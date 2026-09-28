@@ -1,0 +1,99 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # bootc is a long Rust build, so it gets its own cached image and only
+  # rebuilds when this workflow or the packages recipe changes.
+  packages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile.packages
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}/aur-packages:latest
+          cache-from: type=gha,scope=packages
+          cache-to: type=gha,mode=max,scope=packages
+
+  image:
+    needs: packages
+    # Native x86_64. Building this under qemu emulation on an arm64 machine
+    # takes ~15 minutes for the bootc compile alone; here it is a few minutes.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # buildx cannot push and write a local tarball in one pass, so build
+      # the tarball, then load and push it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}:latest
+          build-args: PACKAGES_IMAGE=${{ env.IMAGE }}/aur-packages:latest
+          cache-from: type=gha,scope=os
+          cache-to: type=gha,mode=max,scope=os
+          outputs: type=docker,dest=/tmp/image.tar
+
+      - name: Push to ghcr.io
+        if: github.event_name != 'pull_request'
+        run: |
+          docker load -i /tmp/image.tar
+          docker push "$IMAGE:latest"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: /tmp/image.tar
+
+  iso:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: out
+
+      - name: Build ISO
+        run: ./scripts/build-iso.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: watervaporos-iso
+          path: out/*.iso

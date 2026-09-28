@@ -1,0 +1,41 @@
+#!/bin/bash
+# WaterVaporOS installer.
+#
+# The OS is the OCI image shipped on this ISO. Installing means handing that
+# image to `bootc install to-disk`, which lays down the ostree root, the ESP
+# and the bootloader in one shot.
+set -euo pipefail
+
+IMAGE_ARCHIVE=/usr/share/watervapor/image.tar
+IMAGE_REF=localhost/watervaporos:latest
+
+die() { printf '\n\e[1;31merror:\e[0m %s\n' "$*" >&2; exit 1; }
+say() { printf '\n\e[1;34m==>\e[0m \e[1m%s\e[0m\n' "$*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ -f $IMAGE_ARCHIVE ]] || die "OS image not found at $IMAGE_ARCHIVE"
+[[ -d /sys/firmware/efi ]] || die "UEFI boot required; this ISO was booted in legacy BIOS mode"
+
+say "Available disks"
+lsblk -dno NAME,SIZE,MODEL /dev/[svn]d* /dev/nvme*n* 2>/dev/null | sed 's/^/  /'
+
+read -rp $'\nTarget disk (e.g. sda, nvme0n1): ' disk
+TARGET="/dev/${disk#/dev/}"
+[[ -b $TARGET ]] || die "$TARGET is not a block device"
+
+printf '\n\e[1;31mThis will ERASE %s entirely.\e[0m\n' "$TARGET"
+read -rp 'Type ERASE to continue: ' confirm
+[[ $confirm == ERASE ]] || die "aborted"
+
+say "Loading OS image into local container storage"
+podman load -i "$IMAGE_ARCHIVE"
+
+say "Installing to $TARGET"
+podman run --rm --privileged --pid=host \
+    --security-opt label=disable \
+    -v /dev:/dev \
+    -v /var/lib/containers:/var/lib/containers \
+    "$IMAGE_REF" \
+    bootc install to-disk --wipe --generic-image "$TARGET"
+
+say "Done. Remove the installation media and reboot."
