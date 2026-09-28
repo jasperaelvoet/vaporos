@@ -46,6 +46,31 @@ IMAGE_ARGS='--build-arg PACKAGES_IMAGE=localhost/watervaporos-aur-packages:lates
   ./scripts/build-image.sh
 ```
 
+## Trying it in a VM
+
+`scripts/dev-vm.sh` boots the ISO on a Proxmox host and opens the VM's console
+in your browser via Proxmox's own noVNC -- nothing to install locally.
+
+```sh
+make dev            # fetch the newest CI ISO, then boot it
+make dev-destroy    # tear the VM down
+```
+
+It needs SSH key access to the Proxmox host. Defaults are overridable by
+environment variable:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `PVE_HOST` | `192.168.1.2` | Proxmox host |
+| `PVE_NODE` | `proxmox` | node name, used to build the console URL |
+| `VMID` | `9000` | |
+| `DISK_STORAGE` | `local-lvm` | |
+| `BRIDGE` | `vmbr0` | |
+
+The VM is created with OVMF and Secure Boot keys *not* pre-enrolled: bootc
+needs UEFI, and an unsigned Arch kernel will not pass Secure Boot. The script
+refuses to touch a VMID whose name is not `watervaporos-dev`.
+
 ## Installing
 
 Boot the ISO **in UEFI mode**, then:

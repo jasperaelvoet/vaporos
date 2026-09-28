@@ -1,4 +1,4 @@
-.PHONY: image iso packages all clean
+.PHONY: image iso packages dev dev-destroy all clean
 
 all: iso
 
@@ -14,3 +14,11 @@ clean:
 packages:
 	docker build --platform linux/amd64 -f Containerfile.packages \
 		-t localhost/watervaporos-aur-packages:latest .
+
+# Boot the ISO in a throwaway VM on the Proxmox host and open its console.
+dev:
+	./scripts/dev-vm.sh fetch
+	./scripts/dev-vm.sh up
+
+dev-destroy:
+	./scripts/dev-vm.sh destroy
