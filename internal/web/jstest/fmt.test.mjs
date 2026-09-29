@@ -1,11 +1,11 @@
-// Unit tests for static/js/fmt.js. Run by TestJavaScript (go test) when Node
+// Unit tests for static/legacy/js/fmt.js. Run by TestJavaScript (go test) when Node
 // is installed, or directly: node --test internal/web/jstest/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   bytes, duration, ago, parseMode, modeLabel, groupModes, safeNext, normalizeCode, hostnameError,
   passwordError, sshKeys, sshKeyError, phaseLabel, percent, plural,
-} from '../static/js/fmt.js';
+} from '../static/legacy/js/fmt.js';
 
 test('bytes uses decimal units like drive vendors', () => {
   assert.equal(bytes(0), '0 B');

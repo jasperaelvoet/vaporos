@@ -71,8 +71,9 @@ func TestPagesRender(t *testing.T) {
 			for _, want := range []string{
 				"<title>" + html.EscapeString(p.Title) + " · VaporOS</title>",
 				`data-page="` + p.Name + `"`,
-				`<script type="module" src="` + u.assets.prefix() + `/js/pages/` + p.Script + `.js"></script>`,
-				`href="` + u.assets.prefix() + `/app.css"`,
+				`<script type="module" src="` + u.assets.prefix() + `/legacy/js/pages/` + p.Script + `.js"></script>`,
+				`href="` + u.assets.prefix() + `/legacy/app.css"`,
+				`href="` + u.assets.prefix() + `/icon.svg"`,
 				`<symbol id="i-home"`,
 			} {
 				if !strings.Contains(body, want) {
@@ -86,7 +87,7 @@ func TestPagesRender(t *testing.T) {
 				t.Errorf("navigation does not mark %s as current", p.Path)
 			}
 			// The page's script and stylesheet must actually be served.
-			for _, ref := range []string{"/js/pages/" + p.Script + ".js", "/app.css", "/js/lib.js", "/icon.svg"} {
+			for _, ref := range []string{"/legacy/js/pages/" + p.Script + ".js", "/legacy/app.css", "/legacy/js/lib.js", "/icon.svg"} {
 				if rec := get(h, u.assets.prefix()+ref); rec.Code != http.StatusOK {
 					t.Errorf("GET %s = %d", ref, rec.Code)
 				}
@@ -244,12 +245,12 @@ func TestStaticContentTypesAndCaching(t *testing.T) {
 	_, h := newHandler(t, false, "")
 	u := testUI(t)
 	for name, ctype := range map[string]string{
-		"app.css":              "text/css; charset=utf-8",
-		"js/lib.js":            "text/javascript; charset=utf-8",
-		"js/pages/install.js":  "text/javascript; charset=utf-8",
-		"icon.svg":             "image/svg+xml",
-		"icon-192.png":         "image/png",
-		"manifest.webmanifest": "application/manifest+json",
+		"legacy/app.css":             "text/css; charset=utf-8",
+		"legacy/js/lib.js":           "text/javascript; charset=utf-8",
+		"legacy/js/pages/install.js": "text/javascript; charset=utf-8",
+		"icon.svg":                   "image/svg+xml",
+		"icon-192.png":               "image/png",
+		"manifest.webmanifest":       "application/manifest+json",
 	} {
 		rec := get(h, u.assets.prefix()+"/"+name)
 		if rec.Code != http.StatusOK {
@@ -277,7 +278,7 @@ func TestStaticContentTypesAndCaching(t *testing.T) {
 
 	// A page from before an update asks for its old version: it gets the
 	// current file, but must revalidate.
-	rec := get(h, "/static/0123456789ab/app.css")
+	rec := get(h, "/static/0123456789ab/legacy/app.css")
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
 		t.Errorf("stale version: %d %q", rec.Code, rec.Header().Get("Cache-Control"))
 	}
@@ -291,7 +292,7 @@ func TestStaticContentTypesAndCaching(t *testing.T) {
 func TestStaticGzip(t *testing.T) {
 	_, h := newHandler(t, false, "")
 	u := testUI(t)
-	url := u.assets.prefix() + "/app.css"
+	url := u.assets.prefix() + "/legacy/app.css"
 	rec := get(h, url, "Accept-Encoding", "br, gzip")
 	if rec.Header().Get("Content-Encoding") != "gzip" || !strings.Contains(rec.Header().Get("Vary"), "Accept-Encoding") {
 		t.Fatalf("no gzip: %v", rec.Header())
@@ -301,11 +302,11 @@ func TestStaticGzip(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain, _ := io.ReadAll(zr)
-	if !bytes.Equal(plain, u.assets.files["app.css"].body) {
+	if !bytes.Equal(plain, u.assets.files["legacy/app.css"].body) {
 		t.Error("gzip body does not decompress to app.css")
 	}
 	gzTag := rec.Header().Get("ETag")
-	if gzTag == u.assets.files["app.css"].etag {
+	if gzTag == u.assets.files["legacy/app.css"].etag {
 		t.Error("gzip variant shares the identity ETag")
 	}
 	if rec := get(h, url, "Accept-Encoding", "gzip;q=0"); rec.Header().Get("Content-Encoding") != "" {
@@ -497,7 +498,7 @@ func TestScriptsMatchMarkup(t *testing.T) {
 			}
 		}
 		refs := byID.FindAllStringSubmatch(src, -1)
-		if name == "js/lib.js" {
+		if name == "legacy/js/lib.js" {
 			// The shared runtime null-checks what it looks up, but every id
 			// it names must exist on at least one page.
 			for _, m := range refs {
@@ -511,7 +512,7 @@ func TestScriptsMatchMarkup(t *testing.T) {
 			}
 			return
 		}
-		if !strings.HasPrefix(name, "js/pages/") {
+		if !strings.HasPrefix(name, "legacy/js/pages/") {
 			return
 		}
 		page := strings.TrimSuffix(path.Base(name), ".js")
@@ -530,7 +531,7 @@ func TestScriptsMatchMarkup(t *testing.T) {
 // The inline logo in the page header and icon.svg are the same drawing.
 func TestLogoMatchesIcon(t *testing.T) {
 	d := regexp.MustCompile(`<path d="([^"]+)"`)
-	layout, _ := content.ReadFile("templates/layout.html")
+	layout, _ := content.ReadFile("templates/legacy/layout.html")
 	icon, _ := content.ReadFile("static/icon.svg")
 	logo := layout[bytes.Index(layout, []byte(`{{define "logo"}}`)):]
 	a, b := d.FindAllSubmatch(logo, -1), d.FindAllSubmatch(icon, -1)

@@ -92,7 +92,8 @@ var installerSetup = page{Name: "setup", Path: "/setup", Title: "Install VaporOS
 type pageData struct {
 	Page      page
 	Nav       []page
-	Static    string // versioned static prefix, "/static/<hash>"
+	Static    string // versioned prefix of this UI's own files, "/static/<hash>/legacy"
+	Shared    string // versioned prefix of the files every UI shares (icons, manifest), "/static/<hash>"
 	Version   string
 	Installer bool
 	NeedCode  bool   // a setup code guards /setup's API calls
@@ -143,7 +144,7 @@ func newUI(srv *api.Server) (*ui, error) {
 	base, err := template.New("").Funcs(template.FuncMap{
 		"icon":   iconHTML,
 		"sprite": spriteHTML,
-	}).ParseFS(content, "templates/layout.html")
+	}).ParseFS(content, "templates/legacy/layout.html")
 	if err != nil {
 		return nil, err
 	}
@@ -152,14 +153,14 @@ func newUI(srv *api.Server) (*ui, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := t.ParseFS(content, "templates/pages/"+p.Name+".html"); err != nil {
+		if _, err := t.ParseFS(content, "templates/legacy/pages/"+p.Name+".html"); err != nil {
 			return nil, err
 		}
 		u.tmpl[p.Name] = t
 	}
 	for _, p := range append(pages, installerSetup) {
-		if _, ok := assets.files["js/pages/"+p.Script+".js"]; !ok {
-			return nil, fmt.Errorf("page %s: missing script js/pages/%s.js", p.Name, p.Script)
+		if _, ok := assets.files["legacy/js/pages/"+p.Script+".js"]; !ok {
+			return nil, fmt.Errorf("page %s: missing script legacy/js/pages/%s.js", p.Name, p.Script)
 		}
 	}
 	return u, nil
@@ -198,7 +199,8 @@ func (u *ui) pageHandler(p page) http.HandlerFunc {
 		d := pageData{
 			Page:      p,
 			Nav:       u.nav,
-			Static:    u.assets.prefix(),
+			Static:    u.assets.prefix() + "/legacy",
+			Shared:    u.assets.prefix(),
 			Version:   config.BinaryVersion,
 			Installer: installer,
 		}
