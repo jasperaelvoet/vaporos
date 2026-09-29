@@ -2,7 +2,7 @@
 // A zero-dependency static server that behaves like GitHub Pages for the
 // VaporOS site: the export in <outDir> is served under /vaporos/.
 //
-//   node scripts/serve.mjs <outDir> [port=4329] [--base=/vaporos] [--quiet]
+//   node scripts/serve.mjs <outDir> [port=4329] [--base=/vaporos] [--gzip] [--quiet]
 //
 //   /vaporos/x/          → <outDir>/x/index.html
 //   /vaporos/x           → 301 /vaporos/x/ when x is a directory; else x.html if it exists
@@ -10,10 +10,13 @@
 //   /                    → 302 /vaporos/ (convenience; GitHub Pages would show another site)
 // GET and HEAD only, single byte ranges (for video), no caching, correct MIME
 // types (.wasm, .glb, .gltf, .ktx2, .woff2, .txt RSC payloads and more).
+// --gzip compresses text answers for clients that accept it, as GitHub Pages
+// does, so Lighthouse measures the transfer sizes the real site has.
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
+import { createGzip } from 'node:zlib';
 
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(
@@ -24,13 +27,14 @@ const flags = Object.fromEntries(
 );
 const [outArg, portArg] = args.filter((a) => !a.startsWith('--'));
 if (!outArg) {
-  console.error('usage: node scripts/serve.mjs <outDir> [port=4329] [--base=/vaporos] [--quiet]');
+  console.error('usage: node scripts/serve.mjs <outDir> [port=4329] [--base=/vaporos] [--gzip] [--quiet]');
   process.exit(2);
 }
 const ROOT = resolve(outArg);
 const PORT = Number(portArg ?? 4329);
 const BASE = String(flags.base ?? '/vaporos').replace(/\/+$/, '');
 const QUIET = !!flags.quiet;
+const GZIP = !!flags.gzip;
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -129,12 +133,23 @@ async function send(req, res, file, status = 200) {
     status = 206;
     headers['Content-Range'] = `bytes ${start}-${end}/${info.size}`;
   }
-  headers['Content-Length'] = info.size ? end - start + 1 : 0;
+  const zip = GZIP && status !== 206 && info.size > 0 && COMPRESSIBLE.test(headers['Content-Type']) && /\bgzip\b/.test(req.headers['accept-encoding'] ?? '');
+  if (zip) {
+    headers['Content-Encoding'] = 'gzip';
+    headers.Vary = 'Accept-Encoding';
+    delete headers['Accept-Ranges'];
+  } else {
+    headers['Content-Length'] = info.size ? end - start + 1 : 0;
+  }
   res.writeHead(status, headers);
   log(status, req, status === 404 ? '→ 404.html' : '');
   if (req.method === 'HEAD' || !info.size) return res.end();
-  createReadStream(file, { start, end }).pipe(res);
+  const body = createReadStream(file, { start, end });
+  if (zip) body.pipe(createGzip()).pipe(res);
+  else body.pipe(res);
 }
+// What GitHub Pages compresses: text, scripts, JSON, SVG, manifests.
+const COMPRESSIBLE = /^(text\/|application\/(json|javascript|manifest\+json|xml)|image\/svg\+xml)/;
 
 async function notFound(req, res) {
   const page = join(ROOT, '404.html');
