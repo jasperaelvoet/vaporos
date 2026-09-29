@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jasperaelvoet/vaporos/internal/display/edid"
+	"github.com/jasperaelvoet/vaporos/internal/brand"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 )
@@ -242,7 +242,7 @@ func buildWelcome(in welcomeInputs) welcome.State {
 		if mins := int((left + time.Minute - 1) / time.Minute); mins > 0 {
 			st.Status = fmt.Sprintf("Going to sleep in %d min", mins)
 		}
-		st.Detail = "Moonlight wakes it again: open Moonlight and pick this PC"
+		st.Detail = "Moonlight wakes it: open Moonlight and pick this PC"
 	}
 	if o.staged != "" && !in.live {
 		st.Detail = "Update " + o.staged + " installs on the next restart"
@@ -252,7 +252,7 @@ func buildWelcome(in welcomeInputs) welcome.State {
 	}
 	if s := in.session; s != nil {
 		st.Status = "Streaming to " + s.Client
-		st.Detail = modeLabel(s.Mode, s.HDR)
+		st.Detail = brand.ModeLabel(s.Mode, s.HDR)
 	}
 	if o.updateActive(in.now) {
 		u := o.update
@@ -286,20 +286,6 @@ func buildWelcome(in welcomeInputs) welcome.State {
 		}
 	}
 	return st
-}
-
-// modeLabel spells a "WxH@R" mode for people: "3840 × 2160 · 120 Hz · HDR".
-func modeLabel(mode string, hdr bool) string {
-	var parts []string
-	if md, err := edid.ParseMode(mode); err == nil {
-		parts = append(parts, fmt.Sprintf("%d × %d", md.W, md.H), fmt.Sprintf("%d Hz", md.Refresh))
-	} else if mode != "" {
-		parts = append(parts, mode)
-	}
-	if hdr {
-		parts = append(parts, "HDR")
-	}
-	return strings.Join(parts, " · ")
 }
 
 func capitalize(s string) string {

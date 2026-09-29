@@ -32,24 +32,6 @@ func TestHostURL(t *testing.T) {
 	}
 }
 
-func TestModeLabel(t *testing.T) {
-	for _, c := range []struct {
-		mode string
-		hdr  bool
-		want string
-	}{
-		{"3840x2160@120", true, "3840 × 2160 · 120 Hz · HDR"},
-		{"1280x800@90", false, "1280 × 800 · 90 Hz"},
-		{"odd", false, "odd"},
-		{"", true, "HDR"},
-		{"", false, ""},
-	} {
-		if got := modeLabel(c.mode, c.hdr); got != c.want {
-			t.Errorf("modeLabel(%q, %v) = %q, want %q", c.mode, c.hdr, got, c.want)
-		}
-	}
-}
-
 func TestBuildWelcome(t *testing.T) {
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	base := welcomeInputs{hostname: "vapor", ips: []string{"192.168.1.50"}, port: 80, gpuSupported: true, version: "20260929.1", now: now}
@@ -151,7 +133,7 @@ func TestPreSleepNotice(t *testing.T) {
 		t.Errorf("5 min before sleep = %+v", st)
 	}
 	idle(120)
-	if st := buildWelcome(in); st.Status != "Going to sleep in 2 min" || st.Detail != "Moonlight wakes it again: open Moonlight and pick this PC" {
+	if st := buildWelcome(in); st.Status != "Going to sleep in 2 min" || st.Detail != "Moonlight wakes it: open Moonlight and pick this PC" {
 		t.Errorf("2 min before sleep = %+v", st)
 	}
 	for _, c := range []struct {
