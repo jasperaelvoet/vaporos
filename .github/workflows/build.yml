@@ -26,8 +26,9 @@
 # is also the OCI tag installed machines on that branch follow.
 name: build
 
-# The website and the docs have their own workflow (pages.yml): changes that
-# touch only them neither build nor release the OS.
+# The website and the docs have their own workflow (pages.yml), and the web
+# tooling under tools/ its own (web.yml): changes that touch only them
+# neither build nor release the OS.
 on:
   push:
     branches: ['**']
@@ -35,13 +36,17 @@ on:
       - 'website/**'
       - '**.md'
       - '.claude/**'
+      - 'tools/**'
       - '.github/workflows/pages.yml'
+      - '.github/workflows/web.yml'
   pull_request:
     paths-ignore:
       - 'website/**'
       - '**.md'
       - '.claude/**'
+      - 'tools/**'
       - '.github/workflows/pages.yml'
+      - '.github/workflows/web.yml'
   workflow_dispatch:
 
 # One run per branch or PR at a time. A new push to a PR replaces the running
