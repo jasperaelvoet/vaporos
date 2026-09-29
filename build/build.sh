@@ -4,9 +4,11 @@
 #   root.erofs              the OS: one read-only image with kernel modules + userspace
 #   vmlinuz                 the kernel that matches it
 #   initramfs.img           the initramfs with the vos hook
+#   systemd-bootx64.efi     the boot loader, for the ISO's ESP
 #   manifest.json           version, kernel cmdline, checksums: what `vos update` reads
-#   manifest.json.sig       its ed25519 signature (when a signing key is available)
+#   manifest.json.sig       its ed25519 signature (debug builds with the dev key)
 #   vaporos-<version>.iso   live system + web installer, UEFI, USB/CD hybrid
+#                           (build/iso.sh)
 #
 # Environment:
 #   VERSION          YYYYMMDD.HHMMSS, UTC (default: now). rollback_index is the
@@ -16,19 +18,28 @@
 #   VOS_DEBUG        1: dev image -- root autologin on the serial console, trusts
 #                    and is signed with the builder's dev key, fast compression.
 #                    0 (default): release image.
+#   VOS_PHASE        all (default): everything above. image: stop once
+#                    manifest.json is written, unsigned, with no ISO; CI signs
+#                    and makes the ISO in a separate job (see below).
 #   COMPRESS         mkfs.erofs compressor (default: lz4hc,9 for debug builds,
 #                    zstd,level=9 for release builds)
 #   EROFS_PCLUSTER   physical cluster size for zstd/lzma (default: 262144)
 #   REFRESH=1        re-pacstrap even though packages.txt and pacman.conf are unchanged
-#   VOS_SIGNING_KEY  base64 ed25519 private key; if set, signs the manifest
-#                    (release builds; debug builds use /keys/dev.key). Only
-#                    `vos sign` gets to see it.
 #   VOS_ALLOW_STUB=1 tolerate `vos edid generate` and `vos sign` reporting
 #                    "not implemented" (while those Go subcommands are stubs)
 #
+# The release signing key never comes near this script. It runs package
+# scriptlets, pacman hooks, mkinitcpio hooks and locale-gen as root in a
+# privileged container, and any of them could read a key from this process's
+# environment (/proc/1/environ keeps it even after `unset`), its memory or a
+# mounted file. CI builds with VOS_PHASE=image and signs in a separate job that
+# runs no package code (.github/workflows/build.yml, job "sign"); this script
+# refuses to run with a release key in reach.
+#
 # Mounts: /src (the repo, read-only; /src/.build/vos is the linux/amd64 vos
 # binary), /out, /work and /var/cache/pacman/pkg (caches), and optionally /keys
-# (dev.key + dev.pub, the builder's dev signing key).
+# (dev.key + dev.pub, the builder's dev signing key, which only debug images
+# trust).
 #
 # Stages, and what makes them fast:
 #   base      pacstrap of packages.txt. Cached in /work/base and reused until
@@ -39,12 +50,6 @@
 #   checks    the finished erofs is mounted read-only and inspected; a bad
 #             image never reaches /out.
 set -euo pipefail
-
-# The release signing key goes to `vos sign` and nothing else: out of the
-# environment with it before anything runs, or every package scriptlet
-# pacstrap runs (and mkinitcpio, locale-gen, ...) could read it.
-SIGNING_KEY=${VOS_SIGNING_KEY:-}
-unset VOS_SIGNING_KEY
 
 SRC=/src
 # shellcheck source=build/lib.sh
@@ -58,6 +63,7 @@ CHECK=$WORK/check
 STAGE=$WORK/stage
 
 VOS_DEBUG=${VOS_DEBUG:-0}
+VOS_PHASE=${VOS_PHASE:-all}
 VOS_ALLOW_STUB=${VOS_ALLOW_STUB:-0}
 CHANNEL=${CHANNEL:-dev}
 GIT=${GIT:-unknown}
@@ -82,7 +88,10 @@ trap cleanup EXIT
 
 # --------------------------------------------------------------- inputs ----
 
+[[ -z ${VOS_SIGNING_KEY+set} && ! -e /run/secrets/vos-signing-key ]] ||
+    die "a release signing key reached the image build; it must never be where package scriptlets run (CI signs in its sign job)"
 [[ $VOS_DEBUG == 0 || $VOS_DEBUG == 1 ]] || die "VOS_DEBUG must be 0 or 1, not '$VOS_DEBUG'"
+[[ $VOS_PHASE == all || $VOS_PHASE == image ]] || die "VOS_PHASE must be all or image, not '$VOS_PHASE'"
 [[ $CHANNEL =~ ^[A-Za-z0-9._-]+$ ]] || die "CHANNEL '$CHANNEL' is not a valid channel (tag) name"
 
 if [[ -z ${VERSION:-} ]]; then
@@ -376,7 +385,7 @@ fi
 rm -rf "$STAGE"; mkdir -p "$STAGE/vos"
 cp "$INITRD_CACHE" "$STAGE/vos/initramfs.img"
 cp "$ROOT/usr/lib/modules/$KVER/vmlinuz" "$STAGE/vos/vmlinuz"
-cp "$ROOT/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$WORK/systemd-bootx64.efi"
+cp "$ROOT/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$STAGE/vos/systemd-bootx64.efi"
 
 # ------------------------------------------------------------------ erofs ---
 # zstd and lzma need large physical clusters to compress well (the default
@@ -526,85 +535,55 @@ jq -n --arg version "$VERSION" --argjson rollback_index "$ROLLBACK_INDEX" \
         min_updater: 1,
         artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd}}' >"$STAGE/vos/manifest.json"
 
-# `vos sign --key KEYSPEC MANIFEST` writes MANIFEST.sig. The signature is then
-# checked independently (verify_ed25519, with openssl) against the public key
-# devices will use. The release key is in vos's environment alone.
-sign_manifest() { # sign_manifest KEYSPEC PUBKEY
-    local msg
-    rm -f "$STAGE/vos/manifest.json.sig"
-    if ! msg=$(VOS_SIGNING_KEY=$SIGNING_KEY "$VOS" sign --key "$1" "$STAGE/vos/manifest.json" 2>&1); then
-        stub_ok "vos sign" "$msg" && return 0
-        die "vos sign failed: $msg"
-    fi
-    [[ -s $STAGE/vos/manifest.json.sig ]] || die "vos sign did not write manifest.json.sig"
-    if [[ -f $2 ]]; then
-        verify_ed25519 "$2" "$STAGE/vos/manifest.json" "$STAGE/vos/manifest.json.sig" ||
-            die "manifest.json.sig does not verify against ${2##*/}"
-        info "signed and verified against ${2##*/}"
-    else
-        warn "signed, but ${2##*/} is not available to verify the signature"
-    fi
-}
-
 step "Writing manifest.json"
-if [[ -n $SIGNING_KEY ]]; then
-    sign_manifest env:VOS_SIGNING_KEY "$SRC/keys/release.pub"
-elif [[ $VOS_DEBUG == 1 && -s $KEYS/dev.key ]]; then
-    sign_manifest "$KEYS/dev.key" "$KEYS/dev.pub"
-else
-    warn "no signing key: manifest.json is unsigned"
-fi
+info "version $VERSION, rollback_index $ROLLBACK_INDEX, channel $CHANNEL"
 
-# -------------------------------------------------------------------- ISO ---
-step "Creating ISO"
-# The El Torito / USB ESP: systemd-boot, one live entry, and the kernel pair.
-# No menu, no editor: the kernel command line cannot be changed at boot.
-ESPIMG=$WORK/efiboot.img
-esp_kib=$(( ( $(stat -c %s "$STAGE/vos/vmlinuz") + $(stat -c %s "$STAGE/vos/initramfs.img") ) / 1024 + 8192 ))
-rm -f "$ESPIMG"
-mkfs.fat -C -n VOS_EFI "$ESPIMG" "$esp_kib" >/dev/null
-mmd -i "$ESPIMG" ::/EFI ::/EFI/BOOT ::/loader ::/loader/entries ::/vos
-mcopy -i "$ESPIMG" "$WORK/systemd-bootx64.efi" ::/EFI/BOOT/BOOTX64.EFI
-mcopy -i "$ESPIMG" "$STAGE/vos/vmlinuz" "$STAGE/vos/initramfs.img" ::/vos/
-printf '%s\n' 'timeout 0' 'editor no' 'auto-entries no' 'auto-firmware no' 'console-mode keep' |
-    mcopy -i "$ESPIMG" - ::/loader/loader.conf
-cat <<ENTRY | mcopy -i "$ESPIMG" - ::/loader/entries/live.conf
-title   VaporOS $VERSION (installer)
-linux   /vos/vmlinuz
-initrd  /vos/initramfs.img
-options vos.mode=live vos.label=VOS_LIVE $IMAGE_CMDLINE
-ENTRY
+ISO=""
+if [[ $VOS_PHASE == all ]]; then
+    # Debug builds only: the dev key, which only debug images trust. `vos sign
+    # --key FILE MANIFEST` writes MANIFEST.sig; the signature is then checked
+    # independently (verify_ed25519, with openssl) against the public key the
+    # image trusts.
+    if [[ $VOS_DEBUG == 1 && -s $KEYS/dev.key ]]; then
+        step "Signing manifest.json with the dev key"
+        if ! msg=$("$VOS" sign --key "$KEYS/dev.key" "$STAGE/vos/manifest.json" 2>&1); then
+            stub_ok "vos sign" "$msg" || die "vos sign failed: $msg"
+        else
+            [[ -s $STAGE/vos/manifest.json.sig ]] || die "vos sign did not write manifest.json.sig"
+            if [[ -f $KEYS/dev.pub ]]; then
+                verify_ed25519 "$KEYS/dev.pub" "$STAGE/vos/manifest.json" "$STAGE/vos/manifest.json.sig" ||
+                    die "manifest.json.sig does not verify against dev.pub"
+                info "signed and verified against dev.pub"
+            else
+                warn "signed, but dev.pub is not available to verify the signature"
+            fi
+        fi
+    else
+        warn "no signing key: manifest.json is unsigned, and the installer refuses this ISO"
+    fi
 
-loader_conf=$(mtype -i "$ESPIMG" ::/loader/loader.conf)
-grep -qx 'editor no' <<<"$loader_conf" || die "the ISO's loader.conf does not say 'editor no'"
-live_entry=$(mtype -i "$ESPIMG" ::/loader/entries/live.conf)
-[[ $live_entry != *console=tty0* ]] || die "the ISO's live entry puts a console on tty0"
-
-ISO="vaporos-$VERSION.iso"
-xorriso -as mkisofs \
-    -iso-level 3 -full-iso9660-filenames -joliet -joliet-long -rational-rock \
-    -volid VOS_LIVE -appid "VaporOS $VERSION" -publisher VaporOS \
-    -partition_offset 16 \
-    -append_partition 2 C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$ESPIMG" \
-    -appended_part_as_gpt \
-    -e --interval:appended_partition_2:all:: -no-emul-boot \
-    -output "$WORK/$ISO" "$STAGE" 2>&1 | grep -iE 'error|fail' || true
-[[ -s $WORK/$ISO ]] || die "xorriso did not write the ISO"
-elapsed
-
-iso_bytes=$(stat -c %s "$WORK/$ISO")
-if (( iso_bytes >= ISO_LIMIT )); then
-    msg="the ISO is $(mib "$iso_bytes") MiB, over the $(mib "$ISO_LIMIT") MiB release limit (GitHub caps assets at 2 GiB)"
-    if [[ $VOS_DEBUG == 1 ]]; then warn "$msg (a debug build; release builds fail here)"; else die "$msg"; fi
+    step "Creating ISO"
+    ISO="vaporos-$VERSION.iso"
+    bash "$SRC/build/iso.sh" "$STAGE/vos" "$WORK/$ISO" || die "could not make the ISO"
+    elapsed
+    iso_bytes=$(stat -c %s "$WORK/$ISO")
+    if (( iso_bytes >= ISO_LIMIT )); then
+        msg="the ISO is $(mib "$iso_bytes") MiB, over the $(mib "$ISO_LIMIT") MiB release limit (GitHub caps assets at 2 GiB)"
+        if [[ $VOS_DEBUG == 1 ]]; then warn "$msg (a debug build; release builds fail here)"; else die "$msg"; fi
+    fi
 fi
 
 # ------------------------------------------------------------------ out -----
 step "Publishing to out/"
-rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json.sig"
-for f in root.erofs vmlinuz initramfs.img manifest.json manifest.json.sig; do
+rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig"
+for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
     if [[ -f $STAGE/vos/$f ]]; then cp "$STAGE/vos/$f" "$OUT/"; fi
 done
-mv "$WORK/$ISO" "$OUT/"
 info "root.erofs  $(mib "$(stat -c %s "$OUT/root.erofs")") MiB ($COMPRESS)"
-info "$ISO  $(mib "$iso_bytes") MiB (limit $(mib "$ISO_LIMIT") MiB)"
+if [[ -n $ISO ]]; then
+    mv "$WORK/$ISO" "$OUT/"
+    info "$ISO  $(mib "$iso_bytes") MiB (limit $(mib "$ISO_LIMIT") MiB)"
+else
+    info "no ISO (VOS_PHASE=$VOS_PHASE): build/iso.sh makes it once manifest.json is signed"
+fi
 ls -l "$OUT"

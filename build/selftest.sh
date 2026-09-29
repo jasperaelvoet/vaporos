@@ -147,6 +147,44 @@ printf 'kernel.sysrq = 1' >"$root/usr/lib/sysctl.d/80-no-newline.conf"
 printf 'kernel.sysrq = 0' >"$root/usr/lib/sysctl.d/99-vos.conf"
 sysrq; sysrq_is "sysctl: files without a final newline" 0
 
+# ------------------------------------------------------------------- iso.sh --
+iso=$tmp/iso
+mkdir -p "$iso/in"
+for f in root.erofs:1024 vmlinuz:256 initramfs.img:512 systemd-bootx64.efi:64; do
+    head -c "$(( ${f#*:} * 1024 ))" /dev/urandom >"$iso/in/${f%%:*}"
+done
+printf '{"version":"20260929.123456","cmdline":"quiet loglevel=3 console=ttyS0,115200"}\n' >"$iso/in/manifest.json"
+# on_iso ISO: the files under /vos on ISO, one per line, in $tmp/out.
+on_iso() {
+    rm -rf "$iso/x"
+    xorriso -osirrox on -indev "$1" -extract /vos "$iso/x" >/dev/null 2>&1 &&
+        ls "$iso/x" >"$tmp/out"
+}
+# (The container has no cmp.)
+same() { [[ $(sha256sum <"$1") == "$(sha256sum <"$2")" ]]; }
+
+expect pass "iso: an unsigned ISO" bash "$here/iso.sh" "$iso/in" "$iso/unsigned.iso"
+expect pass "iso: ... has /vos" on_iso "$iso/unsigned.iso"
+result "$([[ $(tr '\n' ' ' <"$tmp/out") == 'initramfs.img manifest.json root.erofs vmlinuz ' ]] && echo 1 || echo 0)" \
+    "iso: ... with exactly the OS files, no signature and no boot loader"
+result "$(same "$iso/in/root.erofs" "$iso/x/root.erofs" && echo 1 || echo 0)" "iso: ... and root.erofs intact"
+
+printf 'c2lnbmF0dXJl\n' >"$iso/in/manifest.json.sig"
+expect pass "iso: a signed ISO" bash "$here/iso.sh" "$iso/in" "$iso/signed.iso"
+expect pass "iso: ... has /vos" on_iso "$iso/signed.iso"
+has "iso: ... with manifest.json.sig" manifest.json.sig
+result "$(same "$iso/in/manifest.json.sig" "$iso/x/manifest.json.sig" && echo 1 || echo 0)" "iso: ... the very signature"
+
+cp "$iso/in/manifest.json" "$iso/manifest.good"
+printf '{"version":"20260929.123456","cmdline":"quiet console=tty0 console=ttyS0"}\n' >"$iso/in/manifest.json"
+expect fail "iso: a console on tty0 is refused" bash "$here/iso.sh" "$iso/in" "$iso/tty0.iso"
+printf '{"version":"20260929.123456"}\n' >"$iso/in/manifest.json"
+expect fail "iso: a manifest without cmdline is refused" bash "$here/iso.sh" "$iso/in" "$iso/nocmdline.iso"
+cp "$iso/manifest.good" "$iso/in/manifest.json"
+rm "$iso/in/systemd-bootx64.efi"
+expect fail "iso: no boot loader, no ISO" bash "$here/iso.sh" "$iso/in" "$iso/noefi.iso"
+has "iso: ... and it says what is missing" systemd-bootx64.efi
+
 # ---------------------------------------------------------------- firewall --
 render() { # render CONFIG_JSON -> the ruleset vos-firewall would load
     printf '%s\n' "$1" >"$tmp/config.json"
