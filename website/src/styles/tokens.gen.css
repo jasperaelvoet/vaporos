@@ -1,5 +1,5 @@
 /* Code generated from design/tokens.json by go test ./internal/brand (VOS_GEN_DESIGN=1). DO NOT EDIT.
-   The control center's Tailwind v4 input: styles/app.css imports it. Direction: redline. */
+   The website's Tailwind v4 tokens: src/app/globals.css imports it. Direction: redline. */
 
 @theme {
   --color-*: initial;

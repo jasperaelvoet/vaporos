@@ -122,6 +122,13 @@ func generate(tf *tokensFile, raw []byte) ([]output, error) {
 		}
 		outs = append(outs, output{"web", "internal/web/styles/tokens.css", []byte(css)})
 	}
+	if tf.targetOn("site") {
+		site, err := siteOutputs(tf, sha)
+		if err != nil {
+			return nil, err
+		}
+		outs = append(outs, site...)
+	}
 	return outs, nil
 }
 
