@@ -1,6 +1,7 @@
 package install
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,8 +49,10 @@ func (o *Options) normalize() error {
 	if o.Hostname == "" && o.Mode == ModeErase {
 		o.Hostname = defaultHostname
 	}
-	if o.Hostname != "" && !hostnameRE.MatchString(o.Hostname) {
-		return fmt.Errorf("invalid hostname %q: use 1-63 letters, digits and hyphens", o.Hostname)
+	if o.Hostname != "" {
+		if err := checkHostname(o.Hostname); err != nil {
+			return err
+		}
 	}
 
 	if o.Password != "" {
@@ -98,6 +101,19 @@ func (o *Options) normalizeSource() error {
 	}
 	o.Channel = strings.TrimSpace(o.Channel)
 	return checkChannel(o.Channel)
+}
+
+// checkHostname is PUT /system/hostname's rule (system.ValidateHostname):
+// one lower-case label, and not "localhost", which would shadow the
+// loopback name on every client.
+func checkHostname(name string) error {
+	if !hostnameRE.MatchString(name) {
+		return fmt.Errorf("invalid hostname %q: use 1-63 letters, digits and hyphens", name)
+	}
+	if name == "localhost" {
+		return errors.New(`invalid hostname: "localhost" is reserved`)
+	}
+	return nil
 }
 
 func validTimezoneName(tz string) bool {

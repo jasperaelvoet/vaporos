@@ -544,7 +544,7 @@ func (in *installer) inspectTarget(ctx context.Context) error {
 	}
 	upper := filepath.Join(in.rootDir, "state", "etc", "upper")
 	if in.opts.Hostname == "" {
-		if h := config.ReadLine(filepath.Join(upper, "hostname")); hostnameRE.MatchString(h) {
+		if h := config.ReadLine(filepath.Join(upper, "hostname")); checkHostname(h) == nil {
 			in.opts.Hostname = h
 		}
 	}

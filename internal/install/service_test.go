@@ -188,15 +188,16 @@ func TestServiceValidation(t *testing.T) {
 		return nil
 	}
 	for body, want := range map[string]string{
-		`not json`:                            "bad request body",
-		`{}`:                                  "no disk",
-		`{"disk":"sdb"}`:                      "holds the VaporOS installer",
-		`{"disk":"/dev/sda1"}`:                "is a partition",
-		`{"disk":"sda","hostname":"a b"}`:     "invalid hostname",
-		`{"disk":"sda","password":"short"}`:   "at least 8",
-		`{"disk":"sda","mode":"repair"}`:      "no VaporOS installation",
-		`{"disk":"sda","source":"ftp://x/y"}`: "unsupported source",
-		`{"disk":"sda","source":"oci://ghcr.io/Not Valid"}`:                 "invalid repository",
+		`not json`:                                          "bad request body",
+		`{}`:                                                "no disk",
+		`{"disk":"sdb"}`:                                    "holds the VaporOS installer",
+		`{"disk":"/dev/sda1"}`:                              "is a partition",
+		`{"disk":"sda","hostname":"a b"}`:                   "invalid hostname",
+		`{"disk":"sda","hostname":"LocalHost"}`:             `"localhost" is reserved`,
+		`{"disk":"sda","password":"short"}`:                 "at least 8",
+		`{"disk":"sda","mode":"repair"}`:                    "no VaporOS installation",
+		`{"disk":"sda","source":"ftp://x/y"}`:               "unsupported source",
+		`{"disk":"sda","source":"oci://ghcr.io/Not Valid"}`: "invalid repository",
 		`{"disk":"sda","source":"oci://ghcr.io/x/vaporos","channel":"a b"}`: "invalid channel",
 		`{"disk":"sda","timezone":"../../x"}`:                               "invalid timezone",
 	} {

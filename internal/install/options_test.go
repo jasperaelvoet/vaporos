@@ -3,6 +3,8 @@ package install
 import (
 	"strings"
 	"testing"
+
+	"github.com/jasperaelvoet/vaporos/internal/system"
 )
 
 func TestNormalize(t *testing.T) {
@@ -25,6 +27,8 @@ func TestNormalize(t *testing.T) {
 		{"dotted hostname", Options{Disk: "sda", Hostname: "vapor.local"}, Options{}, "invalid hostname"},
 		{"hyphen hostname", Options{Disk: "sda", Hostname: "-vapor"}, Options{}, "invalid hostname"},
 		{"long hostname", Options{Disk: "sda", Hostname: strings.Repeat("a", 64)}, Options{}, "invalid hostname"},
+		{"localhost", Options{Disk: "sda", Hostname: " LocalHost "}, Options{}, `"localhost" is reserved`},
+		{"repair to localhost", Options{Disk: "sda", Mode: "repair", Hostname: "localhost"}, Options{}, "reserved"},
 		{"short password", Options{Disk: "sda", Password: "vapor"}, Options{}, "at least 8"},
 		{"nul password", Options{Disk: "sda", Password: "12345678\x00"}, Options{}, "not valid"},
 		{"traversal timezone", Options{Disk: "sda", Timezone: "../../etc/shadow"}, Options{}, "invalid timezone"},
@@ -56,6 +60,20 @@ func TestNormalize(t *testing.T) {
 				t.Errorf("normalize = %+v, want %+v", o, tc.want)
 			}
 		})
+	}
+}
+
+// The installer and PUT /system/hostname must agree on every name, or the
+// wizard could set a name that Settings then refuses to keep.
+func TestHostnameRuleMatchesSystem(t *testing.T) {
+	for _, name := range []string{
+		"vapor", "living-room", "a", "0", "x1", strings.Repeat("a", 63), strings.Repeat("a", 64),
+		"localhost", "localhost2", "my-localhost", "", "-a", "a-", "a--b", "a_b", "a.b", "A", "é", "a b",
+	} {
+		inst, sys := checkHostname(name) == nil, system.ValidateHostname(name) == nil
+		if inst != sys {
+			t.Errorf("%q: the installer accepts it: %v, /system/hostname: %v", name, inst, sys)
+		}
 	}
 }
 
