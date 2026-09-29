@@ -245,6 +245,63 @@ func TestPollAnnouncesNewPairings(t *testing.T) {
 	}
 }
 
+func TestPollPublishesPairingState(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	var seen int
+	next := func() []string {
+		h.rec.mu.Lock()
+		defer h.rec.mu.Unlock()
+		var out []string
+		for _, e := range h.rec.events[seen:] {
+			if strings.HasPrefix(e.Topic, "pairing.") {
+				out = append(out, e.Topic+" "+string(e.Data))
+			}
+		}
+		seen = len(h.rec.events)
+		return out
+	}
+	setPairings := func(ps ...Pairing) {
+		h.f.mu.Lock()
+		h.f.pairings = ps
+		h.f.mu.Unlock()
+	}
+
+	h.s.poll(ctx)
+	if got := next(); !reflect.DeepEqual(got, []string{`pairing.state {"pairings":[]}`}) {
+		t.Errorf("first poll = %q", got)
+	}
+	h.s.poll(ctx)
+	if got := next(); len(got) != 0 {
+		t.Errorf("unchanged poll = %q", got)
+	}
+	deck := Pairing{ID: strings.Repeat("7f", 16), Name: "Steam Deck", Address: "192.168.1.31"}
+	setPairings(deck)
+	h.s.poll(ctx)
+	want := []string{
+		`pairing.pending {"name":"Steam Deck"}`,
+		`pairing.state {"pairings":[{"id":"` + deck.ID + `","name":"Steam Deck","address":"192.168.1.31"}]}`,
+	}
+	if got := next(); !reflect.DeepEqual(got, want) {
+		t.Errorf("device appears = %q, want %q", got, want)
+	}
+	setPairings()
+	h.s.poll(ctx)
+	if got := next(); !reflect.DeepEqual(got, []string{`pairing.state {"pairings":[]}`}) {
+		t.Errorf("device gone = %q", got)
+	}
+
+	// Sunshine stops answering: nobody can pair, so the list empties.
+	setPairings(deck)
+	h.s.poll(ctx)
+	next()
+	h.s.client = NewClient("https://127.0.0.1:1", "u", "p", certPath())
+	h.s.poll(ctx)
+	if got := next(); !reflect.DeepEqual(got, []string{`pairing.state {"pairings":[]}`}) {
+		t.Errorf("Sunshine down = %q", got)
+	}
+}
+
 func TestMaintainPicksUpNewGamesAndConnector(t *testing.T) {
 	h := newHarness(t)
 	writeCreds(t, h.f.user, h.f.pass)

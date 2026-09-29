@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 	"text/template"
 	"time"
@@ -74,6 +75,8 @@ type Service struct {
 	session        *sessionInfo
 	pairings       []Pairing
 	seenPairings   map[string]bool
+	sentPairings   []Pairing // the last pairing.state list
+	pairingsSent   bool
 	version        string
 	pendingRestart bool
 	nextConf       time.Time
@@ -520,6 +523,8 @@ func (s *Service) maintain(ctx context.Context) {
 
 // refreshPairings tracks clients waiting for a PIN and announces new ones
 // (pairing.pending), so the web UI and welcome screen can prompt for it.
+// pairing.state carries the whole list whenever it changes, so a prompt
+// closes when its pairing completes, expires or is cancelled.
 func (s *Service) refreshPairings(ctx context.Context) {
 	cl := s.api()
 	if cl == nil {
@@ -544,6 +549,10 @@ func (s *Service) refreshPairings(ctx context.Context) {
 		}
 	}
 	s.seenPairings, s.pairings = seen, ps
+	changed := !s.pairingsSent || !slices.Equal(s.sentPairings, ps)
+	if changed {
+		s.sentPairings, s.pairingsSent = slices.Clone(ps), true
+	}
 	s.mu.Unlock()
 	for _, p := range fresh {
 		ev := map[string]string{}
@@ -551,6 +560,9 @@ func (s *Service) refreshPairings(ctx context.Context) {
 			ev["name"] = p.Name
 		}
 		s.publish("pairing.pending", ev)
+	}
+	if changed {
+		s.publish("pairing.state", map[string]any{"pairings": append([]Pairing{}, ps...)})
 	}
 }
 
