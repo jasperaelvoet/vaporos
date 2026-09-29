@@ -23,6 +23,30 @@ async function load() {
   render();
 }
 
+// planesLabel explains GET /display "planes": Sunshine's KMS capture needs
+// gamescope to composite onto one plane.
+function planesLabel(n) {
+  if (n === 0) return 'None (nothing on the virtual screen)';
+  if (n === 1) return '1 (composited, as streaming needs)';
+  return `${n} (a game is drawn on its own plane; the stream may lose the picture)`;
+}
+
+// freeConnectors lists the outputs the virtual screen may move to (GET
+// /display "available_connectors", names or {name}); null when this
+// VaporOS does not report them.
+function freeConnectors() {
+  if (!Array.isArray(d.available_connectors)) return null;
+  return d.available_connectors.map((c) => (typeof c === 'string' ? c : c && c.name)).filter(Boolean);
+}
+
+function updateConnectorNote() {
+  const sel = byId('connector');
+  const note = byId('connector-note');
+  const moving = !sel.disabled && sel.value && sel.value !== d.virtual_connector;
+  note.textContent = moving ? `Saving moves the virtual screen to ${sel.value} when VaporOS restarts.` : '';
+  note.hidden = !moving;
+}
+
 function render() {
   byId('reboot-banner').hidden = !d.reboot_needed;
   byId('nogpu-banner').hidden = d.profile !== 'none';
@@ -31,6 +55,7 @@ function render() {
     ['State', STATES[d.state] || d.state || ''],
     ['Mode', d.current ? modeLabel(d.current) : 'Not active'],
     ['Virtual screen', d.virtual_connector ? h('span', { class: 'mono', text: d.virtual_connector }) : 'None'],
+    d.profile !== 'none' && typeof d.planes === 'number' ? ['Planes', planesLabel(d.planes)] : null,
     ['Graphics', d.profile === 'amd' ? 'AMD' : d.profile === 'none' ? 'Not supported' : d.profile],
   ]);
 
@@ -38,15 +63,18 @@ function render() {
   const form = byId('display-form');
   if (!form.contains(document.activeElement)) {
     byId('hdr').checked = !!d.hdr;
+    const free = freeConnectors();
     const sel = byId('connector');
-    const conns = (d.connectors || []).filter((c) => !c.physical || c.name === d.virtual_connector);
-    fill(sel, conns.map((c) => h('option', { value: c.name, text: c.name === d.virtual_connector ? `${c.name} (current)` : c.name })));
-    if (d.virtual_connector && !conns.some((c) => c.name === d.virtual_connector)) {
-      sel.prepend(h('option', { value: d.virtual_connector, text: `${d.virtual_connector} (current)` }));
+    byId('connector-field').hidden = free === null;
+    sel.disabled = true;
+    if (free !== null) {
+      const names = [...new Set([d.virtual_connector, ...free].filter(Boolean))];
+      fill(sel, names.map((n) => h('option', { value: n, text: n === d.virtual_connector ? `${n} (current)` : n })));
+      if (!d.virtual_connector) sel.prepend(h('option', { value: '', text: free.length ? 'None yet' : 'No free outputs' }));
+      sel.value = d.virtual_connector || '';
+      sel.disabled = d.profile === 'none' || !free.length;
     }
-    if (!sel.options.length) sel.append(h('option', { value: '', text: 'No free outputs' }));
-    sel.value = d.virtual_connector || '';
-    sel.disabled = d.profile === 'none' || !conns.length;
+    updateConnectorNote();
   }
   byId('hdr').disabled = d.profile === 'none';
 
@@ -94,11 +122,17 @@ function wire() {
     const sel = byId('connector');
     if (!sel.disabled && sel.value && sel.value !== d.virtual_connector) body.virtual_connector = sel.value;
     await api('PUT', '/display/settings', body);
-    toast(body.virtual_connector ? 'Saved. Restart VaporOS to use the new output.' : 'Saved.', 'ok');
+    if (body.virtual_connector) {
+      byId('reboot-banner').hidden = false;
+      toast(`Saved. The virtual screen moves to ${body.virtual_connector} when VaporOS restarts.`, 'ok');
+    } else {
+      toast('Saved.', 'ok');
+    }
     document.activeElement.blur();
     await load();
     return true;
   });
+  byId('connector').addEventListener('change', updateConnectorNote);
 
   onSubmit(byId('mode-form'), async () => {
     const wEl = byId('mode-w');

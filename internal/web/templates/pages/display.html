@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="banner banner-warn" id="reboot-banner" hidden>
   {{icon "restart"}}
-  <div class="banner-text"><strong>Restart to apply display changes.</strong> New modes are added to the virtual screen when VaporOS starts.</div>
+  <div class="banner-text"><strong>Restart to apply display changes.</strong> New modes and a new virtual screen output take effect when VaporOS starts.</div>
   <button class="btn btn-sm" id="reboot-now" type="button">Restart now</button>
 </div>
 <div class="banner banner-warn" id="nogpu-banner" hidden>
@@ -23,10 +23,11 @@
         <span class="switch-track" aria-hidden="true"></span>
         <span class="switch-text"><strong>HDR</strong><span class="muted">Stream in HDR when the Moonlight device asks for it.</span></span>
       </label>
-      <div class="field">
+      <div class="field" id="connector-field" hidden>
         <label for="connector">Virtual screen connector</label>
-        <select id="connector" name="virtual_connector" aria-describedby="connector-hint"></select>
-        <p class="hint" id="connector-hint">An unused output on the graphics card that VaporOS drives as an invisible screen. Changing it needs a restart.</p>
+        <select id="connector" name="virtual_connector" aria-describedby="connector-hint connector-note"></select>
+        <p class="hint" id="connector-hint">An unused output on the graphics card that VaporOS drives as an invisible screen. Move it if you want to plug a monitor into its port. Changing it needs a restart.</p>
+        <p class="hint strong" id="connector-note" aria-live="polite" hidden></p>
       </div>
       <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
     </form>

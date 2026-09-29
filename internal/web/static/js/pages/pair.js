@@ -21,11 +21,34 @@ async function loadSystem() {
   fill(byId('pc-addresses'), names.map((a) => h('span', { class: 'address', text: a })));
 }
 
+// pairings are the devices waiting for a PIN (GET /sunshine). With more
+// than one, Sunshine needs to be told which one the PIN is for.
+let pairings = [];
+
 async function loadSunshine() {
   try {
     const s = await api('GET', '/sunshine');
-    setWaiting(!!s.pending_pairing);
+    pairings = Array.isArray(s.pairings) ? s.pairings.filter((p) => p && p.id) : [];
+    setWaiting(!!s.pending_pairing || pairings.length > 0, pairings.length === 1 ? pairings[0].name : '');
+    renderPairings();
   } catch { /* the form works regardless */ }
+}
+
+function pairingLabel(p) {
+  const name = p.name || 'Unnamed device';
+  return p.address ? `${name} (${p.address})` : name;
+}
+
+function renderPairings() {
+  const pick = byId('pairing-pick');
+  const sel = byId('pairing-id');
+  const keep = sel.value;
+  fill(sel,
+    h('option', { value: '', text: 'Choose a device', disabled: true }),
+    pairings.map((p) => h('option', { value: p.id, text: pairingLabel(p) })));
+  sel.value = pairings.some((p) => p.id === keep) ? keep : '';
+  pick.hidden = pairings.length < 2;
+  setText('pairing-pick-hint', `${pairings.length} devices are waiting to pair. Pick the one whose screen shows this PIN.`);
 }
 
 function setWaiting(waiting, name = '') {
@@ -80,28 +103,50 @@ function wire() {
     const digits = pin.value.replace(/\D/g, '').slice(0, 4);
     if (digits !== pin.value) pin.value = digits;
   });
+  const choice = byId('pairing-id');
+  choice.addEventListener('change', () => {
+    // Suggest the name the device gave itself, unless one was typed.
+    const p = pairings.find((x) => x.id === choice.value);
+    const name = byId('device-name');
+    if (p && p.name && !name.value.trim()) name.value = p.name;
+  });
   onSubmit(byId('pair-form'), async () => {
     const name = byId('device-name');
+    const body = { pin: pin.value, name: name.value.trim() };
+    if (pairings.length > 1) {
+      if (!choice.value) return invalid(choice, 'Choose the device that shows this PIN.');
+      body.pairing_id = choice.value;
+    }
     if (!/^\d{4}$/.test(pin.value)) return invalid(pin, 'Enter the 4 digits Moonlight shows.');
-    if (!name.value.trim()) return invalid(name, 'Give the device a name, like "Living room TV".');
+    if (!body.name) return invalid(name, 'Give the device a name, like "Living room TV".');
     try {
-      await api('POST', '/sunshine/pair', { pin: pin.value, name: name.value.trim() });
+      await api('POST', '/sunshine/pair', body);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) throw e;
+      if (e instanceof ApiError && e.status === 409) {
+        // Several devices are waiting (or the chosen one gave up): show the
+        // current list so the visitor can pick, instead of blaming the PIN.
+        await loadSunshine();
+        throw new Error(pairings.length > 1
+          ? 'More than one device is waiting to pair. Choose the one that shows this PIN, then press Pair again.'
+          : e.message);
+      }
       throw new Error(`Pairing didn't work (${e.message.replace(/\.$/, '')}). Check the PIN, and that Moonlight still shows it.`);
     }
-    toast(`${name.value.trim()} is paired. Pick Steam in Moonlight to play.`, 'ok');
+    toast(`${body.name} is paired. Pick Steam in Moonlight to play.`, 'ok');
     pin.value = '';
     name.value = '';
     setWaiting(false);
     byId('step-pin').classList.add('done');
-    await loadClients();
+    // Another device may still be waiting; the list says so.
+    await Promise.all([loadSunshine(), loadClients()]);
     return true;
   });
   const refresh = byId('clients-refresh');
   refresh.addEventListener('click', () => busy(refresh, loadClients));
   on('pairing.pending', (p) => {
     setWaiting(true, p && p.name);
+    loadSunshine(); // a second device waiting brings up the picker
     if (document.activeElement === document.body) pin.focus();
   });
   onReconnect(() => Promise.all([loadSunshine(), loadClients()]));

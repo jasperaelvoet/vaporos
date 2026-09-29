@@ -57,7 +57,7 @@
     <p class="muted">Pick the drive to install on. The USB stick you started from isn't listed.</p>
     <div class="banner" id="gpu-note" hidden>{{icon "monitor"}}<div class="banner-text" id="gpu-text"></div></div>
     <div class="choices" id="disk-list" role="radiogroup" aria-label="Drives"></div>
-    <p class="empty" id="disk-empty" hidden>No drives found. Connect a drive of at least 24.5 GiB (about 26.3 GB) and rescan.</p>
+    <p class="empty" id="disk-empty" hidden>No drives found. Connect a drive of at least <span id="disk-min">24.5 GiB (about 26.3 GB)</span> and rescan.</p>
     <p class="field-error" id="disk-error" role="alert" hidden></p>
     <div class="wizard-nav">
       <button class="btn btn-ghost" id="disk-rescan" type="button">{{icon "restart"}}Rescan</button>
@@ -74,7 +74,8 @@
         <label class="choice"><input type="radio" name="mode" value="erase"><span class="choice-body"><span class="choice-main"><strong>Erase and install</strong><span class="muted">Start over. Everything on the drive is deleted.</span></span></span></label>
       </div>
     </fieldset>
-    <div class="field">
+    <p class="hint" id="repair-keeps" hidden>Repair keeps this PC's name on your network and its time zone. You can rename it later under Advanced.</p>
+    <div class="field" id="hostname-field">
       <label for="hostname">Name on your network</label>
       <div class="input-affix">
         <input id="hostname" name="hostname" value="vapor" required maxlength="63" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="hostname-hint">
@@ -99,7 +100,7 @@
 
   <form class="step" data-step="extras" id="extras-form" hidden>
     <h2 tabindex="-1">Games and time</h2>
-    <div class="field">
+    <div class="field" id="timezone-field">
       <label for="timezone">Time zone</label>
       <select id="timezone" name="timezone">
         {{- range .Timezones}}
@@ -109,7 +110,7 @@
     </div>
     <fieldset class="field">
       <legend>Steam libraries on other drives</legend>
-      <p class="hint">Keep playing games you already downloaded. Checked libraries are mounted for Steam; nothing on them is changed.</p>
+      <p class="hint">Keep playing games you already downloaded. Checked libraries are mounted under /var/mnt on every start, and nothing on them is changed. After installing, add each one once in Steam under Settings → Storage.</p>
       <div class="checks" id="library-list"></div>
       <p class="empty" id="library-empty" hidden>No Steam libraries found on other drives. You can add drives later under Storage.</p>
     </fieldset>
@@ -161,6 +162,7 @@
     <ol class="numbered">
       <li><strong>Remove the USB stick</strong> from the PC.</li>
       <li>Press <strong>Restart now</strong>. VaporOS starts in about a minute.</li>
+      <li id="done-libraries" hidden><strong>Add your game drives in Steam.</strong> Once Steam is up in Moonlight, open Settings → Storage → Add Drive and choose <span id="done-library-paths"></span>. The games on them come back without downloading.</li>
     </ol>
     <div class="wizard-nav"><span></span><button class="btn btn-primary btn-lg" id="reboot-btn" type="button">{{icon "restart"}}Restart now</button></div>
   </div>
@@ -169,7 +171,7 @@
     <div class="done-mark pending"><span class="spinner spinner-lg"></span></div>
     <h2 tabindex="-1">Restarting…</h2>
     <p class="muted" id="restart-status" aria-live="polite">Waiting for VaporOS to start. This page moves on by itself.</p>
-    <p class="small muted">If it doesn't, open <a id="restart-link" href="http://vapor.local/">http://vapor.local</a><span id="restart-alt"></span>.</p>
+    <p class="small muted">If it doesn't, open the address shown on the PC's screen or in your router's list of devices<span id="restart-or">, or <a id="restart-link" href="http://vapor.local/">http://vapor.local</a></span><span id="restart-alt"></span>.</p>
   </div>
 </section>
 {{end}}

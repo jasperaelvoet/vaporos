@@ -9,8 +9,10 @@ import {
 } from '../lib.js';
 
 // The smallest drive that can hold the A/B layout: 512 MiB ESP, two slots of
-// at least 8 GiB and 8 GiB of data (CONTRACTS.md "Disk layout").
-const MIN_DISK = 512 * 2 ** 20 + 2 * 8 * 2 ** 30 + 8 * 2 ** 30;
+// at least 8 GiB and 8 GiB of data (CONTRACTS.md "Disk layout"). The probe
+// says what the image being installed really needs (min_size); this floor
+// is only for a probe that does not.
+const MIN_DISK_FLOOR = 512 * 2 ** 20 + 2 * 8 * 2 ** 30 + 8 * 2 ** 30;
 const INPUT_STEPS = ['disk', 'account', 'extras', 'confirm'];
 const HOST_KEY = 'vos-install-host';
 
@@ -20,7 +22,7 @@ const w = {
   disk: null,
   mode: 'erase',
   modeChosen: false, // the visitor picked erase/repair themselves
-  hostname: 'vapor',
+  hostname: 'vapor', // '' in repair: the installed system keeps its own
   password: '',
   timezone: '',
   libraries: new Set(), // UUIDs to adopt
@@ -100,6 +102,13 @@ function usableDisks() {
   return ((w.probe && w.probe.disks) || []).filter((d) => !d.is_live);
 }
 
+function minDisk() {
+  const n = Number(w.probe && w.probe.min_size);
+  return Number.isFinite(n) && n > 0 ? n : MIN_DISK_FLOOR;
+}
+
+const gib = (n) => `${(n / 2 ** 30).toFixed(1).replace(/\.0$/, '')} GiB`;
+
 function renderGPU() {
   const gpu = (w.probe && w.probe.gpu) || {};
   const note = byId('gpu-note');
@@ -116,11 +125,13 @@ function renderGPU() {
 
 function renderDisks() {
   const disks = usableDisks();
-  const fits = disks.filter((d) => Number(d.size) >= MIN_DISK);
+  const min = minDisk();
+  const fits = disks.filter((d) => Number(d.size) >= min);
   if (w.disk && !fits.some((d) => d.path === w.disk.path)) w.disk = null;
   if (!w.disk && fits.length === 1) w.disk = fits[0];
+  setText('disk-min', `${gib(min)} (about ${bytes(min)})`);
   fill(byId('disk-list'), disks.map((d) => {
-    const tooSmall = Number(d.size) < MIN_DISK;
+    const tooSmall = Number(d.size) < min;
     const input = h('input', { type: 'radio', name: 'disk', value: d.path, disabled: tooSmall });
     input.checked = !!w.disk && w.disk.path === d.path;
     input.addEventListener('change', () => {
@@ -131,7 +142,7 @@ function renderDisks() {
     if (d.has_vaporos) chips.push(badge('VaporOS installed', 'accent'));
     for (const lib of d.steam_libraries || []) chips.push(badge(`Steam library${lib.label ? `: ${lib.label}` : ''}`, 'ok'));
     if (d.removable) chips.push(badge('Removable'));
-    if (tooSmall) chips.push(badge('Too small', 'warn'));
+    if (tooSmall) chips.push(badge(`Too small (needs ${gib(min)})`, 'warn'));
     const facts = [bytes(d.size), TRANSPORTS[String(d.transport || '').toLowerCase()] || d.transport, d.path].filter(Boolean);
     return h('label', { class: 'choice' }, input,
       h('span', { class: 'choice-body' },
@@ -156,19 +167,26 @@ function diskNext() {
   if (hasVapor) mode = w.modeChosen && w.mode === 'erase' ? 'erase' : 'repair';
   for (const r of $$('input[name="mode"]')) r.checked = r.value === mode;
   w.mode = mode;
-  updatePasswordRules();
+  updateModeFields();
   go('account');
 }
 
 // ---------- step: name and password ----------
 
-function updatePasswordRules() {
+// updateModeFields adapts the form to erase or repair. A repair keeps the
+// installed system's name and time zone: the wizard sends neither, and the
+// installer leaves /etc/hostname and /etc/localtime alone.
+function updateModeFields() {
   const repair = w.mode === 'repair';
   byId('password').required = !repair;
   byId('password2').required = !repair;
   setText('password-hint', repair
     ? 'Leave empty to keep the current password, or set a new one (at least 8 characters).'
     : "At least 8 characters. You'll use it to sign in to this page.");
+  byId('repair-keeps').hidden = !repair;
+  byId('hostname-field').hidden = repair;
+  byId('hostname').required = !repair;
+  byId('timezone-field').hidden = repair;
 }
 
 function updateHostPreview() {
@@ -179,14 +197,17 @@ function updateHostPreview() {
 }
 
 function submitAccount() {
+  const repair = w.mode === 'repair';
   const host = byId('hostname');
   const p1 = byId('password');
   const p2 = byId('password2');
-  const herr = hostnameError(host.value.trim());
-  if (herr) return invalid(host, herr);
-  const perr = passwordError(p1.value, p2.value, { optional: w.mode === 'repair' });
+  if (!repair) {
+    const herr = hostnameError(host.value.trim());
+    if (herr) return invalid(host, herr);
+  }
+  const perr = passwordError(p1.value, p2.value, { optional: repair });
   if (perr) return invalid(p1.value.length < 8 ? p1 : p2, perr);
-  w.hostname = host.value.trim();
+  w.hostname = repair ? '' : host.value.trim();
   w.password = p1.value;
   renderExtras();
   go('extras');
@@ -195,9 +216,24 @@ function submitAccount() {
 
 // ---------- step: games and time ----------
 
+// guessTimezone prefers what the live system knows, but the ISO has no
+// zone of its own and reports UTC; the browser's zone is then the better
+// guess, as long as the list offers it.
+function guessTimezone(sel) {
+  const offered = (tz) => !!tz && [...sel.options].some((o) => o.value === tz);
+  const probed = (w.probe && w.probe.timezone) || '';
+  if (probed && probed !== 'UTC') return probed;
+  let browser = '';
+  try {
+    browser = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch { /* no Intl */ }
+  if (offered(browser)) return browser;
+  return probed || 'UTC';
+}
+
 function renderExtras() {
   const sel = byId('timezone');
-  const tz = w.timezone || (w.probe && w.probe.timezone) || 'UTC';
+  const tz = w.timezone || guessTimezone(sel);
   if (![...sel.options].some((o) => o.value === tz)) {
     sel.prepend(h('option', { value: tz, text: tz.replace(/_/g, ' ') }));
   }
@@ -238,6 +274,26 @@ function selectedLibraries() {
   return [...w.libraries].filter((u) => offered.has(u));
 }
 
+// libraryFolder is where an adopted library appears on the installed
+// system: /var/mnt/<label> (made safe the way install/target.go's
+// libraryMountpoint does it, else the UUID) plus the folder inside it.
+function libraryFolder(lib) {
+  const name = String(lib.label || '').replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
+  const inside = !lib.path || lib.path === '/' ? '' : `/${String(lib.path).replace(/^\/+/, '')}`;
+  return `/var/mnt/${name || lib.uuid}${inside}`;
+}
+
+function selectedLibraryFolders() {
+  const chosen = new Set(selectedLibraries());
+  const out = [];
+  for (const d of usableDisks()) {
+    for (const lib of d.steam_libraries || []) {
+      if (chosen.has(lib.uuid)) out.push(libraryFolder(lib));
+    }
+  }
+  return [...new Set(out)];
+}
+
 // ---------- step: confirm ----------
 
 function renderSummary() {
@@ -248,9 +304,9 @@ function renderSummary() {
   kv(byId('summary'), [
     ['Drive', `${d.model || d.path} (${bytes(d.size)})`],
     ['Install', erase ? 'Erase the drive and install' : 'Repair: keep games and settings'],
-    ['Address', `http://${w.hostname}.local`],
+    ['Address', w.hostname ? `http://${w.hostname}.local` : 'Unchanged'],
     ['Password', w.password ? 'New password set' : 'Unchanged'],
-    ['Time zone', w.timezone.replace(/_/g, ' ')],
+    ['Time zone', w.timezone ? w.timezone.replace(/_/g, ' ') : 'Unchanged'],
     ['Steam libraries', libs.length ? labels.join(', ') : 'None'],
   ]);
   byId('erase-warning').hidden = !erase;
@@ -272,12 +328,14 @@ function updateInstallButton() {
 async function submitInstall() {
   if (w.mode === 'erase' && !eraseConfirmed()) return;
   showError('install-error', '');
+  const repair = w.mode === 'repair';
+  // Empty means "keep": a repair never renames the PC or moves its clock.
   const body = {
     disk: w.disk.path,
     mode: w.mode,
-    hostname: w.hostname,
+    hostname: repair ? '' : w.hostname,
     password: w.password,
-    timezone: w.timezone,
+    timezone: repair ? '' : w.timezone,
     libraries: selectedLibraries(),
     source: '',
   };
@@ -291,7 +349,8 @@ async function submitInstall() {
     }
   }
   try {
-    sessionStorage.setItem(HOST_KEY, w.hostname);
+    if (w.hostname) sessionStorage.setItem(HOST_KEY, w.hostname);
+    else sessionStorage.removeItem(HOST_KEY);
   } catch { /* ignore */ }
   startProgress();
 }
@@ -350,6 +409,10 @@ function finish() {
   w.finished = true;
   window.removeEventListener('beforeunload', leaveGuard);
   byId('progress-bar').value = 100;
+  // VaporOS mounts adopted libraries but does not register them with Steam.
+  const folders = selectedLibraryFolders();
+  byId('done-libraries').hidden = folders.length === 0;
+  fill(byId('done-library-paths'), folders.map((f, i) => [i ? (i === folders.length - 1 ? ' and ' : ', ') : '', h('span', { class: 'mono', text: f })]));
   go('done');
 }
 
@@ -403,13 +466,19 @@ async function samePing() {
 // system usually gets the same IP, so this origin answering with mode "os"
 // is the common case; otherwise http://<hostname>.local is tried once the
 // installer has gone away (before that the name may belong to another box).
+// A repair keeps the installed name, which the wizard may not know; then
+// only this address is watched.
 async function waitForSystem() {
-  const target = `http://${w.hostname}.local/`;
-  const link = byId('restart-link');
-  link.href = target;
-  link.textContent = `http://${w.hostname}.local`;
+  const name = w.hostname || (w.disk && w.disk.hostname) || '';
+  const target = name ? `http://${name}.local/` : '';
+  byId('restart-or').hidden = !target;
+  if (target) {
+    const link = byId('restart-link');
+    link.href = target;
+    link.textContent = `http://${name}.local`;
+  }
   const ips = ((w.probe && w.probe.ips) || []).filter((ip) => ip && ip !== location.hostname);
-  if (ips.length) fill(byId('restart-alt'), ' or ', h('a', { href: hostURL(ips[0]), text: hostURL(ips[0]).replace(/\/$/, '') }));
+  if (ips.length) fill(byId('restart-alt'), ', or ', h('a', { href: hostURL(ips[0]), text: hostURL(ips[0]).replace(/\/$/, '') }));
   const start = Date.now();
   let down = false;
   for (;;) {
@@ -423,13 +492,14 @@ async function waitForSystem() {
       down = true;
       setText('restart-status', 'VaporOS is starting from the drive. This takes about a minute.');
     }
-    if ((down || Date.now() - start > 30000) && (await reachable(target))) {
+    if (target && (down || Date.now() - start > 30000) && (await reachable(target))) {
       setText('restart-status', 'VaporOS is up. Opening it…');
       location.replace(target);
       return;
     }
     if (Date.now() - start > 4 * 60e3) {
-      setText('restart-status', "This is taking longer than usual. Check that the USB stick is out and the PC restarted, then use the link below.");
+      // The installed system may have got another address from the router.
+      setText('restart-status', "This is taking longer than usual. Check that the USB stick is out and the PC restarted, then open the address shown on the PC's screen or in your router's list of devices.");
     }
   }
 }
@@ -446,13 +516,13 @@ function wire() {
     r.addEventListener('change', () => {
       w.mode = r.value;
       w.modeChosen = true;
-      updatePasswordRules();
+      updateModeFields();
     });
   }
   byId('hostname').addEventListener('input', updateHostPreview);
   onSubmit(byId('account-form'), async () => submitAccount());
   onSubmit(byId('extras-form'), async () => {
-    w.timezone = byId('timezone').value;
+    w.timezone = w.mode === 'repair' ? '' : byId('timezone').value;
     renderSummary();
     go('confirm');
   });

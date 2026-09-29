@@ -21,7 +21,9 @@ import (
 //
 // VOS_WEB_INSTALLER=1 serves the installer; VOS_WEB_SIGNED_OUT=1 starts
 // signed out (password "vaporvapor"); VOS_WEB_STREAMING=1 starts mid-stream;
-// VOS_WEB_SETUP=1 starts without an admin password (first-run setup).
+// VOS_WEB_SETUP=1 starts without an admin password (first-run setup);
+// VOS_WEB_PAIRING=1 starts with two devices waiting to pair;
+// VOS_WEB_HEADLESS=1 waives the installer's setup code (no monitor).
 func TestDevServer(t *testing.T) {
 	addr := os.Getenv("VOS_WEB_DEV")
 	if addr == "" {
@@ -38,6 +40,16 @@ func TestDevServer(t *testing.T) {
 	fake.needsSetup = os.Getenv("VOS_WEB_SETUP") == "1"
 	if os.Getenv("VOS_WEB_STREAMING") == "1" {
 		fake.session = map[string]any{"client": "Jasper's iPhone", "mode": "2796x1290@120", "hdr": true}
+	}
+	if os.Getenv("VOS_WEB_PAIRING") == "1" {
+		fake.pairings = []map[string]string{
+			{"id": "7f3a0c1e9b2d4a6f8e1c3b5d7a9f0e2c", "name": "Steam Deck", "address": "192.168.1.31"},
+			{"id": "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e", "name": "Pixel 9", "address": "192.168.1.44"},
+		}
+	}
+	if os.Getenv("VOS_WEB_HEADLESS") == "1" {
+		fake.headless = true
+		srv.SetSetupWaiver(func() bool { return true })
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", fake)
@@ -61,7 +73,8 @@ type fakeAPI struct {
 	booted     time.Time
 	hostname   string
 	session    map[string]any
-	pending    bool
+	pairings   []map[string]string // devices waiting for a PIN
+	headless   bool                // the installer waives its setup code
 	clients    []map[string]string
 	update     map[string]any
 	display    map[string]any
@@ -92,8 +105,11 @@ func newFakeAPI(installer bool) *fakeAPI {
 			"connectors": []map[string]any{
 				{"name": "DP-1", "status": "connected", "physical": false},
 				{"name": "DP-2", "status": "disconnected", "physical": false},
+				{"name": "DP-3", "status": "disconnected", "physical": false},
 				{"name": "HDMI-A-1", "status": "connected", "physical": true},
 			},
+			"available_connectors": []string{"DP-2", "DP-3"},
+			"planes":               1,
 			"modes": []string{"1280x720@60", "1280x720@120", "1920x1080@60", "1920x1080@120", "1920x1080@144",
 				"2560x1440@60", "2560x1440@120", "2560x1600@60", "2560x1600@120", "3440x1440@100", "3840x2160@30", "3840x2160@60",
 				"2796x1290@60", "2796x1290@120"},
@@ -234,15 +250,26 @@ func (f *fakeAPI) routes() {
 		if f.session != nil {
 			s = f.session
 		}
-		return map[string]any{"running": true, "version": "2026.928.143000", "streaming": f.session != nil, "session": s, "pending_pairing": f.pending}
+		return map[string]any{"running": true, "version": "2026.928.143000", "streaming": f.session != nil, "session": s,
+			"pending_pairing": len(f.pairings) > 0, "pairings": append([]map[string]string{}, f.pairings...)}
 	})
 	f.handle("POST /sunshine/pair", true, func(w http.ResponseWriter, r *http.Request) any {
 		b := body(r)
-		if b["pin"] != "1234" {
+		id, _ := b["pairing_id"].(string)
+		switch {
+		case id == "" && len(f.pairings) > 1:
+			api.Error(w, http.StatusConflict, "%d devices are waiting to pair; choose which one this PIN is for", len(f.pairings))
+			return nil
+		case b["pin"] != "1234":
 			api.Error(w, http.StatusBadRequest, "sunshine rejected the PIN")
 			return nil
 		}
-		f.pending = false
+		for i, p := range f.pairings {
+			if id == "" || p["id"] == id {
+				f.pairings = append(f.pairings[:i:i], f.pairings[i+1:]...)
+				break
+			}
+		}
 		f.clients = append(f.clients, map[string]string{"uuid": fmt.Sprint(time.Now().UnixNano()), "name": fmt.Sprint(b["name"])})
 		return ok
 	})
@@ -285,7 +312,15 @@ func (f *fakeAPI) routes() {
 		b := body(r)
 		f.display["hdr"] = b["hdr"]
 		if c, ok := b["virtual_connector"].(string); ok {
+			old := f.display["virtual_connector"].(string)
 			f.display["virtual_connector"], f.display["reboot_needed"] = c, true
+			var free []string
+			for _, n := range append(f.display["available_connectors"].([]string), old) {
+				if n != c {
+					free = append(free, n)
+				}
+			}
+			f.display["available_connectors"] = free
 		}
 		return ok
 	})
@@ -293,8 +328,8 @@ func (f *fakeAPI) routes() {
 	f.handle("GET /storage", true, func(w http.ResponseWriter, r *http.Request) any {
 		disks := []map[string]any{
 			{"path": "/dev/nvme0n1p4", "model": "Samsung SSD 990 PRO 1TB", "size": 960_000_000_000, "uuid": "sys-0001", "label": "vos_data", "fstype": "ext4", "mounted_at": "/state", "is_system": true, "free": 612_000_000_000},
-			{"path": "/dev/sda1", "model": "Samsung SSD 870 EVO 1TB", "size": 1_000_000_000_000, "uuid": "5e1d-aa01", "label": "SATA1TB", "fstype": "ext4", "steam_library": true},
-			{"path": "/dev/sdb1", "model": "WDC WD20EZAZ", "size": 2_000_000_000_000, "uuid": "77b2-c9d0", "label": "Games2", "fstype": "btrfs", "steam_library": true},
+			{"path": "/dev/sda1", "model": "Samsung SSD 870 EVO 1TB", "size": 1_000_000_000_000, "uuid": "5e1d-aa01", "label": "SATA1TB", "fstype": "ext4", "steam_library": true, "library_dir": "."},
+			{"path": "/dev/sdb1", "model": "WDC WD20EZAZ", "size": 2_000_000_000_000, "uuid": "77b2-c9d0", "label": "Games2", "fstype": "btrfs", "steam_library": true, "library_dir": "SteamLibrary"},
 			{"path": "/dev/sdc1", "model": "Crucial X9", "size": 500_000_000_000, "uuid": "E0A1-33F2", "label": "WINDATA", "fstype": "ntfs"},
 		}
 		for _, d := range disks {
@@ -305,8 +340,18 @@ func (f *fakeAPI) routes() {
 		return map[string]any{"disks": disks}
 	})
 	f.handle("POST /storage/libraries", true, func(w http.ResponseWriter, r *http.Request) any {
-		f.libraries[fmt.Sprint(body(r)["uuid"])] = true
-		return ok
+		uuid := fmt.Sprint(body(r)["uuid"])
+		f.libraries[uuid] = true
+		label := map[string]string{"5e1d-aa01": "SATA1TB", "77b2-c9d0": "Games2", "E0A1-33F2": "WINDATA"}[uuid]
+		mp, lib := "/var/mnt/"+label, "/var/mnt/"+label
+		if uuid == "77b2-c9d0" {
+			lib += "/SteamLibrary"
+		}
+		hint := "In Steam, open Settings > Storage > Add Drive and choose " + lib + "."
+		if uuid != "E0A1-33F2" {
+			hint = "This disk already holds a Steam library. In Steam, open Settings > Storage > Add Drive and choose " + lib + "; its installed games reappear without downloading."
+		}
+		return map[string]string{"mountpoint": mp, "library": lib, "hint": hint}
 	})
 	f.handle("DELETE /storage/libraries/{uuid}", true, func(w http.ResponseWriter, r *http.Request) any {
 		delete(f.libraries, r.PathValue("uuid"))
@@ -338,7 +383,7 @@ func (f *fakeAPI) routes() {
 
 	setup := func(h func(w http.ResponseWriter, r *http.Request) any) func(w http.ResponseWriter, r *http.Request) any {
 		return func(w http.ResponseWriter, r *http.Request) any {
-			if r.Header.Get("X-VOS-Setup") != "ABCD-EFGH" {
+			if !f.headless && r.Header.Get("X-VOS-Setup") != "ABCD-EFGH" {
 				if c, err := r.Cookie("vos_setup"); err != nil || c.Value != "ABCD-EFGH" {
 					api.Error(w, http.StatusForbidden, "setup code required")
 					return nil
@@ -352,11 +397,11 @@ func (f *fakeAPI) routes() {
 			"disks": []map[string]any{
 				{"path": "/dev/nvme0n1", "model": "Samsung SSD 990 PRO 1TB", "size": 1_000_204_886_016, "transport": "nvme", "removable": false, "is_live": false, "has_vaporos": true, "steam_libraries": []any{}},
 				{"path": "/dev/sda", "model": "Samsung SSD 870 EVO 1TB", "size": 1_000_204_886_016, "transport": "sata", "removable": false, "is_live": false, "has_vaporos": false,
-					"steam_libraries": []map[string]string{{"uuid": "5e1d-aa01", "label": "SATA1TB", "path": "/dev/sda1"}}},
+					"steam_libraries": []map[string]string{{"uuid": "5e1d-aa01", "label": "SATA1TB", "path": "/SteamLibrary"}}},
 				{"path": "/dev/sdb", "model": "SanDisk Ultra Fit", "size": 32_000_000_000, "transport": "usb", "removable": true, "is_live": true, "has_vaporos": false},
 				{"path": "/dev/sdc", "model": "Kingston DataTraveler", "size": 16_000_000_000, "transport": "usb", "removable": true, "is_live": false, "has_vaporos": false},
 			},
-			"ips": []string{"192.168.1.167"}, "timezone": "Europe/Brussels",
+			"ips": []string{"192.168.1.167"}, "timezone": "UTC", "min_size": 26_306_674_688, "source": "",
 			"gpu": map[string]any{"vendor": "amd", "name": "AMD Radeon RX 9070 XT", "driver": "amdgpu", "supported": true},
 		}
 	}))

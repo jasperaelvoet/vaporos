@@ -21,6 +21,14 @@ async function load() {
 
 const title = (d) => d.label || d.model || d.path;
 
+// libraryPath is the folder to add in Steam: the mount point, or the
+// library folder inside it (a Windows drive's SteamLibrary, say).
+function libraryPath(d) {
+  if (!d.mounted_at) return '';
+  const dir = String(d.library_dir || '').replace(/^\/+|\/+$/g, '');
+  return dir && dir !== '.' ? `${d.mounted_at}/${dir}` : d.mounted_at;
+}
+
 function usage(d) {
   if (!d.size || d.free == null || !d.mounted_at) return null;
   const pct = percent(((d.size - d.free) / d.size) * 100);
@@ -40,7 +48,8 @@ function item(d, actions, iconName = 'drive') {
     h('div', { class: 'list-main' },
       h('span', { class: 'list-title', text: title(d) }),
       h('span', { class: 'list-sub', text: facts.join(' · ') }),
-      d.mounted_at ? h('span', { class: 'list-sub mono', text: d.mounted_at }) : null,
+      d.mounted_at ? h('span', { class: 'list-sub mono', text: d.adopted ? libraryPath(d) : d.mounted_at }) : null,
+      d.adopted ? h('span', { class: 'list-sub', text: 'Add this folder once in Steam: Settings → Storage → Add Drive.' }) : null,
       usage(d),
       tags.length ? h('span', { class: 'chips' }, tags) : null),
     actions.length ? h('div', { class: 'list-actions' }, actions) : null);
@@ -58,11 +67,15 @@ function adoptButton(d) {
       if (!ok) return;
     }
     await busy(b, async () => {
-      await api('POST', '/storage/libraries', { uuid: d.uuid });
+      // The server says which folder Steam needs: the library can sit in
+      // a subfolder, and the mount name is not simply the label.
+      const res = (await api('POST', '/storage/libraries', { uuid: d.uuid })) || {};
       await load();
       const now = disks.find((x) => x.uuid === d.uuid);
-      const where = now && now.mounted_at ? now.mounted_at : `/var/mnt/${d.label || d.uuid}`;
-      toast(`${title(d)} is ready. In Steam, add ${where} under Settings → Storage.`, 'ok');
+      const where = res.library || res.mountpoint || (now && libraryPath(now));
+      toast(res.hint || (where
+        ? `${title(d)} is ready. In Steam, open Settings → Storage → Add Drive and choose ${where}.`
+        : `${title(d)} is ready. Add it in Steam under Settings → Storage.`), 'ok');
     });
   });
   return b;
