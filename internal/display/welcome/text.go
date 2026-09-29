@@ -11,8 +11,6 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/brand"
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gobold"
-	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/font/sfnt"
@@ -46,10 +44,6 @@ var (
 	tvFonts      map[string]*opentype.Font // by "<font>/<face>"
 	fontFallback *opentype.Font
 
-	// The Go faces the draft look still draws with, until the direction's
-	// look replaces it.
-	fontRegular, fontBold, fontMono *opentype.Font
-
 	facesMu sync.Mutex
 	faces   = map[faceKey]font.Face{}
 )
@@ -62,7 +56,6 @@ type faceKey struct {
 func loadFonts() {
 	fontsOnce.Do(func() {
 		fontFallback = mustParse(goregular.TTF)
-		fontRegular, fontBold, fontMono = fontFallback, mustParse(gobold.TTF), mustParse(gomonobold.TTF)
 		tvFonts = map[string]*opentype.Font{}
 		for key := range tvFontFiles {
 			b, err := fontFiles.ReadFile(path.Join("fonts", fontFile(key)))
@@ -105,6 +98,8 @@ func mustParse(b []byte) *opentype.Font {
 }
 
 // face returns a cached face of f at px pixels (72 DPI: points == pixels).
+// Advances and kerning stay fractional: the cuts carry no hints, and a big
+// display face spaced on whole pixels looks uneven.
 func face(f *opentype.Font, px int) font.Face {
 	px = max(px, 6)
 	facesMu.Lock()
@@ -113,7 +108,7 @@ func face(f *opentype.Font, px int) font.Face {
 	if fc, ok := faces[k]; ok {
 		return fc
 	}
-	fc, err := opentype.NewFace(f, &opentype.FaceOptions{Size: float64(px), DPI: 72, Hinting: font.HintingFull})
+	fc, err := opentype.NewFace(f, &opentype.FaceOptions{Size: float64(px), DPI: 72, Hinting: font.HintingNone})
 	if err != nil {
 		panic("welcome: font face: " + err.Error())
 	}

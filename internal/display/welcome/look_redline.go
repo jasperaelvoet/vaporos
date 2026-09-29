@@ -20,6 +20,7 @@ import (
 // top right reads the state like a camera's overlay, and spot-meter
 // brackets frame the card. Everything specific to the direction lives in
 // look_redline*.go; its numbers come from brand's generated tokens.
+var theLook look = redlineLook{}
 
 type redlineLook struct{}
 

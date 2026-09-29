@@ -36,7 +36,7 @@ var tones = append(append([]brand.State{}, brand.States...), brand.Neutral, "bog
 // internal/display/status.go builds; the previews, the golden and the pixel
 // tests all use them.
 var fixtureNames = []string{
-	"first-run", "installer-done", "installer-failed", "installer-ready", "installer-running",
+	"first-run", "going-to-sleep", "installer-done", "installer-failed", "installer-ready", "installer-running",
 	"long-unicode", "no-gpu", "offline", "pairing", "ready", "ready-staged", "restart-needed",
 	"starting", "streaming", "updating",
 }
