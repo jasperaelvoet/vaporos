@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,40 +28,49 @@ func luma(c color.RGBA) int { return (299*int(c.R) + 587*int(c.G) + 114*int(c.B)
 // The QR on screen must be exactly rsc.io/qr's code for the state's URL,
 // module for module, so any phone camera decodes the right address.
 func TestQRMatchesEncoder(t *testing.T) {
-	want, err := qr.Encode(sample.QR, qr.M)
+	for _, sz := range pixelSizes {
+		l := computeLayout(sample, sz.X, sz.Y)
+		checkQR(t, sizeName(sz), l, paint(l, true), sample.QR)
+	}
+}
+
+// checkQR compares every module of the rendered code, quiet zone included,
+// with rsc.io/qr's matrix for text.
+func checkQR(t *testing.T, at string, l *layout, img *image.RGBA, text string) {
+	t.Helper()
+	want, err := qr.Encode(text, qr.M)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, sz := range []image.Point{{1920, 1080}, {1280, 800}, {1080, 1920}, {3840, 2160}, {1024, 768}} {
-		l := computeLayout(sample, sz.X, sz.Y)
-		img := paint(l, true)
-		if l.QR == nil || l.QR.Size != want.Size || l.Module < 3 {
-			t.Fatalf("%v: layout QR %+v module %d", sz, l.QR, l.Module)
-		}
-		if !l.QRCard.In(img.Bounds()) {
-			t.Errorf("%v: QR card %v off screen", sz, l.QRCard)
-		}
-		for y := -4; y < want.Size+4; y++ { // include the quiet zone
-			for x := -4; x < want.Size+4; x++ {
-				c := img.RGBAAt(l.QRAt.X+x*l.Module+l.Module/2, l.QRAt.Y+y*l.Module+l.Module/2)
-				dark := luma(c) < 64
-				light := luma(c) > 192
-				if want.Black(x, y) != dark || want.Black(x, y) == light {
-					t.Fatalf("%v: module (%d,%d) is %v, want black=%v", sz, x, y, c, want.Black(x, y))
-				}
+	if l.QR == nil || l.QR.Size != want.Size || l.Module < 3 {
+		t.Fatalf("%s: layout QR %+v module %d", at, l.QR, l.Module)
+	}
+	if !l.QRCard.In(img.Bounds()) {
+		t.Errorf("%s: QR card %v off screen", at, l.QRCard)
+	}
+	for y := -4; y < want.Size+4; y++ { // include the quiet zone
+		for x := -4; x < want.Size+4; x++ {
+			c := img.RGBAAt(l.QRAt.X+x*l.Module+l.Module/2, l.QRAt.Y+y*l.Module+l.Module/2)
+			dark := luma(c) < 64
+			light := luma(c) > 192
+			if want.Black(x, y) != dark || want.Black(x, y) == light {
+				t.Fatalf("%s: module (%d,%d) is %v, want black=%v", at, x, y, c, want.Black(x, y))
 			}
 		}
 	}
 }
 
-// Every text line must actually be drawn inside the screen and not on
-// top of the QR code.
+// Every line must actually be drawn inside the screen and not on top of
+// the QR code, and a state with a setup code shows one line of every role.
 func TestTextDrawn(t *testing.T) {
+	required := []role{roleWordmark, roleStatus, roleDetail, roleURL, roleIP, roleCodeLabel, roleCode, roleCaption, roleVersion}
 	for _, sz := range []image.Point{{1920, 1080}, {1080, 1920}, {1280, 720}} {
 		l := computeLayout(sample, sz.X, sz.Y)
 		img := paint(l, true)
-		if len(l.Texts) < 9 { // Vapor, OS, status, detail, url, ip, label, code, caption, version
-			t.Fatalf("%v: only %d text items", sz, len(l.Texts))
+		for _, r := range required {
+			if !slices.ContainsFunc(l.Texts, func(it textItem) bool { return it.Role == r }) {
+				t.Errorf("%v: no %s line", sz, r)
+			}
 		}
 		for _, it := range l.Texts {
 			if it.Rect.Empty() || !it.Rect.In(img.Bounds()) {

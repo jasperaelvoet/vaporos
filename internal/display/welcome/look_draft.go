@@ -96,7 +96,16 @@ func (draftLook) arrange(l *layout, st State) {
 		l.addText(roleStatus, st.Status, fontBold, draftType.Status, p.Ink, margin, y, textMax)
 	}
 	if st.Detail != "" {
-		l.addText(roleDetail, st.Detail, fontRegular, draftType.Detail, p.Ink2, margin, y+58, textMax)
+		d := l.Texts[l.addText(roleDetail, st.Detail, fontRegular, draftType.Detail, p.Ink2, margin, y+58, textMax)]
+		// A device waiting for its PIN: the line that says where to enter
+		// it sits on a plate.
+		if l.Attention == AttentionPair {
+			l.Callout = image.Rect(l.X(margin-28), l.Y(y+58-34), d.Rect.Max.X+l.Len(20), l.Y(y+58+14))
+		}
+	}
+	// A running install or update: a bar between the detail and the address.
+	if l.Percent > 0 && (l.Tone == brand.Installing || l.Tone == brand.Updating) {
+		l.Progress = image.Rect(l.X(margin), l.Y(y+94), l.X(margin)+l.Len(min(textMax, 720)), l.Y(y+94)+l.Len(12))
 	}
 	y += 190
 	if st.URL != "" {
@@ -183,11 +192,24 @@ func (draftLook) background(img *image.RGBA, b backdrop) {
 
 func lerp(a, b uint8, t float64) float64 { return float64(a) + (float64(b)-float64(a))*t }
 
-// decorate draws the accent bar under the wordmark and the setup code plate.
+// decorate draws the bar under the wordmark, in the tone's colour (the
+// accent while neutral), the attention plate, the setup code plate and the
+// progress bar.
 func (draftLook) decorate(img *image.RGBA, l *layout) {
 	p := draftPalette
-	fillRounded(img, l.Signature, l.Signature.Dy()/2, p.Accent)
+	if !l.Callout.Empty() {
+		fillRounded(img, l.Callout, l.Len(12), p.Surface)
+		c := l.Callout
+		stripe := image.Rect(c.Min.X+l.Len(10), c.Min.Y+l.Len(10), c.Min.X+l.Len(16), c.Max.Y-l.Len(10))
+		fillRounded(img, stripe, stripe.Dx()/2, opaque(brand.AttentionPair.Color))
+	}
+	sig := p.Accent
+	if l.Tone != brand.Neutral {
+		sig = opaque(brand.StyleOf(l.Tone).Color)
+	}
+	fillRounded(img, l.Signature, l.Signature.Dy()/2, sig)
 	if !l.Panel.Empty() {
 		fillRounded(img, l.Panel, l.Panel.Dy()/8, p.Surface)
 	}
+	fillBar(img, l.Progress, l.Percent, p.Surface2, opaque(brand.StyleOf(l.Tone).Color))
 }

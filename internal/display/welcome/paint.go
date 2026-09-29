@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -44,6 +45,9 @@ type palette struct {
 func rgb(v uint32) color.RGBA {
 	return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xff}
 }
+
+// opaque converts a token colour; the tokens' TV and state colours are opaque.
+func opaque(c color.NRGBA) color.RGBA { return color.RGBA{R: c.R, G: c.G, B: c.B, A: 0xff} }
 
 // Render draws the welcome screen for st at w×h pixels. It shares font
 // faces between calls, so one goroutine renders at a time.
@@ -87,6 +91,25 @@ func paintQR(img *image.RGBA, l *layout, dark, light color.RGBA) {
 			}
 		}
 	}
+}
+
+// fillBar draws a progress bar: a rounded track, then a fill from its left
+// end over percent of its width (barFill).
+func fillBar(img *image.RGBA, track image.Rectangle, percent int, trackC, fillC color.RGBA) {
+	if track.Empty() {
+		return
+	}
+	fillRounded(img, track, track.Dy()/2, trackC)
+	if w := barFill(track, percent); w > 0 {
+		fill := track
+		fill.Max.X = fill.Min.X + w
+		fillRounded(img, fill, fill.Dy()/2, fillC)
+	}
+}
+
+// barFill is the width of the fill: round(percent/100 × the track's width).
+func barFill(track image.Rectangle, percent int) int {
+	return int(math.Round(float64(min(max(percent, 0), 100)) / 100 * float64(track.Dx())))
 }
 
 // backdrop is everything a look's background may depend on. It is the
