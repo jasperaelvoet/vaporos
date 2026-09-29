@@ -1,5 +1,61 @@
-node_modules/
-dist/
-.astro/
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
 # Copied from ../keys/release.pub by scripts/copy-key.mjs before every build.
-public/release.pub
+/public/release.pub
+
+# Leftovers of the Astro site this one replaced.
+/dist/
+/.astro/
+
+# Test and browser-tool output (gate reports go to a scratch directory, never here).
+/test-results/
+/playwright-report/
+/.playwright-cli/
+
+# Generated at build or test time, never committed: fonts copied from
+# design/fonts at prebuild, the live demo export, the TV stills, and the
+# control center's UI strings (go test ./internal/web -run TestExportStrings).
+/src/fonts/
+/public/demo/
+/public/tv/
+/tests/fixtures/ui-strings.*.json

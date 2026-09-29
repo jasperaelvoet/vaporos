@@ -1,6 +1,6 @@
 // The part of a GitHub release the site shows. Shared by the build-time
-// fetch (release.ts) and the in-browser refresh (DownloadCard's script), so
-// both read the API the same way.
+// fetch (release.ts) and the in-browser refresh (use-latest-release.ts), so
+// both read the API the same way. Pure: safe in server and client code.
 
 export const REPO = 'jasperaelvoet/vaporos';
 export const REPO_URL = `https://github.com/${REPO}`;
@@ -10,17 +10,22 @@ export const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
 // the first release, where /releases/latest answers 404, which browsers log
 // as a console error on every visit. Every push to a non-main branch adds a
 // prerelease, so read a full page (100) to reach the newest stable release.
-// A list without one never downgrades the card (see DownloadCard).
+// A list without one never downgrades the card (see use-latest-release.ts).
 export const LIST_API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
 
 // latestFromList picks what /releases/latest would: the newest published
 // release that isn't a prerelease (the list is sorted newest first).
 export function latestFromList(json: unknown): unknown {
   if (!Array.isArray(json)) return null;
-  return json.find((r: Record<string, unknown> | null) => r && typeof r === 'object' && !r.draft && !r.prerelease) ?? null;
+  return (
+    json.find(
+      (r: Record<string, unknown> | null) => r && typeof r === 'object' && !r.draft && !r.prerelease,
+    ) ?? null
+  );
 }
 
-// Asset names come from .github/workflows/build.yml (publish job).
+// Asset names come from .github/workflows/build.yml (publish job):
+// vaporos-<version>.iso, SHA256SUMS, manifest.json, manifest.json.sig.
 export const ISO_PATTERN = /^vaporos-.*\.iso$/;
 
 export interface Asset {
@@ -30,9 +35,13 @@ export interface Asset {
 }
 
 export interface Release {
+  /** '20260928.101500': the tag without its leading v. */
   version: string;
+  /** 'v20260928.101500' */
   tag: string;
+  /** The release page on GitHub (release notes). */
   url: string;
+  /** ISO 8601 timestamp, or '' when GitHub gave none. */
   published: string;
   prerelease: boolean;
   iso: Asset;
@@ -79,6 +88,20 @@ export function parseRelease(json: unknown): Release | null {
   };
 }
 
+// pickNewer decides what the page shows when the browser finds a release:
+// the state only ever upgrades. No live release (rate limits, outages, a page
+// full of branch prereleases) keeps what the build found, and so does a live
+// answer older than the build's (a stale sessionStorage entry, say).
+export function pickNewer(current: Release | null, candidate: Release | null): Release | null {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  const was = Date.parse(current.published);
+  const now = Date.parse(candidate.published);
+  if (Number.isNaN(was) || Number.isNaN(now)) return candidate;
+  return now >= was ? candidate : current;
+}
+
+/** 3221225472 → '3.2 GB'; 0 → ''. */
 export function formatSize(bytes: number): string {
   if (!bytes) return '';
   const gb = bytes / 1e9;
@@ -86,6 +109,7 @@ export function formatSize(bytes: number): string {
   return `${Math.round(bytes / 1e6)} MB`;
 }
 
+/** '2026-09-28T11:02:41Z' → 'Sep 28, 2026' (UTC, so server and browser agree). */
 export function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
