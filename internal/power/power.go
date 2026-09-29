@@ -171,8 +171,8 @@ func (s *Service) ioDelta() uint64 {
 	return cur - prev
 }
 
-// quickReason runs the cheap checks: keep-awake and the other services.
-func (s *Service) quickReason(now time.Time) string {
+// keepReason is keep-awake, set in the web UI or by the manual file.
+func (s *Service) keepReason(now time.Time) string {
 	s.mu.Lock()
 	keep := now.Before(s.keepUntil)
 	s.mu.Unlock()
@@ -181,6 +181,14 @@ func (s *Service) quickReason(now time.Time) string {
 	}
 	if s.keepFileSeen() {
 		return "manual keep-awake"
+	}
+	return ""
+}
+
+// quickReason runs the cheap checks: keep-awake and the other services.
+func (s *Service) quickReason(now time.Time) string {
+	if r := s.keepReason(now); r != "" {
+		return r
 	}
 	for _, f := range s.busy {
 		if f == nil {
@@ -314,27 +322,45 @@ func newBusy(reason string) *busyInfo {
 	return &busyInfo{Reason: reason, Web: reason == webReason}
 }
 
-type powerState struct {
+// Summary is GET /power without wol.
+type Summary struct {
 	IdleShutdown   bool       `json:"idle_shutdown"`
 	IdleMinutes    int        `json:"idle_minutes"`
 	KeepAwakeUntil *time.Time `json:"keep_awake_until,omitempty"`
-	WoL            []WoLIface `json:"wol"`
 	Busy           *busyInfo  `json:"busy"`
 	WebUntil       *time.Time `json:"web_until,omitempty"`
 	IdleSeconds    int        `json:"idle_seconds"`
 	ShutdownIn     *int       `json:"shutdown_in"`
 }
 
-// snapshot builds the GET /power answer. The busy reason is the cheap
-// checks now, else what the last policy pass saw (the process, download
-// and I/O checks are too slow to repeat per request), else web activity,
-// which is cheap and so always read fresh.
-func (s *Service) snapshot(ctx context.Context) powerState {
-	now := s.now()
-	pc := s.settings()
-	st := powerState{IdleShutdown: pc.IdleShutdown, IdleMinutes: pc.IdleMinutes, WoL: s.wolStatus(ctx)}
+type powerState struct {
+	Summary
+	WoL []WoLIface `json:"wol"`
+}
 
-	reason := s.quickReason(now)
+// snapshot builds the GET /power answer, with the cheap checks run now.
+func (s *Service) snapshot(ctx context.Context) powerState {
+	wol := s.wolStatus(ctx)
+	now := s.now()
+	return powerState{s.summary(now, s.quickReason(now)), wol}
+}
+
+// Summary is GET /power without wol, for GET /status. It never waits on
+// the other services or ethtool: only keep-awake is checked now, the
+// other reasons come from the last policy pass, at most 15 s old.
+func (s *Service) Summary() Summary {
+	now := s.now()
+	return s.summary(now, s.keepReason(now))
+}
+
+// summary is the busy reason checked just now (fresh), else what the last
+// policy pass saw (the process, download and I/O checks are too slow to
+// repeat per request), else web activity, which is cheap and so always
+// read fresh; with the settings and the idle timer.
+func (s *Service) summary(now time.Time, fresh string) Summary {
+	pc := s.settings()
+	st := Summary{IdleShutdown: pc.IdleShutdown, IdleMinutes: pc.IdleMinutes}
+	reason := fresh
 	s.mu.Lock()
 	if !s.keepUntil.IsZero() && now.Before(s.keepUntil) {
 		t := s.keepUntil.UTC().Truncate(time.Second)

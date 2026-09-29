@@ -602,3 +602,41 @@ func TestWoLAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestPowerSummaryIsCached(t *testing.T) {
+	r := newRig(t, 15, true)
+	calls := 0
+	r.busy = []BusyFunc{func() (bool, string) { calls++; return r.busyNow, "Moonlight stream" }}
+	r.ethtool = func(context.Context, string) (string, error) { t.Error("Summary ran ethtool"); return "", nil }
+
+	r.busyNow = true
+	r.step()
+	n := calls
+	r.busyNow = false // the stream ended after the last pass
+	s := r.Summary()
+	if calls != n || s.Busy == nil || s.Busy.Reason != "Moonlight stream" || s.ShutdownIn != nil {
+		t.Errorf("Summary after a busy pass = %+v (%d busy checks)", s, calls-n)
+	}
+	b, _ := json.Marshal(s)
+	if strings.Contains(string(b), `"wol"`) {
+		t.Errorf("Summary has wol: %s", b)
+	}
+
+	r.step() // idle since the busy pass
+	r.clock = r.clock.Add(5 * time.Second)
+	if s = r.Summary(); s.Busy != nil || s.IdleSeconds != 20 || s.ShutdownIn == nil || *s.ShutdownIn != 880 {
+		t.Errorf("Summary while idle = %+v", s)
+	}
+	r.keepFile = true // keep-awake is checked now, not at the next pass
+	if s = r.Summary(); s.Busy == nil || s.Busy.Reason != "manual keep-awake" {
+		t.Errorf("Summary with the keep-awake file = %+v", s)
+	}
+	r.keepFile = false
+	r.Touch()
+	if s = r.Summary(); s.Busy == nil || !s.Busy.Web || s.WebUntil == nil {
+		t.Errorf("Summary with web activity = %+v", s)
+	}
+	if calls != n+1 {
+		t.Errorf("%d busy checks, want only the one pass's", calls-n)
+	}
+}
