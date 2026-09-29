@@ -95,6 +95,10 @@ func Main(args []string) int {
 		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow} {
 			r.Routes(srv)
 		}
+		srv.Handle("GET", "/status", api.Authed, statusSources{
+			system: sys.Info, sunshine: sun.Summary, stream: disp.CurrentSession,
+			display: disp.Info, update: up.View, power: pow.Summary,
+		}.handle)
 		runners = append(runners,
 			runner{"update", up.Run},
 			runner{"sunshine", sun.Run},
