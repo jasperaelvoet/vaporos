@@ -1,0 +1,28 @@
+# Everything that goes into the VaporOS image. One package per line.
+# The whole set is installed as prebuilt Arch packages; nothing is compiled.
+
+# The system
+base
+linux
+linux-firmware
+intel-ucode
+amd-ucode
+mkinitcpio
+
+# Administration
+sudo
+openssh
+e2fsprogs
+dosfstools
+gptfdisk
+
+# Networking (systemd-networkd + resolved come with base)
+iwd
+
+# Shell comforts
+vim
+nano
+less
+man-db
+man-pages
+bash-completion

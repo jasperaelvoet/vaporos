@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# mkinitcpio install hook: everything the vos runtime hook needs to assemble
+# the root filesystem, either from an A/B slot on disk or from the live ISO.
+
+build() {
+    add_module erofs
+    add_module overlay
+    add_module loop
+    add_module ext4
+
+    # Live boot from optical media or a CD-ROM-emulating hypervisor.
+    add_module isofs
+    add_module cdrom
+    add_module sr_mod
+    # Without this rule udev never probes the disc, so /dev/disk/by-label
+    # never shows up for the ISO.
+    add_udev_rule 60-cdrom_id.rules
+
+    add_binary losetup
+    add_binary mount
+    add_binary umount
+
+    add_runscript
+}
+
+help() {
+    cat <<HELPEOF
+Mounts the VaporOS root: a read-only erofs image with /etc overlaid and
+/var bind-mounted from the data partition (installed), or the same image
+from the ISO under a tmpfs overlay (live, vos.mode=live).
+HELPEOF
+}

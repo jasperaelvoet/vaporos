@@ -1,4 +1,0 @@
-[install]
-# systemd-boot keeps the EFI side simple and matches how bootupd
-# stages bootloader updates.
-root-fs-type = "ext4"

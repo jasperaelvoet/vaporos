@@ -1,0 +1,423 @@
+#!/usr/bin/env bash
+#
+# vos -- install, update and roll back VaporOS.
+#
+# Disk layout (GPT):
+#   vos_esp   vfat   systemd-boot, plus one kernel+initramfs per slot
+#   vos_a     erofs  a complete, read-only OS image
+#   vos_b     erofs  the other image; updates are written to whichever slot
+#                     is not running
+#   vos_data  ext4   /var, and the /etc overlay's upper layer
+#
+# An update never touches the running slot. The new slot boots with systemd-boot
+# boot counting (3 tries); if it never reaches boot-complete.target, the
+# firmware menu falls back to the previous slot on its own.
+set -euo pipefail
+
+LIVE_MEDIUM=/run/vos/medium/vos
+ESP=/efi
+ENTRY_OPTIONS="console=ttyS0,115200 console=tty0"
+
+# ------------------------------------------------------------------ helpers --
+
+bold=$'\e[1m' dim=$'\e[2m' blue=$'\e[1;34m' red=$'\e[1;31m' green=$'\e[1;32m' reset=$'\e[0m'
+[[ -t 1 ]] || bold= dim= blue= red= green= reset=
+
+say()  { printf '%s==>%s %s%s%s\n' "$blue" "$reset" "$bold" "$*" "$reset"; }
+info() { printf '    %s\n' "$*"; }
+ok()   { printf '%s==>%s %s\n' "$green" "$reset" "$*"; }
+die()  { printf '%serror:%s %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+
+need_root() { [[ $EUID -eq 0 ]] || die "run as root (sudo vos $*)"; }
+
+booted_slot() {
+    local arg
+    for arg in $(</proc/cmdline); do
+        [[ $arg == vos.slot=* ]] && { printf '%s' "${arg#vos.slot=}"; return; }
+    done
+}
+
+is_live() { grep -qw 'vos.mode=live' /proc/cmdline; }
+
+other_slot() { [[ $1 == a ]] && echo b || echo a; }
+
+running_version() { . /usr/lib/os-release; printf '%s' "${IMAGE_VERSION:-unknown}"; }
+
+# Load a manifest.env without executing anything but KEY=value lines.
+read_manifest() {
+    local file=$1 key value
+    while IFS='=' read -r key value; do
+        [[ $key =~ ^VOS_[A-Z0-9_]+$ ]] || continue
+        printf -v "$key" '%s' "$value"
+    done <"$file"
+    [[ -n ${VOS_VERSION:-} ]] || die "manifest $file has no VOS_VERSION"
+}
+
+verify() {
+    local file=$1 want=$2 have
+    have=$(sha256sum "$file" | cut -d' ' -f1)
+    [[ $have == "$want" ]] || die "checksum mismatch for $(basename "$file")"
+}
+
+# Partition device for partition number $2 of disk $1, straight from sysfs:
+# lsblk's PARTLABEL/PARTN come from the udev database, which lags right after
+# partitioning.
+part_by_number() {
+    local p
+    for p in "/sys/class/block/${1##*/}"/*/partition; do
+        [[ -r $p && $(<"$p") == "$2" ]] || continue
+        p=${p%/partition}
+        printf '/dev/%s' "${p##*/}"
+        return
+    done
+}
+
+# Write the kernel, initramfs and loader entry for $version booting $slot.
+# $tries, when set, enables systemd-boot boot counting for the entry.
+install_entry() {
+    local esp=$1 version=$2 slot=$3 src=$4 tries=${5:-}
+    local name="vos-${version}"
+    [[ -n $tries ]] && name+="+${tries}"
+
+    mkdir -p "$esp/vos/$version" "$esp/loader/entries"
+    cp "$src/vmlinuz"       "$esp/vos/$version/vmlinuz"
+    cp "$src/initramfs.img" "$esp/vos/$version/initramfs.img"
+    cat >"$esp/loader/entries/$name.conf" <<ENTRY
+title    VaporOS
+version  $version
+sort-key vapor
+linux    /vos/$version/vmlinuz
+initrd   /vos/$version/initramfs.img
+options  vos.slot=$slot $ENTRY_OPTIONS
+ENTRY
+}
+
+# Remove every entry (and its kernel, once unreferenced) that boots $slot.
+remove_slot_entries() {
+    local esp=$1 slot=$2 entry version
+    shopt -s nullglob
+    for entry in "$esp"/loader/entries/vos-*.conf; do
+        grep -q "vos.slot=$slot\b" "$entry" || continue
+        version=$(awk '$1 == "version" { print $2 }' "$entry")
+        rm -f "$entry"
+        if ! grep -qs "/vos/$version/" "$esp"/loader/entries/*.conf; then
+            rm -rf "${esp:?}/vos/$version"
+        fi
+    done
+    shopt -u nullglob
+}
+
+entry_for_slot() {
+    local esp=$1 slot=$2 entry
+    shopt -s nullglob
+    for entry in "$esp"/loader/entries/vos-*.conf; do
+        grep -q "vos.slot=$slot\b" "$entry" && { printf '%s' "$entry"; break; }
+    done
+    shopt -u nullglob
+}
+
+# ------------------------------------------------------------------ install --
+
+cmd_install() {
+    local disk="" hostname="" user="" password="" timezone="" assume_yes=0
+    while (($#)); do
+        case $1 in
+            --disk)      disk=$2; shift 2 ;;
+            --hostname)  hostname=$2; shift 2 ;;
+            --user)      user=$2; shift 2 ;;
+            --password)  password=$2; shift 2 ;;
+            --timezone)  timezone=$2; shift 2 ;;
+            --yes)       assume_yes=1; shift ;;
+            *) die "unknown option: $1" ;;
+        esac
+    done
+
+    need_root install
+    is_live || die "install runs from the live ISO"
+    [[ -d /sys/firmware/efi ]] || die "boot the ISO in UEFI mode; VaporOS does not support legacy BIOS"
+    local src=$LIVE_MEDIUM
+    [[ -f $src/root.erofs ]] || die "live medium not found at $src"
+    read_manifest "$src/manifest.env"
+
+    # ---- choose a disk
+    local live_disk
+    live_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /run/vos/medium)" 2>/dev/null || true)
+    if [[ -z $disk ]]; then
+        say "Disks"
+        lsblk -dpno NAME,SIZE,MODEL,TYPE | awk -v skip="/dev/$live_disk" \
+            '$NF == "disk" && $1 != skip { $NF=""; print "    " $0 }'
+        echo
+        read -rp "Install to which disk? " disk
+    fi
+    [[ $disk == /dev/* ]] || disk="/dev/$disk"
+    [[ -b $disk && $(lsblk -dno TYPE "$disk") == disk ]] || die "$disk is not a disk"
+
+    local disk_mib image_mib slot_mib
+    disk_mib=$(( $(blockdev --getsize64 "$disk") / 1024 / 1024 ))
+    image_mib=$(( $(stat -c %s "$src/root.erofs") / 1024 / 1024 ))
+    # Room for the image to grow: 2.5x today's size, 4-16 GiB.
+    slot_mib=$(( image_mib * 5 / 2 ))
+    (( slot_mib < 4096 ))  && slot_mib=4096
+    (( slot_mib > 16384 )) && slot_mib=16384
+    (( disk_mib >= 512 + 2 * slot_mib + 2048 )) ||
+        die "$disk is too small: need at least $(( (512 + 2 * slot_mib + 2048) / 1024 )) GiB"
+
+    # ---- who is this machine for
+    [[ -n $hostname ]] || read -rp "Hostname [vapor]: " hostname
+    hostname=${hostname:-vapor}
+    while [[ -z $user ]]; do read -rp "Username: " user; done
+    [[ $user =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid username: $user"
+    while [[ -z $password ]]; do
+        local again
+        read -rsp "Password for $user: " password; echo
+        read -rsp "Again: " again; echo
+        [[ $password == "$again" ]] || { echo "Passwords differ."; password=""; }
+    done
+
+    echo
+    info "Disk:      $disk ($(( disk_mib / 1024 )) GiB)"
+    info "Version:   $VOS_VERSION"
+    info "Slots:     2 x $(( slot_mib / 1024 )) GiB, rest for data"
+    info "Hostname:  $hostname"
+    info "User:      $user (sudo)"
+    echo
+    if (( ! assume_yes )); then
+        printf '%sEverything on %s will be erased.%s\n' "$red" "$disk" "$reset"
+        local confirm
+        read -rp "Type ERASE to continue: " confirm
+        [[ $confirm == ERASE ]] || die "aborted"
+    fi
+
+    # ---- partition
+    say "Partitioning $disk"
+    wipefs -qa "$disk"
+    # No -q: on a blank disk sgdisk 1.0.10 -q builds the table in memory,
+    # exits 0 and never writes it.
+    sgdisk --zap-all "$disk" >/dev/null
+    sgdisk \
+        -n1:0:+512M        -t1:ef00 -c1:vos_esp \
+        -n2:0:+${slot_mib}M -t2:8300 -c2:vos_a \
+        -n3:0:+${slot_mib}M -t3:8300 -c3:vos_b \
+        -n4:0:0            -t4:8300 -c4:vos_data \
+        "$disk" >/dev/null
+    blockdev --rereadpt "$disk" 2>/dev/null || partx -u "$disk" 2>/dev/null || true
+
+    # udev re-reads the table itself when sgdisk closes the disk, which briefly
+    # removes and re-adds the partitions; wait until all four nodes are there.
+    local p_esp p_a p_b p_data tries=0
+    while :; do
+        udevadm settle
+        p_esp=$(part_by_number "$disk" 1)
+        p_a=$(part_by_number "$disk" 2)
+        p_b=$(part_by_number "$disk" 3)
+        p_data=$(part_by_number "$disk" 4)
+        [[ -b $p_esp && -b $p_a && -b $p_b && -b $p_data ]] && break
+        (( ++tries < 50 )) || die "partitions did not appear on $disk"
+        sleep 0.2
+    done
+
+    # ---- write the OS
+    say "Writing VaporOS $VOS_VERSION to slot a"
+    dd if="$src/root.erofs" of="$p_a" bs=4M conv=fsync status=progress
+    wipefs -qa "$p_b"
+
+    say "Creating filesystems"
+    mkfs.vfat -F 32 -n VOS_ESP "$p_esp" >/dev/null
+    mkfs.ext4 -q -F -L vos_data "$p_data"
+
+    # ---- bootloader
+    say "Installing bootloader"
+    local target=/run/vos/target
+    mkdir -p "$target/esp"
+    mount -o fmask=0077,dmask=0077 "$p_esp" "$target/esp"
+    bootctl install --esp-path="$target/esp" --graceful --no-pager >/dev/null
+    cat >"$target/esp/loader/loader.conf" <<'CONF'
+timeout 3
+console-mode keep
+editor yes
+CONF
+    install_entry "$target/esp" "$VOS_VERSION" a "$src"
+
+    # ---- first-boot state: assemble the same mount stack the initramfs will,
+    # so user and hostname land in the /etc overlay on the data partition.
+    say "Setting up $hostname"
+    local root="$target/root"
+    mkdir -p "$root"
+    mount -t erofs -o ro "$p_a" "$root"
+    mount "$p_data" "$root/state"
+    mkdir -p "$root/state/var" "$root/state/etc/upper" "$root/state/etc/work"
+    mount --bind "$root/state/var" "$root/var"
+    mount -t overlay overlay \
+        -o "lowerdir=$root/etc,upperdir=$root/state/etc/upper,workdir=$root/state/etc/work" \
+        "$root/etc"
+    mount -t proc proc "$root/proc"
+    # Plain mounts, not --rbind: a recursive /sys drags in /sys/fs/cgroup,
+    # which then refuses to unmount.
+    mount -t sysfs sys "$root/sys"
+    mount --bind /dev "$root/dev"
+
+    mkdir -p "$root/var/home" "$root/var/roothome"
+    chmod 0700 "$root/var/roothome"
+    printf '%s\n' "$hostname" >"$root/etc/hostname"
+    if [[ -n $timezone ]]; then
+        [[ -f $root/usr/share/zoneinfo/$timezone ]] || die "unknown timezone: $timezone"
+        ln -sf "../usr/share/zoneinfo/$timezone" "$root/etc/localtime"
+    fi
+    chroot "$root" useradd -m -G wheel -s /bin/bash "$user"
+    printf '%s:%s\n' "$user" "$password" | chroot "$root" chpasswd
+    chroot "$root" passwd -q -l root
+
+    umount -R "$root"
+    umount "$target/esp"
+    sync
+
+    echo
+    ok "VaporOS $VOS_VERSION is installed on $disk."
+    info "Remove the installation medium and reboot."
+}
+
+# ------------------------------------------------------------------- update --
+
+cmd_update() {
+    local source="" force=0
+    while (($#)); do
+        case $1 in
+            --from)  source=$2; shift 2 ;;
+            --force) force=1; shift ;;
+            *) die "unknown option: $1" ;;
+        esac
+    done
+    need_root update
+    is_live && die "update is for installed systems; the live ISO is already the latest you booted"
+
+    if [[ -z $source ]]; then
+        # shellcheck disable=SC1091
+        [[ -f /etc/vos/update.conf ]] && . /etc/vos/update.conf
+        source=${URL:?no update URL; set URL= in /etc/vos/update.conf or pass --from}
+    fi
+
+    local current target work
+    current=$(booted_slot)
+    [[ -n $current ]] || die "cannot tell which slot is running (no vos.slot= on the kernel command line)"
+    target=$(other_slot "$current")
+    work=/var/tmp/vos-update
+    rm -rf "$work"; mkdir -p "$work"
+    # Expanded now: $work is local and gone by the time the EXIT trap runs.
+    trap "rm -rf '$work'" EXIT
+
+    fetch() {
+        if [[ $source == http://* || $source == https://* ]]; then
+            curl -fL --retry 3 ${2:+--progress-bar} -o "$work/$1" "$source/$1"
+        else
+            cp "$source/$1" "$work/$1"
+        fi
+    }
+
+    say "Checking $source"
+    fetch manifest.env
+    read_manifest "$work/manifest.env"
+    local running
+    running=$(running_version)
+    if [[ $VOS_VERSION == "$running" ]] && (( ! force )); then
+        ok "Already up to date ($running)."
+        return
+    fi
+    info "running: $running (slot $current)"
+    info "new:     $VOS_VERSION -> slot $target"
+
+    say "Downloading"
+    fetch root.erofs progress
+    fetch vmlinuz
+    fetch initramfs.img
+    verify "$work/root.erofs"    "$VOS_ROOT_SHA256"
+    verify "$work/vmlinuz"       "$VOS_VMLINUZ_SHA256"
+    verify "$work/initramfs.img" "$VOS_INITRAMFS_SHA256"
+
+    local slot_dev="/dev/disk/by-partlabel/vos_$target"
+    [[ -b $slot_dev ]] || die "$slot_dev missing"
+    (( $(stat -c %s "$work/root.erofs") <= $(blockdev --getsize64 "$slot_dev") )) ||
+        die "new image does not fit in slot $target"
+
+    # Unhook the target slot from the bootloader *before* overwriting it, so a
+    # half-written slot can never be booted.
+    ls "$ESP"/loader >/dev/null   # trigger the automount
+    remove_slot_entries "$ESP" "$target"
+
+    say "Writing slot $target"
+    dd if="$work/root.erofs" of="$slot_dev" bs=4M conv=fsync status=progress
+
+    install_entry "$ESP" "$VOS_VERSION" "$target" "$work" 3
+    sync
+
+    echo
+    ok "VaporOS $VOS_VERSION is ready in slot $target."
+    info "Reboot to switch. If it fails to boot three times, $running comes back on its own."
+}
+
+# ----------------------------------------------------------------- rollback --
+
+cmd_rollback() {
+    need_root rollback
+    local current target entry
+    current=$(booted_slot)
+    [[ -n $current ]] || die "not running from an installed slot"
+    target=$(other_slot "$current")
+    ls "$ESP"/loader >/dev/null
+    [[ -n $(entry_for_slot "$ESP" "$target") ]] || die "slot $target has nothing bootable"
+
+    # Mark the running entry as out of tries. systemd-boot sorts it last, so the
+    # other slot becomes the default, and it stays in the menu for manual use.
+    entry=$(entry_for_slot "$ESP" "$current")
+    local base=${entry%.conf}
+    base=${base%%+*}
+    mv "$entry" "$base+0-1.conf"
+    ok "Next boot uses slot $target. Reboot to roll back."
+}
+
+# ------------------------------------------------------------------- status --
+
+cmd_status() {
+    . /usr/lib/os-release
+    printf '%sVaporOS%s %s\n' "$bold" "$reset" "${IMAGE_VERSION:-?}"
+    if is_live; then
+        info "mode:    live (nothing is saved)"
+        return
+    fi
+    local current entry version tries
+    current=$(booted_slot)
+    info "booted:  slot ${current:-?}"
+    ls "$ESP"/loader >/dev/null 2>&1 || { info "(ESP not readable; run as root for slot details)"; return; }
+    for slot in a b; do
+        entry=$(entry_for_slot "$ESP" "$slot")
+        if [[ -z $entry ]]; then
+            info "slot $slot:  empty"
+            continue
+        fi
+        version=$(awk '$1 == "version" { print $2 }' "$entry")
+        tries=""
+        [[ $(basename "$entry") == *+* ]] && tries=" ${dim}(boot counting: $(basename "$entry" .conf | sed 's/.*+//'))${reset}"
+        info "slot $slot:  $version$( [[ $slot == "$current" ]] && echo ' <- running')$tries"
+    done
+}
+
+usage() {
+    cat <<USAGE
+usage: vos <command> [options]
+
+  status                     show the running version and both slots
+  install [--disk D ...]     install from the live ISO (interactive)
+          --hostname H --user U --password P --timezone Z --yes
+  update  [--from URL|DIR]   write the newest image to the idle slot
+          [--force]
+  rollback                   boot the other slot from now on
+USAGE
+}
+
+case ${1:-} in
+    status)   shift; cmd_status "$@" ;;
+    install)  shift; cmd_install "$@" ;;
+    update)   shift; cmd_update "$@" ;;
+    rollback) shift; cmd_rollback "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) usage >&2; exit 2 ;;
+esac

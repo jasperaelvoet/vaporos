@@ -1,105 +1,74 @@
-# WaterVaporOS
+# VaporOS
 
-An immutable, Arch-based Linux distribution built as a **bootable container**
-(bootc). Right now it is deliberately bare: kernel, systemd, a shell, and the
-machinery needed to install and update itself. Nothing else.
+An immutable, Arch-based Linux distribution. Right now it is deliberately bare:
+kernel, systemd, a shell, and the machinery needed to install and update
+itself. Nothing else.
 
 ## How it works
 
-The operating system *is* an OCI image. There is no package manager on the
-installed machine.
+The whole OS is one read-only erofs image, built from prebuilt Arch packages.
+There is no package manager on the installed machine.
 
 ```
-Containerfile  ──build──▶  watervaporos:latest  ──┬──▶  ISO ──▶ bootc install to-disk
-   (the OS)                  (the OS, as an        │
-                              OCI image)           └──▶  bootc upgrade  (in-place update)
+packages.txt + rootfs/  ──build──▶  root.erofs + vmlinuz + initramfs  ──┬──▶  ISO ──▶ vos install
+                                         (+ manifest.env)               └──▶  vos update (A/B)
 ```
 
-* **Kernel, firmware, and all of userspace live in the image.** You upgrade the
-  kernel by rebuilding the image, not by running pacman on the machine.
-* `/usr` is read-only and content-addressed via ostree/composefs.
-* `/etc` is three-way merged on each deploy, so your local edits survive.
-* `/var` is machine state and is never part of the image.
-* The previous deployment stays on disk, so a bad update is one reboot away
-  from being undone.
+* The disk has two OS slots (`vos_a`, `vos_b`), an ESP and a data partition.
+* `/` is the erofs image, read-only.
+* `/etc` is an overlay: the image's `/etc` plus your local changes.
+* `/var` (and `/home`, `/root`, …) lives on the data partition.
+* `vos update` writes the new image to the slot that is not running and boots
+  it with systemd-boot boot counting. If it never boots cleanly, the previous
+  slot comes back on its own. `vos rollback` switches back by hand.
 
-## Building
+## Develop
 
-**Use CI.** Arch is x86_64-only, so on Apple silicon everything runs under qemu
-emulation -- the `bootc` compile alone took over 15 minutes locally. The
-GitHub Actions workflow builds natively in a fraction of that and publishes the
-image to `ghcr.io`, which is where `bootc upgrade` pulls from anyway.
-
-Locally, the OS build is quick *provided* it can pull the prebuilt AUR packages
-that CI publishes:
+You need OrbStack (or any Docker) and ssh key access to a Proxmox host
+(`ssh-copy-id root@192.168.1.2`). Then:
 
 ```sh
-./scripts/build-image.sh   # the OS itself -> out/image.tar
-./scripts/build-iso.sh     # a live installer ISO carrying it -> out/*.iso
+make
 ```
 
-To build those packages yourself instead (slow under emulation):
+That is the whole loop. It builds whatever changed, then makes the dev VM run
+that build. If the VM does not exist yet, it creates it and installs to its disk
+automatically. If it already exists, it runs `vos update` and reboots into the
+new slot. When nothing changed, it finishes in seconds.
 
-```sh
-make packages
-IMAGE_ARGS='--build-arg PACKAGES_IMAGE=localhost/watervaporos-aur-packages:latest' \
-  ./scripts/build-image.sh
-```
+| Command | |
+| --- | --- |
+| `make` | build if needed, then install or update the dev VM |
+| `make shell` | serial shell in the VM (user `vapor`, password `vapor`; Ctrl-O leaves) |
+| `make console` | the VM's display in a native Screen Sharing window |
+| `make log` | follow the VM's serial console |
+| `make reset` | wipe the dev VM and install it from scratch |
+| `make test` | end-to-end install test on a separate throwaway VM |
+| `make status` / `make destroy` | |
+| `make refresh` | rebuild the package base with the newest Arch packages |
+| `make release` | smaller image, slower compression |
+| `make clean` | remove `out/` and the build volume |
 
-## Trying it in a VM
+Builds run in a cached Arch container (`build/`). Nothing is compiled, and a
+rebuild that only touches `rootfs/` takes about 15 seconds. Proxmox only runs
+the VM: each build is rsynced to it (as a delta) and served to the VM over HTTP
+for `vos update`.
 
-`scripts/dev-vm.sh` boots the ISO on a Proxmox host and opens the VM's console
-in your browser via Proxmox's own noVNC -- nothing to install locally.
+The defaults (Proxmox host `192.168.1.2`, dev VM `9000`, test VM `9001`,
+`local-lvm`, `vmbr0`, …) are at the top of `scripts/dev.sh`. To override them,
+put `KEY=value` lines in a gitignored `.dev.env`. The tooling refuses to touch
+a VMID whose name is not its own. `CONSOLE=0 make` never opens a window.
 
-```sh
-make dev            # fetch the newest CI ISO, then boot it
-make dev-destroy    # tear the VM down
-```
+## Installing on real hardware
 
-It needs SSH key access to the Proxmox host. Defaults are overridable by
-environment variable:
-
-| Variable | Default | |
-| --- | --- | --- |
-| `PVE_HOST` | `192.168.1.2` | Proxmox host |
-| `PVE_NODE` | `proxmox` | node name, used to build the console URL |
-| `VMID` | `9000` | |
-| `DISK_STORAGE` | `local-lvm` | |
-| `BRIDGE` | `vmbr0` | |
-
-The VM is created with OVMF and Secure Boot keys *not* pre-enrolled: bootc
-needs UEFI, and an unsigned Arch kernel will not pass Secure Boot. The script
-refuses to touch a VMID whose name is not `watervaporos-dev`.
-
-## Installing
-
-Boot the ISO **in UEFI mode**, then:
-
-```sh
-watervapor-install
-```
-
-It asks for a target disk, then hands the image to `bootc install to-disk`.
-
-## Updating an installed system
-
-```sh
-sudo bootc upgrade && systemctl reboot
-sudo bootc rollback              # if the new one misbehaves
-```
+Boot the ISO **in UEFI mode** (Secure Boot off: the Arch kernel is unsigned),
+then run `vos install`.
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
-| `Containerfile` | The OS definition. Stage 1 builds `bootc`/`bootupd` from the AUR; stage 2 is the OS. |
-| `image/` | Files overlaid into the OS image (os-release, tmpfiles, the ostree layout prep). |
-| `iso/` | archiso profile overlay: package list, installer script, live-session banner. |
-| `scripts/` | Build entry points. |
-
-## Known rough edges
-
-* Arch has no SELinux, so `libsepol`/`libselinux` are built from the AUR purely
-  to satisfy bootc's link requirements. They are not enforcing anything.
-* The ISO embeds the full OS image, so it is large.
-* Not yet verified end to end on real hardware.
+| `packages.txt` | Every package in the image. |
+| `rootfs/` | Files overlaid onto the image, including `vos` and the initramfs hook. |
+| `build/` | The build container and the script that runs in it. |
+| `scripts/` | `dev.sh` (the dev loop), `build.sh`, and `serial.py` (drives the VM's serial console). |

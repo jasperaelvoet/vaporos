@@ -1,0 +1,99 @@
+#!/usr/bin/ash
+# shellcheck shell=dash
+#
+# VaporOS root assembly.
+#
+# Installed:  vos.slot=a|b
+#   /            erofs, read-only        PARTLABEL=vos_<slot>
+#   /state       ext4, read-write        PARTLABEL=vos_data
+#   /var         bind of /state/var
+#   /etc         overlay: image /etc + /state/etc/upper
+#
+# Live:       vos.mode=live
+#   /            overlay: erofs image on the ISO + tmpfs, all changes lost on reboot
+
+run_hook() {
+    vos_mode="$(getarg vos.mode disk)"
+    vos_slot="$(getarg vos.slot)"
+    vos_label="$(getarg vos.label VOS_LIVE)"
+
+    export mount_handler="vos_mount_handler"
+}
+
+vos_die() {
+    err "$*"
+    echo "VaporOS could not assemble its root filesystem. Dropping to a shell."
+    launch_interactive_shell
+}
+
+vos_mount_handler() {
+    root="$1"
+    case "$vos_mode" in
+        live) vos_mount_live "$root" ;;
+        *)    vos_mount_disk "$root" ;;
+    esac
+}
+
+vos_mount_disk() {
+    root="$1"
+    [ "$vos_slot" = a ] || [ "$vos_slot" = b ] ||
+        vos_die "vos.slot must be 'a' or 'b' (got '${vos_slot}')"
+
+    slot_dev="/dev/disk/by-partlabel/vos_${vos_slot}"
+    data_dev="/dev/disk/by-partlabel/vos_data"
+
+    poll_device "$slot_dev" 30 || vos_die "slot ${vos_slot} not found at ${slot_dev}"
+    poll_device "$data_dev" 30 || vos_die "data partition not found at ${data_dev}"
+
+    msg ":: mounting VaporOS slot ${vos_slot}"
+    mount -t erofs -o ro "$slot_dev" "$root" || vos_die "cannot mount ${slot_dev}"
+    mount -t ext4 -o rw,noatime "$data_dev" "$root/state" || vos_die "cannot mount ${data_dev}"
+
+    mkdir -p "$root/state/var" "$root/state/etc/upper" "$root/state/etc/work"
+    mount -o bind "$root/state/var" "$root/var"
+    # index=off: the lower /etc is a different erofs after every A/B switch.
+    # With the index on, overlayfs pins the upper layer to the lower it was
+    # created on and refuses to mount it on the other slot (ESTALE).
+    mount -t overlay overlay \
+        -o "lowerdir=$root/etc,upperdir=$root/state/etc/upper,workdir=$root/state/etc/work,index=off" \
+        "$root/etc" || vos_die "cannot overlay /etc"
+}
+
+vos_mount_live() {
+    root="$1"
+    iso_dev="/dev/disk/by-label/${vos_label}"
+    base=/run/vos
+
+    poll_device "$iso_dev" 30 || vos_die "live medium not found at ${iso_dev}"
+
+    msg ":: mounting VaporOS live medium"
+    mkdir -p "$base/medium" "$base/lower" "$base/cow"
+    mount -t iso9660 -o ro "$iso_dev" "$base/medium" || vos_die "cannot mount ${iso_dev}"
+
+    loopdev="$(losetup -f --show -r "$base/medium/vos/root.erofs")" ||
+        vos_die "cannot attach root.erofs"
+    mount -t erofs -o ro "$loopdev" "$base/lower" || vos_die "cannot mount root.erofs"
+
+    mount -t tmpfs -o mode=0755,size=75% cow "$base/cow"
+    mkdir -p "$base/cow/upper" "$base/cow/work"
+    mount -t overlay overlay \
+        -o "lowerdir=$base/lower,upperdir=$base/cow/upper,workdir=$base/cow/work" \
+        "$root" || vos_die "cannot assemble live root"
+
+    # Live-session conveniences, written into the throwaway overlay so they can
+    # never leak into an installed system.
+    for unit in getty@tty1 serial-getty@ttyS0; do
+        mkdir -p "$root/etc/systemd/system/${unit}.service.d"
+        cat > "$root/etc/systemd/system/${unit}.service.d/autologin.conf" <<UNIT
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin root --noclear --keep-baud %I 115200,38400,9600 \$TERM
+UNIT
+    done
+    cp "$root/usr/share/vos/live-motd" "$root/etc/motd"
+    # There is no ESP to automount in a live session. Left in, the automount
+    # is triggered by every sandboxed service's mount namespace and fails
+    # them all after a 90s device timeout (D-Bus first).
+    sed -i '/vos_esp/d' "$root/etc/fstab"
+    echo vapor-live > "$root/etc/hostname"
+}

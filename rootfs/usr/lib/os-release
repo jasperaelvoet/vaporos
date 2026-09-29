@@ -1,0 +1,13 @@
+NAME="VaporOS"
+PRETTY_NAME="VaporOS @VERSION@"
+ID=vaporos
+ID_LIKE=arch
+VERSION="@VERSION@"
+VERSION_ID=@VERSION@
+IMAGE_ID=vaporos
+IMAGE_VERSION=@VERSION@
+BUILD_ID=@VERSION@
+ANSI_COLOR="38;2;120;190;255"
+HOME_URL="https://github.com/jasperaelvoet/vaporos"
+BUG_REPORT_URL="https://github.com/jasperaelvoet/vaporos/issues"
+DEFAULT_HOSTNAME=vapor
