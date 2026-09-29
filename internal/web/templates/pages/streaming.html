@@ -1,0 +1,66 @@
+{{define "content"}}
+<div class="grid">
+  <section class="card" aria-labelledby="sun-h">
+    <header class="card-head">
+      <h2 id="sun-h">{{icon "gamepad"}}Sunshine</h2>
+      <span class="badge" id="sun-badge">…</span>
+    </header>
+    <dl class="kv" id="sun-kv"><dt class="skeleton"></dt><dd class="skeleton"></dd></dl>
+    <div class="actions">
+      <button class="btn" id="sun-restart" type="button">{{icon "restart"}}Restart Sunshine</button>
+      <a class="btn btn-ghost" href="/advanced#logs">{{icon "file"}}Logs</a>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="session-h">
+    <header class="card-head"><h2 id="session-h">{{icon "sparkle"}}Current stream</h2></header>
+    <div class="card-body" id="session-body" aria-live="polite"><p class="skeleton"></p></div>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="settings-h">
+  <header class="card-head"><h2 id="settings-h">{{icon "sliders"}}Stream settings</h2></header>
+  <form id="settings-form" class="form-grid">
+    <div class="field">
+      <label for="encoder">Video encoder</label>
+      <select id="encoder" name="encoder" aria-describedby="encoder-hint">
+        <option value="">Automatic</option>
+        <option value="vulkan">Vulkan (recommended for AMD)</option>
+        <option value="vaapi">VA-API</option>
+        <option value="nvenc">NVENC (NVIDIA)</option>
+        <option value="quicksync">Quick Sync (Intel)</option>
+        <option value="software">Software (CPU)</option>
+      </select>
+      <p class="hint" id="encoder-hint">Vulkan encodes on the GPU with the least delay.</p>
+    </div>
+    <div class="field">
+      <label for="bitrate">Maximum bitrate</label>
+      <div class="input-affix">
+        <input id="bitrate" name="bitrate" type="number" inputmode="numeric" min="0" max="1000" step="1" aria-describedby="bitrate-hint">
+        <span class="affix" aria-hidden="true">Mbps</span>
+      </div>
+      <p class="hint" id="bitrate-hint">0 lets each Moonlight device choose.</p>
+    </div>
+    <div class="field">
+      <label for="gamepad">Controller type</label>
+      <select id="gamepad" name="gamepad" aria-describedby="gamepad-hint">
+        <option value="auto">Automatic</option>
+        <option value="xone">Xbox One / Series</option>
+        <option value="x360">Xbox 360</option>
+        <option value="ds4">DualShock 4</option>
+        <option value="ds5">DualSense</option>
+        <option value="switch">Switch Pro</option>
+      </select>
+      <p class="hint" id="gamepad-hint">What games see when you play with a controller.</p>
+    </div>
+    <div class="field" id="audio-field">
+      <label for="audio-sink">Audio output</label>
+      <input id="audio-sink" name="audio_sink" autocomplete="off" spellcheck="false" placeholder="Default" aria-describedby="audio-hint">
+      <p class="hint" id="audio-hint">Leave empty unless sound doesn't reach Moonlight.</p>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
+</section>
+{{end}}

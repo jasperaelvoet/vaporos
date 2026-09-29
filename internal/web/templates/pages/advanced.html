@@ -1,0 +1,83 @@
+{{define "content"}}
+<div class="grid">
+  <section class="card" aria-labelledby="name-h">
+    <header class="card-head"><h2 id="name-h">{{icon "wifi"}}Network name</h2></header>
+    <form id="hostname-form" class="stack">
+      <div class="field">
+        <label for="hostname">Name</label>
+        <div class="input-affix">
+          <input id="hostname" name="hostname" required maxlength="63" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="hostname-hint">
+          <span class="affix" aria-hidden="true">.local</span>
+        </div>
+        <p class="hint" id="hostname-hint">Moonlight and this page find VaporOS by this name.</p>
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" type="submit">Rename</button></div>
+    </form>
+  </section>
+
+  <section class="card" aria-labelledby="pw-h">
+    <header class="card-head"><h2 id="pw-h">{{icon "key"}}Admin password</h2></header>
+    <form id="password-form" class="stack">
+      <input type="text" name="username" value="admin" autocomplete="username" class="sr-only" tabindex="-1" aria-hidden="true">
+      <div class="field">
+        <label for="pw-current">Current password</label>
+        <input id="pw-current" name="current" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="field">
+        <label for="pw-new">New password</label>
+        <input id="pw-new" name="new" type="password" autocomplete="new-password" minlength="8" required aria-describedby="pw-new-hint">
+        <p class="hint" id="pw-new-hint">At least 8 characters.</p>
+      </div>
+      <div class="field">
+        <label for="pw-new2">Repeat new password</label>
+        <input id="pw-new2" type="password" autocomplete="new-password" required>
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" type="submit">Change password</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="ssh-h">
+  <header class="card-head"><h2 id="ssh-h">{{icon "terminal"}}SSH</h2></header>
+  <form id="ssh-form" class="stack">
+    <label class="switch">
+      <input type="checkbox" role="switch" id="ssh-on" name="enabled">
+      <span class="switch-track" aria-hidden="true"></span>
+      <span class="switch-text"><strong>Allow SSH</strong><span class="muted">For troubleshooting. Only the keys below can log in; passwords never work.</span></span>
+    </label>
+    <div class="field">
+      <label for="ssh-keys">Authorized public keys</label>
+      <textarea id="ssh-keys" name="keys" rows="4" class="mono" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="ssh-ed25519 AAAA… you@laptop" aria-describedby="ssh-keys-hint"></textarea>
+      <p class="hint" id="ssh-keys-hint">One key per line.</p>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+  </form>
+</section>
+
+<section class="card" id="logs" aria-labelledby="logs-h">
+  <header class="card-head">
+    <h2 id="logs-h">{{icon "file"}}Sunshine log</h2>
+    <div class="row">
+      <a class="btn btn-ghost btn-sm" href="/api/v1/sunshine/logs" target="_blank" rel="noopener">{{icon "external"}}Open</a>
+      <button class="btn btn-ghost btn-sm" id="logs-refresh" type="button">{{icon "restart"}}Refresh</button>
+    </div>
+  </header>
+  <pre class="logs" id="logs-text" tabindex="0" aria-label="Sunshine log">Loading…</pre>
+</section>
+
+<div class="grid">
+  <section class="card" aria-labelledby="about-h">
+    <header class="card-head"><h2 id="about-h">{{icon "info"}}About</h2></header>
+    <dl class="kv" id="about"><dt class="skeleton"></dt><dd class="skeleton"></dd></dl>
+  </section>
+
+  <section class="card" aria-labelledby="restart-h">
+    <header class="card-head"><h2 id="restart-h">{{icon "power"}}Restart and power</h2></header>
+    <p class="muted small">Streams in progress are stopped.</p>
+    <div class="actions">
+      <button class="btn" id="reboot-btn" type="button">{{icon "restart"}}Restart</button>
+      <button class="btn btn-danger" id="poweroff-btn" type="button">{{icon "power"}}Power off</button>
+    </div>
+  </section>
+</div>
+{{end}}

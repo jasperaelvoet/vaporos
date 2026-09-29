@@ -1,0 +1,19 @@
+{{define "content"}}
+<section class="auth-card card">
+  <h1>Sign in</h1>
+  <p class="muted">Enter the admin password you chose when you set up VaporOS.</p>
+  <form id="login-form" class="stack" autocomplete="on">
+    <input type="text" name="username" value="admin" autocomplete="username" class="sr-only" tabindex="-1" aria-hidden="true">
+    <div class="field">
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required autofocus aria-describedby="login-error">
+    </div>
+    <p class="field-error" id="login-error" role="alert" hidden></p>
+    <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+  </form>
+  <details class="help">
+    <summary>{{icon "info"}}Forgot the password?</summary>
+    <p class="muted small">Reinstall from the VaporOS USB stick and choose <strong>Repair</strong>. It keeps your games and settings and lets you set a new password.</p>
+  </details>
+</section>
+{{end}}

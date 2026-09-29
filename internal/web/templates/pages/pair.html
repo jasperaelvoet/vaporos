@@ -1,0 +1,56 @@
+{{define "content"}}
+<ol class="steps">
+  <li class="card step-card" id="step-app">
+    <span class="step-num" aria-hidden="true">1</span>
+    <div class="step-body">
+      <h2>Get Moonlight</h2>
+      <p class="muted">Moonlight is the free app that plays your games from this PC.</p>
+      <div class="store-links">
+        <a class="store" href="https://apps.apple.com/app/moonlight-game-streaming/id1000551566" target="_blank" rel="noopener noreferrer">{{icon "phone"}}<span><strong>iPhone, iPad, Apple TV</strong><small>App Store</small></span>{{icon "external"}}</a>
+        <a class="store" href="https://play.google.com/store/apps/details?id=com.limelight" target="_blank" rel="noopener noreferrer">{{icon "phone"}}<span><strong>Android, Google TV</strong><small>Google Play</small></span>{{icon "external"}}</a>
+        <a class="store" href="https://moonlight-stream.org/" target="_blank" rel="noopener noreferrer">{{icon "monitor"}}<span><strong>Windows, Mac, Linux</strong><small>moonlight-stream.org</small></span>{{icon "external"}}</a>
+      </div>
+    </div>
+  </li>
+
+  <li class="card step-card" id="step-add">
+    <span class="step-num" aria-hidden="true">2</span>
+    <div class="step-body">
+      <h2>Add this PC</h2>
+      <p class="muted">Open Moonlight on the same network. It usually finds <strong id="pc-name">VaporOS</strong> by itself; tap it.</p>
+      <p class="muted">If it doesn't show up, tap <strong>+</strong> (Add PC) and enter this address:</p>
+      <div class="address-list" id="pc-addresses"><span class="skeleton"></span></div>
+    </div>
+  </li>
+
+  <li class="card step-card" id="step-pin">
+    <span class="step-num" aria-hidden="true">3</span>
+    <div class="step-body">
+      <h2>Enter the PIN</h2>
+      <p class="muted">Moonlight shows a 4-digit PIN. Type it here to finish pairing.</p>
+      <div class="banner banner-accent" id="pin-waiting" hidden>{{icon "phone"}}<div class="banner-text"><strong>Moonlight is waiting.</strong> <span id="pin-waiting-name"></span>Enter the PIN it shows.</div></div>
+      <form id="pair-form" class="pin-form">
+        <div class="field">
+          <label for="pin">PIN</label>
+          <input id="pin" name="pin" class="pin-input mono" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4}" maxlength="4" required placeholder="0000" aria-describedby="pin-hint">
+          <p class="hint" id="pin-hint">4 digits</p>
+        </div>
+        <div class="field">
+          <label for="device-name">Device name</label>
+          <input id="device-name" name="name" maxlength="64" required autocomplete="off" placeholder="e.g. Living room TV">
+        </div>
+        <button class="btn btn-primary" type="submit">{{icon "check"}}Pair</button>
+      </form>
+    </div>
+  </li>
+</ol>
+
+<section class="card" aria-labelledby="clients-h">
+  <header class="card-head">
+    <h2 id="clients-h">{{icon "phone"}}Paired devices</h2>
+    <button class="btn btn-ghost btn-sm" id="clients-refresh" type="button">{{icon "restart"}}Refresh</button>
+  </header>
+  <ul class="list" id="clients" aria-live="polite"><li class="list-item"><span class="skeleton"></span></li></ul>
+  <p class="empty" id="clients-empty" hidden>No devices are paired yet.</p>
+</section>
+{{end}}

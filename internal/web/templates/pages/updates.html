@@ -1,0 +1,56 @@
+{{define "content"}}
+<section class="card" aria-labelledby="ustate-title">
+  <header class="card-head">
+    <h2>{{icon "update"}}Status</h2>
+    <span class="badge" id="ustate-badge" hidden></span>
+  </header>
+  <p class="state-title" id="ustate-title" aria-live="polite">Checking…</p>
+  <p class="muted" id="ustate-detail" aria-live="polite"></p>
+  <div class="progress-block" id="uprogress" hidden>
+    <div class="row-between"><span class="strong" id="uprogress-phase">Downloading</span><span class="mono" id="uprogress-pct">0%</span></div>
+    <progress id="uprogress-bar" max="100" aria-labelledby="uprogress-phase"></progress>
+    <p class="muted small mono" id="uprogress-bytes" aria-live="off"></p>
+  </div>
+  <div class="banner banner-danger" id="ulast-error" role="alert" hidden>{{icon "alert"}}<div class="banner-text" id="ulast-error-text"></div></div>
+  <div class="actions" id="uactions">
+    <button class="btn btn-primary" id="stage-btn" type="button" hidden>{{icon "download"}}Download and install</button>
+    <button class="btn btn-primary" id="activate-btn" type="button" hidden>{{icon "power"}}Restart now</button>
+    <button class="btn" id="check-btn" type="button">{{icon "restart"}}Check now</button>
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card" aria-labelledby="ver-h">
+    <header class="card-head"><h2 id="ver-h">{{icon "info"}}Versions</h2></header>
+    <dl class="kv" id="versions"><dt class="skeleton"></dt><dd class="skeleton"></dd></dl>
+    <div class="actions">
+      <button class="btn" id="rollback-btn" type="button" disabled>{{icon "back"}}Roll back</button>
+    </div>
+    <p class="hint" id="rollback-hint">Roll back starts the previous version on the next restart.</p>
+  </section>
+
+  <section class="card" aria-labelledby="uset-h">
+    <header class="card-head"><h2 id="uset-h">{{icon "sliders"}}Settings</h2></header>
+    <form id="usettings" class="stack">
+      <label class="switch">
+        <input type="checkbox" role="switch" id="auto" name="auto">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span class="switch-text"><strong>Download updates automatically</strong><span class="muted">New versions are prepared in the background and start on the next restart.</span></span>
+      </label>
+      <div class="field">
+        <label for="channel">Channel</label>
+        <input id="channel" name="channel" list="channels" required maxlength="128" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="channel-hint">
+        <datalist id="channels"><option value="main"></option></datalist>
+        <p class="hint" id="channel-hint"><span class="mono">main</span> is the stable channel. Other channels are test builds.</p>
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="card" id="failed-card" aria-labelledby="failed-h" hidden>
+  <header class="card-head"><h2 id="failed-h">{{icon "alert"}}Versions that didn't start</h2></header>
+  <p class="muted small">VaporOS went back to the previous version by itself, and won't install these again.</p>
+  <ul class="chips" id="failed"></ul>
+</section>
+{{end}}

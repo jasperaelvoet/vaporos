@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="banner banner-warn" id="reboot-banner" hidden>
+  {{icon "restart"}}
+  <div class="banner-text"><strong>Restart to apply display changes.</strong> New modes are added to the virtual screen when VaporOS starts.</div>
+  <button class="btn btn-sm" id="reboot-now" type="button">Restart now</button>
+</div>
+<div class="banner banner-warn" id="nogpu-banner" hidden>
+  {{icon "alert"}}
+  <div class="banner-text"><strong>No supported graphics card found.</strong> Streaming needs an AMD Radeon GPU. The welcome screen still works.</div>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="now-h">
+    <header class="card-head"><h2 id="now-h">{{icon "monitor"}}Right now</h2></header>
+    <dl class="kv" id="now-kv"><dt class="skeleton"></dt><dd class="skeleton"></dd></dl>
+  </section>
+
+  <section class="card" aria-labelledby="dset-h">
+    <header class="card-head"><h2 id="dset-h">{{icon "sliders"}}Settings</h2></header>
+    <form id="display-form" class="stack">
+      <label class="switch">
+        <input type="checkbox" role="switch" id="hdr" name="hdr">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span class="switch-text"><strong>HDR</strong><span class="muted">Stream in HDR when the Moonlight device asks for it.</span></span>
+      </label>
+      <div class="field">
+        <label for="connector">Virtual screen connector</label>
+        <select id="connector" name="virtual_connector" aria-describedby="connector-hint"></select>
+        <p class="hint" id="connector-hint">An unused output on the graphics card that VaporOS drives as an invisible screen. Changing it needs a restart.</p>
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="modes-h">
+  <header class="card-head"><h2 id="modes-h">{{icon "sparkle"}}Resolutions</h2></header>
+  <p class="muted small">VaporOS switches the virtual screen to the mode each Moonlight device asks for. A device with an unusual screen gets the closest mode now and its exact mode after the next restart.</p>
+  <div class="modes" id="modes" aria-live="polite"><span class="skeleton"></span></div>
+  <h3 class="subhead">Learned from your devices</h3>
+  <div class="chips" id="learned"></div>
+  <p class="empty small" id="learned-empty" hidden>None yet.</p>
+  <h3 class="subhead">Add a mode</h3>
+  <form id="mode-form" class="mode-form">
+    <div class="field">
+      <label for="mode-w">Width</label>
+      <input id="mode-w" name="w" type="number" inputmode="numeric" min="640" max="7680" required placeholder="2560">
+    </div>
+    <span class="mode-x" aria-hidden="true">×</span>
+    <div class="field">
+      <label for="mode-h">Height</label>
+      <input id="mode-h" name="h" type="number" inputmode="numeric" min="480" max="4320" required placeholder="1600">
+    </div>
+    <span class="mode-x" aria-hidden="true">@</span>
+    <div class="field">
+      <label for="mode-r">Hz</label>
+      <input id="mode-r" name="r" type="number" inputmode="numeric" min="24" max="240" required placeholder="120">
+    </div>
+    <button class="btn" type="submit">{{icon "plus"}}Add</button>
+  </form>
+</section>
+
+<section class="card" aria-labelledby="conn-h">
+  <header class="card-head"><h2 id="conn-h">{{icon "zap"}}Outputs</h2></header>
+  <ul class="list" id="connectors"><li class="list-item"><span class="skeleton"></span></li></ul>
+</section>
+{{end}}
