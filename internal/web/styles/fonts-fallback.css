@@ -1,0 +1,90 @@
+/* Code generated from design/fonts/fonts.json by tools/fonts/fonts.py. DO NOT EDIT. */
+/* One metric-matched local fallback per web font face (the fontaine method):
+   list "<family> fallback" right after "<family>" in a font stack, and until
+   the web font arrives the text takes the same line box and about the same
+   width, so the swap moves nothing. size-adjust matches the average width of
+   English text; the overrides then match the face's ascent, descent and gap. */
+
+@font-face {
+  font-family: "Anybody fallback";
+  src: local("Arial"), local("ArialMT"), local("Helvetica Neue"), local("HelveticaNeue"), local("Roboto");
+  font-weight: 560;
+  font-stretch: 72%;
+  font-style: normal;
+  size-adjust: 78.9%;
+  ascent-override: 100.76%;
+  descent-override: 30.42%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Anybody fallback";
+  src: local("Arial Bold"), local("Arial-BoldMT"), local("Helvetica Neue Bold"), local("HelveticaNeue-Bold"), local("Roboto Bold"), local("Roboto-Bold");
+  font-weight: 700;
+  font-stretch: 100%;
+  font-style: normal;
+  size-adjust: 115.53%;
+  ascent-override: 68.81%;
+  descent-override: 20.77%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Anybody fallback";
+  src: local("Arial Bold"), local("Arial-BoldMT"), local("Helvetica Neue Bold"), local("HelveticaNeue-Bold"), local("Roboto Bold"), local("Roboto-Bold");
+  font-weight: 800;
+  font-stretch: 124%;
+  font-style: normal;
+  size-adjust: 151.01%;
+  ascent-override: 52.64%;
+  descent-override: 15.89%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Mona Sans fallback";
+  src: local("Arial"), local("ArialMT"), local("Helvetica Neue"), local("HelveticaNeue"), local("Roboto");
+  font-weight: 400;
+  font-stretch: 100%;
+  font-style: normal;
+  size-adjust: 104.35%;
+  ascent-override: 104.46%;
+  descent-override: 30.67%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Mona Sans fallback";
+  src: local("Arial Bold"), local("Arial-BoldMT"), local("Helvetica Neue Bold"), local("HelveticaNeue-Bold"), local("Roboto Bold"), local("Roboto-Bold");
+  font-weight: 600;
+  font-stretch: 100%;
+  font-style: normal;
+  size-adjust: 99.87%;
+  ascent-override: 109.15%;
+  descent-override: 32.04%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Martian Mono fallback";
+  src: local("Menlo Regular"), local("Menlo-Regular"), local("Courier New"), local("CourierNewPSMT"), local("Droid Sans Mono");
+  font-weight: 500;
+  font-stretch: 100%;
+  font-style: normal;
+  size-adjust: 116.27%;
+  ascent-override: 86.01%;
+  descent-override: 17.2%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Martian Mono fallback";
+  src: local("Menlo Bold"), local("Menlo-Bold"), local("Courier New Bold"), local("CourierNewPS-BoldMT");
+  font-weight: 600;
+  font-stretch: 100%;
+  font-style: normal;
+  size-adjust: 116.27%;
+  ascent-override: 86.01%;
+  descent-override: 17.2%;
+  line-gap-override: 0%;
+}
