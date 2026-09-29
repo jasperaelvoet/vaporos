@@ -42,9 +42,18 @@ type Service struct {
 	running  bool
 	stopping bool // Run is returning: no new background stages
 	progress *Progress
-	stages   sync.WaitGroup // stages StartStage runs
+	cancel   context.CancelCauseFunc // ends the running stage's context
+	stages   sync.WaitGroup          // stages StartStage runs
 	reboot   func(context.Context) error
 }
+
+var (
+	// ErrCancelled is the cause of a stage that Cancel stopped.
+	ErrCancelled       = errors.New("the update was cancelled")
+	errNothingToCancel = errors.New("no update is running")
+	errShellUpdate     = errors.New("the update running now was started with vos update from a shell; stop it there")
+	errTooLate         = errors.New("VaporOS is already installing the update; it takes a few seconds")
+)
 
 func NewService(cfg *config.Config) *Service {
 	if cfg == nil {
@@ -58,6 +67,7 @@ func (s *Service) Routes(srv *api.Server) {
 	srv.Handle(http.MethodGet, "/update", api.Authed, s.handleGet)
 	srv.Handle(http.MethodPost, "/update/check", api.Authed, s.handleCheck)
 	srv.Handle(http.MethodPost, "/update/stage", api.Authed, s.handleStage)
+	srv.Handle(http.MethodPost, "/update/cancel", api.Authed, s.handleCancel)
 	srv.Handle(http.MethodPost, "/update/activate", api.Authed, s.handleActivate)
 	srv.Handle(http.MethodPost, "/update/rollback", api.Authed, s.handleRollback)
 	srv.Handle(http.MethodPut, "/update/settings", api.Authed, s.handleSettings)
@@ -128,7 +138,7 @@ func (s *Service) autoStage(ctx context.Context) {
 	if res.Available == nil {
 		return
 	}
-	if err := s.stageNow(ctx, Options{}); err != nil && !IsBenign(err) && !errors.Is(err, ErrBusy) {
+	if err := s.stageNow(ctx, Options{}); err != nil && !IsBenign(err) && !errors.Is(err, ErrBusy) && !errors.Is(err, ErrCancelled) {
 		log.Printf("update: %v", err)
 	}
 }
@@ -215,30 +225,36 @@ func (s *Service) lifetime() context.Context {
 	return s.ctx
 }
 
+// claim marks a stage as running (s.mu held) and returns its context, which
+// Cancel ends.
+func (s *Service) claim(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancelCause(parent)
+	s.running, s.progress, s.cancel = true, &Progress{Phase: "check"}, cancel
+	return ctx
+}
+
 // reserve claims the one update slot this process runs at a time.
-func (s *Service) reserve() bool {
+func (s *Service) reserve(parent context.Context) (context.Context, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
-		return false
+		return nil, false
 	}
-	s.running = true
-	s.progress = &Progress{Phase: "check"}
-	return true
+	return s.claim(parent), true
 }
 
 // StartStage stages in the background; progress goes out as
 // update.progress events. It fails at once if an update is running.
 func (s *Service) StartStage(opts Options) error {
+	parent := s.lifetime()
 	s.mu.Lock()
 	if s.running || s.stopping {
 		s.mu.Unlock()
 		return ErrBusy
 	}
-	s.running, s.progress = true, &Progress{Phase: "check"}
+	ctx := s.claim(parent)
 	s.stages.Add(1) // under mu, so never after waitStages began to Wait
 	s.mu.Unlock()
-	ctx := s.lifetime()
 	go func() {
 		defer s.stages.Done()
 		s.doStage(ctx, opts)
@@ -247,17 +263,48 @@ func (s *Service) StartStage(opts Options) error {
 }
 
 func (s *Service) stageNow(ctx context.Context, opts Options) error {
-	if !s.reserve() {
+	ctx, ok := s.reserve(ctx)
+	if !ok {
 		return ErrBusy
 	}
 	return s.doStage(ctx, opts)
 }
 
+// Cancel stops the stage this process runs, unless it is already writing
+// the ESP. The outcome arrives as update.progress: "cancelled", or "done"
+// when the stage got past its last look at ctx first.
+func (s *Service) Cancel() error {
+	if err := s.cancelStage(); !errors.Is(err, errNothingToCancel) {
+		return err
+	}
+	if updateLocked() {
+		return errShellUpdate
+	}
+	return errNothingToCancel
+}
+
+func (s *Service) cancelStage() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case !s.running:
+		return errNothingToCancel
+	case s.progress.Phase == "install" || s.progress.Phase == "done":
+		return errTooLate
+	}
+	s.cancel(ErrCancelled)
+	return nil
+}
+
 func (s *Service) doStage(ctx context.Context, opts Options) error {
 	defer func() {
 		s.mu.Lock()
-		s.running, s.progress = false, nil
+		cancel := s.cancel
+		s.running, s.progress, s.cancel = false, nil, nil
 		s.mu.Unlock()
+		if cancel != nil {
+			cancel(nil)
+		}
 	}()
 	opts.Progress = func(p Progress) {
 		s.mu.Lock()
@@ -266,19 +313,29 @@ func (s *Service) doStage(ctx context.Context, opts Options) error {
 		events.Publish("update.progress", p)
 	}
 	res, err := Stage(ctx, s.config(), opts)
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	var p Progress
+	switch {
+	case errors.Is(context.Cause(ctx), ErrCancelled):
+		s.mu.Lock()
+		p = Progress{Phase: "cancelled", Percent: s.progress.Percent}
+		s.mu.Unlock()
+		log.Print("update: cancelled")
+		err = ErrCancelled
+	case IsBenign(err):
 		// A stage that finds nothing to do still ends: otherwise its "check"
 		// stays the replayed update.progress, and a new page shows it running.
-		p := Progress{Phase: "idle"}
-		if !IsBenign(err) {
-			p = Progress{Phase: "error", Error: err.Error()}
-			log.Printf("update: %v", err)
-		}
-		if res != nil {
-			p.Version = res.Manifest.Version
-		}
-		events.Publish("update.progress", p)
+		p = Progress{Phase: "idle"}
+	default:
+		p = Progress{Phase: "error", Error: err.Error()}
+		log.Printf("update: %v", err)
 	}
+	if res != nil {
+		p.Version = res.Manifest.Version
+	}
+	events.Publish("update.progress", p)
 	return err
 }
 
@@ -359,6 +416,14 @@ func (s *Service) handleStage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.StartStage(opts); err != nil {
+		api.Error(w, http.StatusConflict, "%v", err)
+		return
+	}
+	api.OK(w)
+}
+
+func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if err := s.Cancel(); err != nil {
 		api.Error(w, http.StatusConflict, "%v", err)
 		return
 	}

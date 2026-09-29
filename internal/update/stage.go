@@ -214,7 +214,7 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 	rep := &reporter{fn: progress}
 	rep.report("check", 0, 0)
 	defer func() {
-		if err != nil && !IsBenign(err) && !isNotNow(err) {
+		if err != nil && !IsBenign(err) && !isNotNow(err) && !errors.Is(context.Cause(ctx), ErrCancelled) {
 			msg := err.Error()
 			modifyState(func(st *State) error { st.LastError = msg; return nil })
 		}

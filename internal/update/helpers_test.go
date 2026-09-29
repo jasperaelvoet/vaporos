@@ -232,6 +232,9 @@ type fakeRegistry struct {
 	manifest, index []byte
 	rootDigest      string
 	failRoot        atomic.Bool // drop the next root download half way
+	// holdRoot, when set, stops each root download half way until the
+	// client gives up, and receives once the half is out.
+	holdRoot chan struct{}
 
 	tokenReqs, rootBlobReqs atomic.Int32
 	mu                      sync.Mutex
@@ -349,6 +352,18 @@ func (f *fakeRegistry) storage(w http.ResponseWriter, r *http.Request) {
 		f.rootRanges = append(f.rootRanges, r.Header.Get("Range"))
 		f.rootSigs = append(f.rootSigs, r.URL.Query().Get("sig"))
 		f.mu.Unlock()
+		if f.holdRoot != nil {
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusOK)
+			w.Write(data[:len(data)/2])
+			w.(http.Flusher).Flush()
+			select {
+			case f.holdRoot <- struct{}{}:
+			case <-r.Context().Done():
+			}
+			<-r.Context().Done()
+			panic(http.ErrAbortHandler)
+		}
 		if f.failRoot.CompareAndSwap(true, false) {
 			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 			w.WriteHeader(http.StatusOK)

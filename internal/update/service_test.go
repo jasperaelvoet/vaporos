@@ -111,7 +111,7 @@ func TestServiceStageErrors(t *testing.T) {
 		t.Fatalf("bad body: %d", code)
 	}
 	// One at a time.
-	if !s.reserve() {
+	if _, ok := s.reserve(context.Background()); !ok {
 		t.Fatal("reserve")
 	}
 	if code, _ := call(t, s.handleStage, "POST", `{}`); code != http.StatusConflict {
@@ -283,5 +283,104 @@ func TestRunAutoStages(t *testing.T) {
 	s.Run(ctx)
 	if st := e.state(); st.Staged != nil || st.Checked != "" {
 		t.Fatalf("auto=off staged or checked: %+v", st)
+	}
+}
+
+func TestServiceCancel(t *testing.T) {
+	e := setup(t)
+	img := e.makeImage(newVersion, 200, 256<<10, nil)
+	f := newFakeRegistry(t, img)
+	f.holdRoot = make(chan struct{})
+	s := NewService(e.cfg(f.spec()))
+
+	evs, unsubscribe := events.Default.Subscribe()
+	defer unsubscribe()
+	if code, out := call(t, s.handleStage, "POST", ""); code != 200 {
+		t.Fatalf("stage: %d %v", code, out)
+	}
+	select {
+	case <-f.holdRoot:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the root download never started")
+	}
+	if code, out := call(t, s.handleCancel, "POST", ""); code != 200 {
+		t.Fatalf("cancel: %d %v", code, out)
+	}
+	waitIdle(t, s)
+
+	var last Progress
+	for len(evs) > 0 {
+		ev := <-evs
+		if ev.Topic != "update.progress" {
+			continue
+		}
+		e.must(json.Unmarshal(ev.Data, &last))
+		if last.Phase == "error" {
+			t.Fatalf("error event: %+v", last)
+		}
+	}
+	if last.Phase != "cancelled" || last.Version != newVersion || last.Percent < 2 || last.Percent >= 80 {
+		t.Fatalf("last event %+v", last)
+	}
+	if p := lastProgress(t); p != last {
+		t.Fatalf("replayed %+v", p)
+	}
+	// Cancelled while writing: the idle slot is already unhooked, and
+	// nothing records a failure or holds the version back.
+	if b := e.entry("b"); b != nil {
+		t.Fatalf("slot b still boots %s", b.Name())
+	}
+	if st := e.state(); st.LastError != "" || st.Staged != nil || st.Held != nil || len(st.Failed) != 0 {
+		t.Fatalf("state %+v", st)
+	}
+	code, out := call(t, s.handleGet, "GET", "")
+	if code != 200 || out["busy"] != false || out["progress"] != nil || out["next_boot"] != nil {
+		t.Fatalf("get: %d %v", code, out)
+	}
+	if code, _ := call(t, s.handleCancel, "POST", ""); code != http.StatusConflict {
+		t.Fatalf("cancel with nothing running: %d", code)
+	}
+
+	s = NewService(e.cfg(e.srcDir(img)))
+	if err := s.stageNow(context.Background(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+}
+
+func TestCancelRefusals(t *testing.T) {
+	setup(t)
+	s := NewService(nil)
+	if err := s.Cancel(); !errors.Is(err, errNothingToCancel) {
+		t.Fatalf("nothing running: %v", err)
+	}
+	l, err := lockFile(updateLockPath(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Cancel(); !errors.Is(err, errShellUpdate) || !strings.Contains(err.Error(), "vos update") {
+		t.Fatalf("vos update from a shell: %v", err)
+	}
+	l.Unlock()
+
+	ctx, ok := s.reserve(context.Background())
+	if !ok {
+		t.Fatal("reserve")
+	}
+	for _, phase := range []string{"install", "done"} {
+		s.progress = &Progress{Phase: phase}
+		if code, out := call(t, s.handleCancel, "POST", ""); code != http.StatusConflict || !strings.Contains(out["error"].(string), "installing") {
+			t.Fatalf("%s: %d %v", phase, code, out)
+		}
+	}
+	if ctx.Err() != nil {
+		t.Fatal("cancelled past the point of no return")
+	}
+	s.progress = &Progress{Phase: "verify"}
+	if err := s.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(context.Cause(ctx), ErrCancelled) {
+		t.Fatalf("cause %v", context.Cause(ctx))
 	}
 }
