@@ -49,7 +49,7 @@ export const controlCenter = {
     { icon: 'phone', label: 'Pair', detail: 'Moonlight devices with a 4-digit PIN.', text: '**Pair** Moonlight devices with a 4-digit PIN.' },
     { icon: 'hdr', label: 'Display', detail: 'Modes and HDR, learned from each device.', text: '**Display** modes and HDR, learned from each device.' },
     { icon: 'drive', label: 'Storage', detail: 'For game drives you already have.', text: '**Storage** for game drives you already have.' },
-    { icon: 'update', label: 'Updates', detail: 'And one-tap rollback.', text: '**Updates** and one-tap rollback.' },
+    { icon: 'update', label: 'Updates', detail: 'And a rollback to the previous version.', text: '**Updates**, and a rollback to the previous version.' },
     { icon: 'power', label: 'Power', detail: 'Idle shutdown, stay awake and Wake-on-LAN.', text: '**Power**: idle shutdown, stay awake and Wake-on-LAN.' },
   ] satisfies { icon: IconName; label: string; detail: string; text: Rich }[],
   /** Caption under the device illustration (see mock.ts). */

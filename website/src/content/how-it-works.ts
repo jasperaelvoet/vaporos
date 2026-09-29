@@ -30,7 +30,7 @@ export const howItWorksSection: SectionHead = {
 
 export const howItWorks: HowItWorks = {
   diagramCaption:
-    'The VaporOS PC runs Steam in gamescope on a virtual display. Sunshine captures and encodes it and sends it over your home network to Moonlight on a TV, phone or laptop. A monitor on the PC, if there is one, shows only the welcome screen with the setup address.',
+    'The VaporOS PC runs Steam in gamescope on a virtual display. Sunshine captures and encodes it and sends it over your home network to Moonlight on a TV, phone or laptop. A monitor on the PC, if there is one, shows only the welcome screen with its address and a QR code.',
   pc: {
     icon: 'cpu',
     title: 'Your PC',
@@ -41,7 +41,7 @@ export const howItWorks: HowItWorks = {
       { icon: 'zap', title: 'Sunshine', detail: 'GPU encode' },
     ],
     monitorNote:
-      'After the install, a monitor is optional. If one is connected, it shows only the welcome screen: the address and a QR code.',
+      "A monitor is optional, even to install; it helps with the PC's firmware settings. If one is connected, it shows only the welcome screen: the address and a QR code.",
   },
   network: { icon: 'ethernet', label: 'Home network' },
   client: {

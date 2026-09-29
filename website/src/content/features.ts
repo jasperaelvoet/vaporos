@@ -50,8 +50,8 @@ export const features: Feature[] = [
     id: 'phone',
     icon: 'phone',
     title: 'Run it from your phone',
-    body: 'Install, pair, update and power off in your browser at `vapor.local`. The PC never shows a terminal.',
-    short: 'Install, pair, update and power off at `vapor.local`.',
+    body: 'Install from your phone at `vaporos-setup.local`, then pair, update and power off at `vapor.local`. The PC never shows a terminal.',
+    short: 'Install at `vaporos-setup.local`; pair, update and power off at `vapor.local`.',
   },
   {
     id: 'rollback',
@@ -71,26 +71,28 @@ export const features: Feature[] = [
     id: 'cachyos',
     icon: 'zap',
     title: 'Tuned by CachyOS',
-    body: 'The CachyOS kernel and x86-64-v3 packages, with its zram, scheduler and I/O tuning built in.',
+    body: "The CachyOS kernel and x86-64-v3 packages, with CachyOS's zram swap, I/O scheduler rules and process priorities built in.",
     short: 'The CachyOS kernel and x86-64-v3 packages.',
   },
   {
     id: 'libraries',
     icon: 'drive',
     title: 'Bring your Steam libraries',
-    body: 'Already have games on another drive? Pick it during setup, or later under Storage, and keep playing. Nothing on it is changed.',
-    short: 'Keep playing the games on your other drives. Nothing on them is changed.',
+    body: "Already have games on another drive? Pick it during setup, or later under Storage, and keep playing. VaporOS mounts it and adds it to Steam's library list; nothing on it is changed.",
+    short: 'Keep playing the games on your other drives: VaporOS adds them to Steam. Nothing on them is changed.',
     wide: true,
   },
   {
-    // STALE? Commit 0382231 (after the Astro copy was checked) made idle shutdown
-    // default to OFF; the installer turns it on when a wired NIC supports
-    // Wake-on-LAN (docs/CONTRACTS.md, power.idle_shutdown). Reword before launch.
+    // Idle power-off is off by default; a new install turns it on only when a
+    // wired network adapter wakes on a magic packet, and a repair keeps the old
+    // setting (internal/config/config.go Defaults, internal/install/target.go
+    // writeConfig). Busy means a stream, a game, a Steam download or an update
+    // (internal/power/power.go busyReason, internal/daemon/daemon.go).
     id: 'power',
     icon: 'moon',
     title: 'Off when idle, awake on demand',
-    body: 'VaporOS powers off when nobody plays, but never while streaming, downloading or updating. Moonlight wakes it over Wake-on-LAN.',
-    short: 'Powers off when nobody plays. Moonlight wakes it over Wake-on-LAN.',
+    body: "When a wired network adapter can wake the PC, VaporOS powers off after 15 minutes of nobody playing, and Moonlight wakes it again. It never powers off while you stream, play, download or update. On a PC that can't be woken that way, it stays on until you turn this on.",
+    short: 'Powers off when idle, if Moonlight can wake it again.',
     wide: true,
   },
 ];
