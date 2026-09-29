@@ -123,8 +123,8 @@ export type GuideBlock =
   | { type: 'callout'; callout: Callout }
   | { type: 'code'; blocks: Code[] }
   | { type: 'requirements'; items: Requirement[] }
-  /** The welcome screen illustration (mock.ts → welcomeScreen[mock]). */
-  | { type: 'figure'; mock: 'installer' | 'os'; caption: string }
+  /** The welcome screen on the PC, drawn from installerScreen (a real render replaces it once the site has stills). */
+  | { type: 'figure'; screen: 'installer'; caption: string }
   | { type: 'wizard'; steps: Item[] }
   | { type: 'stores'; stores: Store[] }
   | { type: 'done'; icon: IconName; title: string; text: Rich };
@@ -257,7 +257,7 @@ export const installGuide = {
           type: 'p',
           text: 'If the screen says **Waiting for the network**, plug in the network cable. No monitor? Open `http://vaporos-setup.local` on your phone.',
         },
-        { type: 'figure', mock: 'installer', caption: 'Illustration of the welcome screen while the installer runs.' },
+        { type: 'figure', screen: 'installer', caption: 'Illustration of the welcome screen while the installer runs.' },
       ],
     },
     {
