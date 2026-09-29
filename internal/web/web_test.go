@@ -510,22 +510,50 @@ func TestAcceptsGzip(t *testing.T) {
 	}
 }
 
-// The appliance is mostly used from a phone, often over Wi-Fi: keep the
-// whole UI small.
+// Static budgets. The appliance is mostly used from a phone, often over
+// Wi-Fi. Raising one is a design decision: change it in the same commit and
+// say why in its message. The new UI's own budgets arrive with its shell.
+const (
+	budgetLegacyRaw = 136_208 // static/legacy/**: 135,208 bytes when it was set aside, plus 1 kB; frozen
+	budgetSharedRaw = 45_000  // the files at the root of static/ (icons, manifest), which every set shares
+	budgetIconRaw   = 12_000  // each PNG icon at the root of static/
+	budgetTotalRaw  = 600_000 // every embedded static file of every set, until the legacy UI is deleted
+)
+
 func TestAssetBudget(t *testing.T) {
-	u := testUI(t, activeSet)
-	var total, wire int
-	for _, a := range u.assets.files {
-		total += len(a.body)
+	var legacy, shared, total int
+	walkStatic(t, func(name string, b []byte) {
+		total += len(b)
+		switch {
+		case legacySet.ownsStatic(name):
+			legacy += len(b)
+		case !strings.Contains(name, "/"):
+			shared += len(b)
+			if path.Ext(name) == ".png" && len(b) > budgetIconRaw {
+				t.Errorf("%s is %d bytes, budget is %d", name, len(b), budgetIconRaw)
+			}
+		}
+	})
+	var wire int
+	for _, a := range testUI(t, activeSet).assets.files {
 		if a.gz != nil {
 			wire += len(a.gz)
 		} else {
 			wire += len(a.body)
 		}
 	}
-	t.Logf("static assets: %d bytes (%d gzipped)", total, wire)
-	if total >= 150_000 {
-		t.Errorf("static assets are %d bytes, budget is 150 kB", total)
+	t.Logf("static: legacy %d, shared %d, total %d bytes; the active set serves %d bytes gzipped", legacy, shared, total, wire)
+	for _, b := range []struct {
+		what        string
+		size, limit int
+	}{
+		{"static/legacy", legacy, budgetLegacyRaw},
+		{"the shared root files", shared, budgetSharedRaw},
+		{"all static files", total, budgetTotalRaw},
+	} {
+		if b.size > b.limit {
+			t.Errorf("%s: %d bytes, budget is %d", b.what, b.size, b.limit)
+		}
 	}
 }
 
