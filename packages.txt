@@ -1,13 +1,19 @@
 # Everything that goes into the VaporOS image. One package per line.
-# The whole set is installed as prebuilt Arch packages; nothing is compiled.
+# The whole set is installed as prebuilt CachyOS/Arch packages (repo order in
+# build/pacman.conf); nothing is compiled.
 
 # The system
 base
-linux
+# The CachyOS kernel: BORE scheduler, sched-ext, CachyOS patchset
+linux-cachyos
 linux-firmware
 intel-ucode
 amd-ucode
 mkinitcpio
+
+# CachyOS tuning: sysctl/udev (I/O schedulers, THP, ...), zram swap via
+# zram-generator, and ananicy-cpp with the CachyOS process priority rules.
+cachyos-settings
 
 # Administration
 sudo

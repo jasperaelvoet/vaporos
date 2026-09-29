@@ -25,7 +25,7 @@ log:
 reset:
 	@./scripts/dev.sh reset
 
-# End-to-end test on a separate throwaway VM; the dev VM is left alone.
+# Reinstall the dev VM from scratch and check the result end to end.
 test:
 	@./scripts/dev.sh test
 
@@ -45,4 +45,4 @@ release:
 
 clean:
 	rm -rf out
-	docker volume rm -f vos-work wvos-work wvos-pkgcache >/dev/null
+	./scripts/build.sh clean

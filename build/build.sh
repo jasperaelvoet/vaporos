@@ -26,6 +26,13 @@ step() { printf '\n\e[1;34m==>\e[0m \e[1m%s\e[0m\n' "$*"; }
 t0=$SECONDS
 elapsed() { printf '    (%ss)\n' $((SECONDS - t0)); t0=$SECONDS; }
 
+# The image is made of x86-64-v3 packages, and pacstrap runs their install
+# scriptlets, so the build has to happen on a CPU that can run them.
+/usr/lib/ld-linux-x86-64.so.2 --help | grep -q 'x86-64-v3 (supported' || {
+    echo "error: this CPU cannot run x86-64-v3 code; build on the Proxmox builder (the default)" >&2
+    exit 1
+}
+
 mapfile -t PACKAGES < <(sed -e 's/#.*//' -e '/^\s*$/d' "$SRC/packages.txt")
 base_key=$(cat "$SRC/packages.txt" "$SRC/build/pacman.conf" | sha256sum | cut -c1-16)
 
@@ -36,7 +43,14 @@ if [[ $REFRESH == 1 || ! -f $WORK/base/.vos-key || $(<"$WORK/base/.vos-key") != 
     mkdir -p "$WORK/base"
     # -c: use the (volume-backed) host package cache; -G: keep the host keyring
     # out of the image; the image never runs pacman anyway.
-    pacstrap -c -G -C "$SRC/build/pacman.conf" "$WORK/base" "${PACKAGES[@]}" >/dev/null
+    # pacstrap exits 0 even when scriptlets or hooks fail; catch that here.
+    pacstrap -c -G -C "$SRC/build/pacman.conf" "$WORK/base" "${PACKAGES[@]}" >"$WORK/pacstrap.log" 2>&1 ||
+        { tail -n 30 "$WORK/pacstrap.log" >&2; exit 1; }
+    if grep -qE '^error: command failed|^Fatal glibc' "$WORK/pacstrap.log"; then
+        grep -B2 -E '^error: command failed|^Fatal glibc' "$WORK/pacstrap.log" >&2
+        echo "pacstrap: a package scriptlet or hook failed (full log: $WORK/pacstrap.log)" >&2
+        exit 1
+    fi
     echo "$base_key" >"$WORK/base/.vos-key"
     elapsed
 else
@@ -62,7 +76,10 @@ rm -f "$ROOT/.vos-key"
 
 systemctl --root="$ROOT" enable \
     systemd-networkd.service systemd-resolved.service \
-    systemd-timesyncd.service iwd.service >/dev/null 2>&1
+    systemd-timesyncd.service iwd.service \
+    fstrim.timer >/dev/null 2>&1
+# The CachyOS services (ananicy-cpp, systemd-oomd, the wireless regdomain
+# setter) are enabled by cachyos-settings' own install scriptlet, as on CachyOS.
 # Asks for locale/timezone/root password on first boot; the installer does that.
 systemctl --root="$ROOT" mask systemd-firstboot.service >/dev/null 2>&1
 ln -sf ../run/systemd/resolve/stub-resolv.conf "$ROOT/etc/resolv.conf"

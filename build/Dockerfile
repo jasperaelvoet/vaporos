@@ -8,6 +8,22 @@ FROM docker.io/library/archlinux:base
 # The container is already the sandbox.
 RUN sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
 
+# The image is built from CachyOS packages (see build/pacman.conf). pacstrap
+# verifies them against this container's keyring, resolves their mirrors from
+# this container's /etc/pacman.d and installs them with this container's
+# pacman, so set it up the way CachyOS's own cachyos-repo.sh does: trust the
+# signing key, then install the keyring, the mirrorlists and CachyOS's pacman.
+# The tools below stay stock Arch.
+RUN pacman-key --init \
+    && pacman-key --recv-keys F3B607488DB35A47 --keyserver hkps://keyserver.ubuntu.com \
+    && pacman-key --lsign-key F3B607488DB35A47 \
+    && printf '[cachyos]\nServer = https://mirror.cachyos.org/repo/$arch/$repo\n' >/tmp/cachyos.conf \
+    && cat /etc/pacman.conf /tmp/cachyos.conf >/tmp/pacman.conf \
+    && pacman -Sy --noconfirm --config /tmp/pacman.conf \
+        cachyos-keyring cachyos-mirrorlist cachyos-v3-mirrorlist \
+        cachyos-v4-mirrorlist cachyos/pacman \
+    && rm /tmp/cachyos.conf /tmp/pacman.conf
+
 RUN pacman -Syu --noconfirm --needed \
         arch-install-scripts \
         erofs-utils \

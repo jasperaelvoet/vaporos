@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# The VaporOS dev loop. Builds happen on this machine; the Proxmox host only
-# runs the VM and serves the built image to it.
+# The VaporOS dev loop. Builds run in a Docker LXC on the Proxmox host (see
+# scripts/build.sh), which also runs the VM and serves the built image to it.
 #
 #   build     build out/ if anything changed since the last build
 #   dev       build if anything changed, then bring the dev VM to that build:
@@ -10,7 +10,7 @@
 #   console   open the VM's display in a native Screen Sharing window
 #   log       follow the VM's serial console
 #   reset     wipe the dev VM and install it from scratch
-#   test      end-to-end check on a separate throwaway VM
+#   test      reinstall the dev VM from scratch and check the result
 #   status | down | destroy
 #   send TXT | expect REGEX [TIMEOUT]    drive the serial console by hand
 #
@@ -26,7 +26,6 @@ PVE_USER=${PVE_USER:-root}
 VMID=${VMID:-9000}
 VM_NAME=${VM_NAME:-vaporos-dev}
 VM_HOSTNAME=${VM_HOSTNAME:-vosdev}
-TEST_VMID=${TEST_VMID:-9001}
 ISO_STORAGE=${ISO_STORAGE:-local}
 ISO_DIR=${ISO_DIR:-/var/lib/vz/template/iso}
 DISK_STORAGE=${DISK_STORAGE:-local-lvm}
@@ -105,7 +104,7 @@ build_if_needed() {
         ok "Build $(build_version) is current"
         return
     fi
-    preflight_docker
+    [[ ${BUILDER:-pve} != local ]] || preflight_docker
     say "Building"
     rm -f out/.inputs
     ./scripts/build.sh
@@ -119,9 +118,16 @@ local_iso() {
     printf '%s' "$iso"
 }
 
-# rsync with a delta against what is already there: consecutive builds share
-# most of their bytes, so this usually sends a fraction of the file.
-push() { rsync -t --inplace --partial "$1" "$PVE_USER@$PVE_HOST:$2"; }
+# Put a file from out/ on the Proxmox host. A build made by the builder is
+# already there, so copy it locally. Otherwise rsync with a delta against what
+# is already there: consecutive builds share most of their bytes.
+push() {
+    if [[ -f out/.built-on ]]; then
+        pve "cp $(<out/.built-on)/$(basename "$1") $2"
+    else
+        rsync -t --inplace --partial "$1" "$PVE_USER@$PVE_HOST:$2"
+    fi
+}
 
 upload_iso() {
     local iso
@@ -229,7 +235,7 @@ vm_install() {
 
     say "Creating VM $VMID ($VM_NAME)"
     # UEFI only (VaporOS boots through systemd-boot). Secure Boot keys are
-    # not pre-enrolled because the Arch kernel is unsigned.
+    # not pre-enrolled because the kernel is unsigned.
     pve "qm create $VMID \
             --name $VM_NAME \
             --machine q35 --bios ovmf \
@@ -366,7 +372,7 @@ cmd_test() {
     local user=$DEV_USER pass=$DEV_PASS
     preflight_pve
     build_if_needed
-    use_vm "$TEST_VMID" vaporos-test vaportest
+    # Only ever one VM: the test reinstalls the dev VM and leaves it running.
     vm_install
     ok "live ISO booted and installed"
 
@@ -391,10 +397,15 @@ cmd_test() {
     expect_ 'slot a:.*running' 30 || fail "vos status did not report slot a running"
     ok "vos status reports slot a"
 
-    say "Removing test VM $VMID"
-    vm_destroy
+    send_ "echo CHECK-KERNEL=\$(uname -r)"
+    expect_ 'CHECK-KERNEL=[^ ]*cachyos' 30 || fail "not running the CachyOS kernel"
+    ok "running the CachyOS kernel"
+    send_ "echo CHECK-CACHY=\$(systemctl is-active ananicy-cpp systemd-oomd | tr '\n' ,)\$(swapon --noheadings --show=NAME)"
+    expect_ 'CHECK-CACHY=active,active,/dev/zram0' 30 || fail "ananicy-cpp, systemd-oomd or zram swap is not running"
+    ok "ananicy-cpp, systemd-oomd and zram swap are running"
+
     echo
-    ok "End-to-end test passed."
+    ok "End-to-end test passed. VM $VMID runs VaporOS $(vm_version)"
 }
 
 cmd_status() {
