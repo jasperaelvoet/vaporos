@@ -1,2 +1,69 @@
-/* View transitions, keyframes and reduced motion (ARCH §7.2); the mechanics
-   only, the direction's values come from tokens.css. Filled by the shell (C0b). */
+/* Motion mechanics (ARCH §7.2): cross-document view transitions, the
+   keyframes the components use, and reduced motion. The durations and
+   curves come from tokens.css (REDLINE: things heat fast and cool slowly).
+   Only the tabs cross-fade; a state change is never wrapped in a view
+   transition, so words never double-expose. */
+@view-transition { navigation: auto; }
+
+@layer components {
+  /* Chrome that stays put between pages. */
+  .appbar { view-transition-name: appbar; }
+  .rail { view-transition-name: rail; }
+  .strip { view-transition-name: strip; }
+  .main { view-transition-name: main; }
+  .tab[aria-current] .tab-mark { view-transition-name: tab-indicator; }
+  /* A System row grows into its sub-page's heading. */
+  [data-vt="updates"] { view-transition-name: sys-updates; }
+  [data-vt="power"] { view-transition-name: sys-power; }
+  [data-vt="storage"] { view-transition-name: sys-storage; }
+  [data-vt="settings"] { view-transition-name: sys-settings; }
+  [data-vt="logs"] { view-transition-name: sys-logs; }
+  [data-vt="about"] { view-transition-name: sys-about; }
+
+  /* ⟦cc-vt-motion⟧ REDLINE: a short cross-fade of main, a slight slide by
+     direction (forward goes deeper, back comes out). */
+  ::view-transition-old(main) { animation: var(--vt-main-out, vos-fade-out var(--vos-dur-fast) var(--ease-standard) both); }
+  ::view-transition-new(main) { animation: var(--vt-main-in, vos-fade-in var(--vos-dur-base) var(--ease-standard) both); }
+  html:active-view-transition-type(forward) {
+    --vt-main-out: vos-out-left var(--vos-dur-fast) var(--ease-standard) both;
+    --vt-main-in: vos-in-right var(--vos-dur-base) var(--ease-standard) both;
+  }
+  html:active-view-transition-type(back) {
+    --vt-main-out: vos-out-right var(--vos-dur-fast) var(--ease-standard) both;
+    --vt-main-in: vos-in-left var(--vos-dur-base) var(--ease-standard) both;
+  }
+  ::view-transition-group(tab-indicator) { animation-duration: var(--vos-dur-base); animation-timing-function: var(--ease-standard); }
+}
+
+@keyframes vos-fade-in { from { opacity: 0; } }
+@keyframes vos-fade-out { to { opacity: 0; } }
+@keyframes vos-in-right { from { opacity: 0; translate: 1.5rem 0; } }
+@keyframes vos-in-left { from { opacity: 0; translate: -1.5rem 0; } }
+@keyframes vos-out-left { to { opacity: 0; translate: -0.75rem 0; } }
+@keyframes vos-out-right { to { opacity: 0; translate: 0.75rem 0; } }
+@keyframes vos-pulse { from { opacity: 1; } to { opacity: 0.35; } }
+@keyframes vos-pip { 0% { opacity: 0.9; scale: 0.6; } 100% { opacity: 0; scale: 1.5; } }
+@keyframes vos-skel { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@keyframes vos-shake { 20%, 60% { translate: -0.4375rem 0; } 40%, 80% { translate: 0.4375rem 0; } }
+@keyframes vos-fired {
+  0%, 40% { background: var(--color-accent); color: var(--color-accent-ink); }
+  100% { background: var(--color-surface); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) { animation-duration: 0s; }
+  ::view-transition-old(*), ::view-transition-new(*) { animation: vos-fade-out var(--vos-dur-fast) both; }
+  ::view-transition-new(*) { animation-name: vos-fade-in; }
+  @layer components {
+    .skel, .strip-tally::after, .pinpad-pip, .link-state[data-link="connecting"] .link-dot { animation: none; }
+    .src { transition: none; }
+    .dialog, .sheet { transition-duration: var(--vos-dur-instant); }
+    .notice { transition-duration: var(--vos-dur-instant); }
+    /* The hold's fill is the confirmation, not decoration: it still shows,
+       in steps. */
+    .hold[data-hold-state="holding"], .hold[data-hold-state="holding"] .hold-fill { transition-timing-function: steps(4, end); }
+    .hold[data-hold-state="fired"] { animation-duration: var(--vos-dur-fast); }
+    .pin-box[data-shake] { animation: none; }
+    .screen-shape-frame { transition: none; }
+  }
+}

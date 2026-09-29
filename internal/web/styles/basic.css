@@ -1,3 +1,16 @@
 /* Basic mode for browsers without color-mix() (Safari 15.4-16.3): unlayered,
-   so it wins over every layered rule that still applies (ARCH §2.11).
-   Filled by the shell (C0b); at most 1.5 kB. */
+   so it wins over every layered rule that still applies (ARCH §2.11). One
+   plain, readable look; at most 1.5 kB. */
+@supports not (color: color-mix(in lab, red, red)) {
+  body { background: #0b0a0c; color: #f3eee7; font: 15px/1.45 -apple-system, system-ui, sans-serif; }
+  .btn, .key, .key-tile, .copy, .notice-action { border: 1px solid #8a808e; }
+  .btn.primary { background: #fcffa4; color: #0b0a0c; }
+  .input { border: 1px solid #8a808e; }
+  :focus-visible { outline: 2px solid #fcffa4; outline-offset: 2px; }
+  .strip, .restart-row, .offline, .rows, .skel-card { border: 1px solid #2e2730; }
+  .field-heat { filter: none; }
+  .main::before {
+    content: "This browser is too old for the full VaporOS look. Everything still works.";
+    display: block; margin: 0 0 12px; padding: 8px 12px; border: 1px solid #8a808e; font-size: 13px;
+  }
+}

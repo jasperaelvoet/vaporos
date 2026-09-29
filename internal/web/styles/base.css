@@ -1,4 +1,38 @@
-/* Element defaults, the focus ring and the typography roles, in Tailwind's
-   base layer. Filled by the shell (C0b). */
+/* Element defaults, the focus ring and the type roles, in Tailwind's base
+   layer (after its preflight). REDLINE: an ash page, bone text; the display
+   face comes in three static cuts, and width is temperature (the cut of the
+   current state is --state-cut-w / --state-cut-g, from tokens.css). */
 @layer base {
+  html {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scrollbar-color: var(--color-line) transparent;
+  }
+  body {
+    min-height: 100dvh;
+    background: var(--color-canvas);
+    font: 400 var(--text-base) / 1.45 var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  b, strong { font-weight: 600; }
+  a { color: inherit; }
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 3px;
+  }
+  :focus:not(:focus-visible) { outline: none; }
+  [tabindex="-1"]:focus { outline: none; }
+  h1, h2, h3 { text-wrap: balance; }
+  p { text-wrap: pretty; }
+  code, kbd, samp, .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  ::selection { background: var(--color-h3); color: var(--color-ink); }
+  /* A dialog in the top layer holds the page still behind it. */
+  html:has(dialog[open]) { overflow: hidden; }
 }
