@@ -1,0 +1,75 @@
+{{- /*
+  The frame of every signed-in page (spec-cc-screens §1.3): the app bar, the
+  tabs (a bottom bar on phones, a rail from the rail breakpoint up), the
+  now-streaming strip, the offline banner, the restart row and the fatal
+  panel. Scripts address these by the ids here (ui/shell.js); state is in
+  data-* attributes, the look in styles/components.css.
+*/ -}}
+
+{{define "appbar"}}
+<header class="appbar">
+  <a class="appbar-host" href="{{.Base}}/">{{template "logo"}}<span class="appbar-name mono" id="host-name">{{.Hostname}}.local</span><span class="sr-only">, Home</span></a>
+  <button class="link-state" id="link" type="button" data-link="connecting" aria-haspopup="dialog" aria-controls="recent">
+    <span class="link-dot" aria-hidden="true"></span><span class="link-text" id="link-text" aria-hidden="true">Connecting…</span><span class="sr-only" id="link-name">Connecting: live updates. Show recent notices.</span>
+  </button>
+</header>
+{{end}}
+
+{{define "nav"}}
+<div class="rail">
+  <a class="rail-brand" href="{{.Base}}/">{{template "logo"}}{{template "wordmark"}}<span class="sr-only">VaporOS, Home</span></a>
+  <nav class="tabs" id="nav" aria-label="Main">
+    <ul class="tab-list" role="list">
+      {{- range .Tabs}}
+      <li><a class="tab" href="{{$.Base}}{{.Path}}" data-tab="{{.Name}}"{{if eq .Name $.Tab}} aria-current="{{if $.Page.Nav}}page{{else}}true{{end}}"{{end}}>{{icon .Icon}}<span class="tab-label">{{.NavLabel}}</span><span class="tab-mark" aria-hidden="true"></span><span class="tab-badge" data-part="badge" aria-hidden="true" hidden></span><span class="sr-only" data-part="badge-text"></span></a></li>
+      {{- end}}
+    </ul>
+  </nav>
+  <div class="rail-foot">
+    <span class="rail-host mono" id="rail-host">{{.Hostname}}.local</span>
+    <span class="rail-version">VaporOS <span class="mono">{{.Version}}</span></span>
+    <button class="rail-signout" id="signout" type="button">{{icon "logout"}}<span>Sign out</span></button>
+  </div>
+</div>
+{{end}}
+
+{{define "strip"}}
+<aside class="strip" id="strip" aria-label="Now streaming" hidden>
+  <button class="strip-open" id="strip-open" type="button" aria-haspopup="dialog" aria-controls="stream-sheet">
+    <span class="strip-tally" aria-hidden="true"></span>
+    <span class="strip-what" aria-hidden="true"><b class="strip-client" id="strip-client">Streaming</b><span class="strip-mode mono" id="strip-mode"></span></span>
+    <span class="strip-since mono" id="strip-since" aria-hidden="true"></span>
+    <span class="strip-more" aria-hidden="true">{{icon "chevron"}}</span>
+    <span class="sr-only" id="strip-name">Now streaming. Show details.</span>
+  </button>
+</aside>
+{{end}}
+
+{{define "offline"}}
+<div class="offline" id="offline" role="status" hidden>
+  <span class="offline-dot" aria-hidden="true"></span><p class="offline-text" id="offline-text"></p>
+  <button class="btn small ghost" id="offline-wake" type="button" aria-haspopup="dialog" aria-controls="scene" hidden>How to wake it</button>
+</div>
+{{end}}
+
+{{define "restart-row"}}
+<div class="restart-row" id="restart-row" role="region" aria-labelledby="restart-text" hidden>
+  {{icon "restart"}}<p class="restart-text" id="restart-text" data-part="text"></p>
+  <button class="btn small" id="restart-go" type="button" data-part="go">Restart</button>
+</div>
+{{end}}
+
+{{define "fatal"}}
+<section class="fatal" id="fatal" role="alert" aria-labelledby="fatal-title" hidden>
+  <h2 class="fatal-title" id="fatal-title" tabindex="-1">Can't reach VaporOS</h2>
+  <p class="fatal-text" id="fatal-text">Check that the PC is on and that this device is on the same network. If it's asleep, wake it from Moonlight.</p>
+  <p class="fatal-last mono" id="fatal-last" hidden></p>
+  <div class="fatal-wake" id="fatal-wake" hidden>{{template "wake" "fatal"}}</div>
+  <button class="btn primary" id="fatal-retry" type="button">{{icon "refresh"}}Try again</button>
+</section>
+{{end}}
+
+{{define "announcers"}}
+<div class="sr-only" id="announce-polite" aria-live="polite" aria-atomic="true"></div>
+<div class="sr-only" id="announce-assertive" aria-live="assertive" aria-atomic="true"></div>
+{{end}}

@@ -1,0 +1,21 @@
+{{- /*
+  The Wake card (DECISIONS NEW-1): how to start VaporOS again when it is off.
+  Moonlight wakes it on its own; for any other Wake-on-LAN app or a router,
+  the wired adapter's MAC and the subnet's broadcast address, with Copy
+  buttons that work on the box's plain-http origin (ui/clipboard.js).
+  ui/wake.js fills it from GET /power wol[] or the last-known snapshot.
+  Used by the reconnection scene, the fatal panel and System › Power, so
+  it takes an id prefix: {{template "wake" "power"}}.
+*/ -}}
+{{define "wake"}}
+<section class="wake" data-part="wake" aria-labelledby="{{.}}-wake-title">
+  <h3 class="wake-title" id="{{.}}-wake-title">Wake it</h3>
+  <p class="wake-moonlight" data-part="moonlight">Moonlight wakes it: open Moonlight and pick this PC.</p>
+  <dl class="wake-facts" data-part="facts" hidden>
+    <div class="wake-row"><dt>MAC address</dt><dd><code class="wake-value" id="{{.}}-wake-mac" data-part="mac"></code><button class="copy" type="button" data-copy-target="{{.}}-wake-mac">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only"> the MAC address</span></button></dd></div>
+    <div class="wake-row" data-part="bcast-row"><dt>Broadcast address</dt><dd><code class="wake-value" id="{{.}}-wake-bcast" data-part="bcast"></code><button class="copy" type="button" data-copy-target="{{.}}-wake-bcast">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only"> the broadcast address</span></button></dd></div>
+  </dl>
+  <p class="wake-note" data-part="save" hidden>Save these now, while VaporOS is on: a Wake-on-LAN app or your router can wake it with them.</p>
+  <p class="wake-note" data-part="nowol" hidden>Wake-on-LAN is off, so only its power button starts it again.</p>
+</section>
+{{end}}

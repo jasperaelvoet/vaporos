@@ -11,7 +11,10 @@ package web
 
 import (
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -19,9 +22,12 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/brand"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
@@ -30,15 +36,35 @@ var content embed.FS
 
 // page is one server-rendered route.
 type page struct {
-	Name   string // template file under templates/pages and <html data-page>
-	Path   string // URL path
-	Title  string // <title> and <h1>
-	Label  string // navigation label, when shorter than Title
-	Lead   string // one-line explanation under the heading
-	Script string // static/js/pages/<Script>.js
-	Icon   string // icon name (icons.go)
-	Nav    bool   // listed in the main navigation
-	Bare   bool   // centred card without navigation (sign-in, setup)
+	Name     string // template file under templates/pages and <html data-page>
+	Path     string // URL path
+	Title    string // <title> and <h1>
+	Heading  string // the <h1> when it differs from Title (next set)
+	Label    string // navigation label, when shorter than Title
+	Lead     string // one-line explanation under the heading
+	Script   string // static/js/pages/<Script>.js
+	Icon     string // icon name (icons.go)
+	Nav      bool   // listed in the main navigation: a tab root
+	Tab      string // a sub-page's tab root, by Name (next set)
+	Bare     bool   // centred card without navigation (sign-in, setup)
+	HideHead bool   // the <h1> is visually hidden (Home: the hero speaks first)
+}
+
+// DocTitle is the next set's <title>: "Updates · VaporOS", or the title
+// alone when it already names VaporOS ("Install VaporOS").
+func (p page) DocTitle() string {
+	if strings.Contains(p.Title, "VaporOS") {
+		return p.Title
+	}
+	return p.Title + " · VaporOS"
+}
+
+// H1 is the page's main heading.
+func (p page) H1() string {
+	if p.Heading != "" {
+		return p.Heading
+	}
+	return p.Title
 }
 
 // NavLabel is what the navigation shows for the page.
@@ -63,13 +89,20 @@ func (p page) pattern() string {
 // paths. Only activeSet is read, parsed and served, so a half-built set can
 // never stop vosd (and with it the API) from starting.
 type uiSet struct {
-	Name      string // "legacy" or "next"
-	Templates string // directory with layout.html and pages/<page>.html
-	Static    string // directory under static/ with the set's app.css and js/ ("" is static/ itself)
-	Pages     []page // every route, in navigation order
-	Installer page   // replaces the setup page on the live ISO
-	Partials  string // glob of extra {{define}} files parsed with the layout; may match nothing
+	Name      string   // "legacy" or "next"
+	Templates string   // directory with layout.html and pages/<page>.html
+	Static    string   // directory under static/ with the set's app.css and js/ ("" is static/ itself)
+	Pages     []page   // every route, in navigation order (the order is <html data-order>)
+	Installer page     // replaces the setup page on the live ISO
+	Partials  string   // glob of extra {{define}} files parsed with the layout; may match nothing
+	OldURLs   []oldURL // earlier paths that answer 303 to their page now
+	Compress  bool     // pages are gzipped and carry an ETag
+	Current   bool     // pageData.Version is the image version, and pages get Preloads and Fonts
 }
+
+// oldURL is a path an earlier UI served. Bookmarks, home-screen icons, the
+// README and the welcome screen (/pair) still point at them.
+type oldURL struct{ From, To string }
 
 // legacySet is the eight-page UI. CONTRACTS.md "Pages".
 var legacySet = uiSet{
@@ -81,13 +114,63 @@ var legacySet = uiSet{
 	Partials:  "templates/legacy/partials/*.html",
 }
 
-// nextSet is the new UI. It stays empty and unreachable until the switch
-// commit makes it the active set.
+// nextSet is the four-tab UI (MASTER-PLAN §2.2). It is unreachable in
+// production until the switch commit makes it the active set.
 var nextSet = uiSet{
 	Name:      "next",
 	Templates: "templates",
 	Static:    "",
+	Pages:     nextPages,
+	Installer: nextInstaller,
 	Partials:  "templates/partials/*.html",
+	OldURLs:   oldURLs,
+	Compress:  true,
+	Current:   true,
+}
+
+// nextPages is every route of the four-tab UI, in order: Home is 0, the
+// tabs 1-3 and the System sub-pages 4-9, so moving to a lower number is
+// going back (head.js). Wave agents fill the pages; this list is the one
+// place routes are added (spec-cc-screens §1.1).
+var nextPages = []page{
+	{Name: "home", Path: "/", Title: "Home", Script: "home", Icon: "vapor", Nav: true, HideHead: true},
+	{Name: "devices", Path: "/devices", Title: "Devices", Script: "devices", Icon: "devices", Nav: true,
+		Lead: "Phones, tablets, TVs and computers that play from this PC."},
+	{Name: "screen", Path: "/screen", Title: "Screen", Script: "screen", Icon: "screen", Nav: true,
+		Lead: "The invisible screen Moonlight streams, and how it's sent."},
+	{Name: "system", Path: "/system", Title: "System", Script: "system", Icon: "system", Nav: true},
+	{Name: "updates", Path: "/system/updates", Title: "Updates", Script: "updates", Icon: "update", Tab: "system",
+		Lead: "New versions install next to the running one and switch over on restart."},
+	{Name: "power", Path: "/system/power", Title: "Power", Script: "power", Icon: "power", Tab: "system",
+		Lead: "Sleep when nobody plays, wake from Moonlight."},
+	{Name: "storage", Path: "/system/storage", Title: "Storage", Script: "storage", Icon: "drive", Tab: "system",
+		Lead: "Drives in this PC, and the game libraries VaporOS mounts for Steam."},
+	{Name: "settings", Path: "/system/settings", Title: "Settings", Script: "settings", Icon: "sliders", Tab: "system",
+		Lead: "Name, password and remote access."},
+	{Name: "logs", Path: "/system/logs", Title: "Logs", Script: "logs", Icon: "file", Tab: "system",
+		Lead: "What the stream server has been doing."},
+	{Name: "about", Path: "/system/about", Title: "About", Script: "about", Icon: "info", Tab: "system"},
+	{Name: "login", Path: "/login", Title: "Sign in", Script: "login", Bare: true},
+	{Name: "setup", Path: "/setup", Title: "Set up VaporOS", Heading: "Welcome to VaporOS", Script: "setup", Bare: true},
+}
+
+// nextInstaller replaces the setup page on the live ISO.
+var nextInstaller = page{Name: "setup", Path: "/setup", Title: "Install VaporOS", Script: "install", Bare: true}
+
+// oldURLs are the eight-page UI's paths (spec-cc-screens §1.2). The
+// welcome screen prints /pair (internal/display/status.go), and README.md
+// names Pair and Updates. They answer 303 with the query kept, never a
+// permanent redirect, which browsers would keep forever. /advanced#logs
+// keeps its fragment across the redirect; settings.js sends it on to
+// /system/logs.
+var oldURLs = []oldURL{
+	{"/pair", "/devices#pair"},
+	{"/streaming", "/screen#stream"},
+	{"/display", "/screen"},
+	{"/storage", "/system/storage"},
+	{"/updates", "/system/updates"},
+	{"/power", "/system/power"},
+	{"/advanced", "/system/settings"},
 }
 
 // activeSet is the UI vosd serves. There is deliberately no runtime knob.
@@ -151,22 +234,35 @@ var legacyInstaller = page{Name: "setup", Path: "/setup", Title: "Install VaporO
 // pageData is what every template sees.
 type pageData struct {
 	Page      page
-	Nav       []page
+	Nav       []page // the tab roots, in order (the legacy layout's name)
+	Tabs      []page // the same list, as the next layout calls it
+	Tab       string // the highlighted tab's Name; "" on bare pages
+	Order     int    // the page's index in the registry (<html data-order>)
 	Static    string // versioned prefix of the set's own files, "/static/<hash>/legacy"
-	Shared    string // versioned prefix of the files every UI shares (icons, manifest), "/static/<hash>"
+	Shared    string // versioned prefix of the files every UI shares (icons, manifest, fonts), "/static/<hash>"
+	Base      string // prefix of every link: "" on the box, the demo's path on the website
+	Preloads  []string
+	Fonts     []string // fonts to preload, relative to Shared
+	Theme     struct{ Dark, Light string }
+	Hostname  string // this machine's name, without .local
 	Version   string
 	Installer bool
 	NeedCode  bool   // a setup code guards /setup's API calls
 	Code      string // setup code from ?code=, to prefill the field
 	Timezones []tzGroup
+	Demo      bool // rendered for the website's live demo (TestExportDemo)
 }
 
 type ui struct {
-	srv    *api.Server
-	set    uiSet
-	assets *assetStore
-	tmpl   map[string]*template.Template
-	nav    []page
+	srv      *api.Server
+	set      uiSet
+	assets   *assetStore
+	tmpl     map[string]*template.Template
+	nav      []page
+	preloads map[string][]string // page script → its static import graph, under the set's static dir
+	lazy     map[string][]string // page script → modules it imports with import()
+	fonts    []string
+	base     string // see pageData.Base
 }
 
 // uiHolder hands the handlers the current UI. Production stores one and
@@ -195,6 +291,11 @@ func register(srv *api.Server, set uiSet, fsys fs.FS) *uiHolder {
 	for _, p := range set.Pages {
 		srv.HandleRaw(p.pattern(), api.Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h.load().servePage(w, r, p)
+		}))
+	}
+	for _, o := range set.OldURLs {
+		srv.HandleRaw("GET "+o.From, api.Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h.load().serveOldURL(w, r, o)
 		}))
 	}
 	srv.HandleRaw("GET /static/", api.Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,9 +328,19 @@ func newUI(srv *api.Server, set uiSet, fsys fs.FS) (*ui, error) {
 			u.nav = append(u.nav, p)
 		}
 	}
+	sprite := spriteHTML()
+	if set.Current {
+		icons, err := iconsUsed(fsys, set, assets)
+		if err != nil {
+			return nil, err
+		}
+		sprite = spriteHTML(icons...)
+	}
 	base, err := template.New("").Funcs(template.FuncMap{
-		"icon":   iconHTML,
-		"sprite": spriteHTML,
+		"icon":      iconHTML,
+		"sprite":    func() template.HTML { return sprite },
+		"filters":   filtersHTML,
+		"handshake": handshakeHTML,
 	}).ParseFS(fsys, path.Join(set.Templates, "layout.html"))
 	if err != nil {
 		return nil, err
@@ -262,25 +373,120 @@ func newUI(srv *api.Server, set uiSet, fsys fs.FS) (*ui, error) {
 			return nil, fmt.Errorf("page %s: missing script static/%s", p.Name, script)
 		}
 	}
+	if set.Current {
+		u.preloads, u.lazy = map[string][]string{}, map[string][]string{}
+		for _, p := range append([]page{set.Installer}, set.Pages...) {
+			entry := path.Join(set.Static, "js/pages", p.Script+".js")
+			static, lazy, err := importGraph(assets.files, entry)
+			if err != nil {
+				return nil, fmt.Errorf("page %s: %v", p.Name, err)
+			}
+			var pre []string
+			for _, m := range static {
+				if m != entry {
+					pre = append(pre, strings.TrimPrefix(strings.TrimPrefix(m, set.Static), "/"))
+				}
+			}
+			u.preloads[p.Script], u.lazy[p.Script] = pre, lazy
+		}
+		u.fonts = preloadFonts(assets, set)
+	}
 	return u, nil
+}
+
+// fontPreloads are the faces design/fonts/fonts.json marks "preload": the
+// state words' warm cut and the body text. TestFonts holds this list to
+// fonts.json. A page preloads one only once the set's stylesheet uses it,
+// so a preload is never wasted.
+var fontPreloads = []string{"fonts/anybody-warm.woff2", "fonts/monasans-regular.woff2"}
+
+func preloadFonts(assets *assetStore, set uiSet) []string {
+	css := assets.files[path.Join(set.Static, "app.css")]
+	var out []string
+	for _, f := range fontPreloads {
+		if css != nil && assets.files[f] != nil && bytes.Contains(css.body, []byte(f)) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// filtersHTML inlines REDLINE's heat and cold filters (generated by
+// internal/brand from the one heat ramp) and the grey heat gradient the
+// signature art fills its sources with. It is 0×0 rather than
+// display:none, which would disable the filters in some engines.
+func filtersHTML() template.HTML {
+	return template.HTML(`<svg class="defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>` +
+		`<radialGradient id="g-heat"><stop offset="0" stop-color="#fff"/><stop offset=".18" stop-color="#e8e8e8"/>` +
+		`<stop offset=".38" stop-color="#a6a6a6"/><stop offset=".58" stop-color="#5c5c5c"/><stop offset=".78" stop-color="#262626"/>` +
+		`<stop offset="1" stop-color="#000"/></radialGradient>` + brand.FilterSVG + `</defs></svg>`)
+}
+
+// handshakeHTML is {{handshake .Hostname}}: the 5×5 mark the TV draws next
+// to the setup code, so the phone and the screen can be matched at a
+// glance (MASTER-PLAN §4.4). It depends on the hostname only.
+func handshakeHTML(host string) template.HTML {
+	hs := brand.HandshakeFor(host)
+	hex := func(c interface{ RGBA() (r, g, b, a uint32) }) string {
+		r, g, b, _ := c.RGBA()
+		return fmt.Sprintf("#%02x%02x%02x", r>>8, g>>8, b>>8)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `<svg class="handshake" viewBox="0 0 5 5" width="40" height="40" aria-hidden="true" focusable="false"><rect width="5" height="5" fill="%s"/><path fill="%s" d="`, hex(hs.Ground), hex(hs.On))
+	for r := range 5 {
+		for c := range 5 {
+			if hs.Cells[r][c] {
+				fmt.Fprintf(&b, "M%d %dh1v1h-1z", c, r)
+			}
+		}
+	}
+	b.WriteString(`"/></svg>`)
+	return template.HTML(b.String())
 }
 
 // static is the versioned URL prefix of the set's own files.
 func (u *ui) static() string { return path.Join(u.assets.prefix(), u.set.Static) }
 
+// cleanQuery is the request's query with a setup code from another site
+// dropped. Another site can put ?code= in a URL (an <img>, or a popup it
+// keeps re-navigating); honouring it would let that site lock this browser
+// out of setup with wrong codes, so it is dropped before the cookie, the
+// form or the page script can use it. Someone who followed such a link
+// types the code.
+func cleanQuery(r *http.Request) (rawQuery string, foreign bool) {
+	rawQuery = r.URL.RawQuery
+	if q := r.URL.Query(); q.Has("code") && !api.FirstPartyNavigation(r) {
+		q.Del("code")
+		rawQuery, foreign = q.Encode(), true
+	}
+	return rawQuery, foreign
+}
+
+// serveOldURL answers an earlier UI's path with 303 to its page now, the
+// query kept and a fragment added (/pair → /devices#pair). On the ISO every
+// path goes to /setup, as every page does.
+func (u *ui) serveOldURL(w http.ResponseWriter, r *http.Request, o oldURL) {
+	rawQuery, _ := cleanQuery(r)
+	to, frag, _ := strings.Cut(o.To, "#")
+	if u.srv.Options().Installer {
+		to, frag = "/setup", ""
+	}
+	loc := u.base + to
+	if rawQuery != "" {
+		loc += "?" + rawQuery
+	}
+	if frag != "" {
+		loc += "#" + frag
+	}
+	h := w.Header()
+	h.Set("Location", loc)
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusSeeOther)
+}
+
 func (u *ui) servePage(w http.ResponseWriter, r *http.Request, p page) {
 	installer := u.srv.Options().Installer
-	rawQuery := r.URL.RawQuery
-	foreignCode := false
-	if q := r.URL.Query(); q.Has("code") && !api.FirstPartyNavigation(r) {
-		// Another site put a setup code in this URL (an <img>, or a
-		// popup it keeps re-navigating). Honouring it would let that
-		// site lock this browser out of setup with wrong codes, so it
-		// is dropped before the cookie, the form or the page script
-		// can use it. Someone who followed such a link types the code.
-		q.Del("code")
-		rawQuery, foreignCode = q.Encode(), true
-	}
+	rawQuery, foreignCode := cleanQuery(r)
 	withQuery := func(path string) string {
 		if rawQuery != "" {
 			return path + "?" + rawQuery
@@ -297,18 +503,52 @@ func (u *ui) servePage(w http.ResponseWriter, r *http.Request, p page) {
 		http.Redirect(w, r, withQuery(p.Path), http.StatusSeeOther)
 		return
 	}
-	d := pageData{
-		Page:      p,
-		Nav:       u.nav,
-		Static:    u.static(),
-		Shared:    u.assets.prefix(),
-		Version:   config.BinaryVersion,
-		Installer: installer,
-	}
+	d := u.data(p)
+	d.Installer = installer
 	if p.Name == "setup" {
 		u.prepareSetup(w, r, &d)
 	}
-	u.render(w, d)
+	u.render(w, r, d)
+}
+
+// data is the page's pageData before the request's own parts.
+func (u *ui) data(p page) pageData {
+	d := pageData{
+		Page:    p,
+		Nav:     u.nav,
+		Tabs:    u.nav,
+		Static:  u.static(),
+		Shared:  u.assets.prefix(),
+		Base:    u.base,
+		Version: config.BinaryVersion,
+	}
+	for i, q := range u.set.Pages {
+		if q.Path == p.Path {
+			d.Order = i
+		}
+	}
+	switch {
+	case p.Nav:
+		d.Tab = p.Name
+	case p.Tab != "":
+		d.Tab = p.Tab
+	}
+	if u.set.Current {
+		d.Preloads = u.preloads[p.Script]
+		d.Fonts = u.fonts
+		d.Theme.Dark, d.Theme.Light = brand.ThemeColorDark, brand.ThemeColorLight
+		d.Hostname, _, _ = strings.Cut(config.Hostname(), ".")
+		d.Version = imageVersion()
+	}
+	return d
+}
+
+// imageVersion is the version the TV shows: the OS image's, else vosd's.
+func imageVersion() string {
+	if ii, err := config.LoadImageInfo(); err == nil && ii.Version != "" {
+		return ii.Version
+	}
+	return config.BinaryVersion
 }
 
 // prepareSetup handles the setup code for both setup flavours. The code
@@ -323,6 +563,9 @@ func (u *ui) prepareSetup(w http.ResponseWriter, r *http.Request, d *pageData) {
 	}
 	if d.Installer {
 		d.Page = u.set.Installer
+		if u.set.Current {
+			d.Preloads = u.preloads[d.Page.Script]
+		}
 		d.Timezones = timezoneGroups()
 		// After the install reboots, the page waits for the new system at
 		// http://<hostname>.local, a different origin. Widen connect-src for
@@ -358,7 +601,7 @@ func cleanCode(s string) string {
 
 // render executes the page into a buffer first, so a template error becomes
 // a clean 500 instead of half a page.
-func (u *ui) render(w http.ResponseWriter, d pageData) {
+func (u *ui) render(w http.ResponseWriter, r *http.Request, d pageData) {
 	var buf bytes.Buffer
 	if err := u.tmpl[d.Page.Name].ExecuteTemplate(&buf, "layout", d); err != nil {
 		log.Printf("web: render %s: %v", d.Page.Name, err)
@@ -368,7 +611,40 @@ func (u *ui) render(w http.ResponseWriter, d pageData) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	// Pages name versioned assets, so they must be revalidated after an
-	// update; the assets themselves are immutable.
+	// update; the assets themselves are immutable. no-cache (not no-store)
+	// keeps pages in the back/forward cache.
 	h.Set("Cache-Control", "no-cache")
-	w.Write(buf.Bytes())
+	if !u.set.Compress {
+		w.Write(buf.Bytes())
+		return
+	}
+	// The page carries no secret (the CSRF token comes from /auth/me) and
+	// the only reflected input, ?code=, is dropped on cross-site requests,
+	// so compressing it leaks nothing.
+	body := buf.Bytes()
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+	h.Add("Vary", "Accept-Encoding")
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		body, etag = gzipPage(body), strings.TrimSuffix(etag, `"`)+`-gz"`
+		h.Set("Content-Encoding", "gzip")
+	}
+	h.Set("ETag", etag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
+}
+
+var gzipWriters = sync.Pool{New: func() any {
+	zw, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+	return zw
+}}
+
+// gzipPage compresses a page at BestSpeed with a pooled writer.
+func gzipPage(b []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzipWriters.Get().(*gzip.Writer)
+	zw.Reset(&buf)
+	zw.Write(b)
+	zw.Close()
+	gzipWriters.Put(zw)
+	return buf.Bytes()
 }

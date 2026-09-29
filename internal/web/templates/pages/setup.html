@@ -1,0 +1,51 @@
+{{- /* A stub from the shell (C0b) until the entry pages' owner (C5)
+  replaces it: the first-run password form on an installed system, the
+  installer wizard's frame on the ISO. */ -}}
+{{define "content"}}
+{{if .Installer}}{{template "wizard" .}}{{else}}{{template "first-run" .}}{{end}}
+{{end}}
+
+{{define "setup-code-field"}}
+<div class="field">
+  <label class="field-label" for="setup-code">Setup code</label>
+  <input class="input mono" id="setup-code" name="code" value="{{.Code}}" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-EFGH" aria-describedby="setup-code-hint">
+  <p class="field-hint" id="setup-code-hint">It's on the screen connected to the VaporOS PC. Scanning the QR code there fills it in for you.</p>
+</div>
+{{end}}
+
+{{define "first-run"}}
+<form class="entry" id="first-run" novalidate>
+  <p class="entry-lead">Choose the admin password you'll use to manage this PC from your phone or computer.</p>
+  <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
+  {{if .NeedCode}}{{template "setup-code-field" .}}{{end}}
+  <div class="field">
+    <label class="field-label" for="setup-password">New password</label>
+    <input class="input" id="setup-password" name="password" type="password" autocomplete="new-password" required aria-describedby="setup-password-hint">
+    <p class="field-hint" id="setup-password-hint">At least 8 characters.</p>
+  </div>
+  <div class="field">
+    <label class="field-label" for="setup-password2">Repeat password</label>
+    <input class="input" id="setup-password2" type="password" autocomplete="new-password" required>
+  </div>
+  <p class="form-error" id="setup-error" role="alert"></p>
+  <button class="btn primary wide" type="submit" disabled>Save and continue</button>
+</form>
+{{end}}
+
+{{define "wizard"}}
+<section class="entry" id="wizard" aria-labelledby="wizard-title">
+  <h2 class="sr-only" id="wizard-title">Steps</h2>
+  {{template "setup-code-field" .}}
+  <div class="field">
+    <label class="field-label" for="timezone">Time zone</label>
+    <select class="input" id="timezone" name="timezone">
+      {{- range .Timezones}}
+      <optgroup label="{{.Region}}">
+        {{- range .Zones}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+      </optgroup>
+      {{- end}}
+    </select>
+  </div>
+  <p class="entry-lead" data-region="stub" aria-busy="true">The installer's steps arrive with its page.</p>
+</section>
+{{end}}

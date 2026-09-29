@@ -1,0 +1,14 @@
+{{- /* A working stub from the shell (C0b) until the entry pages' owner (C5)
+  replaces it: sign in with the admin password. */ -}}
+{{define "content"}}
+<form class="entry" id="login-form" novalidate>
+  <p class="entry-lead" id="login-lead">Enter the admin password you chose when you set up VaporOS.</p>
+  <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
+  <div class="field">
+    <label class="field-label" for="login-password">Password</label>
+    <input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required aria-describedby="login-error">
+  </div>
+  <p class="form-error" id="login-error" role="alert"></p>
+  <button class="btn primary wide" type="submit" disabled>Sign in</button>
+</form>
+{{end}}

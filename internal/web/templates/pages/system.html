@@ -1,0 +1,28 @@
+{{- /* A stub from the shell (C0b): the System index's owner (C4b) replaces
+  it. It already lists the six sub-pages and the two power keys, so the
+  shell's hold-to-confirm, confirm and reconnection scene can be tried. */ -}}
+{{define "content"}}
+<section class="rack" aria-labelledby="sys-pages-title">
+  <h2 class="rack-title" id="sys-pages-title">Everything else</h2>
+  <ul class="rows" role="list">
+    <li><a class="row row-link" href="{{.Base}}/system/updates" data-vt="updates">{{icon "update"}}<span class="row-main"><span class="row-name">Updates</span></span></a></li>
+    <li><a class="row row-link" href="{{.Base}}/system/power" data-vt="power">{{icon "power"}}<span class="row-main"><span class="row-name">Power</span></span></a></li>
+    <li><a class="row row-link" href="{{.Base}}/system/storage" data-vt="storage">{{icon "drive"}}<span class="row-main"><span class="row-name">Storage</span></span></a></li>
+    <li><a class="row row-link" href="{{.Base}}/system/settings" data-vt="settings">{{icon "sliders"}}<span class="row-main"><span class="row-name">Settings</span><span class="row-sub">Name, password, remote access</span></span></a></li>
+    <li><a class="row row-link" href="{{.Base}}/system/logs" data-vt="logs">{{icon "file"}}<span class="row-main"><span class="row-name">Logs</span></span></a></li>
+    <li><a class="row row-link" href="{{.Base}}/system/about" data-vt="about">{{icon "info"}}<span class="row-main"><span class="row-name">About</span></span></a></li>
+  </ul>
+</section>
+<section class="rack" data-region="power-keys" aria-busy="true" aria-labelledby="sys-power-title">
+  <h2 class="rack-title" id="sys-power-title">Restart and power</h2>
+  <div class="keys-strip keys-two">
+    <button class="key-tile hold" type="button" id="sys-reboot" data-hold="reboot" aria-describedby="sys-hold-hint" disabled>{{icon "restart"}}<b>Restart</b><span class="hold-fill" aria-hidden="true"></span></button>
+    <button class="key-tile hold" type="button" id="sys-poweroff" data-hold="poweroff" aria-describedby="sys-hold-hint" disabled>{{icon "power"}}<b>Power off</b><span class="hold-fill" aria-hidden="true"></span></button>
+  </div>
+  <p class="hold-hint" id="sys-hold-hint" aria-live="polite">Hold to confirm, or tap to be asked first.</p>
+</section>
+<section class="rack rack-signout" aria-labelledby="sys-signout-title">
+  <h2 class="sr-only" id="sys-signout-title">Sign out</h2>
+  <button class="btn ghost" id="sys-signout" type="button">{{icon "logout"}}Sign out</button>
+</section>
+{{end}}

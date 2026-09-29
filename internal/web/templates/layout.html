@@ -1,0 +1,85 @@
+{{- /*
+  The next control center's page shell (ARCH §6-§7, spec-cc-screens §1.3, §2).
+  The API's CSP forbids inline scripts and style attributes, so this file has
+  neither: behaviour lives in static/js, looks in app.css. Each page template
+  defines "content"; the shell's pieces are the partials in partials/. The
+  server renders the frame and the skeletons, so the first paint (and the
+  view transition's snapshot of it) never waits for the API.
+*/ -}}
+{{define "layout"}}<!doctype html>
+<html lang="en" data-page="{{.Page.Name}}" data-order="{{.Order}}" data-base="{{.Base}}" data-tab="{{.Tab}}" data-state=""{{if .Installer}} data-installer{{end}}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="{{.Theme.Dark}}" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="{{.Theme.Light}}" media="(prefers-color-scheme: light)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="VaporOS">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>{{.Page.DocTitle}}</title>
+<link rel="stylesheet" href="{{.Static}}/app.css">
+{{range .Fonts}}<link rel="preload" as="font" type="font/woff2" crossorigin href="{{$.Shared}}/{{.}}">
+{{end -}}
+<script src="{{.Static}}/js/head.js"></script>
+{{range .Preloads}}<link rel="modulepreload" href="{{$.Static}}/{{.}}">
+{{end -}}
+<script type="module" src="{{.Static}}/js/pages/{{.Page.Script}}.js"></script>
+<link rel="expect" href="#main-end" blocking="render">
+<link rel="icon" href="{{.Shared}}/icon.svg" type="image/svg+xml">
+<link rel="icon" href="{{.Shared}}/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="{{.Shared}}/icon-180.png">
+<link rel="manifest" href="{{.Shared}}/manifest.webmanifest">
+</head>
+<body{{if .Page.Bare}} data-bare{{end}}>
+{{sprite}}{{filters}}
+<a class="skip" href="#main">Skip to content</a>
+{{- if .Page.Bare}}
+<main class="bare" id="main" tabindex="-1" aria-busy="true">
+  <div class="bare-brand">{{template "logo"}}{{template "wordmark"}}<span class="sr-only">VaporOS</span></div>
+  <p class="sr-only" id="main-status">Loading…</p>
+  <h1 class="bare-title">{{.Page.H1}}</h1>
+  {{template "fatal" .}}
+  {{template "content" .}}
+  <div id="main-end"></div>
+</main>
+{{- else}}
+<div class="app" id="app">
+  {{template "appbar" .}}
+  {{template "nav" .}}
+  {{template "strip" .}}
+  <main class="main" id="main" tabindex="-1" aria-busy="true">
+    <p class="sr-only" id="main-status">Loading…</p>
+    {{template "offline" .}}
+    {{if ne .Page.Name "home"}}{{template "restart-row" .}}{{end}}
+    {{template "page-head" .}}
+    {{template "fatal" .}}
+    {{template "content" .}}
+    <div id="main-end"></div>
+  </main>
+</div>
+{{template "stream-sheet" .}}
+{{template "pinpad" .}}
+{{template "scene" .}}
+{{- end}}
+{{template "notices" .}}
+{{template "recent" .}}
+{{template "confirm" .}}
+{{template "announcers" .}}
+<noscript><p class="noscript">VaporOS needs JavaScript to show this page.</p></noscript>
+</body>
+</html>
+{{end}}
+
+{{define "page-head"}}
+<div class="page-head{{if .Page.HideHead}} sr-only{{end}}">
+  {{- if .Page.Tab}}
+  <a class="back" href="{{.Base}}/system">{{icon "back"}}System</a>
+  {{- end}}
+  <h1 class="page-title" data-vt="{{.Page.Name}}">{{.Page.H1}}</h1>
+  {{- with .Page.Lead}}
+  <p class="page-lead">{{.}}</p>
+  {{- end}}
+</div>
+{{end}}

@@ -1,0 +1,13 @@
+{{- /*
+  The screen shape (MASTER-PLAN §4.4): the virtual screen at the client's
+  aspect, with the mode as its readout. Inputs: data-state and data-hdr on
+  the root, --mode-w and --mode-h set by ui/screen-shape.js through the
+  CSSOM. The chosen direction draws it (styles/direction.css); it is
+  decorative, so the page says the mode in words elsewhere.
+*/ -}}
+{{define "screen-shape"}}
+<figure class="screen-shape" data-part="shape" data-state="" data-hdr="false" aria-hidden="true">
+  <span class="screen-shape-box"><span class="screen-shape-frame" data-part="frame"></span></span>
+  <figcaption class="screen-shape-readout mono" data-part="readout"></figcaption>
+</figure>
+{{end}}

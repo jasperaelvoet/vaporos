@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -24,6 +25,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display"
+	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/power"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
@@ -936,6 +938,7 @@ var parityInstaller = []parityCase{
 // same status and the same message.
 func TestValidationParity(t *testing.T) {
 	strictOnly(t)
+	t.Run("client", testClientValidationParity)
 	dir := t.TempDir()
 	redirectConfig(t, dir)
 	if err := os.MkdirAll(config.RunDir, 0o700); err != nil {
@@ -1037,5 +1040,107 @@ func TestValidationParity(t *testing.T) {
 				t.Errorf("%s %s %s:\n  real %d %s\n  fake %d %s", pc.method, pc.path, pc.body, rs, rb, fs, fb)
 			}
 		}
+	}
+}
+
+// testClientValidationParity feeds jstest/testdata/validate-vectors.json to
+// the client's rules (static/js/validate.js, under Node) and to the server's
+// own validators: the client must refuse exactly what the server refuses
+// (T6), except the CVT limits a mode check leaves to the server.
+func testClientValidationParity(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	raw, err := os.ReadFile(filepath.Join("jstest", "testdata", "validate-vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Hostname, Password, Channel, AudioSink []struct {
+			V      string
+			Repeat string
+			Times  int
+			OK     bool
+		}
+		Mode []struct {
+			W, H, Hz int
+			OK, CVT  bool
+		}
+		Bitrate []struct {
+			V  int
+			OK bool
+		} `json:"bitrate_mbps"`
+	}
+	var sink struct {
+		AudioSink []struct {
+			V  string
+			OK bool
+		} `json:"audio_sink"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &sink); err != nil {
+		t.Fatal(err)
+	}
+	script := `import { readFileSync } from 'node:fs';
+import * as V from './static/js/validate.js';
+const d = JSON.parse(readFileSync('./jstest/testdata/validate-vectors.json', 'utf8'));
+const val = (c) => (c.repeat ? c.repeat.repeat(c.times) : c.v);
+console.log(JSON.stringify({
+  hostname: d.hostname.map((c) => V.hostnameError(c.v) === ''),
+  password: d.password.map((c) => V.passwordError(val(c)) === ''),
+  mode: d.mode.map((c) => V.modeError(c.w, c.h, c.hz) === ''),
+  channel: d.channel.map((c) => V.channelError(c.v) === ''),
+  sink: d.audio_sink.map((c) => V.audioSinkError(c.v) === ''),
+  bitrate: d.bitrate_mbps.map((c) => V.bitrateError(c.v) === ''),
+}));`
+	out, err := exec.Command(node, "--input-type=module", "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	var js struct{ Hostname, Password, Mode, Channel, Sink, Bitrate []bool }
+	if err := json.Unmarshal(out, &js); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	check := func(what string, i int, client, server, want bool) {
+		t.Helper()
+		if client != server || server != want {
+			t.Errorf("%s #%d: client %v, server %v, vectors say %v", what, i, client, server, want)
+		}
+	}
+	for i, c := range v.Hostname {
+		check("hostname "+strconv.Quote(c.V), i, js.Hostname[i], system.ValidateHostname(c.V) == nil, c.OK)
+	}
+	for i, c := range v.Password {
+		pw := c.V
+		if c.Repeat != "" {
+			pw = strings.Repeat(c.Repeat, c.Times)
+		}
+		check("password", i, js.Password[i], auth.ValidatePassword(pw) == nil, c.OK)
+	}
+	for i, c := range v.Mode {
+		server := edid.Check(edid.Mode{W: c.W, H: c.H, Refresh: c.Hz}) == nil
+		if c.CVT {
+			if !js.Mode[i] || server {
+				t.Errorf("mode #%d %dx%d@%d: the client should pass it and the server's CVT check refuse it (client %v, server %v)", i, c.W, c.H, c.Hz, js.Mode[i], server)
+			}
+			continue
+		}
+		check(fmt.Sprintf("mode %dx%d@%d", c.W, c.H, c.Hz), i, js.Mode[i], server, c.OK)
+	}
+	for i, c := range v.Channel {
+		check("channel "+strconv.Quote(c.V), i, js.Channel[i], update.ValidChannel(c.V), c.OK)
+	}
+	for i, c := range sink.AudioSink {
+		s := sunshine.DefaultSettings()
+		s.AudioSink = c.V
+		check("audio_sink "+strconv.Quote(c.V), i, js.Sink[i], s.Validate() == nil, c.OK)
+	}
+	for i, c := range v.Bitrate {
+		s := sunshine.DefaultSettings()
+		s.BitrateKbpsMax = c.V * 1000
+		check(fmt.Sprintf("bitrate %d Mbps", c.V), i, js.Bitrate[i], s.Validate() == nil, c.OK)
 	}
 }

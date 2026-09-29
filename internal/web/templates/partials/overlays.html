@@ -1,0 +1,133 @@
+{{- /*
+  The shell's overlays (ARCH §6.5-§6.12): notices and Recent, the confirm
+  dialog, the stream sheet, the PIN pad takeover and the reconnection scene.
+  Each is a native <dialog> in the top layer, so the page behind it is inert
+  while it is open. The heat fields are REDLINE's signature art: grey heat
+  sources run through the generated filters ({{filters}} in the layout), so
+  they carry no meaning and are aria-hidden.
+*/ -}}
+
+{{define "notices"}}
+<div class="notices" id="notices">
+  <div class="notice-stack" id="notices-polite" role="status"></div>
+  <div class="notice-stack" id="notices-alert" role="alert"></div>
+  <button class="notice-more" id="notices-more" type="button" aria-haspopup="dialog" aria-controls="recent" hidden></button>
+</div>
+<template id="tpl-notice"><div class="notice" data-kind="info"><span class="notice-mark" aria-hidden="true"></span><p class="notice-text" data-part="text"></p><button class="notice-action" type="button" data-part="action" hidden></button><a class="notice-action" data-part="link" hidden></a><button class="notice-close" type="button" data-part="close"><span class="sr-only" data-part="close-name">Dismiss</span>{{icon "close"}}</button></div></template>
+{{end}}
+
+{{define "recent"}}
+<dialog class="sheet" id="recent" aria-labelledby="recent-title" data-snap="medium">
+  <div class="sheet-handle" data-part="handle" aria-hidden="true"></div>
+  <header class="sheet-head"><h2 class="sheet-title" id="recent-title" tabindex="-1">Recent</h2><button class="sheet-close" type="button" data-close aria-label="Close">{{icon "close"}}</button></header>
+  <div class="sheet-body">
+    <ol class="recent-list" id="recent-list"></ol>
+    <p class="recent-empty" id="recent-empty">No notices yet</p>
+  </div>
+</dialog>
+<template id="tpl-recent"><li class="recent-item" data-kind="info"><span class="recent-mark" aria-hidden="true"></span><span class="recent-text" data-part="text"></span><span class="recent-time mono" data-part="time"></span></li></template>
+{{end}}
+
+{{define "confirm"}}
+<dialog class="dialog" id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+  <form class="dialog-form" method="dialog">
+    <h2 class="dialog-title" id="confirm-title">Are you sure?</h2>
+    <p class="dialog-body" id="confirm-body"></p>
+    <div class="dialog-typed" id="confirm-typed" hidden>
+      <label class="field-label" for="confirm-word" id="confirm-word-label">Type ERASE to confirm</label>
+      <input class="input mono" id="confirm-word" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    </div>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="confirm-cancel" value="cancel">Cancel</button>
+      <button class="btn primary" id="confirm-ok" value="ok">Continue</button>
+    </div>
+  </form>
+</dialog>
+{{end}}
+
+{{define "stream-sheet"}}
+<dialog class="sheet" id="stream-sheet" aria-labelledby="stream-sheet-title" data-snap="medium">
+  <div class="sheet-handle" data-part="handle" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <h2 class="sheet-title" id="stream-sheet-title" tabindex="-1">Streaming to <span id="ss-client">a device</span></h2>
+    <button class="sheet-close" type="button" data-close aria-label="Close">{{icon "close"}}</button>
+  </header>
+  <div class="sheet-body">
+    <dl class="facts">
+      <div class="fact"><dt>Started by</dt><dd id="ss-by"></dd></div>
+      <div class="fact" id="ss-app-row" hidden><dt>Game</dt><dd id="ss-app"></dd></div>
+      <div class="fact"><dt>Resolution</dt><dd class="mono" id="ss-mode"></dd></div>
+      <div class="fact"><dt>HDR</dt><dd id="ss-hdr"></dd></div>
+      <div class="fact" id="ss-since-row" hidden><dt>Since</dt><dd class="mono" id="ss-since"></dd></div>
+    </dl>
+    <p class="sheet-note" id="ss-hint">Switching devices or changing the resolution? Quit the game in Moonlight, then start it again.</p>
+  </div>
+  <footer class="sheet-actions">
+    <button class="btn danger" id="ss-end" type="button">End stream</button>
+    <button class="btn" id="ss-restart" type="button">{{icon "restart"}}Restart streaming</button>
+    <a class="btn ghost" href="{{.Base}}/screen">Screen settings</a>
+  </footer>
+</dialog>
+{{end}}
+
+{{define "pinpad"}}
+<dialog class="pinpad" id="pinpad" data-phase="idle" data-digits="0" aria-labelledby="pin-title" aria-describedby="pin-lead">
+  <div class="pinpad-art" aria-hidden="true">
+    <svg class="field" viewBox="0 0 400 860" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="980" fill="#000"/><ellipse class="src src-plume" cx="200" cy="250" rx="440" ry="250"/><ellipse class="src src-core" cx="200" cy="352" rx="330" ry="190"/></g></svg>
+    <div class="pinpad-scrim"></div>
+  </div>
+  <div class="pinpad-in">
+    <div class="pinpad-top"><button class="btn ghost small" id="pin-close" type="button">{{icon "close"}}Not now</button></div>
+    <div class="pinpad-head">
+      <p class="pinpad-who mono"><span class="pinpad-pip" aria-hidden="true"></span>Moonlight is waiting · <span id="pin-host">{{.Hostname}}.local</span></p>
+      <h2 class="pinpad-title" id="pin-title" tabindex="-1">A device wants to pair</h2>
+      <p class="pinpad-lead" id="pin-lead">Type the PIN Moonlight shows on <span id="pin-lead-name">it</span>.</p>
+    </div>
+    <fieldset class="pinpad-pick" id="pin-pick" hidden>
+      <legend class="pinpad-pick-label">Which device shows this PIN?</legend>
+      <div class="pick-list" id="pin-pick-list"></div>
+    </fieldset>
+    <div class="pin-box" id="pin-box">
+      <div class="pin-cells" aria-hidden="true"><span class="pin-cell" data-part="cell"></span><span class="pin-cell" data-part="cell"></span><span class="pin-cell" data-part="cell"></span><span class="pin-cell" data-part="cell"></span></div>
+      <label class="sr-only" for="pin">PIN shown in Moonlight</label>
+      <input class="pin-input" id="pin" name="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4}" maxlength="4" aria-describedby="pin-hint pin-error">
+    </div>
+    <p class="pin-hint" id="pin-hint">4 digits. Pairs as soon as you enter the last one.</p>
+    <p class="pin-error" id="pin-error" role="alert"></p>
+    <p class="pin-status" id="pin-status" role="status"></p>
+    <details class="pin-more">
+      <summary>Name on this PC</summary>
+      <label class="field-label" for="pin-device-name">Name on this PC</label>
+      <input class="input" id="pin-device-name" maxlength="128" autocomplete="off" aria-describedby="pin-device-hint">
+      <p class="field-hint" id="pin-device-hint">How this device shows in Devices. Leave it for Moonlight's name.</p>
+    </details>
+    <div class="keypad" id="keypad">
+      <button class="key" type="button" data-key="1" aria-controls="pin">1</button><button class="key" type="button" data-key="2" aria-controls="pin">2</button><button class="key" type="button" data-key="3" aria-controls="pin">3</button>
+      <button class="key" type="button" data-key="4" aria-controls="pin">4</button><button class="key" type="button" data-key="5" aria-controls="pin">5</button><button class="key" type="button" data-key="6" aria-controls="pin">6</button>
+      <button class="key" type="button" data-key="7" aria-controls="pin">7</button><button class="key" type="button" data-key="8" aria-controls="pin">8</button><button class="key" type="button" data-key="9" aria-controls="pin">9</button>
+      <button class="key key-fn" type="button" data-key="clear" aria-controls="pin">Clear</button><button class="key" type="button" data-key="0" aria-controls="pin">0</button><button class="key key-fn" type="button" data-key="back" aria-controls="pin" aria-label="Delete the last digit">{{icon "backspace"}}</button>
+    </div>
+  </div>
+</dialog>
+<template id="tpl-pin-device"><label class="pick"><input class="pick-radio" type="radio" name="pin-device" data-part="radio"><span class="pick-name" data-part="name"></span></label></template>
+{{end}}
+
+{{define "scene"}}
+<dialog class="scene" id="scene" data-phase="" data-state="" aria-labelledby="scene-title" aria-describedby="scene-text">
+  <div class="scene-art" aria-hidden="true">
+    <svg class="field" viewBox="0 0 400 860" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="980" fill="#000"/><ellipse class="src src-floor" cx="200" cy="980" rx="420" ry="240"/><ellipse class="src src-plume" cx="200" cy="360" rx="200" ry="300"/><circle class="src src-core" cx="200" cy="520" r="260"/></g></svg>
+  </div>
+  <div class="scene-in">
+    <p class="scene-elapsed mono" id="scene-elapsed" aria-hidden="true">00:00</p>
+    <h2 class="scene-title" id="scene-title" tabindex="-1">Restarting</h2>
+    <p class="scene-text" id="scene-text" aria-live="polite"></p>
+    <p class="scene-last" id="scene-last" hidden></p>
+    <ol class="scene-ping mono" id="scene-ping" aria-hidden="true"></ol>
+    <div class="scene-wake" id="scene-wake" hidden>{{template "wake" "scene"}}</div>
+    <div class="scene-actions" id="scene-actions" hidden>
+      <button class="btn primary" id="scene-reload" type="button">{{icon "refresh"}}Reload</button>
+      <button class="btn ghost" id="scene-close" type="button">Show the last known state</button>
+    </div>
+  </div>
+</dialog>
+{{end}}
