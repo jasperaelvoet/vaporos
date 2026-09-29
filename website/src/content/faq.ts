@@ -45,11 +45,20 @@ export const faq: QA[] = [
     id: 'monitor',
     q: 'Do I need a monitor? Can I use one?',
     a: [
-      "Only while you install. The installer's setup code appears on the PC's screen, so connect a monitor or TV for the install.",
+      'Not even to install, if the PC already boots from the USB stick in UEFI mode with Secure Boot off: with no monitor connected, the installer skips the setup code. A monitor or TV makes the firmware settings and the code easy.',
       "After that you don't need one. VaporOS makes its own virtual display at the resolution, frame rate and HDR setting of the device you stream to, so you don't need a dummy plug either.",
       'If a monitor is connected, it only ever shows the welcome screen: the address of the PC, a QR code, and a status line such as “Ready to stream”. It never shows a terminal or a desktop.',
     ],
-    short: 'Only while you install. After that, VaporOS makes its own virtual display.',
+    short: 'No. With no monitor the installer skips the setup code, and afterwards VaporOS makes its own virtual display.',
+  },
+  {
+    id: 'headless',
+    q: 'Can I install it without a monitor?',
+    a: [
+      "Yes, if the PC already boots from the USB stick in UEFI mode with Secure Boot off. With no monitor connected, the installer doesn't ask for the setup code: open `http://vaporos-setup.local` on your phone. Anyone on your network could open it while it waits, so do this on a network you trust.",
+      "If the PC's graphics card isn't recognised yet, the installer still asks for the code, which a monitor shows.",
+    ],
+    short: "Yes: with no monitor connected, the installer doesn't ask for the setup code.",
   },
   {
     id: 'dual-boot',
@@ -58,6 +67,14 @@ export const faq: QA[] = [
       'No. VaporOS installs to a whole drive and erases it. Other drives in the PC are left alone, and if they hold Steam libraries you can pick them during setup (or later, under Storage) and keep playing those games. Nothing on them is changed.',
     ],
     short: 'No. VaporOS installs to a whole drive and erases it. Other drives are left alone.',
+  },
+  {
+    id: 'drives',
+    q: 'Which drives can hold my Steam games?',
+    a: [
+      "Drives formatted ext2, ext3, ext4, btrfs, XFS, F2FS or NTFS. exFAT and FAT drives can't be used for games. VaporOS mounts the drive, adds it to Steam's library list, and never changes the files on it; a drive without a library gets an empty SteamLibrary folder.",
+    ],
+    short: 'ext2/3/4, btrfs, XFS, F2FS or NTFS; not exFAT or FAT.',
   },
   {
     id: 'secure-boot',
@@ -71,7 +88,7 @@ export const faq: QA[] = [
     id: 'address',
     q: 'Where do I find the web page?',
     a: [
-      "After installing, open `http://vapor.local` on a phone or computer on the same network. If you picked another name during setup, it's that name plus `.local`. A connected monitor also shows the address, the PC's IP address and a QR code.",
+      "After installing, open `http://vapor.local` on a phone or computer on the same network. If you picked another name during setup, it's that name plus `.local`. A connected monitor also shows the address, the PC's IP address and a QR code. With no monitor, your router's list of devices shows its IP address.",
       'While you install from the USB stick, the address is `http://vaporos-setup.local`.',
     ],
     short: '`http://vapor.local` once installed; `http://vaporos-setup.local` while you install.',
@@ -90,20 +107,48 @@ export const faq: QA[] = [
     q: 'What if an update breaks something?',
     a: [
       "VaporOS keeps two copies of the system. An update goes to the one you aren't running, and the old one stays as it was. If the new version doesn't start cleanly, the PC goes back to the previous version by itself and won't install that version again.",
-      'You can also go back by hand: open Updates, choose **Roll back**, and restart.',
+      "You can also go back by hand: open Updates, choose **Roll back**, and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
     ],
     short: "If a new version doesn't start cleanly, the PC goes back to the previous one by itself.",
   },
   {
-    // STALE? Commit 0382231 (after the Astro copy was checked) made idle shutdown
-    // default to OFF; the installer turns it on when a wired NIC supports
-    // Wake-on-LAN (docs/CONTRACTS.md, power.idle_shutdown). Reword before launch.
+    // Idle power-off: off by default, turned on by a new install only when a
+    // wired network adapter wakes on a magic packet (internal/install/target.go).
     id: 'power',
     q: 'Does it stay on all the time?',
     a: [
-      "By default it powers off after 15 minutes of nobody playing, but never while it's streaming, downloading or updating. You can change the time or turn this off under Power, or keep it awake for an hour or four. Moonlight wakes a paired PC over Wake-on-LAN, which needs a wired connection.",
+      'It depends on the PC. When a wired network adapter can wake it from Moonlight (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing it powers off, but never while it streams, runs a game, downloads or updates. Otherwise it stays on. You can change this, or keep it awake for 1 or 4 hours, under Power.',
     ],
-    short: 'By default it powers off after 15 minutes of nobody playing. Moonlight wakes it.',
+    short: 'It powers off when idle only if Moonlight can wake it again.',
+  },
+  {
+    // The Power page lists each wired adapter's MAC address (GET /power wol[]).
+    // The control center is served by the PC itself, so it can't be opened
+    // while the PC is off, and browsers can't send the UDP magic packet.
+    id: 'wake',
+    q: 'Can I wake it from my phone?',
+    a: [
+      'Yes, when the PC is on a network cable and Wake-on-LAN works. In Moonlight, pick the PC and choose **Wake**; this works for a PC Moonlight has paired with.',
+      'Any Wake-on-LAN app on the same network works too, with the MAC address shown under Power. Note it down while the PC is on.',
+      "The VaporOS web page itself can't wake the PC: the PC serves that page, and a web page can't send the wake packet.",
+    ],
+    short: 'Yes: Moonlight wakes it, and so does any Wake-on-LAN app with the MAC address shown under Power.',
+  },
+  {
+    id: 'wifi',
+    q: 'Can it use Wi-Fi?',
+    a: [
+      'Not from the web page: the installer and the control center only set up a network cable, and Wake-on-LAN needs the cable.',
+    ],
+    short: 'Setup and Wake-on-LAN need a network cable.',
+  },
+  {
+    id: 'switching',
+    q: "I switched devices and the picture didn't change.",
+    a: [
+      'The resolution, refresh rate and HDR are set when a game starts in Moonlight. Resuming it from another device keeps them. Quit the game in Moonlight first, then start it on the new device.',
+    ],
+    short: 'Quit the game in Moonlight first, then start it on the new device.',
   },
   {
     id: 'internet',
