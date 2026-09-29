@@ -52,6 +52,7 @@ func TestParseMountInfo(t *testing.T) {
 // fakeHealth is a healthy machine; tests break parts of it.
 type fakeHealth struct {
 	mountsOK, pingOK, userOK, gpu, stream, counting, forced bool
+	noFallback                                              bool // nothing else would boot
 }
 
 func (f *fakeHealth) env() healthEnv {
@@ -76,6 +77,7 @@ func (f *fakeHealth) env() healthEnv {
 		},
 		gpu:      func() bool { return f.gpu },
 		counting: func() bool { return f.counting },
+		fallback: func() bool { return !f.noFallback },
 		forced:   func() bool { return f.forced },
 	}
 }
@@ -181,12 +183,72 @@ func TestHealthDegradedWithoutTrial(t *testing.T) {
 func TestHealthForced(t *testing.T) {
 	setup(t)
 	f := healthy()
-	f.forced = true
+	f.forced, f.counting = true, true
 	if code, _ := runFake(t, f); code != 1 {
 		t.Fatalf("exit %d", code)
 	}
 	if _, err := os.Stat(config.HealthOKPath()); !os.IsNotExist(err) {
 		t.Fatal("health-ok written on a forced failure")
+	}
+}
+
+// The test knob on a blessed entry must not reboot into it forever
+// (FailureAction=reboot): it only fails a boot that is on trial.
+func TestHealthForcedUncounted(t *testing.T) {
+	setup(t)
+	f := healthy()
+	f.forced = true
+	code, log := runFake(t, f)
+	if code != 0 || !strings.Contains(log, "not on trial") || !strings.Contains(log, "degraded") {
+		t.Fatalf("exit %d\n%s", code, log)
+	}
+}
+
+// A counted boot with nothing behind it (the last entry systemd-boot has
+// left) would boot the same image again: report, do not fail.
+func TestHealthNoFallback(t *testing.T) {
+	e := setup(t)
+	e.write(config.HealthOKPath(), `{"gpu":true,"stream":true}`)
+	f := healthy()
+	f.counting, f.noFallback, f.gpu = true, true, false
+	code, log := runFake(t, f)
+	if code != 0 || !strings.Contains(log, "no other entry") {
+		t.Fatalf("exit %d\n%s", code, log)
+	}
+}
+
+// hasFallback follows systemd-boot's order: an entry with tries left, or
+// among the exhausted ones the newest (the same version counts).
+func TestHasFallback(t *testing.T) {
+	cases := []struct {
+		other string // slot b's entry name ("" = none); slot a runs bootedVersion
+		want  bool
+	}{
+		{"vos-" + oldIdleVersion + ".conf", true},
+		{"vos-" + oldIdleVersion + "+2-1.conf", true},
+		{"vos-" + oldIdleVersion + "+0-1.conf", false}, // older and bad: the failing entry sorts first
+		{"vos-" + newVersion + "+0-3.conf", true},      // newer and bad: it sorts first
+		{"vos-" + bootedVersion + "+0-1.conf", true},   // same version, fewer tries done
+		{"", false},
+	}
+	for _, c := range cases {
+		e := setup(t)
+		b := e.entry("b")
+		if c.other == "" {
+			e.must(os.Remove(b.Path))
+		} else {
+			text, err := os.ReadFile(b.Path)
+			e.must(err)
+			version := strings.TrimPrefix(strings.SplitN(strings.TrimSuffix(c.other, ".conf"), "+", 2)[0], "vos-")
+			e.must(os.Remove(b.Path))
+			e.write(filepath.Join(filepath.Dir(b.Path), c.other),
+				strings.Replace(string(text), "version "+oldIdleVersion, "version "+version, 1))
+		}
+		a := e.entry("a")
+		e.must(os.Rename(a.Path, strings.TrimSuffix(a.Path, ".conf")+"+0-3.conf"))
+		if got := hasFallback(); got != c.want {
+			t.Errorf("slot b %q: hasFallback() = %v, want %v", c.other, got, c.want)
+		}
 	}
 }
 

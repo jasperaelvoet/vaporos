@@ -33,8 +33,8 @@ func blockSlot(t *testing.T, env string) (*testEnv, string) {
 		t.Fatalf("%s is not a device: %v", dev, err)
 	}
 	e := setup(t)
-	e.must(os.Remove(SlotDevice("b")))
-	e.must(os.Symlink(dev, SlotDevice("b")))
+	e.must(os.Remove(e.slotDev("b")))
+	e.must(os.Symlink(dev, e.slotDev("b")))
 	return e, dev
 }
 

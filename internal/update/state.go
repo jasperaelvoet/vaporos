@@ -24,6 +24,23 @@ type State struct {
 	Available *Available `json:"available"`
 	Checked   string     `json:"checked,omitempty"` // last successful check, RFC3339
 	LastError string     `json:"last_error"`
+	// Held is the newest version the user went back from (a rollback or
+	// an explicit downgrade). Automatic staging skips it and anything
+	// older; picking a version, --force or a newer build lifts it.
+	Held *Held `json:"held,omitempty"`
+}
+
+// Held is a version automatic updates leave alone.
+type Held struct {
+	Version       string `json:"version"`
+	RollbackIndex int64  `json:"rollback_index"`
+}
+
+// hold records that the user went back from img, keeping the newest hold.
+func (st *State) hold(img *config.ImageInfo) {
+	if st.Held == nil || img.RollbackIndex > st.Held.RollbackIndex {
+		st.Held = &Held{Version: img.Version, RollbackIndex: img.RollbackIndex}
+	}
 }
 
 // Staged is a version written to the idle slot that has not booted yet.
