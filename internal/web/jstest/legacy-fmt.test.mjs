@@ -1,5 +1,5 @@
-// Unit tests for static/legacy/js/fmt.js. Run by TestJavaScript (go test) when Node
-// is installed, or directly: node --test internal/web/jstest/
+// Unit tests for static/legacy/js/fmt.js. Run by TestJavaScript (go test)
+// when Node is installed, or directly: node --test internal/web/jstest/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
