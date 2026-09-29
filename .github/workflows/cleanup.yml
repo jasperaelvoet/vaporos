@@ -1,12 +1,19 @@
 # Every push publishes a release and an OCI version (build.yml), so prune the
 # old ones once a week: branch prereleases beyond the newest 10 (with their
-# tags), and ghcr.io versions beyond the newest 30. Releases from main stay.
+# tags), and ghcr.io versions beyond the newest 10 of each channel. Releases
+# from main stay, and so does every OCI version a channel tag points to:
+# that is what installed machines on the channel pull.
 name: cleanup
 
 on:
   schedule:
     - cron: '23 4 * * 1' # Mondays, 04:23 UTC
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted, delete nothing
+        type: boolean
+        default: false
 
 concurrency:
   group: cleanup
@@ -29,6 +36,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       KEEP: 10
+      DRY_RUN: ${{ inputs.dry_run == true }}
     steps:
       - name: Delete prereleases beyond the newest ${{ env.KEEP }}
         run: |
@@ -39,17 +47,82 @@ jobs:
           while read -r tag; do
             [ -n "$tag" ] || continue
             echo "deleting $tag"
-            gh release delete "$tag" --yes --cleanup-tag
+            [ "$DRY_RUN" = true ] || gh release delete "$tag" --yes --cleanup-tag </dev/null
           done <"$RUNNER_TEMP/old"
 
+  # Not actions/delete-package-versions: it prunes by age alone, and a channel
+  # that has not been pushed to for a while would lose the version its tag
+  # points to (and the tag with it). Its ignore-versions matches the digest,
+  # never a tag.
   packages:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Version-tagged OCI versions kept per channel (the channel's head, which
+      # a channel tag points to, is always kept on top).
+      KEEP: 10
+      DRY_RUN: ${{ inputs.dry_run == true }}
     steps:
-      - uses: actions/delete-package-versions@v5
-        with:
-          package-name: vaporos
-          package-type: container
-          min-versions-to-keep: 30
+      - uses: oras-project/setup-oras@v2
+
+      - name: Delete OCI versions beyond the newest ${{ env.KEEP }} of each channel
+        run: |
+          api=/users/$GITHUB_REPOSITORY_OWNER/packages/container/vaporos/versions
+          repo=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vaporos
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
+          vtag='^[0-9]{8}\.[0-9]{6}$'
+          # One line per version: id, digest, tags (comma-separated).
+          gh api --paginate "$api?per_page=100" \
+            --jq '.[] | [.id, .name, (.metadata.container.tags | join(","))] | @tsv' >"$RUNNER_TEMP/versions"
+          echo "$(wc -l <"$RUNNER_TEMP/versions") package versions"
+
+          # The channel a version was built for, from its signed manifest.json.
+          # (</dev/null: the loop below reads the version list on stdin.)
+          channel_of() {
+            local layer
+            layer=$(oras manifest fetch "$repo@$1" </dev/null 2>/dev/null |
+              jq -r '[.layers[]? | select(.annotations["org.opencontainers.image.title"] == "manifest.json") | .digest][0] // empty') ||
+              return 0
+            [ -n "$layer" ] || return 0
+            oras blob fetch --output - "$repo@$layer" </dev/null 2>/dev/null | jq -r '.channel // empty' 2>/dev/null || true
+          }
+
+          : >"$RUNNER_TEMP/ranked"
+          : >"$RUNNER_TEMP/delete"
+          while IFS=$'\t' read -r id digest tags; do
+            version=$(tr ',' '\n' <<<"$tags" | grep -E "$vtag" | sort | tail -n 1 || true)
+            heads=$(tr ',' '\n' <<<"$tags" | grep -vE "$vtag" | grep -v '^$' | paste -sd, - || true)
+            if [ -z "$tags" ]; then
+              # Nothing points to it any more (a channel tag moved on).
+              printf '%s\t%s\n' "$id" "untagged $digest" >>"$RUNNER_TEMP/delete"
+            elif [ -z "$version" ]; then
+              echo "keep $digest: head of ${heads} (no version tag)"
+            else
+              channel=$(channel_of "$digest")
+              if [ -z "$channel" ]; then
+                echo "::warning::keeping $version ($digest): its channel could not be read"
+                continue
+              fi
+              printf '%s\t%s\t%s\t%s\n' "$channel" "$version" "$id" "$heads" >>"$RUNNER_TEMP/ranked"
+            fi
+          done <"$RUNNER_TEMP/versions"
+
+          # Newest first within each channel: the first $KEEP stay, and so does
+          # anything a channel tag points to, however old.
+          sort -t$'\t' -k1,1 -k2,2r "$RUNNER_TEMP/ranked" |
+            awk -F'\t' -v keep="$KEEP" '
+              $1 != channel { channel = $1; n = 0 }
+              { n++ }
+              n <= keep { next }
+              $4 != "" { print "keep " $2 " (" $1 "): head of " $4 > "/dev/stderr"; next }
+              { print $3 "\t" $2 " (" $1 ")" }' >>"$RUNNER_TEMP/delete"
+
+          echo "$(wc -l <"$RUNNER_TEMP/delete") package versions to delete"
+          while IFS=$'\t' read -r id what; do
+            [ -n "$id" ] || continue
+            echo "deleting $what"
+            [ "$DRY_RUN" = true ] || gh api -X DELETE "$api/$id" </dev/null >/dev/null
+          done <"$RUNNER_TEMP/delete"
