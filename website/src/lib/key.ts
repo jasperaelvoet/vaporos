@@ -3,7 +3,7 @@
 //   1. VAPOROS_KEY_FILE          an explicit path (env or .env.local), for a
 //                                checkout outside the repo
 //   2. ../keys/release.pub       the repo's key: the site is built from website/
-//   3. public/release.pub        the copy scripts/copy-key.mjs makes before
+//   3. public/release.pub        the copy scripts/copy-assets.mjs makes before
 //                                every build and dev start
 import 'server-only';
 import { readFileSync } from 'node:fs';
