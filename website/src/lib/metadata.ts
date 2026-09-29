@@ -28,6 +28,9 @@ export const rootMetadata: Metadata = {
   },
   openGraph: { type: 'website', siteName: site.name, title: site.title, description: site.description, images: [ogImage] },
   twitter: { card: 'summary_large_image', title: site.title, description: site.description, images: [ogImage.url] },
+  // <meta name="vaporos-commit">: the commit a deployed site was built from
+  // (pages.yml sets VAPOROS_SITE_COMMIT), for checking what is live.
+  ...(process.env.VAPOROS_SITE_COMMIT ? { other: { 'vaporos-commit': process.env.VAPOROS_SITE_COMMIT } } : {}),
 };
 
 export const rootViewport: Viewport = {
