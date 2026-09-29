@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 )
@@ -213,10 +214,7 @@ func buildWelcome(in welcomeInputs) welcome.State {
 	}
 	if s := in.session; s != nil {
 		st.Status = "Streaming to " + s.Client
-		st.Detail = s.Mode
-		if s.HDR {
-			st.Detail += " HDR"
-		}
+		st.Detail = modeLabel(s.Mode, s.HDR)
 	}
 	if o.updateActive(in.now) {
 		u := o.update
@@ -247,6 +245,20 @@ func buildWelcome(in welcomeInputs) welcome.State {
 		}
 	}
 	return st
+}
+
+// modeLabel spells a "WxH@R" mode for people: "3840 × 2160 · 120 Hz · HDR".
+func modeLabel(mode string, hdr bool) string {
+	var parts []string
+	if md, err := edid.ParseMode(mode); err == nil {
+		parts = append(parts, fmt.Sprintf("%d × %d", md.W, md.H), fmt.Sprintf("%d Hz", md.Refresh))
+	} else if mode != "" {
+		parts = append(parts, mode)
+	}
+	if hdr {
+		parts = append(parts, "HDR")
+	}
+	return strings.Join(parts, " · ")
 }
 
 func capitalize(s string) string {

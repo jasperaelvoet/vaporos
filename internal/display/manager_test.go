@@ -544,7 +544,7 @@ func TestHDRKeptWhileGameRuns(t *testing.T) {
 	if env := readGamescopeEnv(); env.HDR || h.gsHDR || m.gsHDR {
 		t.Errorf("HDR changed under a game: env %+v", env)
 	}
-	if st := m.welcomeState(); st.Detail != "3840x2160@60" {
+	if st := m.welcomeState(); st.Detail != "3840 × 2160 · 60 Hz" {
 		t.Errorf("welcome detail = %q", st.Detail)
 	}
 	// The game is gone: the next HDR client gets its restart.
