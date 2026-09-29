@@ -1,0 +1,266 @@
+/* Code generated from design/tokens.json by go test ./internal/brand (VOS_GEN_DESIGN=1). DO NOT EDIT.
+   The control center's Tailwind v4 input: styles/app.css imports it. Direction: redline. */
+
+@theme {
+  --color-*: initial;
+
+  /* Palette */
+  --color-ash: #0b0a0c; /* page */
+  --color-soot: #151217; /* panels, rows */
+  --color-char: #211c23; /* raised and pressed */
+  --color-bone: #f3eee7; /* text */
+  --color-smoke: #a69ca4; /* secondary text, the OS of the wordmark */
+  --color-dim: #8a808e; /* tertiary text */
+  --color-cold: #7fd6ff; /* fault: below the scale, always with hazard tape and words */
+  --color-ink-ready: #c58bd3; /* ready as text, step numbers */
+  --color-hot-ink: #2a2230; /* body text on white-hot */
+  --color-hot-ink-2: #4a3f4f; /* meta text on white-hot, the OS of the wordmark on light */
+
+  /* h0 to h9: Matplotlib's Inferno at ten stops: asleep, cold boot, idle, ready, ready's peak, restart needed, warm load, streaming, hot, white-hot */
+  --color-h0: #000004;
+  --color-h1: #1b0c41;
+  --color-h2: #4a0c6b;
+  --color-h3: #781c6d;
+  --color-h4: #a52c60;
+  --color-h5: #cf4446;
+  --color-h6: #ed6925;
+  --color-h7: #fb9b06;
+  --color-h8: #f7d13d;
+  --color-h9: #fcffa4;
+
+  /* c0 to c9: the fault map: the heat ramp's lightness steps, below the scale */
+  --color-c0: #000004;
+  --color-c1: #020a1c;
+  --color-c2: #06193a;
+  --color-c3: #0c2e5a;
+  --color-c4: #17497d;
+  --color-c5: #2a69a0;
+  --color-c6: #4a8ec4;
+  --color-c7: #7fd6ff;
+  --color-c8: #bfebff;
+  --color-c9: #e8f8ff;
+
+  /* Roles, then each state's signal, the text on it and its tint (dark) */
+  --color-canvas: #0b0a0c;
+  --color-canvas-2: #000004;
+  --color-surface: #151217;
+  --color-surface-2: #211c23;
+  --color-line: #2e2730;
+  --color-line-strong: #8a808e;
+  --color-ink: #f3eee7;
+  --color-ink-2: #a69ca4;
+  --color-ink-3: #8a808e;
+  --color-accent: #fcffa4;
+  --color-accent-ink: #0b0a0c;
+  --color-focus: #fcffa4;
+  --color-danger: #7fd6ff;
+  --color-danger-ink: #0b0a0c;
+  --color-state-ready: #c58bd3;
+  --color-state-ready-ink: #0b0a0c;
+  --color-state-ready-soft: #291f2c;
+  --color-state-streaming: #fb9b06;
+  --color-state-streaming-ink: #0b0a0c;
+  --color-state-streaming-soft: #31210b;
+  --color-state-updating: #f7d13d;
+  --color-state-updating-ink: #0b0a0c;
+  --color-state-updating-soft: #312a14;
+  --color-state-restart-needed: #f7d13d;
+  --color-state-restart-needed-ink: #0b0a0c;
+  --color-state-restart-needed-soft: #312a14;
+  --color-state-asleep: #a69ca4;
+  --color-state-asleep-ink: #0b0a0c;
+  --color-state-asleep-soft: #242124;
+  --color-state-fault: #7fd6ff;
+  --color-state-fault-ink: #0b0a0c;
+  --color-state-fault-soft: #1e2b33;
+  --color-state-installing: #c58bd3;
+  --color-state-installing-ink: #0b0a0c;
+  --color-state-installing-soft: #291f2c;
+  --color-state-neutral: #8a808e;
+  --color-state-neutral-ink: #0b0a0c;
+  --color-state-neutral-soft: #1a181c;
+  --color-attention-pair: #c58bd3;
+  --color-attention-pair-ink: #0b0a0c;
+  --color-attention-pair-soft: #291f2c;
+
+  --font-*: initial;
+  --font-display: "Anybody", "Arial Narrow", "Helvetica Neue", "Arial", sans-serif;
+  --font-ui: "Mona Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Martian Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+  --font-mono--font-feature-settings: "tnum" 1;
+  --default-font-family: "Mona Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --default-mono-font-family: "Martian Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+  --default-mono-font-feature-settings: "tnum" 1;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.125rem;
+  --text-md: 0.875rem;
+  --text-md--line-height: 1.25rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.375rem;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.875rem;
+  --text-2xl--line-height: 2.125rem;
+  --text-2xl--letter-spacing: -0.01em;
+  --text-title: 2.75rem;
+  --text-title--line-height: 1;
+  --text-title--letter-spacing: -0.015em;
+  --text-title-lg: 3.5rem;
+  --text-title-lg--line-height: 1;
+  --text-title-lg--letter-spacing: -0.015em;
+  --text-hero: clamp(2.75rem, 14vw, 4.75rem);
+  --text-hero--line-height: 0.92;
+  --text-hero--letter-spacing: -0.02em;
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --radius-3xl: 22px;
+  --radius-pill: 9999px;
+
+  --spacing: 0.25rem;
+  --spacing-gutter: 1rem;
+  --spacing-target: 2.75rem;
+  --breakpoint-rail: 64rem;
+
+  --ease-standard: cubic-bezier(.22,1,.36,1);
+  --ease-out: cubic-bezier(.22,1,.36,1);
+  --ease-sheet: cubic-bezier(.32,.72,0,1);
+  --ease-tach: linear(0.000, 0.036, 0.126, 0.249, 0.387, 0.527, 0.659, 0.775, 0.873, 0.952, 1.011, 1.052, 1.078, 1.091, 1.095, 1.091, 1.082, 1.070, 1.057, 1.043, 1.031, 1.020, 1.011, 1.004, 0.998, 0.995, 0.992, 0.991, 0.991, 0.991, 1);
+  --ease-width: linear(0.000, 0.071, 0.222, 0.394, 0.554, 0.689, 0.793, 0.870, 0.924, 0.960, 0.982, 0.995, 1.002, 1.005, 1.006, 1.006, 1.005, 1.004, 1.003, 1.002, 1);
+}
+
+:root {
+  color-scheme: dark;
+  --vos-tokens: "de8f7b519722";
+  --vos-dur-instant: 80ms;
+  --vos-dur-fast: 180ms;
+  --vos-dur-base: 250ms;
+  --vos-dur-toast: 300ms;
+  --vos-dur-release: 350ms;
+  --vos-dur-shake: 360ms;
+  --vos-dur-slow: 380ms;
+  --vos-dur-fire: 450ms;
+  --vos-dur-step: 450ms;
+  --vos-dur-heat: 600ms;
+  --vos-dur-pct: 800ms;
+  --vos-dur-stretch: 900ms;
+  --vos-dur-needle: 900ms;
+  --vos-dur-count: 1100ms;
+  --vos-dur-cool: 1400ms;
+  --hold-ms: 1200ms;
+  --hold-release-ms: 350ms;
+  --hold-fire-ms: 450ms;
+  --hold-nudge-ms: 2800ms;
+  --vos-pattern-pip-ms: 2400ms;
+  --vos-pattern-steps-ms: 180ms;
+  --vos-scene-cool-ms: 2600ms;
+  --vos-scene-heat-ms: 2600ms;
+  --cut-cold-w: 72%;
+  --cut-cold-g: 560;
+  --cut-warm-w: 100%;
+  --cut-warm-g: 700;
+  --cut-hot-w: 124%;
+  --cut-hot-g: 800;
+}
+
+:root,
+[data-state=""] {
+  --state: var(--color-state-neutral);
+  --state-ink: var(--color-state-neutral-ink);
+  --state-soft: var(--color-state-neutral-soft);
+  --state-heat: 0.3;
+  --state-cut-w: 72%;
+  --state-cut-g: 560;
+  --state-from: 1.34;
+}
+
+[data-state="ready"] {
+  --state: var(--color-state-ready);
+  --state-ink: var(--color-state-ready-ink);
+  --state-soft: var(--color-state-ready-soft);
+  --state-heat: 0.42;
+  --state-cut-w: 100%;
+  --state-cut-g: 700;
+  --state-from: 0.74;
+}
+
+[data-state="streaming"] {
+  --state: var(--color-state-streaming);
+  --state-ink: var(--color-state-streaming-ink);
+  --state-soft: var(--color-state-streaming-soft);
+  --state-heat: 0.87;
+  --state-cut-w: 124%;
+  --state-cut-g: 800;
+  --state-from: 0.62;
+}
+
+[data-state="updating"] {
+  --state: var(--color-state-updating);
+  --state-ink: var(--color-state-updating-ink);
+  --state-soft: var(--color-state-updating-soft);
+  --state-heat: 0.55;
+  --state-cut-w: 100%;
+  --state-cut-g: 700;
+  --state-from: 0.74;
+}
+
+[data-state="restart-needed"] {
+  --state: var(--color-state-restart-needed);
+  --state-ink: var(--color-state-restart-needed-ink);
+  --state-soft: var(--color-state-restart-needed-soft);
+  --state-heat: 0.6;
+  --state-cut-w: 100%;
+  --state-cut-g: 700;
+  --state-from: 0.74;
+}
+
+[data-state="asleep"] {
+  --state: var(--color-state-asleep);
+  --state-ink: var(--color-state-asleep-ink);
+  --state-soft: var(--color-state-asleep-soft);
+  --state-heat: 0.05;
+  --state-cut-w: 72%;
+  --state-cut-g: 560;
+  --state-from: 1.34;
+}
+
+[data-state="fault"] {
+  --state: var(--color-state-fault);
+  --state-ink: var(--color-state-fault-ink);
+  --state-soft: var(--color-state-fault-soft);
+  --state-heat: 0;
+  --state-cut-w: 100%;
+  --state-cut-g: 700;
+  --state-from: 1;
+}
+
+[data-state="installing"] {
+  --state: var(--color-state-installing);
+  --state-ink: var(--color-state-installing-ink);
+  --state-soft: var(--color-state-installing-soft);
+  --state-heat: 0.2;
+  --state-cut-w: 72%;
+  --state-cut-g: 560;
+  --state-from: 1.34;
+}
+
+[data-attention="pair"] {
+  --state: var(--color-attention-pair);
+  --state-ink: var(--color-attention-pair-ink);
+  --state-soft: var(--color-attention-pair-soft);
+  --state-heat: 0.5;
+  --state-cut-w: 100%;
+  --state-cut-g: 700;
+  --state-from: 0.74;
+}

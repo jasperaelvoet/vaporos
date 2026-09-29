@@ -110,6 +110,18 @@ func generate(tf *tokensFile, raw []byte) ([]output, error) {
 		}
 		outs = append(outs, output{"tv", "internal/brand/tokens_gen.go", src})
 	}
+	if tf.targetOn("web") {
+		css, err := cssTokens(tf, sha, cssOpts{
+			header: "/* Code generated from design/tokens.json by go test ./internal/brand (VOS_GEN_DESIGN=1). DO NOT EDIT.\n" +
+				"   The control center's Tailwind v4 input: styles/app.css imports it. Direction: " + tf.Direction + ". */",
+			modes:     modeDefaults(tf.Modes.Web, tf.Theme.Default),
+			fontFaces: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		outs = append(outs, output{"web", "internal/web/styles/tokens.css", []byte(css)})
+	}
 	return outs, nil
 }
 
