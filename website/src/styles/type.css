@@ -1,0 +1,164 @@
+/* Width is temperature.
+
+   One family, Anybody, in three cuts that the device, the TV and the site
+   share: cold (condensed: asleep, "Three steps."), warm (ready, faults) and
+   hot (expanded: streaming, "Turn it into a console tonight."). The site loads
+   the variable file, so it can also travel between them:
+
+     cut-cold | cut-warm | cut-hot | cut-state   the cut (cut-state reads the
+                                                 nearest [data-state]'s cut)
+     --stretch      extra width a scroll scene adds (percentage, e.g. 24%)
+     --stretch-g    extra weight that goes with it (number, e.g. 100)
+     --friction     0..1, scroll speed, written by src/lib/motion/friction.ts
+                    on [data-friction] elements (desktop fine pointers only)
+     --friction-gain  how much width full friction adds (e.g. 8% on the H1)
+
+   All six are registered, so CSS transitions and GSAP tween them smoothly.
+   The resulting width is cut + stretch + friction × gain, clamped by the
+   font to 56-136%. A stretching headline is fitted at its hottest width
+   first (<Headline>, src/lib/type/fit.ts), so nothing ever reflows.
+
+   Headline markup (src/components/ui/headline.tsx renders it):
+
+     <h2 class="headline cut-hot" data-friction data-fitted style="--fit-k:…">
+       <span class="sr-only">Every screen gets its own picture.</span>
+       <span class="headline-fit headline-wide" aria-hidden="true">
+         <span class="ln">Every screen gets</span> <span class="ln">its own picture.</span>
+       </span>
+     </h2>
+
+   .headline is an inline-size container. Its size is the preset's
+   (--headline-size); once fitted it becomes min(size, max(min, 100cqi / K)),
+   where K (--fit-k) is the widest line's width in em at the hottest cut, so
+   the hottest width always fits and resizing needs no script. */
+
+@property --cut-w {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 100%;
+}
+@property --cut-g {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 700;
+}
+@property --stretch {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 0%;
+}
+@property --stretch-g {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --friction {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --friction-gain {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 0%;
+}
+
+@utility cut-cold {
+  --cut-w: var(--cut-cold-w);
+  --cut-g: var(--cut-cold-g);
+  font-family: var(--font-display);
+  font-weight: calc(var(--cut-g) + var(--stretch-g));
+  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-synthesis: none;
+}
+@utility cut-warm {
+  --cut-w: var(--cut-warm-w);
+  --cut-g: var(--cut-warm-g);
+  font-family: var(--font-display);
+  font-weight: calc(var(--cut-g) + var(--stretch-g));
+  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-synthesis: none;
+}
+@utility cut-hot {
+  --cut-w: var(--cut-hot-w);
+  --cut-g: var(--cut-hot-g);
+  font-family: var(--font-display);
+  font-weight: calc(var(--cut-g) + var(--stretch-g));
+  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-synthesis: none;
+}
+/* The nearest [data-state] picks the cut (tokens: asleep and installing are
+   cold, streaming hot, the rest warm). */
+@utility cut-state {
+  --cut-w: var(--state-cut-w);
+  --cut-g: var(--state-cut-g);
+  font-family: var(--font-display);
+  font-weight: calc(var(--cut-g) + var(--stretch-g));
+  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-synthesis: none;
+}
+
+/* Telemetry: modes, versions, addresses, file names (Martian Mono). */
+@utility telemetry {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@layer components {
+  .headline {
+    container-type: inline-size;
+    margin: 0;
+    line-height: var(--headline-leading, 0.92);
+    letter-spacing: var(--headline-tracking, -0.018em);
+  }
+  /* The preset size (--headline-size, set by <Headline>), shrunk once fitted
+     so the hottest width still fits: min(size, max(min, 100cqi / K)). */
+  .headline-fit {
+    display: block;
+    font-size: var(--headline-size, clamp(2.75rem, 6.6vw, 5.75rem));
+  }
+  .headline[data-fitted] .headline-wide {
+    font-size: min(var(--headline-size), max(var(--fit-min, 2.5rem), calc(100cqi / var(--fit-k))));
+  }
+  .headline .ln {
+    display: block;
+    white-space: nowrap;
+  }
+  /* Not fitted yet (no script, no fitK): let long lines wrap rather than
+     overflow the page. */
+  .headline:not([data-fitted]) .headline-wide .ln {
+    white-space: normal;
+  }
+
+  /* Two line sets: wide (≥ 901 px) and narrow. With no narrow set, the wide
+     lines run together and wrap on phones, at the preset's phone size. */
+  .headline-narrow {
+    display: none;
+  }
+  @media (max-width: 56.25rem) {
+    .headline[data-narrow] .headline-wide {
+      display: none;
+    }
+    .headline[data-narrow] .headline-narrow {
+      display: block;
+      font-size: var(--headline-size-narrow, 2.75rem);
+    }
+    .headline[data-narrow][data-fitted-narrow] .headline-narrow {
+      font-size: min(var(--headline-size-narrow), max(var(--fit-min-narrow, 2.5rem), calc(100cqi / var(--fit-k-narrow))));
+    }
+    .headline[data-narrow]:not([data-fitted-narrow]) .headline-narrow .ln {
+      white-space: normal;
+    }
+    .headline:not([data-narrow]) .headline-wide {
+      font-size: var(--headline-size-narrow, 2.75rem);
+      line-height: 0.95;
+      text-wrap: balance;
+    }
+    .headline:not([data-narrow]) .headline-wide .ln {
+      display: inline;
+      white-space: normal;
+    }
+  }
+}

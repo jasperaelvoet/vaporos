@@ -1,0 +1,38 @@
+/* Motion rules.
+
+   Heat comes fast and leaves slowly: heating takes --vos-dur-heat (600 ms),
+   cooling --vos-dur-cool (1400 ms), both on --ease-out. The springs are
+   --ease-tach (needles, counters) and --ease-width (a word stretching into
+   its cut).
+
+   Two switches turn motion off, and both leave every final state in place:
+   the system's prefers-reduced-motion, and the footer's Pause motion toggle
+   (html[data-motion="paused"], saved per browser, set before first paint by
+   the inline chrome script). Scripts ask src/lib/motion/prefs.ts instead of
+   reading either one. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html[data-motion="paused"] *,
+html[data-motion="paused"] ::before,
+html[data-motion="paused"] ::after {
+  animation-duration: 1ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+/* Lenis (desktop fine pointers only) adds .lenis to <html>; its own rules
+   (lenis/dist/lenis.css) are imported in globals.css. */

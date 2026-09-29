@@ -1,0 +1,61 @@
+/* Grounds. The page is ash; panels are soot; white-hot is always the thing
+   you touch, and the one block you download from. Faults are the only cold
+   thing, and always come with hazard tape and words.
+
+     surface-hot      the white-hot block: h9 ground, ash text. The fixed nav
+                      turns into a hard ash bar while one sits under it
+                      (the nav script finds them by this exact class).
+     isotherm-rings   faint contour rings rising from the bottom right, for a
+                      surface-hot block
+     plate            an opaque-enough ash plate for text over heat (≥ 13:1)
+     hazard           cold hazard tape, for a fault's edge
+     heat-bar         the Inferno ramp as a horizontal bar (scales, meters) */
+
+@utility surface-hot {
+  --strong: var(--color-ash);
+  background-color: var(--color-h9);
+  color: var(--color-ash);
+}
+
+@utility isotherm-rings {
+  position: relative;
+  isolation: isolate;
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    opacity: 0.38;
+    background: repeating-radial-gradient(
+      120% 120% at 88% 118%,
+      transparent 0 46px,
+      color-mix(in srgb, var(--color-h8) 90%, transparent) 46px 48px
+    );
+  }
+}
+
+@utility plate {
+  background-color: color-mix(in srgb, var(--color-h0) 86%, transparent);
+  color: var(--color-bone);
+}
+
+@utility hazard {
+  background: repeating-linear-gradient(135deg, var(--color-cold) 0 10px, var(--color-h0) 10px 20px);
+}
+
+@utility heat-bar {
+  background: linear-gradient(
+    to right,
+    var(--color-h0),
+    var(--color-h1),
+    var(--color-h2),
+    var(--color-h3),
+    var(--color-h4),
+    var(--color-h5),
+    var(--color-h6),
+    var(--color-h7),
+    var(--color-h8),
+    var(--color-h9)
+  );
+}
