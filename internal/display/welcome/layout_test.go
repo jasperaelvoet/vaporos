@@ -2,6 +2,7 @@ package welcome
 
 import (
 	"image"
+	"slices"
 	"testing"
 )
 
@@ -33,11 +34,15 @@ func TestLayoutTitleSafe(t *testing.T) {
 		in("QR card", l.QRCard)
 		in("code plate", l.Panel)
 		in("progress bar", l.Progress)
+		in("signature", l.Signature)
+		in("handshake mark", l.Handshake)
 	})
 }
 
-// No text runs into another line, the QR card or its frame, the signature,
-// the progress bar or a plate it doesn't belong to.
+// No text runs into another line, the QR card or its frame, the progress
+// bar, the handshake mark or a plate it doesn't belong to: the setup code
+// sits inside its plate and the scale's words inside the signature, and
+// nothing else touches either.
 func TestLayoutNoOverlap(t *testing.T) {
 	eachLayout(t, func(name string, sz image.Point, l *layout) {
 		at := name + "@" + sizeName(sz)
@@ -47,20 +52,30 @@ func TestLayoutNoOverlap(t *testing.T) {
 					t.Errorf("%s: %s %s %v overlaps %s %s %v", at, a.Role, quote(a.Text), a.Rect, b.Role, quote(b.Text), b.Rect)
 				}
 			}
-			for what, r := range map[string]image.Rectangle{"the QR card": l.QRCard, "the QR frame": l.QRFrame, "the signature": l.Signature, "the progress bar": l.Progress} {
+			for what, r := range map[string]image.Rectangle{"the QR card": l.QRCard, "the QR frame": l.QRFrame, "the progress bar": l.Progress, "the handshake mark": l.Handshake, "the mark": l.Mark} {
 				if a.Rect.Overlaps(r) && !(what == "the progress bar" && a.Role == roleProgress) {
 					t.Errorf("%s: %s %s %v overlaps %s %v", at, a.Role, quote(a.Text), a.Rect, what, r)
 				}
 			}
-			onPanel := a.Role == roleCode || a.Role == roleCodeLabel
-			if onPanel && !a.Rect.In(l.Panel) || !onPanel && a.Rect.Overlaps(l.Panel) {
-				t.Errorf("%s: %s %s %v against the code plate %v", at, a.Role, quote(a.Text), a.Rect, l.Panel)
+			for _, plate := range []struct {
+				what  string
+				r     image.Rectangle
+				roles []role
+			}{{"code plate", l.Panel, []role{roleCode, roleCodeLabel}}, {"signature", l.Signature, []role{roleScale, roleScaleLabel}}} {
+				on := slices.Contains(plate.roles, a.Role)
+				if on && !a.Rect.In(plate.r) || !on && a.Rect.Overlaps(plate.r) {
+					t.Errorf("%s: %s %s %v against the %s %v", at, a.Role, quote(a.Text), a.Rect, plate.what, plate.r)
+				}
 			}
 		}
-		for what, r := range map[string]image.Rectangle{"signature": l.Signature, "progress bar": l.Progress, "code plate": l.Panel, "QR frame": l.QRFrame} {
-			if r.Overlaps(l.QRCard) {
-				t.Errorf("%s: the %s %v overlaps the QR card %v", at, what, r, l.QRCard)
+		for what, r := range map[string]image.Rectangle{"signature": l.Signature, "progress bar": l.Progress, "code plate": l.Panel, "handshake mark": l.Handshake, "caption plate": l.Caption, "callout": l.Callout} {
+			if r.Overlaps(l.QRFrame) || r.Overlaps(l.QRCard) {
+				t.Errorf("%s: the %s %v overlaps the QR card %v or its frame %v", at, what, r, l.QRCard, l.QRFrame)
 			}
+		}
+		// The frame goes around the card; TestQRCardIsPure holds it outside.
+		if !l.QRFrame.Empty() && (!l.QRCard.In(l.QRFrame) || l.QRCard == l.QRFrame) {
+			t.Errorf("%s: the QR frame %v does not surround the card %v", at, l.QRFrame, l.QRCard)
 		}
 	})
 }

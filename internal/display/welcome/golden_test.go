@@ -42,7 +42,7 @@ func goldenOf(name string, sz image.Point, l *layout) goldenCase {
 	c := goldenCase{Fixture: name, Size: sizeName(sz), Module: l.Module, Rects: map[string][4]int{}}
 	for k, r := range map[string]image.Rectangle{
 		"mark": l.Mark, "signature": l.Signature, "progress": l.Progress, "callout": l.Callout,
-		"panel": l.Panel, "qrCard": l.QRCard, "qrFrame": l.QRFrame,
+		"panel": l.Panel, "qrCard": l.QRCard, "qrFrame": l.QRFrame, "handshake": l.Handshake, "caption": l.Caption,
 	} {
 		if !r.Empty() {
 			c.Rects[k] = rect4(r)

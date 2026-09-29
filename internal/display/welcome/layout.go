@@ -15,19 +15,21 @@ import (
 type role uint8
 
 const (
-	roleWordmark  role = iota + 1 // the product name, when it is set as text
-	roleStatus                    // the one sentence that says what is going on
-	roleDetail                    // the line under it
-	roleURL                       // http://vapor.local
-	roleIP                        // the same address by IP
-	roleCodeLabel                 // "Setup code"
-	roleCode                      // the setup code itself
-	roleCaption                   // "Scan to open", under the QR card
-	roleVersion                   // the image version
-	roleProgress                  // a label on the progress bar
+	roleWordmark   role = iota + 1 // the product name, when it is set as text
+	roleStatus                     // the one sentence that says what is going on
+	roleDetail                     // the line under it
+	roleURL                        // http://vapor.local
+	roleIP                         // the same address by IP
+	roleCodeLabel                  // "Setup code"
+	roleCode                       // the setup code itself
+	roleCaption                    // "Scan to open", under the QR card
+	roleVersion                    // the image version
+	roleProgress                   // a label on the progress bar
+	roleScale                      // the ends of the look's heat scale ("asleep", "streaming")
+	roleScaleLabel                 // the state's word on the scale
 )
 
-var roleNames = [...]string{"", "wordmark", "status", "detail", "url", "ip", "codeLabel", "code", "caption", "version", "progress"}
+var roleNames = [...]string{"", "wordmark", "status", "detail", "url", "ip", "codeLabel", "code", "caption", "version", "progress", "scale", "scaleLabel"}
 
 func (r role) String() string {
 	if int(r) < len(roleNames) {
@@ -89,16 +91,22 @@ type layout struct {
 	Texts []textItem
 
 	Mark      image.Rectangle // the vector mark
-	Signature image.Rectangle // the look's state element (the draft: the bar under the wordmark)
+	Signature image.Rectangle // the look's state element (REDLINE: the heat scale with its marker)
 	Progress  image.Rectangle // the progress track; empty when there is no bar
 	Callout   image.Rectangle // the attention highlight, under the line it points at
 	Panel     image.Rectangle // the plate behind the setup code
 	QR        *qr.Code
+	QRSlot    image.Rectangle // the square the card is centred in; the look decorates around it
 	QRCard    image.Rectangle // the light card, quiet zone included
 	QRRadius  int             // the card's corner radius: its corners show what is behind
 	QRAt      image.Point     // top-left pixel of module (0,0)
 	Module    int             // pixels per module
-	QRFrame   image.Rectangle // decoration around the card, outside it
+	QRFrame   image.Rectangle // decoration around the card; it contains the card and never paints inside it
+
+	Handshake     image.Rectangle // the hostname's handshake mark (brand.HandshakeFor), next to the address
+	HandshakeMark brand.Handshake
+	Caption       image.Rectangle   // the plate under the QR caption
+	Plates        []image.Rectangle // plates the look puts behind lines that would sit on too much heat
 }
 
 // computeLayout lays st out on a w×h screen with the compiled-in look.
@@ -118,14 +126,16 @@ func computeLayout(st State, w, h int) *layout {
 // placeQR puts the code in a square of side size reference units at (x, y).
 // The module is the largest whole number of pixels that fits the code and
 // its quiet zone of brand.TVQR.QuietModules modules on every side; the card
-// is a whole number of modules, centred in the square, with corners rounded
-// by one module so the quiet zone stays whole.
+// is a whole number of modules, centred in the square (QRSlot, set even
+// without a code), with corners rounded by one module so the quiet zone
+// stays whole.
 func (l *layout) placeQR(x, y, size float64) {
+	side := l.Len(size)
+	l.QRSlot = image.Rect(l.X(x), l.Y(y), l.X(x)+side, l.Y(y)+side)
 	if l.QR == nil {
 		return
 	}
 	quiet := brand.TVQR.QuietModules
-	side := l.Len(size)
 	n := l.QR.Size + 2*quiet
 	l.Module = max(1, side/n)
 	inner := l.Module * n

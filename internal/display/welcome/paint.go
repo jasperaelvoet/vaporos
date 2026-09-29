@@ -117,7 +117,9 @@ func barFill(track image.Rectangle, percent int) int {
 type backdrop struct {
 	W, H  int
 	Tone  brand.State     // zero when the look's background ignores the tone
-	Focus image.Rectangle // what the background centres on, usually the QR card
+	Pair  bool            // a device waits for its PIN, when the look's background shows it
+	Focus image.Rectangle // what the background centres on, usually the QR card's slot
+	Bloom bool            // no card in Focus yet (starting): a look may centre a smaller shape there
 }
 
 // The background cache: the bgCacheSize most recently used backgrounds, and
@@ -227,6 +229,64 @@ func fillRounded(img *image.RGBA, r image.Rectangle, rad int, c color.RGBA) {
 			p[1] = uint8(float64(p[1]) + (float64(c.G)-float64(p[1]))*cov)
 			p[2] = uint8(float64(p[2]) + (float64(c.B)-float64(p[2]))*cov)
 			p[3] = 0xff
+		}
+	}
+}
+
+// fillRect paints r in c.
+func fillRect(img *image.RGBA, r image.Rectangle, c color.RGBA) {
+	r = r.Intersect(img.Rect)
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		row := img.Pix[img.PixOffset(r.Min.X, y):img.PixOffset(r.Max.X, y)]
+		for i := 0; i < len(row); i += 4 {
+			row[i], row[i+1], row[i+2], row[i+3] = c.R, c.G, c.B, 0xff
+		}
+	}
+}
+
+// blendPx mixes c into the pixel at (x, y) by a.
+func blendPx(img *image.RGBA, x, y int, c color.RGBA, a float64) {
+	if !(image.Point{x, y}).In(img.Rect) || a <= 0 {
+		return
+	}
+	o := img.PixOffset(x, y)
+	p := img.Pix[o : o+4 : o+4]
+	p[0] = uint8(float64(p[0]) + (float64(c.R)-float64(p[0]))*a + 0.5)
+	p[1] = uint8(float64(p[1]) + (float64(c.G)-float64(p[1]))*a + 0.5)
+	p[2] = uint8(float64(p[2]) + (float64(c.B)-float64(p[2]))*a + 0.5)
+	p[3] = 0xff
+}
+
+// roundDist is the signed distance from the centre of pixel (x, y) to the
+// edge of r with corners of radius rad: negative inside.
+func roundDist(r image.Rectangle, rad float64, x, y int) float64 {
+	cx, cy := float64(r.Min.X+r.Max.X)/2, float64(r.Min.Y+r.Max.Y)/2
+	hw, hh := float64(r.Dx())/2, float64(r.Dy())/2
+	rad = min(rad, hw, hh)
+	qx, qy := math.Abs(float64(x)+0.5-cx)-(hw-rad), math.Abs(float64(y)+0.5-cy)-(hh-rad)
+	return math.Hypot(math.Max(qx, 0), math.Max(qy, 0)) + math.Min(math.Max(qx, qy), 0) - rad
+}
+
+// blendRound fills r, its corners rounded by rad, with c at opacity a,
+// anti-aliased by the distance to its edge.
+func blendRound(img *image.RGBA, r image.Rectangle, rad float64, c color.RGBA, a float64) {
+	for y := max(r.Min.Y, img.Rect.Min.Y); y < min(r.Max.Y, img.Rect.Max.Y); y++ {
+		for x := max(r.Min.X, img.Rect.Min.X); x < min(r.Max.X, img.Rect.Max.X); x++ {
+			blendPx(img, x, y, c, math.Min(1, math.Max(0, 0.5-roundDist(r, rad, x, y)))*a)
+		}
+	}
+}
+
+// blendRing draws the inner w pixels of r's rounded edge in c at opacity a.
+func blendRing(img *image.RGBA, r image.Rectangle, rad, w float64, c color.RGBA, a float64) {
+	for y := max(r.Min.Y, img.Rect.Min.Y); y < min(r.Max.Y, img.Rect.Max.Y); y++ {
+		for x := max(r.Min.X, img.Rect.Min.X); x < min(r.Max.X, img.Rect.Max.X); x++ {
+			d := roundDist(r, rad, x, y)
+			if d < -w-1 {
+				continue
+			}
+			cov := math.Min(1, math.Max(0, 0.5-d)) - math.Min(1, math.Max(0, 0.5-(d+w)))
+			blendPx(img, x, y, c, cov*a)
 		}
 	}
 }

@@ -104,8 +104,13 @@ func TestToneDrivesSignature(t *testing.T) {
 		if n := len(sa) / 4; diff*5 < n {
 			t.Errorf("%v: only %d of %d signature pixels differ between ready and fault", sz, diff, n)
 		}
-		if !bytes.Equal(region(ia, a.QRCard), region(ib, b.QRCard)) {
-			t.Errorf("%v: the QR card changes with the tone", sz)
+		// The card's rounded corners show the field behind; the rest of it,
+		// quiet zone and code, is the same in every tone.
+		c, rad := a.QRCard, a.QRRadius
+		for _, r := range []image.Rectangle{{c.Min.Add(image.Pt(rad, 0)), c.Max.Sub(image.Pt(rad, 0))}, {c.Min.Add(image.Pt(0, rad)), c.Max.Sub(image.Pt(0, rad))}} {
+			if !bytes.Equal(region(ia, r), region(ib, r)) {
+				t.Errorf("%v: the QR card changes with the tone", sz)
+			}
 		}
 	}
 }
