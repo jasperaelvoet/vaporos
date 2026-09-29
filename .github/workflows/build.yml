@@ -1,18 +1,25 @@
 # Build, test and publish VaporOS on every push.
 #
 #   go        gofmt, vet, race-enabled unit tests, the static `vos` binary
-#   image     the OS (root.erofs, kernel, initramfs, manifest.json) and the
-#             ISO, built by build/build.sh in the same container as the dev loop.
-#             On pushes build.sh signs manifest.json with the VOS_SIGNING_KEY
-#             secret before it makes the ISO, so the ISO carries
-#             manifest.json.sig: the installer refuses an unsigned medium.
-#             Pull requests never get the key, and their builds stay unsigned.
+#   image     the OS (root.erofs, kernel, initramfs, systemd-boot and an
+#             unsigned manifest.json), built by build/build.sh in the same
+#             container as the dev loop. That container runs package scriptlets
+#             as root, so no signing key ever comes near this job.
+#   sign      on a fresh runner that runs no package code: checks the image
+#             job's manifest.json against this commit, signs it with the
+#             VOS_SIGNING_KEY secret (pushes only; `vos sign` reads the key from
+#             a private file), and makes the ISO around it (build/iso.sh), so
+#             the ISO carries manifest.json.sig: the installer refuses an
+#             unsigned medium. Pull requests never get the key, and their
+#             builds stay unsigned.
 #   vm-test   installs the ISO in QEMU through the web installer and boots it
-#             (an unsigned ISO: checks that its installer refuses to install it)
-#   publish   signed pushes only: checks the image job's signed manifest against
-#             keys/release.pub, pushes the OS to ghcr.io as an OCI artifact
-#             tagged <version> and <channel>, and attaches the ISO to a GitHub
-#             release (main: latest; other branches: prerelease)
+#             (an unsigned ISO: checks that its installer refuses to install
+#             it). A signed build must pass it under KVM.
+#   publish   signed pushes that passed vm-test only: checks the signed manifest
+#             against keys/release.pub, pushes the OS to ghcr.io as an OCI
+#             artifact tagged <version> and <channel> (the channel tag only
+#             ever moves to a higher rollback_index), and attaches the ISO to a
+#             GitHub release (main: latest; other branches: prerelease)
 #
 # The version is the commit's UTC time (YYYYMMDD.HHMMSS), so every job and
 # every re-run of a commit agree on it. The channel is the branch name, which
@@ -123,24 +130,19 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+          # A re-run of the job replaces what an earlier attempt uploaded.
+          overwrite: true
 
   image:
     needs: go
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    outputs:
-      # true when manifest.json (in out/ and on the ISO) is signed with the
-      # release key; vm-test and publish go by it.
-      signed: ${{ steps.check.outputs.signed }}
     env:
       VERSION: ${{ needs.go.outputs.version }}
       CHANNEL: ${{ needs.go.outputs.channel }}
       # The package cache and the build tree (pacstrap base, rootfs overlay,
       # stage) take tens of GB: they go on the runner's second disk.
       SCRATCH: /mnt/vos
-      # Whether this build signs: pushes do, once the secret exists. Only the
-      # yes/no is here; the key itself goes to the one step that builds.
-      SIGN: ${{ github.event_name == 'push' && secrets.VOS_SIGNING_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -185,6 +187,15 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # Weekly keys: packages.txt rarely changes, but the repos do, and an
+      # exact cache hit is never saved again. A new key each week keeps the
+      # package cache close to the current repos at the cost of one save a
+      # week. The same week rebuilds the builder image's pacman keyrings and
+      # mirrorlists (VOS_WEEK in build/Dockerfile), as build/run.sh does.
+      - name: This week
+        id: week
+        run: echo "week=$(date -u +%G-W%V)" >>"$GITHUB_OUTPUT"
+
       - name: Build the builder image
         uses: docker/build-push-action@v7
         with:
@@ -194,20 +205,17 @@ jobs:
           tags: vos-builder:ci
           load: true
           pull: true
+          build-args: VOS_WEEK=${{ steps.week.outputs.week }}
           cache-from: type=gha,scope=vos-builder
           cache-to: type=gha,mode=max,scope=vos-builder
 
-      # Weekly keys: packages.txt rarely changes, but the repos do, and an
-      # exact cache hit is never saved again. A new key each week keeps the
-      # cache close to the current repos at the cost of one save a week.
-      - name: Package cache key
-        id: pkgkey
-        run: echo "week=$(date -u +%G-W%V)" >>"$GITHUB_OUTPUT"
+      - name: Test the build scripts
+        run: docker run --rm --privileged --platform linux/amd64 -v "$PWD:/src:ro" vos-builder:ci /src/build/selftest.sh
 
       - uses: actions/cache@v6
         with:
           path: ${{ env.SCRATCH }}/pkgcache
-          key: pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-${{ steps.pkgkey.outputs.week }}
+          key: pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-${{ steps.week.outputs.week }}
           restore-keys: |
             pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-
             pacman-
@@ -215,24 +223,13 @@ jobs:
       - name: Build the image
         env:
           VOS_DEBUG: '0'
+          # Up to an unsigned manifest.json: the sign job signs it and makes
+          # the ISO.
+          VOS_PHASE: image
           COMPRESS: zstd
           GIT: ${{ github.sha }}
-          # The release key, on pushes only: pull requests (from forks, too)
-          # never see it. build.sh signs manifest.json with it before making
-          # the ISO, checks the signature against keys/release.pub, and keeps
-          # the key from everything but `vos sign`.
-          VOS_SIGNING_KEY: ${{ github.event_name == 'push' && secrets.VOS_SIGNING_KEY || '' }}
         run: |
           mkdir -p out
-          sign=()
-          if [ "$SIGN" = true ]; then
-            if [ ! -f keys/release.pub ]; then
-              echo "::error file=keys/release.pub::keys/release.pub is missing: the signature could not be checked, and the image would trust no release key. Commit the public half of VOS_SIGNING_KEY there."
-              exit 1
-            fi
-            # By name only: the value never appears on a command line.
-            sign=(-e VOS_SIGNING_KEY)
-          fi
           # As scripts/build.sh runs it, but with the package cache and the
           # build tree in host directories on the big disk instead of volumes.
           docker run --rm --privileged --platform linux/amd64 \
@@ -240,32 +237,132 @@ jobs:
             -v "$PWD/out:/out" \
             -v "$SCRATCH/pkgcache:/var/cache/pacman/pkg" \
             -v "$SCRATCH/work:/work" \
-            -e VERSION -e CHANNEL -e GIT -e VOS_DEBUG -e COMPRESS -e REFRESH "${sign[@]}" \
+            -e VERSION -e CHANNEL -e GIT -e VOS_DEBUG -e VOS_PHASE -e COMPRESS -e REFRESH \
             vos-builder:ci /src/build/build.sh
           ls -l out
 
       - name: Check the output
-        id: check
         run: |
-          iso=out/vaporos-$VERSION.iso
-          [ -s "$iso" ] || { echo "::error::the build produced no $iso"; exit 1; }
-          # The manifest must describe this build, and its checksums the files
-          # next to it: this is what was signed, and what publish pushes.
-          python3 - "$VERSION" "$CHANNEL" "$GITHUB_SHA" <<'EOF'
-          import hashlib, json, os, sys
-          version, channel, git = sys.argv[1:]
+          for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json; do
+            if [ ! -s "out/$f" ]; then
+              echo "::error::the build produced no out/$f"
+              exit 1
+            fi
+          done
+          # This job never signs and makes no ISO: the sign job does both.
+          if [ -e out/manifest.json.sig ] || compgen -G 'out/*.iso' >/dev/null; then
+            echo "::error::the image build left a signature or an ISO in out/"
+            exit 1
+          fi
+
+      - name: Trim the package cache
+        run: |
+          # pacman ran as root in the container; actions/cache saves as us.
+          sudo chown -R "$(id -u):$(id -g)" "$SCRATCH/pkgcache"
+          # Leftover download directories, and every package this build did
+          # not install, so the cache holds exactly the current package set.
+          find "$SCRATCH/pkgcache" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          db=$SCRATCH/work/base/var/lib/pacman/local
+          if [ -d "$db" ]; then
+            for f in "$SCRATCH"/pkgcache/*.pkg.tar.*; do
+              [ -e "$f" ] || continue
+              id=$(basename "$f")
+              id=${id%-*.pkg.tar.*}
+              [ -d "$db/$id" ] || rm -f "$f"
+            done
+          else
+            echo "::warning::no package database at $db; the package cache is saved untrimmed"
+          fi
+          du -sh "$SCRATCH/pkgcache"
+
+      - name: Upload the OS files
+        uses: actions/upload-artifact@v7
+        with:
+          name: os
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+          compression-level: 0
+
+  # The release key lives in this job alone. It runs on a fresh runner and
+  # executes nothing but this repository's scripts, the `vos` binary the go
+  # job built from source, and tools from the runner's own distribution: none
+  # of the image's package code, which ran as root on the image job's runner.
+  sign:
+    needs: [go, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      # true when manifest.json (in the iso artifact and on the ISO) is signed
+      # with the release key; vm-test and publish go by it.
+      signed: ${{ steps.check.outputs.signed }}
+    env:
+      VERSION: ${{ needs.go.outputs.version }}
+      CHANNEL: ${{ needs.go.outputs.channel }}
+      # Whether this build signs: pushes do, once the secret exists. Only the
+      # yes/no is here; the key itself goes to the one step that signs.
+      SIGN: ${{ github.event_name == 'push' && secrets.VOS_SIGNING_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vos
+          path: .build
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: os
+          path: out
+
+      - name: Install the ISO tools
+        run: |
+          for try in 1 2 3; do
+            if sudo apt-get update -qq &&
+               sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                 xorriso mtools dosfstools >/dev/null; then
+              break
+            fi
+            [ "$try" -lt 3 ] || exit 1
+            echo "apt-get failed; trying again in 20 s"
+            sleep 20
+          done
+          xorriso -version | head -n 1
+
+      # A signature vouches for everything in the manifest, so sign only this
+      # commit's version, channel and rollback_index, the image's own command
+      # line, and the files that are really there.
+      - name: Check manifest.json
+        run: |
+          python3 - "$VERSION" "$CHANNEL" "$GITHUB_SHA" rootfs/usr/lib/vos/cmdline <<'EOF'
+          import calendar, hashlib, json, os, sys, time
+          version, channel, git, cmdline_path = sys.argv[1:]
+          errors = []
+          if os.path.exists("out/manifest.json.sig"):
+              errors.append("out/manifest.json.sig came from the image job, which must never sign")
           with open("out/manifest.json") as f:
               m = json.load(f)
-          errors = []
-          want = {"schema": 1, "product": "vaporos", "version": version, "channel": channel}
+          with open(cmdline_path) as f:
+              cmdline = f.read().rstrip("\n")
+          want = {
+              "schema": 1, "product": "vaporos", "min_updater": 1,
+              "version": version, "channel": channel, "git": git, "cmdline": cmdline,
+              "rollback_index": calendar.timegm(time.strptime(version, "%Y%m%d.%H%M%S")),
+          }
           for key, value in want.items():
-              if m.get(key) != value:
+              if m.get(key) != value or type(m.get(key)) is not type(value):
                   errors.append(f"{key} is {m.get(key)!r}, expected {value!r}")
-          if m.get("git") != git:
-              print(f"::warning file=out/manifest.json::git is {m.get('git')!r}, expected {git!r}")
-          for role in ("root", "kernel", "initrd"):
-              a = (m.get("artifacts") or {}).get(role) or {}
-              path = os.path.join("out", a.get("name") or f"<no artifacts.{role}.name>")
+          names = {"root": "root.erofs", "kernel": "vmlinuz", "initrd": "initramfs.img"}
+          artifacts = m.get("artifacts") or {}
+          if sorted(artifacts) != sorted(names):
+              errors.append(f"artifacts are {sorted(artifacts)}, expected {sorted(names)}")
+          for role, name in names.items():
+              a = artifacts.get(role) or {}
+              if a.get("name") != name:
+                  errors.append(f"artifacts.{role}.name is {a.get('name')!r}, expected {name!r}")
+                  continue
+              path = os.path.join("out", name)
               if not os.path.isfile(path):
                   errors.append(f"artifacts.{role}: no file {path}")
                   continue
@@ -279,13 +376,47 @@ jobs:
               print(f"::error file=out/manifest.json::{e}")
           sys.exit(1 if errors else 0)
           EOF
-          # Signed exactly when the build had the key.
+
+      - name: Sign manifest.json with the release key
+        if: env.SIGN == 'true'
+        env:
+          # This step's shell only: it writes the key to a file only it can
+          # read, drops the variable, and `vos sign --key FILE` is the one
+          # program that runs while the file exists.
+          VOS_SIGNING_KEY: ${{ secrets.VOS_SIGNING_KEY }}
+        run: |
+          if [ ! -f keys/release.pub ]; then
+            echo "::error file=keys/release.pub::keys/release.pub is missing: the signature could not be checked, and the image would trust no release key. Commit the public half of VOS_SIGNING_KEY there."
+            exit 1
+          fi
+          chmod +x .build/vos
+          key=$RUNNER_TEMP/vos-signing-key
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printf '%s\n' "$VOS_SIGNING_KEY" >"$key")
+          unset VOS_SIGNING_KEY
+          .build/vos sign --key "$key" out/manifest.json
+          rm -f "$key"
+          # Checked without the Go code that made the signature: openssl.
+          . build/lib.sh
+          if ! verify_ed25519 keys/release.pub out/manifest.json out/manifest.json.sig; then
+            echo "::error::out/manifest.json.sig does not verify against keys/release.pub"
+            exit 1
+          fi
+
+      - name: Make the ISO
+        run: bash build/iso.sh out "out/vaporos-$VERSION.iso"
+
+      - name: Check the ISO
+        id: check
+        run: |
+          iso=out/vaporos-$VERSION.iso
+          # Signed exactly when this job had the key.
           if [ -s out/manifest.json.sig ]; then signed=true; else signed=false; fi
           if [ "$signed" != "$SIGN" ]; then
             if [ "$SIGN" = true ]; then
-              echo "::error::the build had the signing key but wrote no manifest.json.sig"
+              echo "::error::this job had the signing key but wrote no manifest.json.sig"
             else
-              echo "::error::there is an out/manifest.json.sig, but this build had no signing key"
+              echo "::error::there is an out/manifest.json.sig, but this job had no signing key"
             fi
             exit 1
           fi
@@ -295,10 +426,9 @@ jobs:
           files=(manifest.json)
           [ "$signed" = false ] || files+=(manifest.json.sig)
           extract=()
-          for f in "${files[@]}"; do extract+=(-extract "/vos/$f" "/x/$f"); done
+          for f in "${files[@]}"; do extract+=(-extract "/vos/$f" "$RUNNER_TEMP/iso/$f"); done
           mkdir -p "$RUNNER_TEMP/iso"
-          if ! docker run --rm -v "$PWD/out:/out:ro" -v "$RUNNER_TEMP/iso:/x" vos-builder:ci \
-              xorriso -osirrox on -indev "/out/${iso#out/}" "${extract[@]}" >"$RUNNER_TEMP/xorriso.log" 2>&1; then
+          if ! xorriso -osirrox on -indev "$iso" "${extract[@]}" >"$RUNNER_TEMP/xorriso.log" 2>&1; then
             cat "$RUNNER_TEMP/xorriso.log"
             echo "::error::could not read ${files[*]} from /vos on the ISO"
             exit 1
@@ -330,26 +460,6 @@ jobs:
             exit 1
           fi
 
-      - name: Trim the package cache
-        run: |
-          # pacman ran as root in the container; actions/cache saves as us.
-          sudo chown -R "$(id -u):$(id -g)" "$SCRATCH/pkgcache"
-          # Leftover download directories, and every package this build did
-          # not install, so the cache holds exactly the current package set.
-          find "$SCRATCH/pkgcache" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
-          db=$SCRATCH/work/base/var/lib/pacman/local
-          if [ -d "$db" ]; then
-            for f in "$SCRATCH"/pkgcache/*.pkg.tar.*; do
-              [ -e "$f" ] || continue
-              id=$(basename "$f")
-              id=${id%-*.pkg.tar.*}
-              [ -d "$db/$id" ] || rm -f "$f"
-            done
-          else
-            echo "::warning::no package database at $db; the package cache is saved untrimmed"
-          fi
-          du -sh "$SCRATCH/pkgcache"
-
       - name: Upload the ISO
         uses: actions/upload-artifact@v7
         with:
@@ -360,23 +470,17 @@ jobs:
             out/manifest.json*
           if-no-files-found: error
           retention-days: 7
-          compression-level: 0
-
-      - name: Upload the OS files
-        uses: actions/upload-artifact@v7
-        with:
-          name: os
-          path: |
-            out/
-            !out/*.iso
-          if-no-files-found: error
-          retention-days: 7
+          overwrite: true
           compression-level: 0
 
   vm-test:
-    needs: [go, image]
+    needs: [go, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      # A step's outcome is recorded before continue-on-error applies, so
+      # this is true only when the test itself passed.
+      passed: ${{ steps.smoke.outcome == 'success' }}
     env:
       VERSION: ${{ needs.go.outputs.version }}
     steps:
@@ -387,8 +491,12 @@ jobs:
           name: iso
           path: out
 
+      # GitHub's Linux runners expose /dev/kvm, but only to root until a udev
+      # rule opens it up.
       - name: Enable KVM
         id: kvm
+        env:
+          SIGNED: ${{ needs.sign.outputs.signed }}
         run: |
           if [ -e /dev/kvm ]; then
             echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
@@ -399,26 +507,41 @@ jobs:
           fi
           if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
             echo "accel=kvm" >>"$GITHUB_OUTPUT"
+          elif [ "$SIGNED" = true ]; then
+            # A signed build is published only once it passed this test, and
+            # the full install under TCG emulation outlasts the job.
+            echo "::error title=No KVM::this runner has no usable /dev/kvm, so the signed build cannot be tested, and is not published. Re-run the job to get another runner."
+            exit 1
           else
-            echo "::warning title=No KVM::this runner has no usable /dev/kvm, so the VM test runs under TCG emulation; it may time out, and does not fail the build"
+            echo "::warning title=No KVM::this runner has no usable /dev/kvm, so the VM test runs under TCG emulation; it may time out, and does not fail an unsigned build"
             echo "accel=tcg" >>"$GITHUB_OUTPUT"
           fi
 
       - name: Install QEMU and OVMF
         run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            qemu-system-x86 qemu-utils ovmf >/dev/null
+          for try in 1 2 3; do
+            if sudo apt-get update -qq &&
+               sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                 qemu-system-x86 qemu-utils ovmf >/dev/null; then
+              break
+            fi
+            [ "$try" -lt 3 ] || exit 1
+            echo "apt-get failed; trying again in 20 s"
+            sleep 20
+          done
           qemu-system-x86_64 --version
 
       - name: Install the ISO through the web installer and boot it
+        id: smoke
+        # Advisory only under TCG, which the step above allows for unsigned
+        # builds alone.
         continue-on-error: ${{ steps.kvm.outputs.accel != 'kvm' }}
         env:
           ACCEL: ${{ steps.kvm.outputs.accel }}
           # The installer only installs a signed image. An unsigned ISO (pull
           # requests; pushes before the secret exists) is tested up to that
           # refusal. A branch's push build tests the full install.
-          SIGNED: ${{ needs.image.outputs.signed == 'true' && '1' || '0' }}
+          SIGNED: ${{ needs.sign.outputs.signed == 'true' && '1' || '0' }}
         run: bash tests/qemu-smoke.sh "out/vaporos-$VERSION.iso" "$VERSION" vm-smoke
 
       - name: Upload the VM logs
@@ -431,9 +554,12 @@ jobs:
             vm-smoke/screens/
           if-no-files-found: ignore
           retention-days: 14
+          overwrite: true
 
   publish:
-    needs: [go, image]
+    needs: [go, sign, vm-test]
+    # No status function here, so GitHub adds success(): a failed, cancelled
+    # or timed-out sign or vm-test job means nothing is published.
     if: github.event_name == 'push'
     # One publish per version at a time: a commit pushed to two branches at
     # once is two builds of one version, and the second must see what the
@@ -449,17 +575,21 @@ jobs:
     env:
       VERSION: ${{ needs.go.outputs.version }}
       CHANNEL: ${{ needs.go.outputs.channel }}
-      SIGNED: ${{ needs.image.outputs.signed }}
+      SIGNED: ${{ needs.sign.outputs.signed }}
+      TESTED: ${{ needs.vm-test.outputs.passed }}
     steps:
       # A push is built unsigned only when the secret is missing (with the
-      # secret, an unsigned build fails the image job). The key never comes
-      # here: publish pushes what the image job signed, after checking it.
-      - name: Check that the build is signed
+      # secret, an unsigned build fails the sign job). The key never comes
+      # here: publish pushes what the sign job signed, after checking it.
+      - name: Check that the build is signed and tested
         id: gate
         run: |
           if [ "$SIGNED" != true ]; then
             echo "::notice title=Not published::the VOS_SIGNING_KEY secret is not set (or not available to this run), so $VERSION was built unsigned and is not published. Create a key pair with 'vos keygen --out release', commit release.pub as keys/release.pub and store the private key with 'gh secret set VOS_SIGNING_KEY <release.key'."
             echo "enabled=false" >>"$GITHUB_OUTPUT"
+          elif [ "$TESTED" != true ]; then
+            echo "::error title=Not published::$VERSION did not pass its VM test (install through the web installer, boot, health), so it is not published."
+            exit 1
           else
             echo "enabled=true" >>"$GITHUB_OUTPUT"
           fi
@@ -495,7 +625,7 @@ jobs:
         run: |
           chmod +x .build/vos
           if [ ! -s out/manifest.json.sig ] || [ ! -f keys/release.pub ]; then
-            echo "::error::publishing needs out/manifest.json.sig from the image job and keys/release.pub"
+            echo "::error::publishing needs out/manifest.json.sig from the sign job and keys/release.pub"
             exit 1
           fi
           # As a device checks it: `vos update` accepts a manifest signed by
@@ -538,11 +668,10 @@ jobs:
 
       # The version is the commit's time, so a commit pushed to two branches
       # (a new branch before its first commit, a fast-forward into main) is
-      # built once per channel under one version. The channel tag always
-      # moves. The version tag and the release v<version> stay with the
-      # channel that published them first, except that main takes them over,
-      # since main's releases are the ones people install; a re-run refreshes
-      # its own.
+      # built once per channel under one version. The version tag and the
+      # release v<version> stay with the channel that published them first,
+      # except that main takes them over, since main's releases are the ones
+      # people install; a re-run refreshes its own.
       - name: Check who owns v${{ env.VERSION }}
         id: owner
         if: steps.gate.outputs.enabled == 'true'
@@ -570,21 +699,76 @@ jobs:
       - uses: oras-project/setup-oras@v2
         if: steps.gate.outputs.enabled == 'true'
 
-      - name: Push the OS to ghcr.io
+      # Installed machines only take a manifest whose rollback_index is higher
+      # than the one they run, so the channel tag only ever moves forward.
+      # Moved back (a re-run of an older run, or a commit dated before the
+      # channel's head) it would strand machines between the two versions and
+      # hand fresh installs the older one. The same build again (a re-run of
+      # this very run) is a no-op. To go back on purpose, commit a revert: it
+      # gets a new, higher version.
+      - name: Check the '${{ env.CHANNEL }}' channel on ghcr.io
+        id: channel
         if: steps.gate.outputs.enabled == 'true'
-        working-directory: out
         env:
           REGISTRY_TOKEN: ${{ github.token }}
-          OWNS_VERSION: ${{ steps.owner.outputs.version }}
         run: |
           # ghcr.io wants the repository in lower case.
           repo=ghcr.io/${GITHUB_REPOSITORY,,}
-          tags=$CHANNEL
-          if [ "$OWNS_VERSION" = true ]; then tags=$VERSION,$CHANNEL; fi
           printf '%s' "$REGISTRY_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          ours=$(jq -er '.rollback_index | numbers' out/manifest.json)
+          if ! oras manifest fetch "$repo:$CHANNEL" >"$RUNNER_TEMP/head.json" 2>"$RUNNER_TEMP/head.err"; then
+            if grep -qiE 'not found|manifest unknown|name unknown' "$RUNNER_TEMP/head.err"; then
+              echo "'$CHANNEL' is not on ghcr.io yet."
+              echo "move=true" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/head.err"
+            echo "::error::could not read $repo:$CHANNEL, so whether $VERSION is newer is unknown"
+            exit 1
+          fi
+          layer=$(jq -r '[.layers[]? | select(.annotations["org.opencontainers.image.title"] == "manifest.json") | .digest][0] // empty' \
+            "$RUNNER_TEMP/head.json")
+          if [ -z "$layer" ] || ! oras blob fetch --output "$RUNNER_TEMP/head-manifest.json" "$repo@$layer"; then
+            echo "::error::$repo:$CHANNEL has no readable manifest.json"
+            exit 1
+          fi
+          theirs=$(jq -er '.rollback_index | numbers' "$RUNNER_TEMP/head-manifest.json")
+          head=$(jq -r '.version // "?"' "$RUNNER_TEMP/head-manifest.json")
+          mine=sha256:$(sha256sum out/manifest.json | cut -d' ' -f1)
+          if [ "$ours" -gt "$theirs" ]; then
+            move=true
+            echo "'$CHANNEL' moves from $head to $VERSION."
+          elif [ "$ours" -lt "$theirs" ]; then
+            move=older
+            echo "::warning title=Channel not moved::'$CHANNEL' is at $head, newer than $VERSION: machines on it would refuse $VERSION as a downgrade, so the tag stays where it is. (A re-run of an older build, or a commit dated before the channel's head?)"
+          elif [ "$layer" = "$mine" ]; then
+            move=same
+            echo "::notice title=Already published::'$CHANNEL' already points to this build of $VERSION; nothing to push."
+          else
+            move=conflict
+            echo "::warning title=Not published::'$CHANNEL' already holds another build of $VERSION (a re-run that rebuilt the image); it stays, and this build is not published."
+          fi
+          echo "move=$move" >>"$GITHUB_OUTPUT"
+
+      - name: Push the OS to ghcr.io
+        if: steps.gate.outputs.enabled == 'true' && (steps.channel.outputs.move == 'true' || steps.channel.outputs.move == 'older')
+        working-directory: out
+        env:
+          OWNS_VERSION: ${{ steps.owner.outputs.version }}
+          MOVE: ${{ steps.channel.outputs.move }}
+        run: |
+          repo=ghcr.io/${GITHUB_REPOSITORY,,}
+          tags=()
+          [ "$OWNS_VERSION" != true ] || tags+=("$VERSION")
+          [ "$MOVE" != true ] || tags+=("$CHANNEL")
+          if [ ${#tags[@]} -eq 0 ]; then
+            echo "Nothing to push: the version tag belongs to another channel, and '$CHANNEL' stays."
+            exit 0
+          fi
+          # (oras login in the step before stored the credentials.)
           # oras records each file's name as its org.opencontainers.image.title
           # annotation, which is how `vos update` finds the files.
-          oras push "$repo:$tags" \
+          oras push "$repo:$(IFS=,; echo "${tags[*]}")" \
             --artifact-type application/vnd.vaporos.os.v1 \
             --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
@@ -595,18 +779,24 @@ jobs:
             vmlinuz:application/vnd.vaporos.kernel.v1 \
             initramfs.img:application/vnd.vaporos.initrd.v1
           summary=
-          for t in ${tags//,/ }; do summary+="${summary:+, }\`$repo:$t\`"; done
+          for t in "${tags[@]}"; do summary+="${summary:+, }\`$repo:$t\`"; done
           echo "OCI: $summary" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Create the GitHub release
-        if: steps.gate.outputs.enabled == 'true' && steps.owner.outputs.version == 'true'
+        if: steps.gate.outputs.enabled == 'true' && steps.owner.outputs.version == 'true' && steps.channel.outputs.move != 'conflict'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           OWNER: ${{ steps.owner.outputs.owner }}
+          MOVE: ${{ steps.channel.outputs.move }}
         run: |
           tag=v$VERSION
           repo=ghcr.io/${GITHUB_REPOSITORY,,}
+          # Latest only while this build is what the channel points to, never
+          # an older one. (Explicitly: GitHub makes a new release latest by
+          # default.)
+          latest=false
+          if [ "$MOVE" = true ] || [ "$MOVE" = same ]; then latest=true; fi
           {
             echo "VaporOS $VERSION, built from \`$CHANNEL\` at $GITHUB_SHA."
             echo
@@ -618,7 +808,7 @@ jobs:
           } >"$RUNNER_TEMP/notes.md"
           files=("out/vaporos-$VERSION.iso" out/manifest.json out/manifest.json.sig out/SHA256SUMS)
           if [ "$GITHUB_REF_NAME" = main ]; then
-            kind=(--latest)
+            kind=(--latest="$latest")
           else
             kind=(--prerelease --latest=false)
           fi
@@ -633,7 +823,7 @@ jobs:
           else
             # main taking over a branch's prerelease of the same commit.
             gh release upload "$tag" "${files[@]}" --clobber
-            gh release edit "$tag" --prerelease=false --latest \
+            gh release edit "$tag" --prerelease=false --latest="$latest" \
               --title "VaporOS $VERSION ($CHANNEL)" \
               --notes-file "$RUNNER_TEMP/notes.md"
           fi

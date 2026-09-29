@@ -155,6 +155,29 @@ wait_serial() {
     die "timed out after $(($2 * SCALE))s waiting for /$regex/"
 }
 
+# wait_serial_since OFFSET REGEX SECONDS: the last match of REGEX (an ERE) in
+# what the serial log got after byte OFFSET, whatever wait_serial matched in
+# between; for lines whose order against the others is not fixed.
+wait_serial_since() {
+    local off=$1 regex=$2 deadline=$((SECONDS + $3 * SCALE)) out
+    while ((SECONDS < deadline)); do
+        out=$(tail -c +$((off + 1)) "$LOG" 2>/dev/null | tr -d '\r' | grep -aoE "$regex" | tail -n 1 || true)
+        if [[ -n $out ]]; then
+            printf '%s' "$out"
+            return 0
+        fi
+        alive || die "QEMU exited while waiting for /$regex/ (see $WORK/qemu-$BOOTS.log)"
+        sleep 2
+    done
+    die "timed out after $(($3 * SCALE))s waiting for /$regex/"
+}
+
+# vos health reports each installed boot's verdict on the serial console
+# (docs/CONTRACTS.md, "Serial lines"). The test holds the image to it as soon
+# as the contract lists that line.
+HEALTH_LINE=0
+grep -q 'VOS-HEALTH result=' "$here/../docs/CONTRACTS.md" 2>/dev/null && HEALTH_LINE=1
+
 # Save the display to screens/NAME.png (best effort).
 screendump() {
     local ppm=$WORK/screens/$1.ppm
@@ -266,7 +289,11 @@ wait_exit $((180 * SCALE)) || { log "the installer did not reboot; stopping the 
 QEMU_PID=""
 
 # 4. The installed system boots from the disk alone and passes its health
-#    check (a failed one reboots, which ends QEMU here).
+#    check. The installer's entry is not boot-counted, so on this boot a
+#    failing check does not reboot: vos health only reports it, and the
+#    first update would then fail every counted boot and fall back. The
+#    report is the VOS-HEALTH serial line, once the contract has it.
+boot_off=$(wc -c <"$LOG" 2>/dev/null || echo 0)
 start_vm disk
 v=$(wait_serial 'VOS-READY mode=os version=(\S+)' 600)
 [[ $v == "$VERSION" ]] || die "the installed system runs $v, expected $VERSION"
@@ -280,9 +307,18 @@ c=$(http GET /auth/me -b "$WORK/cookies")
 [[ $c == 200 && $(json authenticated) == true ]] || die "GET /auth/me after login -> $c $(cat "$WORK/body")"
 log "logged in with the password set during the install"
 
-log "watching the health check (a failure reboots the VM)"
-sleep $((45 * SCALE))
-alive || die "the installed system rebooted on its own: its health check probably failed"
+if ((HEALTH_LINE)); then
+    log "waiting for the boot's health check (VOS-HEALTH)"
+    h=$(wait_serial_since "$boot_off" 'VOS-HEALTH result=[a-z]+.*' 240)
+    [[ $h =~ ^VOS-HEALTH\ result=ok($|\ ) ]] || die "vos health on the installed system did not pass: $h"
+    log "health check: ok"
+    alive || die "the installed system rebooted on its own after its health check"
+else
+    # Until then, only what a counted boot would show: a crash or reboot.
+    log "watching the installed system for $((45 * SCALE))s (docs/CONTRACTS.md has no VOS-HEALTH line yet)"
+    sleep $((45 * SCALE))
+    alive || die "the installed system rebooted on its own: its health check probably failed"
+fi
 expect_ping os
 screendump 3-os-idle
 

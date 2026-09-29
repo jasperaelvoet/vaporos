@@ -115,6 +115,76 @@ echo 'bm90IGEgc2lnbmF0dXJl' >"$tmp/garbage.sig"
 expect fail "signature: fails for garbage" \
     verify_ed25519 "$tmp/key.pub" "$tmp/manifest.json" "$tmp/garbage.sig"
 
+# --------------------------------------------------------- effective_sysctl --
+root=$tmp/sysctl-root
+sysrq() { effective_sysctl "$root" kernel.sysrq >"$tmp/out" || echo "exit $?" >"$tmp/out"; }
+sysrq_is() { result "$([[ $(<"$tmp/out") == "$2" ]] && echo 1 || echo 0)" "$1 (got '$(<"$tmp/out")')"; }
+
+sysrq; sysrq_is "sysctl: no sysctl.d at all" ""
+mkdir -p "$root/usr/lib/sysctl.d"
+printf 'kernel.sysrq = 16\n' >"$root/usr/lib/sysctl.d/50-default.conf"
+sysrq; sysrq_is "sysctl: no /etc/sysctl.d" 16
+mkdir -p "$root/etc/sysctl.d"
+rm "$root/usr/lib/sysctl.d/50-default.conf"
+sysrq; sysrq_is "sysctl: nothing sets it" ""
+printf 'kernel.sysrq = 16\n' >"$root/usr/lib/sysctl.d/50-default.conf"
+printf '# CachyOS\nkernel.sysrq = 1\nvm.swappiness = 100\n' >"$root/usr/lib/sysctl.d/70-cachyos-settings.conf"
+sysrq; sysrq_is "sysctl: the last file in name order wins" 1
+printf 'kernel.sysrq = 0\n' >"$root/usr/lib/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: 99-vos.conf sorts last" 0
+printf 'kernel/sysrq=1\n' >"$root/usr/lib/sysctl.d/99-zz.conf"
+sysrq; sysrq_is "sysctl: a later file with a / key still counts" 1
+rm "$root/usr/lib/sysctl.d/99-zz.conf"
+printf -- '-kernel.sysrq = 438\n' >"$root/etc/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: /etc replaces the same-named /usr/lib file" 438
+rm "$root/etc/sysctl.d/99-vos.conf"
+ln -s /dev/null "$root/etc/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: a link to /dev/null in /etc masks it" 1
+rm "$root/etc/sysctl.d/99-vos.conf"
+printf 'kernel.sysrq_other = 5\nkernel.sysrq = 0   \n' >"$root/usr/lib/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: other keys and trailing blanks" 0
+printf 'kernel.sysrq = 1' >"$root/usr/lib/sysctl.d/80-no-newline.conf"
+printf 'kernel.sysrq = 0' >"$root/usr/lib/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: files without a final newline" 0
+
+# ------------------------------------------------------------------- iso.sh --
+iso=$tmp/iso
+mkdir -p "$iso/in"
+for f in root.erofs:1024 vmlinuz:256 initramfs.img:512 systemd-bootx64.efi:64; do
+    head -c "$(( ${f#*:} * 1024 ))" /dev/urandom >"$iso/in/${f%%:*}"
+done
+printf '{"version":"20260929.123456","cmdline":"quiet loglevel=3 console=ttyS0,115200"}\n' >"$iso/in/manifest.json"
+# on_iso ISO: the files under /vos on ISO, one per line, in $tmp/out.
+on_iso() {
+    rm -rf "$iso/x"
+    xorriso -osirrox on -indev "$1" -extract /vos "$iso/x" >/dev/null 2>&1 &&
+        ls "$iso/x" >"$tmp/out"
+}
+# (The container has no cmp.)
+same() { [[ $(sha256sum <"$1") == "$(sha256sum <"$2")" ]]; }
+
+expect pass "iso: an unsigned ISO" bash "$here/iso.sh" "$iso/in" "$iso/unsigned.iso"
+expect pass "iso: ... has /vos" on_iso "$iso/unsigned.iso"
+result "$([[ $(tr '\n' ' ' <"$tmp/out") == 'initramfs.img manifest.json root.erofs vmlinuz ' ]] && echo 1 || echo 0)" \
+    "iso: ... with exactly the OS files, no signature and no boot loader"
+result "$(same "$iso/in/root.erofs" "$iso/x/root.erofs" && echo 1 || echo 0)" "iso: ... and root.erofs intact"
+
+printf 'c2lnbmF0dXJl\n' >"$iso/in/manifest.json.sig"
+expect pass "iso: a signed ISO" bash "$here/iso.sh" "$iso/in" "$iso/signed.iso"
+expect pass "iso: ... has /vos" on_iso "$iso/signed.iso"
+has "iso: ... with manifest.json.sig" manifest.json.sig
+result "$(same "$iso/in/manifest.json.sig" "$iso/x/manifest.json.sig" && echo 1 || echo 0)" "iso: ... the very signature"
+
+cp "$iso/in/manifest.json" "$iso/manifest.good"
+printf '{"version":"20260929.123456","cmdline":"quiet console=tty0 console=ttyS0"}\n' >"$iso/in/manifest.json"
+expect fail "iso: a console on tty0 is refused" bash "$here/iso.sh" "$iso/in" "$iso/tty0.iso"
+printf '{"version":"20260929.123456"}\n' >"$iso/in/manifest.json"
+expect fail "iso: a manifest without cmdline is refused" bash "$here/iso.sh" "$iso/in" "$iso/nocmdline.iso"
+cp "$iso/manifest.good" "$iso/in/manifest.json"
+rm "$iso/in/systemd-bootx64.efi"
+expect fail "iso: no boot loader, no ISO" bash "$here/iso.sh" "$iso/in" "$iso/noefi.iso"
+has "iso: ... and it says what is missing" systemd-bootx64.efi
+
 # ---------------------------------------------------------------- firewall --
 render() { # render CONFIG_JSON -> the ruleset vos-firewall would load
     printf '%s\n' "$1" >"$tmp/config.json"

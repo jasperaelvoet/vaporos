@@ -57,6 +57,32 @@ verify_ed25519() {
     return "$rc"
 }
 
+# The value systemd-sysctl gives KEY in the image at ROOT: a file in
+# /etc/sysctl.d replaces the same-named one in /usr/lib/sysctl.d (a link to
+# /dev/null masks it), all files are read in file name order, and the last
+# assignment wins. Prints nothing when no file sets KEY.
+# Usage: effective_sysctl ROOT KEY
+effective_sysctl() {
+    local root=$1 re=${2//./[./]} name f target dirs=()
+    for f in "$root/usr/lib/sysctl.d" "$root/etc/sysctl.d"; do
+        if [[ -d $f ]]; then dirs+=("$f"); fi
+    done
+    if (( ${#dirs[@]} == 0 )); then return 0; fi
+    find "${dirs[@]}" -maxdepth 1 -name '*.conf' -printf '%f\n' |
+        sort -u | while read -r name; do
+            f=$root/etc/sysctl.d/$name
+            [[ -e $f || -L $f ]] || f=$root/usr/lib/sysctl.d/$name
+            if [[ -L $f ]]; then
+                target=$(readlink "$f")
+                [[ $target != /dev/null ]] || continue
+                [[ $target != /* ]] || f=$root$target
+            fi
+            cat "$f" 2>/dev/null || true
+            echo
+        done |
+        sed -nE "s/^[[:space:]]*-?${re}[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*\$/\\1/p" | tail -n 1
+}
+
 # Check a public key file: one line of base64 that decodes to 32 bytes.
 # Usage: is_ed25519_pubkey FILE
 is_ed25519_pubkey() {

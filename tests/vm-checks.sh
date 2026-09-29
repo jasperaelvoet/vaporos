@@ -150,6 +150,17 @@ check_health() {
         bad boot-complete "boot-complete.target is $(systemctl is-active boot-complete.target); vos-health is $(systemctl is-active vos-health.service)"
     fi
     if [[ -s /var/lib/vos/health-ok ]]; then ok health-ok "$(tr -d '\n' </var/lib/vos/health-ok)"; else bad health-ok "no /var/lib/vos/health-ok"; fi
+    # On an uncounted boot vos health never fails its unit (there is nothing
+    # to fall back to), so "active" above also covers a failed check. Its
+    # verdict is in this boot's journal: "health: ok" or "health: degraded (...)".
+    local verdict
+    verdict=$(journalctl -b -u vos-health.service -o cat --no-pager 2>/dev/null |
+        grep -oE '^health: (ok$|degraded.*|FAILED.*)' | tail -n 1)
+    case $verdict in
+        'health: ok') ok health "vos health: ok" ;;
+        '') warn health "no verdict from vos health in this boot's journal" ;;
+        *) bad health "vos health on this boot: ${verdict#health: }" ;;
+    esac
 }
 
 # systemd-bless-boot drops the boot counter once boot-complete.target is
@@ -246,6 +257,30 @@ check_hardening() {
     fi
 }
 
+# No keypress, on a local keyboard or a Moonlight client's (Sunshine's
+# virtual keyboard), reboots or suspends the box.
+check_no_reboot_keys() {
+    local cad burst sysrq key have
+    cad=$(systemctl is-enabled ctrl-alt-del.target 2>/dev/null)
+    burst=$(systemctl show --property=CtrlAltDelBurstAction --value 2>/dev/null)
+    if [[ $cad == masked && $burst == none ]]; then
+        ok ctrl-alt-del "ctrl-alt-del.target is masked, CtrlAltDelBurstAction=none"
+    else
+        bad ctrl-alt-del "ctrl-alt-del.target is '${cad:-?}', CtrlAltDelBurstAction '${burst:-?}'"
+    fi
+    sysrq=$(cat /proc/sys/kernel/sysrq 2>/dev/null)
+    if [[ $sysrq == 0 ]]; then ok sysrq "kernel.sysrq = 0"; else bad sysrq "kernel.sysrq = '${sysrq:-?}', expected 0"; fi
+    for key in HandleRebootKey HandleSuspendKey HandleHibernateKey; do
+        have=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+            org.freedesktop.login1.Manager "$key" 2>/dev/null)
+        if [[ $have == 's "ignore"' ]]; then
+            ok "logind-$key" "$key=ignore"
+        else
+            bad "logind-$key" "logind $key is '${have:-?}', expected ignore"
+        fi
+    done
+}
+
 # After a staged version failed its health check on every try, the old slot
 # is back and vosd has recorded the failure.
 check_fallback() {
@@ -313,6 +348,7 @@ case $group in
         check_ping "$version"
         check_api "$password"
         check_hardening
+        check_no_reboot_keys
         ;;
     booted)
         check_booted "$slot" "$version"
