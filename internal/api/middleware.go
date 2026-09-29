@@ -75,7 +75,7 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, access Access, ra
 		return s.requireSetup(w, r, raw)
 	case authedOrSetup:
 		if info, ok := s.session(w, r); ok {
-			s.touch()
+			s.touchUnlessPassive(r)
 			return withSession(r, info), true
 		}
 		return s.requireSetup(w, r, raw)
@@ -101,7 +101,7 @@ func (s *Server) requireSession(w http.ResponseWriter, r *http.Request, raw bool
 			return nil, false
 		}
 	}
-	s.touch()
+	s.touchUnlessPassive(r)
 	return withSession(r, info), true
 }
 
@@ -109,7 +109,7 @@ func (s *Server) requireSetup(w http.ResponseWriter, r *http.Request, raw bool) 
 	res, retry, fromCookie := s.checkSetup(r)
 	switch res {
 	case setupOK:
-		s.touch()
+		s.touchUnlessPassive(r)
 		return r, true
 	case setupLimited:
 		tooMany(w, retry)
@@ -125,6 +125,20 @@ func (s *Server) requireSetup(w http.ResponseWriter, r *http.Request, raw bool) 
 	}
 	deny(w, raw, http.StatusForbidden, "setup code required")
 	return nil, false
+}
+
+// passiveHeader marks a request nobody asked for, such as a page refreshing
+// itself after an event (docs/CONTRACTS.md, Middleware).
+const passiveHeader = "X-VOS-Passive"
+
+// touchUnlessPassive counts r as web UI activity, which keeps the machine
+// awake, unless it is passive. EventSource cannot send headers, hence the
+// query form.
+func (s *Server) touchUnlessPassive(r *http.Request) {
+	if r.Header.Get(passiveHeader) == "1" || r.URL.Query().Get("passive") == "1" {
+		return
+	}
+	s.touch()
 }
 
 // deny writes an error as JSON for API routes and as text for pages.
