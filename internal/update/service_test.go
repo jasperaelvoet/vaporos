@@ -58,6 +58,9 @@ func TestServiceStageAndActivate(t *testing.T) {
 	if code, out := call(t, s.handleCheck, "POST", ""); code != 200 || out["available"].(map[string]any)["version"] != newVersion {
 		t.Fatalf("check: %d %v", code, out)
 	}
+	if code, out := call(t, s.handleGet, "GET", ""); code != 200 || out["next_boot"] != nil {
+		t.Fatalf("next_boot before the stage: %d %v", code, out["next_boot"])
+	}
 
 	evs, cancel := events.Default.Subscribe()
 	defer cancel()
@@ -82,6 +85,9 @@ func TestServiceStageAndActivate(t *testing.T) {
 		out["booted_slot"] != "a" || out["other_slot"].(map[string]any)["version"] != newVersion ||
 		out["config"].(map[string]any)["channel"] != "main" || out["busy"] != false {
 		t.Fatalf("get: %d %v", code, out)
+	}
+	if nb, _ := out["next_boot"].(map[string]any); nb["slot"] != "b" || nb["version"] != newVersion {
+		t.Fatalf("next_boot after the stage: %v", out["next_boot"])
 	}
 
 	if code, out := call(t, s.handleActivate, "POST", ""); code != 200 {
@@ -233,6 +239,10 @@ func TestServiceRollback(t *testing.T) {
 	}
 	if a := e.entry("a"); a.Bootable() {
 		t.Fatal("slot a still preferred")
+	}
+	if _, out := call(t, s.handleGet, "GET", ""); out["next_boot"] == nil ||
+		out["next_boot"].(map[string]any)["slot"] != "b" || out["next_boot"].(map[string]any)["version"] != oldIdleVersion {
+		t.Fatalf("next_boot after the rollback: %v", out["next_boot"])
 	}
 	e.setState(&State{Failed: []string{bootedVersion}})
 	e.bootSlot("b")

@@ -288,6 +288,7 @@ type updateView struct {
 	Config     config.UpdateConfig `json:"config"`
 	BootedSlot string              `json:"booted_slot"`
 	OtherSlot  *SlotStatus         `json:"other_slot"`
+	NextBoot   *NextBoot           `json:"next_boot"`
 	Busy       bool                `json:"busy"`
 	Progress   *Progress           `json:"progress"`
 }
@@ -301,6 +302,7 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	v := updateView{State: *st, Config: s.effectiveConfig(), BootedSlot: config.BootedSlot()}
 	if v.BootedSlot != "" && boot.EnsureESP(config.ESP) == nil {
 		v.OtherSlot, _ = slotStatus(config.OtherSlot(v.BootedSlot), v.BootedSlot)
+		v.NextBoot, _ = nextBoot(v.BootedSlot)
 	}
 	v.Busy, _ = s.Busy()
 	s.mu.Lock()

@@ -74,3 +74,40 @@ func slotStatus(slot, booted string) (*SlotStatus, error) {
 		Entry:     e.Name(),
 	}, nil
 }
+
+// NextBoot is the entry a restart starts, in GET /update.
+type NextBoot struct {
+	Slot    string `json:"slot"`
+	Version string `json:"version"`
+}
+
+// nextBoot returns what a restart starts when that is not the running slot
+// (a staged update, or a rollback waiting for a restart), or nil. VaporOS
+// entries share one sort-key, and stages and rollbacks clear systemd-boot's
+// saved choices, so it starts the entry that sorts first across both slots:
+// bootable first, then the newest version. On a tie the running slot stays.
+func nextBoot(booted string) (*NextBoot, error) {
+	es, err := boot.Entries(config.ESP)
+	if err != nil {
+		return nil, err
+	}
+	var next *boot.Entry
+	for i := range es {
+		e := &es[i]
+		if next == nil || bootsFirst(e, next) || (e.Slot == booted && !bootsFirst(next, e)) {
+			next = e
+		}
+	}
+	if next == nil || next.Slot == booted {
+		return nil, nil
+	}
+	return &NextBoot{Slot: next.Slot, Version: next.Version}, nil
+}
+
+// bootsFirst is systemd-boot's order for two VaporOS entries.
+func bootsFirst(a, b *boot.Entry) bool {
+	if a.Bootable() != b.Bootable() {
+		return a.Bootable()
+	}
+	return boot.CompareVersions(a.Version, b.Version) > 0
+}
