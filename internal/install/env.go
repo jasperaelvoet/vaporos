@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net/http"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/display"
-	"github.com/jasperaelvoet/vaporos/internal/manifest"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
@@ -41,7 +39,9 @@ func exitCode(err error) int {
 // env is everything an install touches outside this package: the other
 // VaporOS packages it calls and the command runner. Keeping them behind one
 // struct lets tests drive a whole install against fakes, independent of how
-// boot, auth or display are implemented.
+// boot, auth or display are implemented. Fetching and verifying the image
+// is deliberately not in here: tests sign real images with a test key, so
+// the update package's checks run as they do on a machine.
 type env struct {
 	run Runner
 
@@ -50,16 +50,12 @@ type env struct {
 	chooseConnector   func() (string, error)
 	machineCmdlineFor func(connector string) string
 
-	verifyManifest func(b, sig []byte, keysDir string) error
-	parseManifest  func(b []byte) (*manifest.Manifest, error)
-
 	bootCmdline       func(slot, imageCmdline, machineCmdline string) string
 	writeLoaderConf   func(esp string) error
 	installEntry      func(esp, version, slot, srcDir, options string, tries int) error
 	setMachineCmdline func(root, cmdline string) error
 	setAdminPassword  func(root, password string) error
 
-	httpClient *http.Client
 	// sleep waits d or until ctx ends; tests make it instant.
 	sleep func(ctx context.Context, d time.Duration) error
 	logf  func(format string, args ...any)
@@ -72,14 +68,11 @@ func defaultEnv() *env {
 		gpu:               display.Probe,
 		chooseConnector:   display.ChooseVirtualConnector,
 		machineCmdlineFor: display.MachineCmdlineFor,
-		verifyManifest:    manifest.Verify,
-		parseManifest:     manifest.Parse,
 		bootCmdline:       boot.Cmdline,
 		writeLoaderConf:   boot.WriteLoaderConf,
 		installEntry:      boot.InstallEntry,
 		setMachineCmdline: boot.SetMachineCmdline,
 		setAdminPassword:  auth.SetAdminPassword,
-		httpClient:        newHTTPClient(),
 		sleep:             sleepCtx,
 		logf:              log.Printf,
 	}
@@ -94,13 +87,4 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// newHTTPClient has no overall timeout (root.erofs is gigabytes); stalls
-// are caught by the header timeout here and the body idle timer in
-// httpReader.
-func newHTTPClient() *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.ResponseHeaderTimeout = 30 * time.Second
-	return &http.Client{Transport: t}
 }

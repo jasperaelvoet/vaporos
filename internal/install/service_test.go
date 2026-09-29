@@ -195,8 +195,10 @@ func TestServiceValidation(t *testing.T) {
 		`{"disk":"sda","hostname":"a b"}`:     "invalid hostname",
 		`{"disk":"sda","password":"short"}`:   "at least 8",
 		`{"disk":"sda","mode":"repair"}`:      "no VaporOS installation",
-		`{"disk":"sda","source":"oci://x/y"}`: "not supported",
-		`{"disk":"sda","timezone":"../../x"}`: "invalid timezone",
+		`{"disk":"sda","source":"ftp://x/y"}`: "unsupported source",
+		`{"disk":"sda","source":"oci://ghcr.io/Not Valid"}`:                 "invalid repository",
+		`{"disk":"sda","source":"oci://ghcr.io/x/vaporos","channel":"a b"}`: "invalid channel",
+		`{"disk":"sda","timezone":"../../x"}`:                               "invalid timezone",
 	} {
 		code, out := do(t, s.handleInstall, "POST", body)
 		if code != http.StatusBadRequest || !strings.Contains(out["error"].(string), want) {
@@ -241,7 +243,7 @@ func TestServiceProbeHandler(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil || w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	for _, k := range []string{"disks", "ips", "timezone", "gpu"} {
+	for _, k := range []string{"disks", "ips", "timezone", "gpu", "source", "min_size", "version"} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("probe has no %q", k)
 		}

@@ -1,7 +1,6 @@
 package install
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,7 +104,6 @@ func TestInstallErase(t *testing.T) {
 		"wipefs -qa @/dev/sda3",
 		"mkfs.vfat -F 32 -n VOS_ESP @/dev/sda1",
 		"mkfs.ext4 -q -F -L vos_data @/dev/sda4",
-		"blockdev --flushbufs @/dev/sda2",
 		"mount -t vfat -o fmask=0077,dmask=0077 @/dev/sda1 " + T + "/esp",
 		"bootctl install --esp-path=" + T + "/esp --graceful --no-pager",
 		"mount -t erofs -o ro @/dev/sda2 " + T + "/root",
@@ -129,13 +127,14 @@ func TestInstallErase(t *testing.T) {
 	}
 
 	// Slot a holds exactly the image.
-	if got, _ := os.ReadFile(f.path("dev/sda2")); !bytes.Equal(got, img.root) {
-		t.Errorf("slot a content differs from root.erofs (%d vs %d bytes)", len(got), len(img.root))
+	if !slotHas(t, f.path("dev/sda2"), img.root) {
+		t.Error("slot a content differs from root.erofs")
 	}
 
 	// Boot entry: slot a, image cmdline + machine cmdline, no counting.
+	// Kernel and initrd came from a verified copy that is gone again.
 	e := f.entry
-	if e.slot != "a" || e.version != img.man.Version || e.tries != 0 || e.srcDir != config.LiveMedium {
+	if e.slot != "a" || e.version != img.man.Version || e.tries != 0 || e.srcDir == "" || e.srcDir == config.LiveMedium || exists(e.srcDir) {
 		t.Errorf("entry = %+v", e)
 	}
 	if wantOpts := "vos.slot=a quiet loglevel=3 console=ttyS0,115200 video=DP-1:e drm.edid_firmware=DP-1:edid/vaporos.bin"; e.options != wantOpts {
@@ -267,7 +266,7 @@ func TestInstallRepair(t *testing.T) {
 			t.Errorf("repair ran %q", c)
 		}
 	}
-	if got, _ := os.ReadFile(f.path("dev/nvme0n1p2")); !bytes.Equal(got, img.root) {
+	if !slotHas(t, f.path("dev/nvme0n1p2"), img.root) {
 		t.Error("slot a not rewritten")
 	}
 	// The machine cmdline on vos_data wins over the detected connector.
@@ -380,7 +379,21 @@ func TestInstallRefusesBeforeWriting(t *testing.T) {
 		{"newer updater", func(f *fakeSys, img *image) {
 			img.man.MinUpdater = 99
 			img.sign(t)
-		}, Options{Disk: "sda"}, "newer installer"},
+		}, Options{Disk: "sda"}, "needs updater version 99"},
+		{"unsafe version", func(f *fakeSys, img *image) {
+			img.man.Version = "../../EFI"
+			img.sign(t)
+		}, Options{Disk: "sda"}, "invalid version"},
+		{"artifact path", func(f *fakeSys, img *image) {
+			a := img.man.Artifacts["kernel"]
+			a.Name = "../vmlinuz"
+			img.man.Artifacts["kernel"] = a
+			img.sign(t)
+		}, Options{Disk: "sda"}, "invalid name"},
+		{"untrusted key", func(f *fakeSys, img *image) {
+			os.Remove(filepath.Join(config.KeysDir, "test.pub"))
+		}, Options{Disk: "sda"}, "not signed by a trusted key"},
+		{"missing directory", nil, Options{Disk: "sda", Source: "/nonexistent/vos"}, "no VaporOS image found at /nonexistent/vos"},
 		{"live disk", nil, Options{Disk: "sdb"}, "holds the VaporOS installer"},
 		{"live disk by label", func(f *fakeSys, img *image) {
 			f.setMounts()
@@ -449,13 +462,13 @@ func TestInstallFailureCleansUp(t *testing.T) {
 			os.WriteFile(filepath.Join(config.LiveMedium, "root.erofs"), []byte("X"+b[1:]), 0o644)
 		}, StepWrite, true},
 		{"bad read-back", func(f *fakeSys, r *fakeRunner, e *env) {
-			r.hook = func(name string, args []string) (string, error, bool) {
-				if name == "blockdev" && args[0] == "--flushbufs" {
-					fh, _ := os.OpenFile(args[1], os.O_WRONLY, 0)
+			// The disk changes between the write and the read-back.
+			f.onStep = func(step string) {
+				if step == StepVerify {
+					fh, _ := os.OpenFile(f.path("dev/sda2"), os.O_WRONLY, 0)
 					fh.WriteAt([]byte("bitrot"), 4096)
 					fh.Close()
 				}
-				return "", nil, false
 			}
 		}, StepVerify, true},
 		{"stuck mount", func(f *fakeSys, r *fakeRunner, e *env) {
@@ -475,7 +488,7 @@ func TestInstallFailureCleansUp(t *testing.T) {
 			e := f.env(r)
 			tc.fail(f, r, e)
 			var recs []progressRec
-			err := runInstall(context.Background(), e, Options{Disk: "sda", Password: "12345678"}, recorder(&recs))
+			err := runInstall(context.Background(), e, Options{Disk: "sda", Password: "12345678"}, f.recorder(&recs))
 			if err == nil || !strings.HasPrefix(err.Error(), tc.step+": ") {
 				t.Fatalf("err = %v, want a %s failure", err, tc.step)
 			}

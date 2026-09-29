@@ -95,8 +95,17 @@ func (s *Service) running() bool {
 	return s.status.State == StateRunning
 }
 
+// handleProbe is GET /install/probe. The optional ?source= and ?channel=
+// are the image the wizard would install (as POST /install takes them);
+// min_size in the answer is sized for that image.
 func (s *Service) handleProbe(w http.ResponseWriter, r *http.Request) {
-	api.WriteJSON(w, http.StatusOK, s.probe(r.Context()))
+	q := r.URL.Query()
+	o := Options{Source: q.Get("source"), Channel: q.Get("channel")}
+	if err := o.normalizeSource(); err != nil {
+		api.Error(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, s.probe(r.Context(), o.Source, o.Channel))
 }
 
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {

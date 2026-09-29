@@ -2,7 +2,6 @@ package install
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -83,11 +82,22 @@ func (o *Options) normalize() error {
 	}
 	o.Libraries = libs
 
+	return o.normalizeSource()
+}
+
+// normalizeSource checks Source and Channel (parseSource, checkChannel).
+// The live medium is always "", whether it was given as "" or "live".
+func (o *Options) normalizeSource() error {
 	o.Source = strings.TrimSpace(o.Source)
-	if _, err := parseSource(o.Source); err != nil {
+	spec, err := parseSource(o.Source)
+	if err != nil {
 		return err
 	}
-	return nil
+	if spec.kind == srcLive {
+		o.Source = ""
+	}
+	o.Channel = strings.TrimSpace(o.Channel)
+	return checkChannel(o.Channel)
 }
 
 func validTimezoneName(tz string) bool {
@@ -105,38 +115,4 @@ func checkTimezone(zoneinfo, tz string) error {
 		return fmt.Errorf("unknown timezone %q", tz)
 	}
 	return nil
-}
-
-// sourceSpec is a parsed Options.Source.
-type sourceSpec struct {
-	kind string // "live", "dir" or "http"
-	dir  string
-	url  *url.URL
-}
-
-// parseSource accepts "" (the live medium), an absolute directory, a
-// file:// URL or an http(s):// URL. OCI registries are the update
-// package's business and not supported here yet.
-func parseSource(s string) (sourceSpec, error) {
-	switch {
-	case s == "":
-		return sourceSpec{kind: "live"}, nil
-	case strings.HasPrefix(s, "oci://"):
-		return sourceSpec{}, fmt.Errorf("oci:// sources are not supported by the installer; install from the live medium, a directory or an http(s) URL")
-	case strings.HasPrefix(s, "http://"), strings.HasPrefix(s, "https://"):
-		u, err := url.Parse(s)
-		if err != nil || u.Host == "" {
-			return sourceSpec{}, fmt.Errorf("invalid source URL %q", s)
-		}
-		return sourceSpec{kind: "http", url: u}, nil
-	case strings.HasPrefix(s, "file://"):
-		u, err := url.Parse(s)
-		if err != nil || (u.Host != "" && u.Host != "localhost") || !filepath.IsAbs(u.Path) {
-			return sourceSpec{}, fmt.Errorf("invalid source URL %q: use file:///absolute/dir", s)
-		}
-		return sourceSpec{kind: "dir", dir: filepath.Clean(u.Path)}, nil
-	case filepath.IsAbs(s):
-		return sourceSpec{kind: "dir", dir: filepath.Clean(s)}, nil
-	}
-	return sourceSpec{}, fmt.Errorf("unsupported source %q: use an absolute directory or an http(s) URL", s)
 }
