@@ -351,6 +351,32 @@ func TestWoLStatus(t *testing.T) {
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("wolStatus = %+v", got)
 	}
+
+	// Capable: some wired NIC supports magic-packet wake, armed or not.
+	if !wolCapable(context.Background(), r.sysNet, r.ethtool) {
+		t.Error("enp4s0 supports g, but the machine is not capable")
+	}
+	armedless := func(_ context.Context, iface string) (string, error) {
+		if iface == "enp4s0" {
+			return "Supports Wake-on: pumbg\nWake-on: d\n", nil
+		}
+		return "", errors.New("no ethtool")
+	}
+	if !wolCapable(context.Background(), r.sysNet, armedless) {
+		t.Error("a NIC that supports g but is not armed yet must count")
+	}
+	none := func(context.Context, string) (string, error) { return "Supports Wake-on: pumb\nWake-on: d\n", nil }
+	if wolCapable(context.Background(), r.sysNet, none) {
+		t.Error("capable without any NIC supporting g")
+	}
+	// Only wired NICs count: Wi-Fi cannot wake a switched-off PC.
+	wifiOnly := t.TempDir()
+	os.MkdirAll(filepath.Join(wifiOnly, "wlan0", "device"), 0o755)
+	os.MkdirAll(filepath.Join(wifiOnly, "wlan0", "wireless"), 0o755)
+	os.WriteFile(filepath.Join(wifiOnly, "wlan0", "type"), []byte("1\n"), 0o644)
+	if wolCapable(context.Background(), wifiOnly, func(context.Context, string) (string, error) { return "Supports Wake-on: g\n", nil }) {
+		t.Error("Wi-Fi counted")
+	}
 }
 
 func TestHandlers(t *testing.T) {

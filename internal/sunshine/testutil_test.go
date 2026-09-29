@@ -257,6 +257,7 @@ func newHarness(t *testing.T) *harness {
 	s.userSystemctl = rec.ctl
 	s.asGamer = rec.gamer
 	s.unitActive = func(context.Context) bool { return true }
+	s.gpuSupported = func() bool { return true }
 	s.games = func() []steam.App { return nil }
 	s.follow = func(context.Context) (<-chan string, error) { return nil, fmt.Errorf("no journal in tests") }
 	s.journalTail = func(context.Context, int) (string, error) { return "", fmt.Errorf("no journal in tests") }

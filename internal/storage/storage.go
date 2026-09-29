@@ -1,6 +1,6 @@
 // Package storage finds disks and Steam libraries, adopts game library
-// disks (config.json -> mount units via the systemd generator), and
-// implements the generator itself.
+// disks (config.json -> mount units via the systemd generator, and the
+// library into Steam's list), and implements the generator itself.
 package storage
 
 import (
@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -38,6 +39,11 @@ type Disk struct {
 	Adopted      bool   `json:"adopted"`
 	Missing      bool   `json:"missing,omitempty"` // adopted, but no such filesystem is attached
 	Free         int64  `json:"free,omitempty"`
+	// Registered: adopted, and Steam's library list has a library on it.
+	// RegistrationPending: VaporOS adds it to that list once Steam is not
+	// running (Steam rewrites the list when it exits).
+	Registered          bool `json:"registered"`
+	RegistrationPending bool `json:"registration_pending,omitempty"`
 }
 
 // ScanDisks lists block devices and filesystems (lsblk -J -b -o …): every
@@ -60,28 +66,29 @@ func ScanDisks(ctx context.Context) ([]Disk, error) {
 	return disks, nil
 }
 
-// cfgMu serializes this package's read-modify-save cycles on the shared
-// configuration. See the contract note in the package tests: config has
-// no lock of its own yet.
-var cfgMu sync.Mutex
-
 type Service struct {
 	cfg *config.Config
 
+	regMu     sync.Mutex      // Steam's library lists and steam-libraries.json
+	regFailed map[string]bool // registrations whose failure was logged
+
 	// Seams for tests.
-	scan      func(context.Context) ([]Disk, error)
-	systemctl func(ctx context.Context, args ...string) error
-	isActive  func(ctx context.Context, unit string) bool
-	mntBase   string
+	scan         func(context.Context) ([]Disk, error)
+	systemctl    func(ctx context.Context, args ...string) error
+	isActive     func(ctx context.Context, unit string) bool
+	steamRunning func() bool
+	mntBase      string
 }
 
 func NewService(cfg *config.Config) *Service {
 	return &Service{
-		cfg:       cfg,
-		scan:      ScanDisks,
-		systemctl: sysd.Systemctl,
-		isActive:  func(ctx context.Context, unit string) bool { return sysd.IsActive(ctx, unit, false) },
-		mntBase:   "/var/mnt",
+		cfg:          cfg,
+		regFailed:    map[string]bool{},
+		scan:         ScanDisks,
+		systemctl:    sysd.Systemctl,
+		isActive:     func(ctx context.Context, unit string) bool { return sysd.IsActive(ctx, unit, false) },
+		steamRunning: func() bool { return gamerSteamRunning("/proc", config.GamerUID) },
+		mntBase:      "/var/mnt",
 	}
 }
 
@@ -100,13 +107,19 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusInternalServerError, "cannot list disks: %v", err)
 		return
 	}
-	cfgMu.Lock()
-	libs := append([]config.Library(nil), s.cfg.Storage.Libraries...)
-	cfgMu.Unlock()
+	libs := s.cfg.Snapshot().Storage.Libraries
+	listed := steamLibraries()
+	s.regMu.Lock()
+	pending := s.loadPending()
+	s.regMu.Unlock()
 
-	adopted := map[string]bool{}
+	adopted := map[string]config.Library{}
 	for _, l := range libs {
-		adopted[l.UUID] = true
+		adopted[l.UUID] = l
+	}
+	steamState := func(d *Disk, mountpoint string) {
+		d.Registered = libraryListed(listed, mountpoint)
+		d.RegistrationPending = !d.Registered && pendingOn(pending, mountpoint)
 	}
 	found := map[string]bool{}
 	out := []Disk{}
@@ -114,22 +127,29 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		if d.FSType == "" || d.FSType == "swap" {
 			continue
 		}
-		d.Adopted = d.UUID != "" && adopted[d.UUID]
+		if l, ok := adopted[d.UUID]; ok && d.UUID != "" {
+			d.Adopted = true
+			steamState(&d, l.Mountpoint)
+		}
 		found[d.UUID] = true
 		out = append(out, d)
 	}
 	for _, l := range libs {
 		if !found[l.UUID] {
-			out = append(out, Disk{UUID: l.UUID, Label: l.Label, FSType: l.FSType, Adopted: true, Missing: true})
+			d := Disk{UUID: l.UUID, Label: l.Label, FSType: l.FSType, Adopted: true, Missing: true}
+			steamState(&d, l.Mountpoint)
+			out = append(out, d)
 		}
 	}
 	api.WriteJSON(w, http.StatusOK, map[string]any{"disks": out})
 }
 
 // handleAdopt serves POST /storage/libraries {"uuid"}: record the disk in
-// config.json, regenerate the mount units and mount it now. The files on
-// the disk are never touched (no chown): a library from another Linux
-// install is owned by uid 1000, which is vapor here too.
+// config.json, regenerate the mount units, mount it now and add its
+// library to Steam's list (now, or once Steam is not running). Existing
+// files on the disk are never changed (no chown): a library from another
+// Linux install is owned by uid 1000, which is vapor here too. A disk
+// without a library gets an empty SteamLibrary folder owned by vapor.
 func (s *Service) handleAdopt(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UUID string `json:"uuid"`
@@ -162,8 +182,8 @@ func (s *Service) handleAdopt(w http.ResponseWriter, r *http.Request) {
 	case disk.IsSystem:
 		api.Error(w, http.StatusBadRequest, "%s is part of the VaporOS system disk", disk.Path)
 		return
-	case !adoptable[disk.FSType]:
-		api.Error(w, http.StatusBadRequest, "%s filesystems cannot hold a Steam library (use ext4, btrfs, xfs or NTFS)", disk.FSType)
+	case !LibraryFS(disk.FSType):
+		api.Error(w, http.StatusBadRequest, "%s filesystems cannot hold a Steam library (use ext4, btrfs, xfs, f2fs or NTFS)", disk.FSType)
 		return
 	}
 
@@ -183,76 +203,141 @@ func (s *Service) handleAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	library := lib.Mountpoint
-	if disk.LibraryDir != "" && disk.LibraryDir != "." {
+	library, ready := lib.Mountpoint, disk.SteamLibrary
+	switch {
+	case disk.SteamLibrary && disk.LibraryDir != "" && disk.LibraryDir != ".":
 		library = filepath.Join(lib.Mountpoint, disk.LibraryDir)
+	case !disk.SteamLibrary:
+		if dir, err := makeLibrary(lib.Mountpoint); err != nil {
+			log.Printf("storage: making a Steam library on %s: %v", lib.Mountpoint, err)
+		} else {
+			library, ready = dir, true
+		}
 	}
-	hint := fmt.Sprintf("In Steam, open Settings > Storage > Add Drive and choose %s.", library)
-	if disk.SteamLibrary {
-		hint = fmt.Sprintf("This disk already holds a Steam library. In Steam, open Settings > Storage > Add Drive and choose %s; its installed games reappear without downloading.", library)
+	registered, pending := false, false
+	if ready {
+		var err error
+		registered, err = s.registerLibrary(library)
+		if err != nil {
+			log.Printf("storage: %v", err)
+		}
+		pending = !registered && err == nil
 	}
-	api.WriteJSON(w, http.StatusOK, map[string]any{"mountpoint": lib.Mountpoint, "library": library, "hint": hint})
+	api.WriteJSON(w, http.StatusOK, map[string]any{
+		"mountpoint":           lib.Mountpoint,
+		"library":              library,
+		"registered":           registered,
+		"registration_pending": pending,
+		"hint":                 adoptHint(library, disk.SteamLibrary, registered, pending),
+	})
+}
+
+// adoptHint tells the user what happens next with an adopted library.
+func adoptHint(library string, hadGames, registered, pending bool) string {
+	games := ""
+	if hadGames {
+		games = " Its installed games appear in Steam without downloading."
+	}
+	switch {
+	case registered:
+		return fmt.Sprintf("%s is one of Steam's game libraries.%s", library, games)
+	case pending:
+		// Steam rewrites its library list when it exits, so it is only
+		// changed while Steam is not running.
+		return fmt.Sprintf("VaporOS adds %s to Steam's game libraries the next time Steam is not running (at the latest after a restart).%s "+
+			"To use it right away, open Steam > Settings > Storage > Add Drive and choose %s.", library, games, library)
+	}
+	return fmt.Sprintf("In Steam, open Settings > Storage > Add Drive and choose %s.%s", library, games)
 }
 
 // addLibrary records d in the configuration. Adopting an adopted disk
 // again is not an error: it retries the mount.
 func (s *Service) addLibrary(d Disk) (config.Library, bool, error) {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
-	for _, l := range s.cfg.Storage.Libraries {
-		if l.UUID == d.UUID {
-			return l, false, nil
+	var lib config.Library
+	var have bool
+	s.cfg.View(func(c *config.Config) { lib, have = findLibrary(c.Storage.Libraries, d.UUID) })
+	if have {
+		return lib, false, nil
+	}
+	added := false
+	err := s.cfg.Mutate(func(c *config.Config) {
+		if lib, have = findLibrary(c.Storage.Libraries, d.UUID); have {
+			return // adopted by a concurrent request
 		}
-	}
-	name := s.mountName(d)
-	lib := config.Library{
-		UUID:       d.UUID,
-		Label:      firstNonEmpty(d.Label, name),
-		Mountpoint: filepath.Join(s.mntBase, name),
-		FSType:     mountType(d.FSType),
-	}
-	prev := s.cfg.Storage.Libraries
-	s.cfg.Storage.Libraries = append(append([]config.Library(nil), prev...), lib)
-	if err := s.cfg.Save(); err != nil {
-		s.cfg.Storage.Libraries = prev
+		name := s.mountName(c.Storage.Libraries, d)
+		lib = config.Library{
+			UUID:       d.UUID,
+			Label:      firstNonEmpty(d.Label, name),
+			Mountpoint: filepath.Join(s.mntBase, name),
+			FSType:     mountType(d.FSType),
+		}
+		c.Storage.Libraries = append(slices.Clone(c.Storage.Libraries), lib)
+		added = true
+	})
+	if err != nil {
+		if added {
+			// config.json still has the old list; take the library out of
+			// memory again (saving may fail again, which changes nothing).
+			s.cfg.Mutate(func(c *config.Config) { c.Storage.Libraries = withoutLibrary(c.Storage.Libraries, d.UUID) })
+		}
 		return config.Library{}, false, fmt.Errorf("cannot save configuration: %w", err)
 	}
-	return lib, true, nil
+	return lib, added, nil
 }
 
 func (s *Service) forgetLibrary(uuid string) (config.Library, bool, error) {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
-	prev := s.cfg.Storage.Libraries
-	var keep []config.Library
 	var gone config.Library
-	found := false
-	for _, l := range prev {
-		if l.UUID == uuid && !found {
-			gone, found = l, true
-			continue
-		}
-		keep = append(keep, l)
-	}
+	var found bool
+	s.cfg.View(func(c *config.Config) { gone, found = findLibrary(c.Storage.Libraries, uuid) })
 	if !found {
 		return config.Library{}, false, nil
 	}
-	if keep == nil {
-		keep = []config.Library{}
+	err := s.cfg.Mutate(func(c *config.Config) {
+		if gone, found = findLibrary(c.Storage.Libraries, uuid); found {
+			c.Storage.Libraries = withoutLibrary(c.Storage.Libraries, uuid)
+		}
+	})
+	if !found {
+		return config.Library{}, false, err // removed by a concurrent request
 	}
-	s.cfg.Storage.Libraries = keep
-	if err := s.cfg.Save(); err != nil {
-		s.cfg.Storage.Libraries = prev
+	if err != nil {
+		// config.json still lists it; put it back in memory too.
+		s.cfg.Mutate(func(c *config.Config) {
+			if _, ok := findLibrary(c.Storage.Libraries, uuid); !ok {
+				c.Storage.Libraries = append(slices.Clone(c.Storage.Libraries), gone)
+			}
+		})
 		return gone, true, fmt.Errorf("cannot save configuration: %w", err)
 	}
 	return gone, true, nil
 }
 
+func findLibrary(libs []config.Library, uuid string) (config.Library, bool) {
+	for _, l := range libs {
+		if l.UUID == uuid {
+			return l, true
+		}
+	}
+	return config.Library{}, false
+}
+
+// withoutLibrary returns a new list without uuid, never nil (config.json
+// keeps "libraries": []).
+func withoutLibrary(libs []config.Library, uuid string) []config.Library {
+	out := []config.Library{}
+	for _, l := range libs {
+		if l.UUID != uuid {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // mountName picks the directory under /var/mnt: the filesystem label made
 // safe for a path and a unit name, else "disk-<uuid prefix>"; with a
-// numeric suffix when another library or a non-empty directory has it.
-// Called with cfgMu held.
-func (s *Service) mountName(d Disk) string {
+// numeric suffix when another library in libs or a non-empty directory
+// has it.
+func (s *Service) mountName(libs []config.Library, d Disk) string {
 	base := sanitizeLabel(d.Label)
 	if base == "" {
 		u := strings.ToLower(strings.ReplaceAll(d.UUID, "-", ""))
@@ -263,7 +348,7 @@ func (s *Service) mountName(d Disk) string {
 	}
 	taken := func(name string) bool {
 		p := filepath.Join(s.mntBase, name)
-		for _, l := range s.cfg.Storage.Libraries {
+		for _, l := range libs {
 			if l.Mountpoint == p {
 				return true
 			}
@@ -323,16 +408,10 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "invalid filesystem uuid")
 		return
 	}
-	cfgMu.Lock()
-	var lib *config.Library
-	for _, l := range s.cfg.Storage.Libraries {
-		if l.UUID == uuid {
-			lib = &l
-			break
-		}
-	}
-	cfgMu.Unlock()
-	if lib == nil {
+	var lib config.Library
+	var found bool
+	s.cfg.View(func(c *config.Config) { lib, found = findLibrary(c.Storage.Libraries, uuid) })
+	if !found {
 		api.Error(w, http.StatusNotFound, "no adopted library with uuid %s", uuid)
 		return
 	}
@@ -350,6 +429,7 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
+	s.forgetPending(lib.Mountpoint)
 	if err := s.systemctl(ctx, "daemon-reload"); err != nil {
 		log.Printf("storage: daemon-reload after removing %s: %v", lib.Mountpoint, err)
 	}

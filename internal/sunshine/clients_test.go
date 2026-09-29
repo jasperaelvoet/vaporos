@@ -215,6 +215,12 @@ func TestRunClosesAnAbandonedApp(t *testing.T) {
 	feed(lineDisconnected)
 	clock.add(abandonAfter - time.Minute)
 	feed(lineConnected)
+	if m := h.rec.messages(); len(m) != 1 || !strings.Contains(m[0]["text"], "resumed") {
+		t.Fatalf("resume not explained: %v", m)
+	}
+	h.rec.mu.Lock()
+	h.rec.events = nil
+	h.rec.mu.Unlock()
 	clock.add(2 * abandonAfter)
 	idleTicks()
 	if n := h.f.closes(); n != 0 {
@@ -363,4 +369,55 @@ func TestStatusFallsBackToThePackageVersion(t *testing.T) {
 		t.Errorf("status = %d %v", w.Code, out)
 	}
 	noVersionRuns(t, h)
+}
+
+// A client that connects to an app no launch started since the last client
+// left has resumed it. Sunshine runs no prep command on a resume, so the
+// display keeps the launch's mode; the web UI is told why.
+func TestResumeIsExplained(t *testing.T) {
+	h := newHarness(t)
+	clock := &fakeClock{t: time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)}
+	h.s.now = clock.now
+	resumes := func() int {
+		n := 0
+		for _, e := range h.rec.events {
+			if e.Topic == "system.message" && strings.Contains(string(e.Data), "resumed") {
+				n++
+			}
+		}
+		return n
+	}
+	step := func(line string, live bool) {
+		clock.add(time.Second)
+		h.s.observeClients(line, clock.now(), live)
+	}
+	begin := func() {
+		clock.add(time.Second)
+		h.s.onEvent(events.Event{Topic: "session.begin", Data: []byte(`{"client":"TV","mode":"3840x2160@60","hdr":true}`)})
+	}
+
+	begin()
+	step(lineConnected, true) // the launch's own client
+	step(lineDisconnected, true)
+	if resumes() != 0 {
+		t.Fatal("a launch counted as a resume")
+	}
+	step(lineConnected, true) // another device resumes
+	if resumes() != 1 {
+		t.Fatalf("resume not explained: %v", h.rec.topics())
+	}
+
+	// The app ended and a new launch followed: not a resume.
+	step("[…]: Info: Process terminated", true)
+	begin()
+	step(lineConnected, true)
+	if resumes() != 1 {
+		t.Error("a new launch after the app ended counted as a resume")
+	}
+	// Replayed history never counts.
+	step(lineDisconnected, false)
+	step(lineConnected, false)
+	if resumes() != 1 {
+		t.Error("replayed history counted as a resume")
+	}
 }

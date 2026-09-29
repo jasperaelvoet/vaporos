@@ -60,15 +60,36 @@ func parseEthtoolWoL(out string) (supports, current string) {
 	return supports, current
 }
 
+// WakeOnLANCapable reports whether a wired NIC can wake this machine with
+// a magic packet (ethtool "Supports Wake-on" includes g). The installer
+// turns idle shutdown on only then: a machine that switches itself off
+// must be able to be woken again.
+func WakeOnLANCapable() bool {
+	return wolCapable(context.Background(), "/sys/class/net", runEthtool)
+}
+
+func wolCapable(ctx context.Context, sysNet string, ethtool func(context.Context, string) (string, error)) bool {
+	for _, w := range wolStatus(ctx, sysNet, ethtool) {
+		if w.Supported {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) wolStatus(ctx context.Context) []WoLIface {
+	return wolStatus(ctx, s.sysNet, s.ethtool)
+}
+
 // wolStatus asks ethtool about every wired interface. ethtool prints the
 // link settings it could read even when it exits non-zero (for example
 // when a virtual NIC has no Wake-on-LAN at all), so its output is parsed
 // regardless of the exit status.
-func (s *Service) wolStatus(ctx context.Context) []WoLIface {
+func wolStatus(ctx context.Context, sysNet string, ethtool func(context.Context, string) (string, error)) []WoLIface {
 	out := []WoLIface{}
-	for _, ifc := range ethernetIfaces(s.sysNet) {
+	for _, ifc := range ethernetIfaces(sysNet) {
 		ectx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		text, _ := s.ethtool(ectx, ifc[0])
+		text, _ := ethtool(ectx, ifc[0])
 		cancel()
 		supports, current := parseEthtoolWoL(text)
 		out = append(out, WoLIface{

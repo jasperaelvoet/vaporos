@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/power"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
 )
 
@@ -121,10 +122,20 @@ func setTimezone(root, tz string) error {
 	return os.Symlink("../usr/share/zoneinfo/"+tz, link)
 }
 
+// wakeOnLANCapable decides idle shutdown for a new config.json. Tests set
+// it once, before any test runs.
+var wakeOnLANCapable = power.WakeOnLANCapable
+
 // writeMachineConfig writes config.json: defaults for a new install with
 // the channel the image came from, or the existing file on a repair; plus
-// the adopted libraries and the chosen virtual connector.
+// the adopted libraries and the chosen virtual connector. A new config
+// switches idle shutdown on only when a wired NIC can wake the machine
+// with a magic packet: a PC that turns itself off must be wakeable.
 func (in *installer) writeMachineConfig(root string) error {
+	return in.writeConfig(root, wakeOnLANCapable)
+}
+
+func (in *installer) writeConfig(root string, wolCapable func() bool) error {
 	path := filepath.Join(root, config.ConfigPath())
 	cfg := config.Defaults()
 	existing := false
@@ -141,6 +152,9 @@ func (in *installer) writeMachineConfig(root string) error {
 	}
 	if !existing && in.man.Channel != "" {
 		cfg.Update.Channel = in.man.Channel
+	}
+	if !existing {
+		cfg.Power.IdleShutdown = wolCapable()
 	}
 	if cfg.Display.VirtualConnector == "" {
 		cfg.Display.VirtualConnector = in.connector
@@ -202,11 +216,18 @@ func clearStaged(root string) error {
 	return config.WriteJSONAtomic(path, st, perm)
 }
 
-// libraryFS are the filesystems a Steam library can be adopted from.
-var libraryFS = map[string]bool{
-	"ext4": true, "ext3": true, "ext2": true, "btrfs": true, "xfs": true,
-	"f2fs": true, "ntfs": true, "ntfs3": true, "exfat": true, "vfat": true,
-}
+// libraryFS is storage.LibraryFS as a set over the filesystem names lsblk
+// reports, for the probe. The rule itself lives in storage, which the
+// generator that mounts the libraries shares.
+var libraryFS = func() map[string]bool {
+	m := map[string]bool{}
+	for _, name := range []string{"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "ntfs", "ntfs3", "exfat", "vfat"} {
+		if storage.LibraryFS(name) {
+			m[name] = true
+		}
+	}
+	return m
+}()
 
 var unsafeLabelRE = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
@@ -239,8 +260,8 @@ func resolveLibraries(ctx context.Context, e *env, uuids []string, target string
 		if d == nil {
 			return nil, fmt.Errorf("no filesystem with UUID %s", u)
 		}
-		if !libraryFS[d.FSType] {
-			return nil, fmt.Errorf("%s (%s) cannot hold a game library", d.Path, orElse(d.FSType, "no filesystem"))
+		if !storage.LibraryFS(d.FSType) {
+			return nil, fmt.Errorf("%s (%s) cannot hold a game library (use ext4, btrfs, xfs, f2fs or NTFS)", d.Path, orElse(d.FSType, "no filesystem"))
 		}
 		for _, disk := range fsDisks(*d, mounts) {
 			if disk == target {

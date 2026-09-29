@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
@@ -38,6 +39,15 @@ const (
 	credsRetry = 10 * time.Minute
 	// restartRetry spaces out retries of a failed Sunshine restart.
 	restartRetry = time.Minute
+	// startCheck is how often vosd makes sure Sunshine runs. The unit is
+	// not enabled anywhere: vosd starts it on every boot, and again when it
+	// stopped for good (a start that failed because the gaming user's
+	// manager was not up yet, someone stopping it). Restart=always covers
+	// ordinary crashes by itself.
+	startCheck = 10 * time.Second
+	// gpuReprobe spaces out GPU probes while no supported GPU was found;
+	// at boot its driver may still be loading.
+	gpuReprobe = 30 * time.Second
 	// logLines is what GET /sunshine/logs returns at most.
 	logLines = 2000
 )
@@ -75,6 +85,12 @@ type Service struct {
 	clients        clientTrack // from the followed journal; unknown when not following
 	busySince      time.Time   // when Run first saw the current app running
 	nextAbandonTry time.Time
+	sessionAt      time.Time // when the last session.begin arrived
+	nextStartCheck time.Time
+	startLogged    bool // "not running; starting it" was logged, and Sunshine was not seen up since
+	gpuOK          bool // a supported GPU was found; never probed again after that
+	nextGPUProbe   time.Time
+	noGPULogged    bool
 
 	pkgVersionOnce sync.Once
 	pkgVersion     string
@@ -93,6 +109,7 @@ type Service struct {
 	subscribe     func() (<-chan events.Event, func())
 	userSystemctl func(ctx context.Context, args ...string) error
 	unitActive    func(ctx context.Context) bool
+	gpuSupported  func() bool
 	asGamer       func(ctx context.Context, name string, args ...string) (string, error)
 	follow        func(ctx context.Context) (<-chan string, error)
 	journalTail   func(ctx context.Context, n int) (string, error)
@@ -117,6 +134,7 @@ func NewService(cfg *config.Config) *Service {
 		subscribe:     events.Default.Subscribe,
 		userSystemctl: sysd.UserSystemctl,
 		unitActive:    func(ctx context.Context) bool { return sysd.IsActive(ctx, unitName, true) },
+		gpuSupported:  func() bool { return display.Probe().Supported },
 		asGamer:       sysd.AsGamer,
 		follow:        followJournal,
 		journalTail:   journalTail,
@@ -239,7 +257,9 @@ func (s *Service) setCreds(c apiCreds) {
 }
 
 // prepare brings Sunshine's files in line at startup: API credentials,
-// sunshine.conf and apps.json, then one restart if anything changed.
+// sunshine.conf and apps.json, then one restart if anything changed, else
+// a start: nothing but vosd ever starts Sunshine, so on a boot where the
+// files are unchanged it is not running yet.
 func (s *Service) prepare(ctx context.Context) {
 	s.mu.Lock()
 	s.tmpl = loadTemplate()
@@ -275,11 +295,81 @@ func (s *Service) prepare(ctx context.Context) {
 			}
 		}
 	}
+	if !s.wantRunning() {
+		return
+	}
 	if changed {
 		if err := s.requestRestart(ctx); err != nil {
 			log.Printf("sunshine: restart: %v", err)
 		}
+		return
 	}
+	s.ensureRunning(ctx)
+}
+
+// wantRunning reports whether Sunshine should run: there is a supported
+// GPU to capture and encode with (Run never gets here on the live ISO).
+// Without one Sunshine could not stream and would only fail and restart,
+// so vosd leaves it stopped; its files are still kept up to date.
+func (s *Service) wantRunning() bool {
+	now := s.now()
+	s.mu.Lock()
+	if s.gpuOK || now.Before(s.nextGPUProbe) {
+		ok := s.gpuOK
+		s.mu.Unlock()
+		return ok
+	}
+	s.nextGPUProbe = now.Add(gpuReprobe)
+	s.mu.Unlock()
+	ok := s.gpuSupported()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gpuOK = ok
+	if !ok && !s.noGPULogged {
+		log.Printf("sunshine: no supported GPU; Sunshine stays stopped until one appears")
+		s.noGPULogged = true
+	}
+	return ok
+}
+
+// ensureRunning starts Sunshine when its unit is not active, checking at
+// most every startCheck. `systemctl start` leaves a running unit alone, and
+// a start that fails is tried again at a later check. A fresh start reads
+// every file, so it also settles a restart that is still waiting for its
+// retry (one that failed while the gaming user's manager was not up yet).
+func (s *Service) ensureRunning(ctx context.Context) {
+	now := s.now()
+	s.mu.Lock()
+	due := !now.Before(s.nextStartCheck)
+	if due {
+		s.nextStartCheck = now.Add(startCheck)
+	}
+	s.mu.Unlock()
+	if !due {
+		return
+	}
+	if s.unitActive(ctx) {
+		s.mu.Lock()
+		s.startLogged = false
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	quiet := s.startLogged
+	s.startLogged = true
+	s.mu.Unlock()
+	if !quiet {
+		log.Printf("sunshine: %s is not running; starting it", unitName)
+	}
+	if err := s.userSystemctl(ctx, "start", unitName); err != nil {
+		if !quiet {
+			log.Printf("sunshine: starting %s: %v (trying again every %v)", unitName, err, startCheck)
+		}
+		return
+	}
+	s.mu.Lock()
+	s.version, s.pairings, s.pendingRestart = "", nil, false
+	s.mu.Unlock()
 }
 
 // currentSettings returns the user-tunable settings, reading them from
@@ -316,7 +406,9 @@ func (s *Service) writeConf() (bool, error) {
 		s.tmpl = tmpl
 	}
 	s.mu.Unlock()
-	conn := outputName(s.cfg.Display.VirtualConnector)
+	var connector string
+	s.cfg.View(func(c *config.Config) { connector = c.Display.VirtualConnector })
+	conn := outputName(connector)
 	data := renderConf(tmpl, confData{
 		Encoder:     set.Encoder,
 		AdapterName: adapterFor(s.sysDRM, conn),
@@ -382,8 +474,8 @@ func (s *Service) poll(ctx context.Context) bool {
 	return busy
 }
 
-// maintain applies what waits for an idle moment: re-rendered files and
-// deferred restarts.
+// maintain applies what waits for an idle moment: re-rendered files,
+// deferred restarts, and starting Sunshine again when it is not running.
 func (s *Service) maintain(ctx context.Context) {
 	now := s.now()
 	s.mu.Lock()
@@ -414,11 +506,16 @@ func (s *Service) maintain(ctx context.Context) {
 			changed = true
 		}
 	}
+	if !s.wantRunning() {
+		return
+	}
 	if changed || pending {
 		if err := s.restart(ctx); err != nil {
 			log.Printf("sunshine: restart: %v", err)
 		}
+		return
 	}
+	s.ensureRunning(ctx)
 }
 
 // refreshPairings tracks clients waiting for a PIN and announces new ones
@@ -503,6 +600,7 @@ func (s *Service) onEvent(ev events.Event) {
 		if json.Unmarshal(ev.Data, &si) == nil {
 			s.mu.Lock()
 			s.session = &si
+			s.sessionAt = s.now()
 			s.mu.Unlock()
 		}
 	case "session.end":

@@ -47,9 +47,6 @@ const (
 	maxKeepAwake = 7 * 24 * time.Hour
 )
 
-// cfgMu serializes this package's changes to the shared configuration.
-var cfgMu sync.Mutex
-
 type Service struct {
 	cfg  *config.Config
 	busy []BusyFunc
@@ -93,11 +90,13 @@ func NewService(cfg *config.Config, busy ...BusyFunc) *Service {
 			return ioBytes(gamescopeIOStat("/sys/fs/cgroup", config.GamerUID))
 		},
 		keepFileSeen: func() bool { return fileExists(keepAwakePath()) },
-		ethtool: func(ctx context.Context, iface string) (string, error) {
-			return sysd.Run(ctx, "ethtool", iface)
-		},
-		sysNet: "/sys/class/net",
+		ethtool:      runEthtool,
+		sysNet:       "/sys/class/net",
 	}
+}
+
+func runEthtool(ctx context.Context, iface string) (string, error) {
+	return sysd.Run(ctx, "ethtool", iface)
 }
 
 // keepAwakePath is a file whose mere existence keeps the machine awake
@@ -148,9 +147,9 @@ func (s *Service) Touch() {
 }
 
 func (s *Service) settings() config.PowerConfig {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
-	return s.cfg.Power
+	var pc config.PowerConfig
+	s.cfg.View(func(c *config.Config) { pc = c.Power })
+	return pc
 }
 
 // ioDelta returns the gamescope session's I/O since the previous call. A
@@ -355,20 +354,20 @@ func (s *Service) handlePut(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "idle_minutes must be between 1 and 1440")
 		return
 	}
-	cfgMu.Lock()
-	prev := s.cfg.Power
-	if req.IdleShutdown != nil {
-		s.cfg.Power.IdleShutdown = *req.IdleShutdown
-	}
-	if req.IdleMinutes != nil {
-		s.cfg.Power.IdleMinutes = *req.IdleMinutes
-	}
-	err := s.cfg.Save()
+	var prev config.PowerConfig
+	err := s.cfg.Mutate(func(c *config.Config) {
+		prev = c.Power
+		if req.IdleShutdown != nil {
+			c.Power.IdleShutdown = *req.IdleShutdown
+		}
+		if req.IdleMinutes != nil {
+			c.Power.IdleMinutes = *req.IdleMinutes
+		}
+	})
 	if err != nil {
-		s.cfg.Power = prev
-	}
-	cfgMu.Unlock()
-	if err != nil {
+		// config.json keeps the old settings; so does memory (saving may
+		// fail again, which changes nothing).
+		s.cfg.Mutate(func(c *config.Config) { c.Power = prev })
 		api.Error(w, http.StatusInternalServerError, "cannot save configuration: %v", err)
 		return
 	}
