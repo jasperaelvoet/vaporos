@@ -196,8 +196,34 @@ func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	api.OK(w)
 }
 
+// settingsView answers GET and PUT /sunshine/settings: the settings plus
+// what the web UI offers for them. PUT ignores choices.
+type settingsView struct {
+	Settings
+	Choices settingsChoices `json:"choices"`
+}
+
+type settingsChoices struct {
+	Encoder        []string `json:"encoder"`
+	Gamepad        []string `json:"gamepad"`
+	BitrateKbpsMax intRange `json:"bitrate_kbps_max"`
+}
+
+type intRange struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
+func viewSettings(set Settings) settingsView {
+	return settingsView{set, settingsChoices{
+		Encoder:        offeredEncoders,
+		Gamepad:        gamepads,
+		BitrateKbpsMax: intRange{0, maxBitrateKbps},
+	}}
+}
+
 func (s *Service) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	api.WriteJSON(w, http.StatusOK, s.currentSettings())
+	api.WriteJSON(w, http.StatusOK, viewSettings(s.currentSettings()))
 }
 
 // handlePutSettings changes any of the whitelisted settings, rewrites
@@ -248,7 +274,7 @@ func (s *Service) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	api.WriteJSON(w, http.StatusOK, set)
+	api.WriteJSON(w, http.StatusOK, viewSettings(set))
 }
 
 // handleLogs serves Sunshine's recent log as text: from its API, else its

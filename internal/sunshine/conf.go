@@ -26,7 +26,7 @@ import (
 type Settings struct {
 	Encoder        string `json:"encoder"`
 	BitrateKbpsMax int    `json:"bitrate_kbps_max"` // Sunshine's max_bitrate; 0 = whatever the client asks
-	AudioSink      string `json:"audio_sink,omitempty"`
+	AudioSink      string `json:"audio_sink"`       // "" = Sunshine's default sink
 	Gamepad        string `json:"gamepad"`
 }
 
@@ -38,6 +38,9 @@ var (
 	// Encoders Sunshine implements on Linux. There is deliberately no
 	// "auto": vosd always names one, so the choice survives a re-render.
 	encoders = []string{"vulkan", "vaapi", "software", "nvenc"}
+	// offeredEncoders are the ones the web UI offers. VaporOS supports AMD
+	// GPUs only; nvenc stays valid so a hand-edited sunshine.conf keeps it.
+	offeredEncoders = []string{"vulkan", "vaapi", "software"}
 	// Gamepad emulations current Sunshine accepts on Linux.
 	gamepads = []string{"auto", "xone", "xseries", "x360", "ds4", "ds5", "switch", "generic"}
 )

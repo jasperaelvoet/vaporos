@@ -429,12 +429,23 @@ func TestClientsHandlers(t *testing.T) {
 
 func TestSettingsHandlers(t *testing.T) {
 	h := newHarness(t)
+	wantChoices := map[string]any{
+		"encoder":          []any{"vulkan", "vaapi", "software"},
+		"gamepad":          []any{"auto", "xone", "xseries", "x360", "ds4", "ds5", "switch", "generic"},
+		"bitrate_kbps_max": map[string]any{"min": float64(0), "max": float64(1_000_000)},
+	}
 	w, out := call(t, h.s.handleGetSettings, "GET", "")
 	if w.Code != 200 || out["encoder"] != "vulkan" || out["gamepad"] != "xone" || out["bitrate_kbps_max"] != float64(0) {
 		t.Errorf("GET settings = %v", out)
 	}
-	w, out = call(t, h.s.handlePutSettings, "PUT", `{"encoder":"vaapi","bitrate_kbps_max":60000}`)
-	if w.Code != 200 || out["encoder"] != "vaapi" || out["gamepad"] != "xone" {
+	if sink, ok := out["audio_sink"]; !ok || sink != "" {
+		t.Errorf("GET audio_sink = %v, %v; want present and empty", sink, ok)
+	}
+	if !reflect.DeepEqual(out["choices"], wantChoices) {
+		t.Errorf("GET choices = %v", out["choices"])
+	}
+	w, out = call(t, h.s.handlePutSettings, "PUT", `{"encoder":"vaapi","bitrate_kbps_max":60000,"choices":{"encoder":["x"]}}`)
+	if w.Code != 200 || out["encoder"] != "vaapi" || out["gamepad"] != "xone" || !reflect.DeepEqual(out["choices"], wantChoices) {
 		t.Fatalf("PUT = %d %v", w.Code, out)
 	}
 	vars := parseConf(mustRead(t, confPath()))
@@ -462,6 +473,10 @@ func TestSettingsHandlers(t *testing.T) {
 	call(t, h.s.handlePutSettings, "PUT", `{"gamepad":"ds5"}`)
 	if len(h.rec.calls()) != 1 || !h.s.pendingRestart {
 		t.Errorf("restarted during a stream: %q", h.rec.calls())
+	}
+	// Not offered, but still accepted (a hand-edited sunshine.conf).
+	if w, out := call(t, h.s.handlePutSettings, "PUT", `{"encoder":"nvenc"}`); w.Code != 200 || out["encoder"] != "nvenc" {
+		t.Errorf("nvenc: %d %v", w.Code, out)
 	}
 }
 
