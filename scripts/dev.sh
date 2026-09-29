@@ -26,6 +26,13 @@
 # Nothing needs configuring. To override the defaults below, put them in a
 # (gitignored) .dev.env at the repo root. CONSOLE=0 never opens a window.
 #
+# STOP_AT_INSTALLER=1 make reset (or make, while there is no dev VM yet)
+# boots the live ISO and stops once its installer announces itself, so the
+# install can be done through the wizard's own web UI. It prints the
+# installer's address and setup code, also as VM_IP=... and SETUP_CODE=...
+# lines for scripts, opens no window, and leaves the VM in the live ISO;
+# a later `make` installs it through the API as usual.
+#
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ -f .dev.env ]] && . ./.dev.env
@@ -45,6 +52,7 @@ DISK_SIZE=${DISK_SIZE:-48}
 SERVE_DIR=${SERVE_DIR:-/var/lib/vz/vos-dev}
 SERVE_PORT=${SERVE_PORT:-8000}
 CONSOLE=${CONSOLE:-1}
+STOP_AT_INSTALLER=${STOP_AT_INSTALLER:-0}
 TIMEZONE=${TIMEZONE:-Europe/Brussels}
 # The web admin password the automatic install sets.
 ADMIN_PASS=${ADMIN_PASS:-vapor-dev}
@@ -453,6 +461,10 @@ vm_install() {
         fail "the live ISO never announced its installer (VOS-READY mode=installer)"
     read -r VM_IP SETUP_CODE <<<"$m"
     ok "installer is up at http://$VM_IP (setup code $SETUP_CODE)"
+    if [[ $STOP_AT_INSTALLER != 0 ]]; then
+        remember_ip "$VM_IP"
+        return 0
+    fi
 
     if ((TESTING)); then
         screendump installer
@@ -488,6 +500,16 @@ vm_install() {
     [[ -z $m ]] || VM_IP=$m
     remember_ip "$VM_IP"
     dev_settings
+}
+
+# STOP_AT_INSTALLER=1: vm_install left the VM in the live ISO, waiting for
+# its wizard.
+stopped_at_installer() {
+    local url=http://$VM_IP/setup
+    [[ $SETUP_CODE == - ]] || url="$url?code=$SETUP_CODE"
+    ok "VM $VMID waits in the live ISO's installer: open $url to install it through the wizard"
+    echo "VM_IP=$VM_IP"
+    echo "SETUP_CODE=$SETUP_CODE"
 }
 
 # The dev VM has no Wake-on-LAN, so an idle shutdown in the middle of a test
@@ -611,7 +633,14 @@ cmd_dev() {
             blank)
                 warn "VM $VMID's disk holds no VaporOS install; installing it"
                 vm_install; fresh=1 ;;
+            *)
+                [[ $STOP_AT_INSTALLER == 0 ]] ||
+                    die "VM $VMID holds a VaporOS install, which make never wipes: 'STOP_AT_INSTALLER=1 make reset' reinstalls it up to the installer" ;;
         esac
+    fi
+    if [[ $STOP_AT_INSTALLER != 0 ]]; then
+        stopped_at_installer
+        return
     fi
     if ((fresh)); then
         serial_shell 60 >/dev/null || fail "no shell after a fresh install"
@@ -636,6 +665,10 @@ cmd_reset() {
     preflight_pve
     build_if_needed
     vm_install
+    if [[ $STOP_AT_INSTALLER != 0 ]]; then
+        stopped_at_installer
+        return
+    fi
     ok "VM $VMID runs VaporOS $VM_VERSION"
     [[ $CONSOLE == 0 ]] || cmd_console
 }
@@ -656,6 +689,8 @@ cmd_shell() {
 # the test reinstalls the dev VM and leaves it running.
 cmd_test() {
     local v1 v2 have entry boots=0
+    [[ $STOP_AT_INSTALLER == 0 ]] ||
+        die "make test installs through the API from start to end; STOP_AT_INSTALLER=1 goes with make reset"
     TESTING=1
     preflight_pve
     build_if_needed
