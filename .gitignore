@@ -4,3 +4,4 @@ __pycache__/
 .build/
 # Private signing keys never belong in the repo (see keys/README.md).
 *.key
+.claude/

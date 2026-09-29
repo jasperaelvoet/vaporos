@@ -72,7 +72,7 @@ Tests override these through the package variables in `internal/config`.
 
 - `vapor` (uid/gid 1000) is created by sysusers. It is in groups `input render video seat audio`, has no password, lingers, and its home is `/var/home/vapor`. It runs gamescope, Steam, Sunshine and PipeWire as user units.
 - `root` is locked.
-- The web admin is `admin`, with the password in `auth.json` only (not a Unix account).
+- The web admin is `admin`, with the password in `auth.json` only (not a Unix account). Passwords are 8–1024 characters (`auth.ValidatePassword`), everywhere a password is set.
 - Debug images (`image.json.debug=true`) autologin root on the ttyS0 serial console. Release images have no gettys at all.
 
 ## config.json (schema 1)
@@ -236,7 +236,7 @@ counting does the rest.
 | GET `/auth/me` | Public | `{"authenticated":bool,"csrf":"…","needs_setup":bool,"installer":bool}` |
 | POST `/auth/login` | Public | `{"password"}` → `{"csrf"}` + cookie; 401 on a wrong password; 429 after 5 failures per IP (backoff up to 15 min) |
 | POST `/auth/logout` | Authed | → `{}` |
-| POST `/auth/setup` | Setup | `{"password"}` → `{"csrf"}`; only when auth.json is missing (first run after a CLI install) |
+| POST `/auth/setup` | Setup | `{"password"}` → `{"csrf"}`; only when auth.json is missing (first run after a CLI install); 409 in installer mode |
 | POST `/auth/password` | Authed | `{"current","new"}` → `{}` |
 | GET `/system` | Authed | `{"hostname","version","channel","booted_slot","uptime_s","cpu","gpu":{"vendor","name","driver","supported"},"ips":["…"],"mdns":"vapor.local","disk":{"data_total","data_free"},"temps":[{"name","c"}]}` |
 | PUT `/system/hostname` | Authed | `{"hostname"}` → `{}` |
@@ -274,6 +274,8 @@ counting does the rest.
 
 ## Session protocol (`/run/vos/session.sock`)
 
+Served by the display manager (`display.Manager.Run`), not by the daemon.
+
 Newline-delimited JSON, one request and one response per connection.
 - `{"op":"begin","client":"<SUNSHINE_CLIENT_NAME?>","app":"<SUNSHINE_APP_NAME>","width":W,"height":H,"fps":F,"hdr":bool}` → `{"ok":bool,"mode":"WxH@R","hdr":bool,"message":"…"}`
 - `{"op":"end"}` → `{"ok":true}`
@@ -289,6 +291,8 @@ hard timeout of 90 s.
  "qr":"http://192.168.1.50/","code":"ABCD-EFGH","title":"VaporOS","status":"Ready to stream",
  "detail":"Open this address on your phone or computer","version":"…"}
 ```
+The virtual EDID's PNP id is `VPR` and its monitor name `VaporOS`, so gamescope's `modes.cfg` key is `<pnp.ids name for VPR> VaporOS`; vosd reads the real key from `gamescopectl` at runtime instead of assuming it.
+
 `vos welcome` redraws whenever the file changes (poll 1 s). It lights every
 connected physical connector with its preferred mode. It also lights the
 virtual connector (if configured) with a 1920x1080 splash, because Sunshine
@@ -325,7 +329,7 @@ Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
 - **GPU and a monitor:** the welcome screen runs while idle. `session begin` stops it, starts gamescope and applies the mode. `session end` plus 60 s idle (no game or download) stops gamescope and starts the welcome screen again.
 
 Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/sunshine/sunshine.conf`:
-- `capture = kms`, `encoder = vulkan`, `adapter_name = /dev/dri/renderD128`, `output_name = <index of virtual connector>`
+- `capture = kms`, `encoder = vulkan`, `adapter_name = <render node of the virtual connector's card>`, `output_name = <virtual connector name, e.g. DP-1>` (Sunshine's KMS capture matches connector names; a number would mean "n-th active plane", which shifts while the welcome screen lights other outputs)
 - `origin_web_ui_allowed = pc`, `upnp = disabled`, `system_tray = disabled`, `gamepad = xone`
 - `global_prep_cmd = [{"do":"/usr/bin/vos session begin","undo":"/usr/bin/vos session end","elevated":false}]`
 

@@ -3,13 +3,12 @@ Description=Sunshine game streaming host
 Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
 # Controlled by vosd (systemctl --user -M vapor@). Never in the live installer.
 ConditionKernelCommandLine=!vos.mode=live
-# Wants, not Requires, gamescope: Sunshine has to keep running while vosd
+# No dependency on gamescope at all: Sunshine keeps running while vosd
 # swaps gamescope for the welcome screen (a monitor is attached and nobody is
-# streaming), because Moonlight connects to Sunshine and its prep command
-# (vos session begin) is what brings gamescope back. Starting this unit does
-# pull gamescope in; vosd starts it with --job-mode=ignore-requirements when
-# the welcome screen owns the display.
-Wants=vos-gamescope.service pipewire.service pipewire-pulse.service wireplumber.service
+# streaming), and its prep command (vos session begin) is what brings
+# gamescope back. Ordering only, so a boot that starts both starts gamescope
+# first.
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
 After=vos-gamescope.service pipewire.service pipewire-pulse.service wireplumber.service
 StartLimitIntervalSec=0
 
@@ -19,5 +18,7 @@ Type=simple
 # KMS capture works through the file capabilities the image gives the binary
 # (cap_sys_admin,cap_sys_nice+p).
 ExecStart=/usr/bin/sunshine %h/.config/sunshine/sunshine.conf
+# Mesa 26 moved RADV Vulkan video encode behind RADV_EXPERIMENTAL.
+Environment=RADV_EXPERIMENTAL=video_encode
 Restart=always
 RestartSec=3

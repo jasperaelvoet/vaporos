@@ -45,7 +45,7 @@ SERVE_PORT=${SERVE_PORT:-8000}
 CONSOLE=${CONSOLE:-1}
 TIMEZONE=${TIMEZONE:-Europe/Brussels}
 # The web admin password the automatic install sets.
-ADMIN_PASS=${ADMIN_PASS:-vapor}
+ADMIN_PASS=${ADMIN_PASS:-vapor-dev}
 
 ISO_NAME=vaporos-dev.iso
 # What `vos update --from http://…/` fetches, in upload order: the manifest

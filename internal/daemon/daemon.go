@@ -19,7 +19,6 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/power"
-	"github.com/jasperaelvoet/vaporos/internal/session"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
 	"github.com/jasperaelvoet/vaporos/internal/sunshine"
 	"github.com/jasperaelvoet/vaporos/internal/system"
@@ -85,13 +84,8 @@ func Main(args []string) int {
 			runner{"update", up.Run},
 			runner{"sunshine", sun.Run},
 			runner{"power", pow.Run},
-			runner{"system", sys.Run},
-			runner{"session", func(ctx context.Context) {
-				// Sunshine's prep-cmd hooks (vos session begin|end) land here.
-				if err := session.Serve(ctx, config.SessionSock(), disp); err != nil {
-					log.Printf("session socket: %v", err)
-				}
-			}})
+			runner{"system", sys.Run})
+		// The session socket (vos session begin|end) is served by disp.Run.
 	}
 	var wg sync.WaitGroup
 	for _, r := range runners {

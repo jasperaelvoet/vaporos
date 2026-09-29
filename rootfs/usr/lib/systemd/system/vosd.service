@@ -10,7 +10,8 @@ After=network.target systemd-resolved.service
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+# vosd sends READY=1 once the web UI is listening.
+Type=notify
 ExecStart=/usr/bin/vos daemon
 Restart=always
 RestartSec=2
