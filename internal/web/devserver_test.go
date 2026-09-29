@@ -100,23 +100,14 @@ func newFakeAPI(installer bool) *fakeAPI {
 	f := &fakeAPI{
 		mux: http.NewServeMux(), hub: events.NewHub(), installer: installer,
 		booted: time.Now().Add(-26 * time.Hour), hostname: "vapor",
-		update: map[string]any{
-			"booted": "20260929.101500", "staged": nil, "failed": []string{"20260921.083000"},
-			"available":  map[string]any{"version": "20260929.143000", "size": 1_420_000_000, "checked": time.Now().Add(-40 * time.Minute).Format(time.RFC3339)},
-			"last_error": "", "config": map[string]any{"source": "oci://ghcr.io/jasperaelvoet/vaporos", "channel": "main", "auto": "stage"},
-			"booted_slot": "a", "other_slot": map[string]any{"version": "20260927.190000", "bootable": true},
-			"held": nil, "busy": false, "progress": nil,
-		},
-		power: map[string]any{
-			"idle_shutdown": true, "idle_minutes": 15, "keep_awake_until": nil,
-			"wol": []map[string]any{{"iface": "enp6s0", "mac": "9c:6b:00:12:34:56", "enabled": true}}, "busy": nil,
-		},
 		ssh:       map[string]any{"enabled": false, "keys": []string{}},
 		libraries: map[string]string{"5e1d-aa01": "registered", "3c4d-5e6f": ""},
 		install:   map[string]any{"state": "idle", "step": "", "percent": 0, "message": "", "error": ""},
 	}
 	f.seedSunshine()
 	f.seedDisplay()
+	f.seedUpdate()
+	f.seedPower()
 	f.routes()
 	go f.ticker()
 	return f
@@ -222,22 +213,7 @@ func (f *fakeAPI) routes() {
 	f.handle("POST /system/reboot", true, func(w http.ResponseWriter, r *http.Request) any { f.reboot(6 * time.Second); return ok })
 	f.handle("POST /system/poweroff", true, func(w http.ResponseWriter, r *http.Request) any { f.reboot(20 * time.Second); return ok })
 
-	f.handle("GET /update", true, func(w http.ResponseWriter, r *http.Request) any { return f.update })
-	f.handle("POST /update/check", true, func(w http.ResponseWriter, r *http.Request) any {
-		return map[string]any{"available": f.update["available"]}
-	})
-	f.handle("POST /update/stage", true, func(w http.ResponseWriter, r *http.Request) any {
-		go f.fakeStage()
-		return ok
-	})
-	f.handle("POST /update/activate", true, func(w http.ResponseWriter, r *http.Request) any { f.reboot(8 * time.Second); return ok })
-	f.handle("POST /update/rollback", true, func(w http.ResponseWriter, r *http.Request) any { return ok })
-	f.handle("PUT /update/settings", true, func(w http.ResponseWriter, r *http.Request) any {
-		b := body(r)
-		f.update["config"] = map[string]any{"source": "oci://ghcr.io/jasperaelvoet/vaporos", "channel": b["channel"], "auto": b["auto"]}
-		return ok
-	})
-
+	f.updateRoutes()
 	f.sunshineRoutes()
 	f.displayRoutes()
 
@@ -305,26 +281,7 @@ func (f *fakeAPI) routes() {
 		return ok
 	})
 
-	f.handle("GET /power", true, func(w http.ResponseWriter, r *http.Request) any {
-		if f.session != nil {
-			f.power["busy"] = map[string]string{"reason": "streaming to " + fmt.Sprint(f.session["client"])}
-		}
-		return f.power
-	})
-	f.handle("PUT /power", true, func(w http.ResponseWriter, r *http.Request) any {
-		b := body(r)
-		f.power["idle_shutdown"], f.power["idle_minutes"] = b["idle_shutdown"], b["idle_minutes"]
-		return ok
-	})
-	f.handle("POST /power/keep-awake", true, func(w http.ResponseWriter, r *http.Request) any {
-		m, _ := body(r)["minutes"].(float64)
-		if m == 0 {
-			f.power["keep_awake_until"] = nil
-		} else {
-			f.power["keep_awake_until"] = time.Now().Add(time.Duration(m) * time.Minute).Format(time.RFC3339)
-		}
-		return ok
-	})
+	f.powerRoutes()
 	f.handle("GET /ssh", true, func(w http.ResponseWriter, r *http.Request) any { return f.ssh })
 	f.handle("PUT /ssh", true, func(w http.ResponseWriter, r *http.Request) any { f.ssh = body(r); return ok })
 
@@ -395,36 +352,6 @@ func (f *fakeAPI) serveEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeAPI) fakeStage() {
-	f.mu.Lock()
-	var v any
-	if a, ok := f.update["available"].(map[string]any); ok {
-		v = a["version"]
-	}
-	f.mu.Unlock()
-	if f.onTrial {
-		// Refused for now: the server reports it only as this event, and
-		// last_error stays as it was.
-		time.Sleep(400 * time.Millisecond)
-		f.hub.Publish("update.progress", map[string]any{"phase": "error", "version": v,
-			"error": "the running version is still on trial; try again once it has fully started (20260929.101500, 2 tries left)"})
-		return
-	}
-	const total = 1_420_000_000
-	for p := 0; p <= 100; p += 4 {
-		phase := "download"
-		if p > 80 {
-			phase = "verify"
-		}
-		f.hub.Publish("update.progress", map[string]any{"phase": phase, "percent": p, "bytes": total / 100 * p, "total": total, "version": v})
-		time.Sleep(300 * time.Millisecond)
-	}
-	f.mu.Lock()
-	f.update["staged"] = map[string]any{"version": v, "slot": "b", "at": time.Now().Format(time.RFC3339)}
-	f.mu.Unlock()
-	f.hub.Publish("update.progress", map[string]any{"phase": "done", "percent": 100, "version": v})
-}
-
 func (f *fakeAPI) fakeInstall() {
 	steps := []struct {
 		step, msg string
@@ -452,13 +379,4 @@ func (f *fakeAPI) fakeInstall() {
 	f.install = done
 	f.mu.Unlock()
 	f.hub.Publish("install.progress", done)
-}
-
-// ticker publishes the background events a real box would.
-func (f *fakeAPI) ticker() {
-	idle := 60
-	for range time.Tick(5 * time.Second) {
-		idle += 5
-		f.hub.Publish("power.idle", map[string]any{"idle_seconds": idle, "shutdown_in": 15*60 - idle})
-	}
 }
