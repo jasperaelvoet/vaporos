@@ -1,0 +1,19 @@
+{
+  "description": "Idle power-off is on, but Wake-on-LAN is off on the only wired adapter, so nothing could wake the box.",
+  "patch": {
+    "power": {
+      "wol": [
+        {
+          "iface": "enp6s0",
+          "mac": "02:5e:a1:3c:4d:7f",
+          "enabled": false,
+          "supported": true,
+          "ipv4": "192.168.1.40",
+          "prefix": 24,
+          "broadcast": "192.168.1.255"
+        }
+      ]
+    }
+  },
+  "expect": {"hero": "ready", "restart": [], "cards": ["cant-wake"]}
+}

@@ -1,0 +1,5 @@
+{
+  "description": "No session: every page goes to sign-in (password vaporvapor).",
+  "auth": "signed-out",
+  "expect": {"hero": null, "redirect": "/login", "restart": [], "cards": []}
+}

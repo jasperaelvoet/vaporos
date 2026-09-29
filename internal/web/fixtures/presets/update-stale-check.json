@@ -1,0 +1,5 @@
+{
+  "description": "A check phase is replayed while nothing runs (B1): it must not show as updating.",
+  "events": [["update.progress", {"phase": "check", "percent": 0, "bytes": 0, "total": 0, "version": ""}]],
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

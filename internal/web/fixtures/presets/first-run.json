@@ -1,0 +1,5 @@
+{
+  "description": "An installed system without an admin password: /setup asks for the setup code ABCD-EFGH.",
+  "auth": "first-run",
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}

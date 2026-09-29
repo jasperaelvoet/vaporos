@@ -1,0 +1,5 @@
+{
+  "description": "Only the viewer's own page keeps the box on (busy.web and web_until), as on the real box.",
+  "sim": {"web_activity": true},
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

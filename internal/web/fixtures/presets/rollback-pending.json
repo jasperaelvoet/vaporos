@@ -1,0 +1,10 @@
+{
+  "description": "Go back was pressed: the older version starts on the next restart.",
+  "patch": {
+    "update": {
+      "held": {"version": "20260929.101500", "rollback_index": 1790684100},
+      "next_boot": {"slot": "b", "version": "20260927.190000"}
+    }
+  },
+  "expect": {"hero": "restart-needed", "restart": ["rollback"], "cards": []}
+}

@@ -1,0 +1,9 @@
+{
+  "description": "The last check could not reach the update server.",
+  "patch": {
+    "update": {
+      "last_error": "check: Get \"https://ghcr.io/token?scope=repository:jasperaelvoet/vaporos:pull&service=ghcr.io\": dial tcp: lookup ghcr.io: no such host"
+    }
+  },
+  "expect": {"hero": "ready", "restart": [], "cards": ["cant-check"]}
+}

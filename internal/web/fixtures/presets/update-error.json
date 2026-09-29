@@ -1,0 +1,23 @@
+{
+  "description": "The last download stopped with an error.",
+  "patch": {
+    "update": {
+      "available": {"version": "20260929.143000", "size": 1420000000, "checked": "@-40m"},
+      "last_error": "root.erofs: sha256 mismatch (the download was damaged)"
+    }
+  },
+  "events": [
+    [
+      "update.progress",
+      {
+        "phase": "error",
+        "percent": 37,
+        "bytes": 0,
+        "total": 0,
+        "version": "20260929.143000",
+        "error": "root.erofs: sha256 mismatch (the download was damaged)"
+      }
+    ]
+  ],
+  "expect": {"hero": "ready", "restart": [], "cards": ["update-available", "update-stopped"]}
+}

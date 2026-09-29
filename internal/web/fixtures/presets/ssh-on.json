@@ -1,0 +1,10 @@
+{
+  "description": "Remote access over SSH is on with one key.",
+  "patch": {
+    "ssh": {
+      "enabled": true,
+      "keys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFOTT0p7Iivr1j7lNb97ivie7D2deh2qJaSY5wNBf9Uj sam@laptop"]
+    }
+  },
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

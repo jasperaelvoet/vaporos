@@ -1,0 +1,16 @@
+{
+  "description": "A Steam Deck waits for its PIN (the fake takes 1234).",
+  "patch": {
+    "sunshine": {
+      "pending_pairing": true,
+      "pairings": [{"id": "2e91a88f8967a1bd56be84a93e1fe055", "name": "Steam Deck", "address": "192.168.1.31"}]
+    }
+  },
+  "events": [
+    [
+      "pairing.state",
+      {"pairings": [{"id": "2e91a88f8967a1bd56be84a93e1fe055", "name": "Steam Deck", "address": "192.168.1.31"}]}
+    ]
+  ],
+  "expect": {"hero": "ready", "restart": [], "cards": ["pair"], "attention": "pair"}
+}

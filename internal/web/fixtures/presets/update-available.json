@@ -1,0 +1,5 @@
+{
+  "description": "A newer version was found and is not downloaded yet.",
+  "patch": {"update": {"available": {"version": "20260929.143000", "size": 1420000000, "checked": "@-40m"}}},
+  "expect": {"hero": "ready", "restart": [], "cards": ["update-available"]}
+}

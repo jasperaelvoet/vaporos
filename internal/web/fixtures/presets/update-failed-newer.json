@@ -1,0 +1,19 @@
+{
+  "description": "A newer version did not start, so the box went back by itself.",
+  "patch": {
+    "update": {
+      "failed": ["20260921.083000", "20260929.143000"],
+      "last_error": "VaporOS 20260929.143000 did not start correctly; still running 20260929.101500",
+      "other_slot": {
+        "version": "20260929.143000",
+        "running": false,
+        "bootable": false,
+        "counting": false,
+        "tries_left": 0,
+        "tries_done": 3,
+        "entry": "vos-20260929.143000+0-3.conf"
+      }
+    }
+  },
+  "expect": {"hero": "ready", "restart": [], "cards": ["update-failed", "update-stopped"]}
+}

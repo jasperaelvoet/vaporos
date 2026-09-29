@@ -1,0 +1,16 @@
+{
+  "description": "No monitor attached: the virtual screen is the only output.",
+  "patch": {
+    "display": {
+      "connectors": [
+        {"name": "DP-1", "status": "connected", "physical": false},
+        {"name": "DP-2", "status": "disconnected", "physical": false},
+        {"name": "DP-3", "status": "disconnected", "physical": false},
+        {"name": "HDMI-A-1", "status": "disconnected", "physical": false}
+      ],
+      "available_connectors": ["DP-2", "DP-3", "HDMI-A-1"],
+      "state": "none"
+    }
+  },
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

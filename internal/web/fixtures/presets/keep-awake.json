@@ -1,0 +1,5 @@
+{
+  "description": "Stay awake runs for two more hours.",
+  "patch": {"power": {"keep_awake_until": "@+2h"}},
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

@@ -1,0 +1,6 @@
+{
+  "description": "The running version is still on trial, so a download stops with the server's refusal.",
+  "patch": {"update": {"available": {"version": "20260929.143000", "size": 1420000000, "checked": "@-40m"}}},
+  "sim": {"trial": true},
+  "expect": {"hero": "ready", "restart": [], "cards": ["update-available"]}
+}

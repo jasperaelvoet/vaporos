@@ -1,0 +1,6 @@
+{
+  "description": "An update is being written to the other slot.",
+  "patch": {"update": {"available": {"version": "20260929.143000", "size": 1420000000, "checked": "@-40m"}}},
+  "sim": {"stage": {"phase": "write", "percent": 42}},
+  "expect": {"hero": "updating", "restart": [], "cards": []}
+}

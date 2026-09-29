@@ -1,0 +1,17 @@
+{
+  "description": "The living room TV streams at 3840x2160@60 with HDR.",
+  "patch": {
+    "sunshine": {
+      "streaming": true,
+      "session": {"client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@-25m"}
+    },
+    "display": {"state": "streaming", "current": "3840x2160@60"}
+  },
+  "events": [
+    [
+      "session.begin",
+      {"client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@-25m"}
+    ]
+  ],
+  "expect": {"hero": "streaming", "restart": [], "cards": []}
+}

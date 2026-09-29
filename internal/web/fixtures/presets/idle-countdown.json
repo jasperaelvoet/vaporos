@@ -1,0 +1,5 @@
+{
+  "description": "Nobody uses the box or the web UI: power.idle counts down to the idle power-off.",
+  "sim": {"web_activity": false, "idle_seconds": 600},
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

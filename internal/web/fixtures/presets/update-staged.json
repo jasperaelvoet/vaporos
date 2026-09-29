@@ -1,0 +1,23 @@
+{
+  "description": "The update is downloaded and starts on the next restart.",
+  "patch": {
+    "update": {
+      "available": {"version": "20260929.143000", "size": 1420000000, "checked": "@-40m"},
+      "staged": {"version": "20260929.143000", "slot": "b", "at": "@-10m"},
+      "other_slot": {
+        "version": "20260929.143000",
+        "running": false,
+        "bootable": true,
+        "counting": true,
+        "tries_left": 3,
+        "tries_done": 0,
+        "entry": "vos-20260929.143000+3.conf"
+      },
+      "next_boot": {"slot": "b", "version": "20260929.143000"}
+    }
+  },
+  "events": [
+    ["update.progress", {"phase": "done", "percent": 100, "bytes": 0, "total": 0, "version": "20260929.143000"}]
+  ],
+  "expect": {"hero": "restart-needed", "restart": ["update"], "cards": []}
+}

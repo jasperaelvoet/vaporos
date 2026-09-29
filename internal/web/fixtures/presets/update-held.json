@@ -1,0 +1,18 @@
+{
+  "description": "After going back from 20260929.143000: automatic updates leave it alone.",
+  "patch": {
+    "update": {
+      "held": {"version": "20260929.143000", "rollback_index": 1790699400},
+      "other_slot": {
+        "version": "20260929.143000",
+        "running": false,
+        "bootable": false,
+        "counting": false,
+        "tries_left": 0,
+        "tries_done": 0,
+        "entry": "vos-20260929.143000+0-1.conf"
+      }
+    }
+  },
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}
