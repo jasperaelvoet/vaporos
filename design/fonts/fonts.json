@@ -1,0 +1,289 @@
+{
+  "schema": 1,
+  "about": "The font manifest: pinned originals, the faces cut from them and where each output goes. tools/fonts/fonts.py builds from it and writes each face's result; the Go tests check the outputs against it. See SOURCES.md.",
+  "families": {
+    "anybody": {
+      "family": "Anybody",
+      "name": "Anybody",
+      "url": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/anybody/Anybody%5Bwdth,wght%5D.ttf",
+      "sha256": "b184bd7e6ca8348bbaecec98951565729d7e89b7872d4898a1f9981342b5b64c",
+      "axes": { "wdth": [50, 150], "wght": [100, 900] },
+      "upstream": "https://github.com/Etcetera-Type-Co/Anybody",
+      "license": "OFL-1.1",
+      "licenseUrl": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/anybody/OFL.txt",
+      "licenseSha256": "7f0313b042b462fcae1934436cc747f9fd4433e3b08fd6459a4a5104b0bbd5db",
+      "licenseFile": "OFL-Anybody.txt",
+      "rfn": []
+    },
+    "martianmono": {
+      "family": "Martian Mono",
+      "name": "Martian Mono",
+      "url": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/martianmono/MartianMono%5Bwdth,wght%5D.ttf",
+      "sha256": "c3467843ec1c2574b05fbcfd7147c7bfbcf63ddca8fc2bcb9d117f1bfb1b22e7",
+      "axes": { "wdth": [75, 112.5], "wght": [100, 800] },
+      "upstream": "https://github.com/evilmartians/mono",
+      "license": "OFL-1.1",
+      "licenseUrl": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/martianmono/OFL.txt",
+      "licenseSha256": "ddafd2c3f37ef1d83ef284ca63e159befd3820850c5e9eded14ca52eee92c256",
+      "licenseFile": "OFL-MartianMono.txt",
+      "rfn": []
+    },
+    "monasans": {
+      "family": "Mona Sans",
+      "name": "VOS UI",
+      "url": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/monasans/MonaSans%5Bwdth,wght%5D.ttf",
+      "sha256": "fd6e79634b5ae804a45aac7e2e3c2a325b41291fba59034f4732b0135b8475b3",
+      "axes": { "wdth": [75, 125], "wght": [200, 900] },
+      "upstream": "https://github.com/github/mona-sans",
+      "license": "OFL-1.1",
+      "licenseUrl": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/monasans/OFL.txt",
+      "licenseSha256": "9261dcb61fb5e3c587d50d7a9fdae12bc7422d8822d7ac06b8f34550479575de",
+      "licenseFile": "OFL-MonaSans.txt",
+      "rfn": ["Mona"]
+    }
+  },
+  "unicodes": {
+    "web": "U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+02C6,U+02DA,U+02DC,U+2013-2014,U+2018-201A,U+201C-201E,U+2022,U+2026,U+2039-203A,U+20AC,U+2190-2193,U+2212,U+2713,U+2715",
+    "tv": "U+0020-007E,U+00A0-017F,U+2013-2014,U+2018-2019,U+201C-201D,U+2022,U+2026"
+  },
+  "features": { "web": ["ccmp", "locl", "kern", "liga", "calt", "tnum", "case"], "tv": ["kern"] },
+  "budget": { "webTotal": 120000, "preloads": 2, "preloadEach": 60000, "tvTotal": 300000 },
+  "fallbacks": {
+    "sans": {
+      "local": ["Arial", "ArialMT", "Helvetica Neue", "HelveticaNeue", "Roboto"],
+      "metrics": "Arial"
+    },
+    "sans-bold": {
+      "local": ["Arial Bold", "Arial-BoldMT", "Helvetica Neue Bold", "HelveticaNeue-Bold", "Roboto Bold", "Roboto-Bold"],
+      "metrics": "Arial Bold"
+    },
+    "mono": {
+      "local": ["Menlo Regular", "Menlo-Regular", "Courier New", "CourierNewPSMT", "Droid Sans Mono"],
+      "metrics": "Menlo Regular"
+    },
+    "mono-bold": {
+      "local": ["Menlo Bold", "Menlo-Bold", "Courier New Bold", "CourierNewPS-BoldMT"],
+      "metrics": "Menlo Bold"
+    }
+  },
+  "fallbackMetrics": {
+    "Arial": { "unitsPerEm": 2048, "avgWidth": 904.24, "measured": "Arial.ttf, Version 5.01.2x" },
+    "Arial Bold": { "unitsPerEm": 2048, "avgWidth": 977.68, "measured": "Arial Bold.ttf, Version 5.01.2x" },
+    "Menlo Regular": { "unitsPerEm": 2048, "avgWidth": 1233.0, "measured": "Menlo.ttc, 22.0d2e1" },
+    "Menlo Bold": { "unitsPerEm": 2048, "avgWidth": 1233.0, "measured": "Menlo.ttc, 22.0d2e1" }
+  },
+  "faces": [
+    {
+      "role": "display",
+      "face": "cold",
+      "family": "anybody",
+      "style": "Cold",
+      "wdth": 72,
+      "wght": 560,
+      "web": "internal/web/static/fonts/anybody-cold.woff2",
+      "tv": "internal/display/welcome/fonts/anybody-cold.ttf",
+      "fallback": "sans",
+      "result": {
+        "web": {
+          "bytes": 10064,
+          "sha256": "1711c1600473778a18da175fbc2555d92eaae949c29aa13c0cd7b9efe249eddb"
+        },
+        "tv": {
+          "bytes": 24772,
+          "sha256": "081b534dab3bcc595825c5846e294d2bc1e3d429f14a8524fbc3c1aed1f72ff1"
+        },
+        "fallback": {
+          "family": "Anybody fallback",
+          "local": ["Arial", "ArialMT", "Helvetica Neue", "HelveticaNeue", "Roboto"],
+          "sizeAdjust": "78.9%",
+          "ascentOverride": "100.76%",
+          "descentOverride": "30.42%",
+          "lineGapOverride": "0%"
+        }
+      }
+    },
+    {
+      "role": "display",
+      "face": "warm",
+      "family": "anybody",
+      "style": "Warm",
+      "wdth": 100,
+      "wght": 700,
+      "web": "internal/web/static/fonts/anybody-warm.woff2",
+      "tv": "internal/display/welcome/fonts/anybody-warm.ttf",
+      "preload": true,
+      "fallback": "sans-bold",
+      "result": {
+        "web": {
+          "bytes": 10308,
+          "sha256": "8dcfeba7bea97ba446edb8b347be6a26a3bfd16f2ebe17608b024a2797782f8f"
+        },
+        "tv": {
+          "bytes": 25268,
+          "sha256": "556585fcf771f859dfc0a8322a563b1039852489239d19d959dbe87f006e1a1f"
+        },
+        "fallback": {
+          "family": "Anybody fallback",
+          "local": ["Arial Bold", "Arial-BoldMT", "Helvetica Neue Bold", "HelveticaNeue-Bold", "Roboto Bold", "Roboto-Bold"],
+          "sizeAdjust": "115.53%",
+          "ascentOverride": "68.81%",
+          "descentOverride": "20.77%",
+          "lineGapOverride": "0%"
+        }
+      }
+    },
+    {
+      "role": "display",
+      "face": "hot",
+      "family": "anybody",
+      "style": "Hot",
+      "wdth": 124,
+      "wght": 800,
+      "web": "internal/web/static/fonts/anybody-hot.woff2",
+      "tv": "internal/display/welcome/fonts/anybody-hot.ttf",
+      "fallback": "sans-bold",
+      "result": {
+        "web": {
+          "bytes": 10380,
+          "sha256": "e4d99763addb3642414f341cf5307afc399c0007454480463ca9a858547d99ff"
+        },
+        "tv": {
+          "bytes": 25668,
+          "sha256": "d369f894add53f6f6d065e965704c08879f879a2f4108374e6f9f22e3bc4a506"
+        },
+        "fallback": {
+          "family": "Anybody fallback",
+          "local": ["Arial Bold", "Arial-BoldMT", "Helvetica Neue Bold", "HelveticaNeue-Bold", "Roboto Bold", "Roboto-Bold"],
+          "sizeAdjust": "151.01%",
+          "ascentOverride": "52.64%",
+          "descentOverride": "15.89%",
+          "lineGapOverride": "0%"
+        }
+      }
+    },
+    {
+      "role": "ui",
+      "face": "regular",
+      "family": "monasans",
+      "style": "Regular",
+      "wdth": 100,
+      "wght": 400,
+      "web": "internal/web/static/fonts/monasans-regular.woff2",
+      "tv": "internal/display/welcome/fonts/monasans-regular.ttf",
+      "preload": true,
+      "fallback": "sans",
+      "result": {
+        "web": {
+          "bytes": 19120,
+          "sha256": "9efe12cb2bae3a5b6d98890a2f815c75347378ec5251c5cf2c23104765a48159"
+        },
+        "tv": {
+          "bytes": 45388,
+          "sha256": "97334729e7ae7fb32f71bac6c1c6fd42eb49a41b5654122e40b03da7a8bceaf9"
+        },
+        "fallback": {
+          "family": "Mona Sans fallback",
+          "local": ["Arial", "ArialMT", "Helvetica Neue", "HelveticaNeue", "Roboto"],
+          "sizeAdjust": "104.35%",
+          "ascentOverride": "104.46%",
+          "descentOverride": "30.67%",
+          "lineGapOverride": "0%"
+        }
+      }
+    },
+    {
+      "role": "ui",
+      "face": "semibold",
+      "family": "monasans",
+      "style": "SemiBold",
+      "wdth": 100,
+      "wght": 600,
+      "web": "internal/web/static/fonts/monasans-semibold.woff2",
+      "fallback": "sans-bold",
+      "result": {
+        "web": {
+          "bytes": 19420,
+          "sha256": "19c81d47c8a0cbb693062656ee4140df7b69866693a124212b33423e31676bf4"
+        },
+        "fallback": {
+          "family": "Mona Sans fallback",
+          "local": ["Arial Bold", "Arial-BoldMT", "Helvetica Neue Bold", "HelveticaNeue-Bold", "Roboto Bold", "Roboto-Bold"],
+          "sizeAdjust": "99.87%",
+          "ascentOverride": "109.15%",
+          "descentOverride": "32.04%",
+          "lineGapOverride": "0%"
+        }
+      }
+    },
+    {
+      "role": "mono",
+      "face": "medium",
+      "family": "martianmono",
+      "style": "Medium",
+      "wdth": 100,
+      "wght": 500,
+      "web": "internal/web/static/fonts/martianmono-medium.woff2",
+      "tv": "internal/display/welcome/fonts/martianmono-medium.ttf",
+      "fallback": "mono",
+      "result": {
+        "web": {
+          "bytes": 8556,
+          "sha256": "b5700d8eeecff6f90e238d7d22a5bbd8bf7aadc324353b6e19fe1a6970960d4a"
+        },
+        "tv": {
+          "bytes": 23508,
+          "sha256": "a09b8219a0fd1043b1ceb0eef63b10f24a5c770df64346a854efb3d327facad9"
+        },
+        "fallback": {
+          "family": "Martian Mono fallback",
+          "local": ["Menlo Regular", "Menlo-Regular", "Courier New", "CourierNewPSMT", "Droid Sans Mono"],
+          "sizeAdjust": "116.27%",
+          "ascentOverride": "86.01%",
+          "descentOverride": "17.2%",
+          "lineGapOverride": "0%"
+        }
+      }
+    },
+    {
+      "role": "mono",
+      "face": "semibold",
+      "family": "martianmono",
+      "style": "SemiBold",
+      "wdth": 100,
+      "wght": 600,
+      "web": "internal/web/static/fonts/martianmono-semibold.woff2",
+      "tv": "internal/display/welcome/fonts/martianmono-semibold.ttf",
+      "fallback": "mono-bold",
+      "result": {
+        "web": {
+          "bytes": 8568,
+          "sha256": "daa84157d78e8ae1cad0dcb89426c107fe67923b7799ea62030089e3288a1149"
+        },
+        "tv": {
+          "bytes": 23520,
+          "sha256": "fe8b0eb004c663055e62a9e325892adf0e8fe74058b94c2637e47fc3e551782f"
+        },
+        "fallback": {
+          "family": "Martian Mono fallback",
+          "local": ["Menlo Bold", "Menlo-Bold", "Courier New Bold", "CourierNewPS-BoldMT"],
+          "sizeAdjust": "116.27%",
+          "ascentOverride": "86.01%",
+          "descentOverride": "17.2%",
+          "lineGapOverride": "0%"
+        }
+      }
+    }
+  ],
+  "site": [
+    {
+      "family": "anybody",
+      "style": "Variable",
+      "axes": { "wdth": [56, 136], "wght": [300, 860] },
+      "out": "design/fonts/site/anybody-variable.woff2",
+      "result": {
+        "bytes": 48900,
+        "sha256": "73526a656ee9b97fd73d6651a472556f2df3dbe191902958861813c7993a124d"
+      }
+    }
+  ]
+}
