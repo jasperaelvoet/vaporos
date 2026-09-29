@@ -1,8 +1,6 @@
-// messages.js: an API error → the words people see (T5, spec-cc-screens
-// §2.13). Pure. The rule: match the endpoint, the status and a known part of
-// the server's text; else show the server's text with a capital first letter;
-// never show a JSON decode error. jstest/messages.test.mjs pins each row with
-// the server's exact words.
+// messages.js: an API error → words (T5). Match the endpoint, the status and
+// a known part of the server's text; else the server's text, capitalised;
+// never a JSON decode error. Pure; jstest pins each row.
 
 import { capitalize, fill } from './copy.js';
 

@@ -1,9 +1,8 @@
-// Unit tests for static/js/copy.js: T2, T3, T4, T7 and the confirm table.
+// Unit tests for static/js/copy.js (T2, T3, T4, T7) and confirms.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  CONFIRMS, INSTALL_STEPS, LABELS, UPDATE_PHASES, busyReason, capitalize, confirmCopy, fill, pairPrompt, restartRowText,
-} from '../static/js/copy.js';
+import { INSTALL_STEPS, LABELS, UPDATE_PHASES, busyReason, capitalize, fill, pairPrompt, restartRowText } from '../static/js/copy.js';
+import { CONFIRMS, confirmCopy } from '../static/js/confirms.js';
 
 test('fill and capitalize', () => {
   assert.equal(fill('Version <v> is <x>', { v: '1' }), 'Version 1 is <x>');

@@ -1,13 +1,13 @@
-// Unit tests for static/js/state.js. Every preset in internal/web/fixtures
+// Unit tests for static/js/state.js and summary.js. Every preset in internal/web/fixtures
 // carries an "expect"; its documents, built as the dev server builds them,
 // must give that hero, those restart reasons and those cards.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { presets } from './lib/fixtures.mjs';
 import {
-  canWake, contextCards, heroModel, powerLine, powerPlan, restartReasons, restartRow, snapshotFromStatus, statusLine,
-  stripModel, updateProgress, wakeTarget,
+  canWake, powerPlan, restartReasons, restartRow, snapshotFromStatus, stripModel, updateProgress, wakeTarget,
 } from '../static/js/state.js';
+import { contextCards, heroModel, powerLine, statusLine } from '../static/js/summary.js';
 
 const NOW = Date.parse('2026-09-29T12:00:00Z');
 

@@ -1,13 +1,11 @@
-// fmt.js: pure formatting helpers. No DOM, storage, location or network,
-// so jstest/fmt.test.mjs runs them under Node. The readout and aspect of the
-// screen shape follow design/screen-shape-vectors.json, which the Go side
-// (internal/brand ModeLabel) is tested against too.
+// fmt.js: pure formatting. modeLabel and shapeAspect follow
+// design/screen-shape-vectors.json, as internal/brand's ModeLabel does.
 
 import { INSTALL_STEPS, UPDATE_PHASES, capitalize } from './copy.js';
 
 const UNITS = ['B', 'kB', 'MB', 'GB', 'TB', 'PB'];
 
-// bytes formats a size the way drive vendors print it (decimal units).
+// Decimal units, as drive vendors print sizes.
 export function bytes(n) {
   n = Number(n);
   if (!Number.isFinite(n) || n < 0) return '–';
@@ -19,7 +17,6 @@ export function bytes(n) {
   return `${n.toFixed(i > 0 && n < 10 ? 1 : 0)} ${UNITS[i]}`;
 }
 
-// duration formats seconds as the two most significant units.
 export function duration(seconds) {
   let s = Math.max(0, Math.floor(Number(seconds) || 0));
   const d = Math.floor(s / 86400);
@@ -34,7 +31,6 @@ export function duration(seconds) {
   return `${s} s`;
 }
 
-// elapsed formats seconds as a stopwatch: 00:05, 12:40, 1:02:03.
 export function elapsed(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
   const two = (n) => String(n).padStart(2, '0');
@@ -43,8 +39,6 @@ export function elapsed(seconds) {
   return h ? `${h}:${two(m)}:${two(s % 60)}` : `${two(m)}:${two(s % 60)}`;
 }
 
-// since describes how long ago an RFC 3339 time was, as a running length:
-// "38 min", "1 h 5 min". now is the server clock when known.
 export function since(iso, now = Date.now()) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
@@ -52,7 +46,6 @@ export function since(iso, now = Date.now()) {
   return s < 60 ? 'just started' : duration(Math.floor(s / 60) * 60);
 }
 
-// ago describes an RFC 3339 time relative to now ("5 min ago").
 export function ago(iso, now = Date.now()) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
@@ -64,8 +57,6 @@ export function ago(iso, now = Date.now()) {
   return new Date(t).toLocaleDateString();
 }
 
-// clock formats an RFC 3339 time as a local wall-clock time, with the
-// weekday when it is not today.
 export function clock(iso, now = new Date()) {
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return '';
@@ -75,26 +66,20 @@ export function clock(iso, now = new Date()) {
 
 const MODE = /^(\d{2,5})x(\d{2,5})@(\d{1,3}(?:\.\d+)?)$/;
 
-// parseMode parses the API's "WxH@R" into numbers, or returns null.
 export function parseMode(s) {
   const m = MODE.exec(String(s ?? '').trim());
   if (!m) return null;
   return { w: Number(m[1]), h: Number(m[2]), hz: Number(m[3]) };
 }
 
-// modeLabel turns "2560x1440@120" into "2560 × 1440 · 120 Hz", plus
-// " · HDR". Anything that is not a mode comes back unchanged.
 export function modeLabel(s, hdr = false) {
   const m = parseMode(s);
   if (!m) return String(s ?? '');
   return `${m.w} × ${m.h} · ${m.hz} Hz${hdr ? ' · HDR' : ''}`;
 }
 
-// ASPECT bounds the screen shape (MASTER-PLAN §4.4).
 export const ASPECT = { min: 0.4, max: 3.6, unknown: 1.7778 };
 
-// shapeAspect is the width-to-height ratio the screen shape draws, clamped
-// and rounded to four decimals.
 export function shapeAspect(s) {
   const m = parseMode(s);
   if (!m || !m.h) return ASPECT.unknown;
@@ -102,7 +87,6 @@ export function shapeAspect(s) {
   return Math.round(a * 10000) / 10000;
 }
 
-// groupModes groups modes by resolution, widest first, rates ascending.
 export function groupModes(modes) {
   const by = new Map();
   for (const s of modes || []) {
@@ -119,8 +103,7 @@ export function groupModes(modes) {
   return out;
 }
 
-// phaseLabel names an update phase (T3) or an install step (T4). Words the
-// backend never sends get no special case: they show capitalised.
+// T3 or T4; words the backend never sends get no special case (B10).
 export function phaseLabel(phase, kind = 'update') {
   const p = String(phase || '').toLowerCase();
   if (kind === 'install') {
@@ -131,27 +114,22 @@ export function phaseLabel(phase, kind = 'update') {
   return p ? capitalize(p.replace(/[_-]+/g, ' ')) : 'Working';
 }
 
-// percent clamps a value to an integer 0–100.
 export function percent(v) {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
 }
 
-// plural returns "1 device" / "3 devices".
 export function plural(n, one, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-// compareVersions orders fixed-width YYYYMMDD.HHMMSS versions (AGENTS.md):
-// string order is version order. Empty sorts first.
+// Versions are fixed-width YYYYMMDD.HHMMSS: string order is version order.
 export function compareVersions(a, b) {
   a = String(a || '');
   b = String(b || '');
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-// hostLabel is the address people type: mdns when the API gives it, else
-// <hostname>.local.
 export function hostLabel(system = {}, fallback = 'vapor') {
   if (system && system.mdns) return system.mdns;
   const h = (system && system.hostname) || fallback;

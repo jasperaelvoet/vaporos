@@ -1,8 +1,6 @@
-// validate.js: the client's field rules, equal to the server's (T6,
-// spec-cc-screens §2.13). Pure, so jstest/validate.test.mjs checks each rule
-// and TestValidationParity (VOS_WEB_STRICT=1) feeds the same vectors to the
-// Go validators. Each rule returns '' when the value is fine, else the words
-// shown under the field.
+// validate.js: field rules equal to the server's (T6). Pure; jstest and
+// TestValidationParity (VOS_WEB_STRICT=1) share the vectors. A rule returns
+// '' or the words shown under the field.
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const utf8Length = (s) => new TextEncoder().encode(s).length;
