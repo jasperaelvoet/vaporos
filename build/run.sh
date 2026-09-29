@@ -38,7 +38,26 @@ if command -v flock >/dev/null; then
     fi
 fi
 
-docker build -q "${platform[@]}" -t vos-builder "$src/build" >/dev/null
+# The builder image. Docker's layer cache rebuilds it when build/Dockerfile
+# changes. Once a week it is rebuilt from a freshly pulled archlinux:base as
+# well (VOS_WEEK invalidates the keyring layer), as CI's is: pacstrap checks
+# every package against this image's pacman keyring and fetches from its
+# mirrorlists, and both go stale. Offline, the image that is there is used.
+week=$(date -u +%G-W%V)
+built=$(docker image inspect -f '{{ index .Config.Labels "vos.week" }}' vos-builder 2>/dev/null) || built=""
+build_image() {
+    docker build -q "${platform[@]}" "$@" --build-arg "VOS_WEEK=$week" --label "vos.week=$week" \
+        -t vos-builder "$src/build" >/dev/null
+}
+if [[ $built != "$week" ]]; then
+    echo "==> Refreshing the builder image ($week)"
+    if ! build_image --pull; then
+        docker image inspect vos-builder >/dev/null 2>&1 || { echo "error: could not build the builder image" >&2; exit 1; }
+        echo "warning: could not refresh the builder image; using the one there is" >&2
+    fi
+else
+    build_image
+fi
 
 # A host path for KEYS is created private; a volume name is Docker's to create.
 if [[ $keys == /* ]]; then

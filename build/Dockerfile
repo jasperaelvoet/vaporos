@@ -1,12 +1,17 @@
 # The VaporOS build environment. Nothing here is compiled: it is a stock
 # Arch container plus the handful of repo packages needed to turn a pacstrapped
-# tree into an erofs image and a bootable ISO. Built once, then cached.
+# tree into an erofs image and a bootable ISO. Cached, and rebuilt weekly.
 FROM docker.io/library/archlinux:base
 
 # pacman 7 sandboxes its downloader with seccomp, which fails when x86_64 runs
 # translated on an arm64 host ("error restricting syscalls via seccomp").
 # The container is already the sandbox.
 RUN sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+
+# The ISO week of the build (build/run.sh and CI pass it): a new week rebuilds
+# everything below, so the pacman keyrings and mirrorlists pacstrap relies on
+# are never more than a week old, even when archlinux:base has not changed.
+ARG VOS_WEEK=
 
 # The image is built from CachyOS packages (see build/pacman.conf). pacstrap
 # verifies them against this container's keyring, resolves their mirrors from
