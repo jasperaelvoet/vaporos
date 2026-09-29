@@ -80,6 +80,12 @@ jobs:
             go.mod
             go.sum
 
+      # The web UI's JavaScript tests run under go test when node is on the
+      # PATH; pin the version web.yml uses rather than whatever the runner has.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
       - name: Version and channel
         id: meta
         run: |
