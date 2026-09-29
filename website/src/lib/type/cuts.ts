@@ -12,5 +12,9 @@ export const CUTS: Record<CutName, { w: number; g: number }> = {
   hot: { w: tokens.font.display.faces.hot.wdth, g: tokens.font.display.faces.hot.wght },
 };
 
-/** The Tailwind class that sets a cut: cut-cold, cut-warm or cut-hot. */
-export const cutClass = (cut: CutName) => `cut-${cut}` as const;
+/**
+ * The Tailwind class that sets a cut. Spelled out, because Tailwind only
+ * generates classes it finds written whole in the source.
+ */
+export const CUT_CLASS = { cold: 'cut-cold', warm: 'cut-warm', hot: 'cut-hot' } as const satisfies Record<CutName, string>;
+export const cutClass = (cut: CutName) => CUT_CLASS[cut];

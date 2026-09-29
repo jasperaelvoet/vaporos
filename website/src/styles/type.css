@@ -37,6 +37,9 @@
    where K (--fit-k) is the widest line's width in em at the hottest cut, so
    the hottest width always fits and resizing needs no script. */
 
+/* Always generate the cuts, even when a script picks one by name. */
+@source inline("cut-cold cut-warm cut-hot cut-state telemetry");
+
 @property --cut-w {
   syntax: "<percentage>";
   inherits: true;

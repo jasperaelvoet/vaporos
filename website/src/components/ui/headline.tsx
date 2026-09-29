@@ -24,7 +24,7 @@
 // The whole text is one accessible string; the visual lines are aria-hidden
 // when there are two sets.
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
-import { CUTS, type CutName } from '@/lib/type/cuts';
+import { CUTS, CUT_CLASS, type CutName } from '@/lib/type/cuts';
 import { hottestOf } from '@/lib/type/fit';
 import { HeadlineFitter } from './headline-fitter';
 
@@ -135,7 +135,7 @@ export function Headline({
   return (
     <Tag
       id={id}
-      className={`headline cut-${cut} ${className}`}
+      className={`headline ${CUT_CLASS[cut]} ${className}`}
       style={style}
       data-friction={friction ? '' : undefined}
       data-narrow={two ? '' : undefined}
