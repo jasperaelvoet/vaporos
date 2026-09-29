@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Renders an HTML file to a PNG, headless: the share card (public/og.png) is
-// drawn as a 1200×630 page and photographed.
+// Renders the REDLINE share cards outside `next build`, for a quick look and
+// for the unit test: the same renderCard() the og.png route handlers call
+// (src/app/og.png/card.tsx), through next/og in plain Node.
 //
-//   node scripts/og.mjs <card.html> <out.png> [--width=1200] [--height=630]
+//   node scripts/og.mjs <outDir> [--cards=home,download,install,faq]
 //
-// Fonts must be loadable from the HTML (file:// URLs or data: URIs); the
-// screenshot waits for document.fonts.ready. The browser comes from
-// scripts/chrome.mjs (CHROME_PATH first).
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { chromium } from 'playwright-core';
-import { headlessShell } from './chrome.mjs';
+// Writes <outDir>/og-<card>.png (1200×630). The fonts come from src/fonts/ttf,
+// which scripts/copy-assets.mjs fills at prebuild/predev (run it once first).
+// TypeScript and TSX are transpiled on the fly with the project's typescript.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { registerTsx } from '../tests/unit/tsx-hooks.mjs';
 
 const argv = process.argv.slice(2);
 const opt = Object.fromEntries(
@@ -19,21 +19,21 @@ const opt = Object.fromEntries(
     return i < 0 ? [a.slice(2), true] : [a.slice(2, i), a.slice(i + 1)];
   }),
 );
-const [html, out] = argv.filter((a) => !a.startsWith('--'));
-if (!html || !out) {
-  console.error('usage: node scripts/og.mjs <card.html> <out.png> [--width=1200] [--height=630]');
+const outArg = argv.find((a) => !a.startsWith('--'));
+if (!outArg) {
+  console.error('usage: node scripts/og.mjs <outDir> [--cards=home,download,install,faq]');
   process.exit(2);
 }
-const width = Number(opt.width ?? 1200);
-const height = Number(opt.height ?? 630);
-
-const browser = await chromium.launch({ executablePath: headlessShell(), headless: true });
-try {
-  const page = await browser.newPage({ viewport: { width, height } });
-  await page.goto(pathToFileURL(resolve(html)).href, { waitUntil: 'load' });
-  await page.evaluate(() => document.fonts.ready);
-  await page.screenshot({ path: resolve(out) });
-  console.log(`og: ${resolve(out)} (${width}×${height})`);
-} finally {
-  await browser.close();
+registerTsx();
+const { renderCard } = await import('../src/app/og.png/card.tsx');
+const cards = typeof opt.cards === 'string' ? opt.cards.split(',') : ['home', 'download', 'install', 'faq'];
+const out = resolve(outArg);
+mkdirSync(out, { recursive: true });
+for (const name of cards) {
+  const t0 = Date.now();
+  const res = await renderCard(name);
+  const png = Buffer.from(await res.arrayBuffer());
+  const file = join(out, `og-${name}.png`);
+  writeFileSync(file, png);
+  console.log(`og: ${file} (${(png.length / 1000).toFixed(1)} kB, ${Date.now() - t0} ms)`);
 }
