@@ -244,7 +244,7 @@ systemd-boot counting does the rest.
 
 | Topic | Data |
 | --- | --- |
-| `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped) |
+| `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped) |
 | `update.state` | the update-state |
 | `install.progress` | `{step,percent,message,state}` |
 | `session.begin` | `{client,mode,hdr}` |
@@ -266,9 +266,10 @@ systemd-boot counting does the rest.
 | GET `/system` | Authed | `{"hostname","version","channel","booted_slot","uptime_s","cpu","gpu":{"vendor","name","driver","supported"},"ips":["…"],"mdns":"vapor.local","disk":{"data_total","data_free"},"temps":[{"name","c"}]}` |
 | PUT `/system/hostname` | Authed | `{"hostname"}` → `{}` |
 | POST `/system/reboot`, `/system/poweroff` | Authed | → `{}` |
-| GET `/update` | Authed | update-state (with `held`) + `{"config":config.update,"booted_slot","other_slot":{"version","bootable","counting",…}\|null,"busy":bool,"progress":{…}\|null}` |
+| GET `/update` | Authed | update-state (with `held`) + `{"config":config.update,"booted_slot","other_slot":{"version","bootable","counting",…}\|null,"next_boot":{"slot","version"}\|null,"busy":bool,"progress":{…}\|null}` (`next_boot`: the entry systemd-boot starts next when it is not the running slot's: a staged update, or a rollback or downgrade waiting for a restart; null when a restart boots the running slot again or the ESP cannot be read) |
 | POST `/update/check` | Authed | → `{"available":{…}\|null}` |
 | POST `/update/stage` | Authed | `{"version"?}` → `{}` (progress via events); 409 while an update runs. Later refusals (on trial, rollback waiting for a restart, held, …) arrive as `update.progress` `{"phase":"error","error"}` |
+| POST `/update/cancel` | Authed | → `{}`: stops the stage vosd runs (not a `vos update` from a shell). The outcome arrives as `update.progress`: `cancelled`, or `done` if it was already installing. 409 with the reason when nothing runs, when the running update is a `vos update` from a shell, or once the stage writes the ESP (phase `install`). A stage cancelled after writing began has already unhooked the idle slot (Write order 1), so no rollback target remains until the next stage. A cancel records no `last_error` and does not hold the version back: the next automatic check stages it again unless `auto` is `off` |
 | POST `/update/activate` | Authed | → `{}` (reboots into the staged version) |
 | POST `/update/rollback` | Authed | → `{}` (next boot = other slot; UI then offers reboot); 409 with the reason |
 | PUT `/update/settings` | Authed | `{"channel","auto"}` → `{}` |
