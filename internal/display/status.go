@@ -19,6 +19,8 @@ const (
 	messageTTL  = 5 * time.Minute
 	// sleepNotice is how long before an idle shutdown the screen says so.
 	sleepNotice = 2 * time.Minute
+	// bootGrace keeps "no network" calm while links come up after a boot.
+	bootGrace = 15 * time.Second
 )
 
 // statusOverlay is what other services told us through the event hub.
@@ -167,6 +169,7 @@ type welcomeInputs struct {
 	session        *sessionInfo
 	overlay        statusOverlay
 	now            time.Time
+	upSince        time.Time // when vosd started (zero: long ago)
 }
 
 // hostURL formats scheme://host[:port], bracketing IPv6 literals.
@@ -240,6 +243,9 @@ func buildWelcome(in welcomeInputs) welcome.State {
 		st.Status = "Waiting for the network"
 		st.Detail = "Connect this computer to your router with a network cable"
 		st.Tone = brand.Fault
+		if !in.upSince.IsZero() && in.now.Sub(in.upSince) < bootGrace {
+			st.Tone = brand.Neutral
+		}
 	}
 
 	o := in.overlay

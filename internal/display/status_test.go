@@ -82,6 +82,16 @@ func TestBuildWelcome(t *testing.T) {
 		t.Errorf("offline = %+v", st)
 	}
 	wantTone(t, "offline", st, brand.Fault, "", 0)
+	// A calm boot: no alarm while the links come up.
+	in.upSince = now.Add(-14 * time.Second)
+	if st = buildWelcome(in); st.Status != "Waiting for the network" {
+		t.Errorf("offline at boot = %+v", st)
+	}
+	wantTone(t, "offline at boot", st, brand.Neutral, "", 0)
+	in.upSince = now.Add(-bootGrace)
+	wantTone(t, "offline after the boot grace", buildWelcome(in), brand.Fault, "", 0)
+	in.ips, in.upSince = base.ips, now
+	wantTone(t, "online at boot", buildWelcome(in), brand.Ready, "", 0)
 
 	in = base
 	in.gpuSupported, in.gpuName = false, "NVIDIA AD103 [GeForce RTX 4080]"

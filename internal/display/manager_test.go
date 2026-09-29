@@ -632,6 +632,22 @@ func TestStaleSessionEnds(t *testing.T) {
 }
 
 // TestLateGPU: amdgpu binds seconds after vosd started; the next scan
+// TestNoNetworkCalmAtBoot: no address yet reads neutral for the first
+// seconds after vosd starts, and a fault after that.
+func TestNoNetworkCalmAtBoot(t *testing.T) {
+	m, h, clk, _ := newTestManager(t, true)
+	h.ips = nil
+	m.init(context.Background())
+	if st := m.welcomeState(); st.Status != "Waiting for the network" || st.Tone != brand.Neutral {
+		t.Errorf("at boot = %+v", st)
+	}
+	clk.advance(bootGrace)
+	m.init(context.Background()) // Run restarting after a panic keeps the start time
+	if st := m.welcomeState(); st.Tone != brand.Fault {
+		t.Errorf("after the grace = %+v", st)
+	}
+}
+
 // picks the card up and the policy starts gamescope.
 func TestLateGPU(t *testing.T) {
 	m, h, _, _ := newTestManager(t, false)

@@ -120,6 +120,7 @@ type Manager struct {
 	lastStart    map[string]time.Time
 	lastBusy     string
 	composite    compositeWatch
+	upSince      time.Time // the first init: when this vosd started
 }
 
 // opLock is a mutex whose Lock can give up when a context ends.
@@ -318,6 +319,9 @@ func (m *Manager) init(ctx context.Context) {
 		state = StateWelcome
 	}
 	m.mu.Lock()
+	if m.upSince.IsZero() {
+		m.upSince = m.now()
+	}
 	m.state = state
 	if state == StateGaming {
 		// Perhaps a stream survived a vosd restart: give it the idle grace.
@@ -656,6 +660,7 @@ func (m *Manager) welcomeState() welcome.State {
 		session:        m.session,
 		overlay:        m.overlay,
 		now:            m.now(),
+		upSince:        m.upSince,
 	}
 	if m.gpu.Vendor == "" || m.gpu.Vendor == "virtual" {
 		in.gpuName = ""
