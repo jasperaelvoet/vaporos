@@ -88,9 +88,26 @@ async function submitCode() {
 
 const TRANSPORTS = { nvme: 'NVMe', sata: 'SATA', ata: 'SATA', usb: 'USB', mmc: 'SD card', scsi: 'SCSI', virtio: 'Virtual' };
 
+// askForCode goes back to the code step when a Setup call is refused
+// mid-wizard: the code waiver for a PC without a monitor ends as soon as
+// one is plugged in. An install already running carries on regardless.
+function askForCode(e) {
+  if (!(e instanceof ApiError && e.status === 403)) return false;
+  w.finished = true; // stops polling; the reload after the code resumes it
+  window.removeEventListener('beforeunload', leaveGuard);
+  go('code');
+  showError('code-error', "Enter the setup code shown on the PC's screen to continue.");
+  return true;
+}
+
 async function probe(btn = null) {
   const run = async () => {
-    w.probe = await api('GET', '/install/probe');
+    try {
+      w.probe = await api('GET', '/install/probe');
+    } catch (e) {
+      if (askForCode(e)) return false;
+      throw e;
+    }
     renderGPU();
     renderDisks();
     return true;
@@ -342,6 +359,7 @@ async function submitInstall() {
   try {
     await api('POST', '/install', body);
   } catch (e) {
+    if (askForCode(e)) return;
     // 409: an install is already running (another tab); follow it.
     if (!(e instanceof ApiError) || e.status !== 409) {
       showError('install-error', e.message);
@@ -384,7 +402,10 @@ async function poll() {
   while (!w.finished) {
     try {
       apply(await api('GET', '/install/status'));
-    } catch { /* transient; keep polling */ }
+    } catch (e) {
+      if (askForCode(e)) break;
+      /* otherwise transient; keep polling */
+    }
     if (!w.finished) await sleep(2000);
   }
   w.polling = false;
@@ -571,7 +592,7 @@ async function main() {
     return;
   }
   try {
-    await probe();
+    if ((await probe()) === false) return; // back at the code step
   } catch (e) {
     showError('disk-error', e.message);
   }
