@@ -21,9 +21,11 @@ import (
 )
 
 type Service struct {
+	// cfg is the config shared with every service: read it with Snapshot
+	// or View, change it only with Mutate.
 	cfg *config.Config
-	// mu serialises this package's config edits and the SSH/hostname side
-	// effects that follow them.
+	// mu serialises the SSH and hostname changes, so two requests never
+	// interleave their unit and file side effects.
 	mu sync.Mutex
 	// powerPending is set once a reboot or poweroff has been accepted, so a
 	// double click does not queue a second one.
@@ -79,9 +81,8 @@ func (s *Service) Routes(srv *api.Server) {
 // makes config.json the one source of truth even if the file was edited.
 func (s *Service) Run(ctx context.Context) {
 	s.mu.Lock()
-	ssh := s.cfg.SSH
-	s.mu.Unlock()
-	if err := s.syncAuthorizedKeys(ssh); err != nil {
+	defer s.mu.Unlock()
+	if err := s.syncAuthorizedKeys(s.cfg.Snapshot().SSH); err != nil {
 		log.Printf("system: syncing authorized_keys: %v", err)
 	}
 }
@@ -164,9 +165,9 @@ func (s *Service) channel() string {
 	if ii, err := config.LoadImageInfo(); err == nil && ii.Channel != "" {
 		return ii.Channel
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cfg.Update.Channel
+	var ch string
+	s.cfg.View(func(c *config.Config) { ch = c.Update.Channel })
+	return ch
 }
 
 // mdnsName is what avahi announces: the first label of the hostname.

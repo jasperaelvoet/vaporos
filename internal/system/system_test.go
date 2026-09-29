@@ -505,6 +505,52 @@ func TestSSHCommandFailureIsReported(t *testing.T) {
 	}
 }
 
+func TestSSHSaveFailureChangesNothing(t *testing.T) {
+	f := newFixture(t)
+	// config.json cannot be written: its directory is a file.
+	if err := os.RemoveAll(config.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	f.write(config.StateDir, "not a directory")
+	w := call(f.svc.handlePutSSH, "PUT", `{"enabled":true,"keys":["`+edKey(t, "")+`"]}`)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), "saving config") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if cmds := f.commands(); len(cmds) != 0 {
+		t.Fatalf("an unsaved change ran %q", cmds)
+	}
+	if w := call(f.svc.handleGetSSH, "GET", ""); strings.TrimSpace(w.Body.String()) != `{"enabled":false,"keys":[]}` {
+		t.Fatalf("the unsaved change stayed in memory: %s", w.Body)
+	}
+}
+
+// Other services change the shared config at the same time; the SSH
+// handlers must neither race with them nor save over their changes.
+func TestSSHSharesTheConfigLock(t *testing.T) {
+	f := newFixture(t)
+	k := edKey(t, "")
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range 20 {
+			_ = f.svc.cfg.Mutate(func(c *config.Config) { c.Power.IdleMinutes = 30 + i })
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 10 {
+			call(f.svc.handlePutSSH, "PUT", `{"enabled":true,"keys":["`+k+`"]}`)
+			call(f.svc.handleGetSSH, "GET", "")
+		}
+	}()
+	wg.Wait()
+	saved, err := config.Load()
+	if err != nil || saved.Power.IdleMinutes != 49 || !saved.SSH.Enabled {
+		t.Fatalf("config.json lost an update: power %+v ssh %+v (%v)", saved.Power, saved.SSH, err)
+	}
+}
+
 func TestAuthorizedKeysNeverFollowsSymlinks(t *testing.T) {
 	f := newFixture(t)
 	k := edKey(t, "")
@@ -578,12 +624,12 @@ func TestAuthorizedKeysNeverFollowsSymlinks(t *testing.T) {
 func TestRunSyncsAuthorizedKeys(t *testing.T) {
 	f := newFixture(t)
 	k := edKey(t, "sync")
-	f.svc.cfg.SSH = config.SSHConfig{Enabled: true, Keys: []string{k}}
+	_ = f.svc.cfg.Mutate(func(c *config.Config) { c.SSH = config.SSHConfig{Enabled: true, Keys: []string{k}} })
 	f.svc.Run(context.Background())
 	if b, _ := os.ReadFile(keysPath()); string(b) != k+"\n" {
 		t.Fatalf("Run wrote %q", b)
 	}
-	f.svc.cfg.SSH = config.SSHConfig{Enabled: false, Keys: []string{k}}
+	_ = f.svc.cfg.Mutate(func(c *config.Config) { c.SSH = config.SSHConfig{Enabled: false, Keys: []string{k}} })
 	f.svc.Run(context.Background())
 	if _, err := os.Stat(keysPath()); !os.IsNotExist(err) {
 		t.Fatal("Run left keys with SSH disabled")
