@@ -6,27 +6,55 @@ package sysd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
+// waitDelay is how long Run still reads a command's output once the
+// command has exited or ctx has ended. A descendant it left behind may hold
+// the output pipe open for good; without a bound, ctx could not end Run.
+const waitDelay = 2 * time.Second
+
 // Run executes name with args and returns combined, trimmed output.
 func Run(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	return run(exec.CommandContext(ctx, name, args...))
+}
+
+func run(cmd *exec.Cmd) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = waitDelay
 	err := cmd.Run()
 	s := strings.TrimSpace(out.String())
 	if err != nil {
-		return s, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, s)
+		return s, fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, s)
 	}
 	return s, nil
+}
+
+// groupCommand is exec.CommandContext for a command that forks: it gets its
+// own process group, and when ctx ends the whole group is killed, not only
+// the process we started.
+func groupCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	return cmd
 }
 
 func Systemctl(ctx context.Context, args ...string) error {
@@ -49,15 +77,34 @@ func IsActive(ctx context.Context, unit string, user bool) bool {
 	return exec.CommandContext(ctx, "systemctl", args...).Run() == nil
 }
 
+// ActiveState returns a (user) unit's state as `systemctl is-active` prints
+// it ("active", "activating", "deactivating", "inactive", "failed", ...),
+// or "" when systemctl cannot tell. A unit waiting out RestartSec is
+// "activating": not active, yet about to come back by itself.
+func ActiveState(ctx context.Context, unit string, user bool) string {
+	args := []string{"is-active", unit}
+	if user {
+		args = append([]string{"--user", "-M", config.GamerUser + "@"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", args...)
+	cmd.WaitDelay = waitDelay
+	out, _ := cmd.Output() // exits non-zero for every state but active
+	return strings.TrimSpace(string(out))
+}
+
 func Reboot(ctx context.Context) error   { return Systemctl(ctx, "reboot") }
 func Poweroff(ctx context.Context) error { return Systemctl(ctx, "poweroff") }
 
 // AsGamer runs a command as the gaming user with its runtime dir set.
+// runuser forks the command and waits for it; a SIGKILL to runuser alone
+// would leave the command running (a gamescopectl stuck on a wedged
+// gamescope, say) with our output pipe. `runuser -u` keeps the command in
+// runuser's process group (no setsid), so the group kill reaches it.
 func AsGamer(ctx context.Context, name string, args ...string) (string, error) {
 	uid := strconv.Itoa(config.GamerUID)
 	full := append([]string{"-u", config.GamerUser, "--", "env",
 		"XDG_RUNTIME_DIR=/run/user/" + uid, "HOME=" + config.GamerHome, name}, args...)
-	return Run(ctx, "runuser", full...)
+	return run(groupCommand(ctx, "runuser", full...))
 }
 
 // WaitFor polls f every interval until it returns true or timeout passes.
