@@ -1,0 +1,25 @@
+{
+  "about": "Shared vectors for the screen shape's readout and aspect. Tested by internal/brand (ParseMode, ModeLabel, ShapeAspect) and by the control center's fmt.js modeLabel. A mode is the API's \"WxH@R\": 2 to 5 digits per side, a rate of 1 to 3 digits with an optional fraction, surrounding space ignored. Anything else is not a mode: the label is the input unchanged, with no HDR suffix, and the shape uses the unknown aspect.",
+  "readout": "W × H · R Hz, plus \" · HDR\" when hdr is set (× is U+00D7, · is U+00B7, plain spaces); R is printed the shortest way, so 59.940 reads 59.94 and 120.0 reads 120",
+  "aspect": { "min": 0.4, "max": 3.6, "unknown": 1.7778, "precision": 0.0001 },
+  "cases": [
+    { "mode": "2560x1440@120", "hdr": false, "ok": true, "w": 2560, "h": 1440, "hz": 120, "label": "2560 × 1440 · 120 Hz", "aspect": 1.7778 },
+    { "mode": "3840x2160@120", "hdr": true, "ok": true, "w": 3840, "h": 2160, "hz": 120, "label": "3840 × 2160 · 120 Hz · HDR", "aspect": 1.7778 },
+    { "mode": "1920x1080@59.94", "hdr": false, "ok": true, "w": 1920, "h": 1080, "hz": 59.94, "label": "1920 × 1080 · 59.94 Hz", "aspect": 1.7778 },
+    { "mode": "2560x1600@120.000", "hdr": false, "ok": true, "w": 2560, "h": 1600, "hz": 120, "label": "2560 × 1600 · 120 Hz", "aspect": 1.6 },
+    { "mode": " 1280x800@60 ", "hdr": false, "ok": true, "w": 1280, "h": 800, "hz": 60, "label": "1280 × 800 · 60 Hz", "aspect": 1.6 },
+    { "mode": "800x600@75", "hdr": false, "ok": true, "w": 800, "h": 600, "hz": 75, "label": "800 × 600 · 75 Hz", "aspect": 1.3333 },
+    { "mode": "5120x1440@240", "hdr": true, "ok": true, "w": 5120, "h": 1440, "hz": 240, "label": "5120 × 1440 · 240 Hz · HDR", "aspect": 3.5556 },
+    { "mode": "7680x1080@60", "hdr": false, "ok": true, "w": 7680, "h": 1080, "hz": 60, "label": "7680 × 1080 · 60 Hz", "aspect": 3.6 },
+    { "mode": "1080x1920@60", "hdr": false, "ok": true, "w": 1080, "h": 1920, "hz": 60, "label": "1080 × 1920 · 60 Hz", "aspect": 0.5625 },
+    { "mode": "1024x3072@60", "hdr": false, "ok": true, "w": 1024, "h": 3072, "hz": 60, "label": "1024 × 3072 · 60 Hz", "aspect": 0.4 },
+    { "mode": "2560x1440", "hdr": false, "ok": false, "label": "2560x1440" },
+    { "mode": "", "hdr": true, "ok": false, "label": "" },
+    { "mode": "3840x2160@120 HDR", "hdr": true, "ok": false, "label": "3840x2160@120 HDR" },
+    { "mode": "2560X1440@120", "hdr": false, "ok": false, "label": "2560X1440@120" },
+    { "mode": "123456x1440@60", "hdr": false, "ok": false, "label": "123456x1440@60" },
+    { "mode": "2560x1440@1200", "hdr": false, "ok": false, "label": "2560x1440@1200" },
+    { "mode": "2560x1440@60.", "hdr": false, "ok": false, "label": "2560x1440@60." },
+    { "mode": "2560 x 1440 @ 120", "hdr": false, "ok": false, "label": "2560 x 1440 @ 120" }
+  ]
+}
