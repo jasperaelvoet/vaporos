@@ -473,7 +473,7 @@ check_image() {
         [[ ! -e $m/usr/lib/vos/keys/dev.pub ]] || problem "a release image must not trust dev.pub"
     fi
 
-    for unit in vosd.service vos-firewall.service; do
+    for unit in vosd.service vos-firewall.service vos-health.service; do
         [[ -L $m/etc/systemd/system/multi-user.target.wants/$unit ]] || problem "$unit is not enabled"
     done
     [[ -L $m/etc/systemd/system/boot-complete.target.requires/vos-health.service ]] ||

@@ -139,10 +139,15 @@ check_no_terminal() {
 }
 
 check_health() {
+    # boot-complete.target only exists on boots systemd-boot is counting
+    # (after an update); a fresh install boots an uncounted entry.
     if systemctl is-active --quiet boot-complete.target; then
         ok boot-complete "boot-complete.target reached (vos-health passed)"
+    elif [[ ! -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ]] &&
+         systemctl is-active --quiet vos-health.service; then
+        ok boot-complete "uncounted boot; vos-health passed"
     else
-        bad boot-complete "boot-complete.target is $(systemctl is-active boot-complete.target); vos-health: $(systemctl show -P Result vos-health.service)"
+        bad boot-complete "boot-complete.target is $(systemctl is-active boot-complete.target); vos-health is $(systemctl is-active vos-health.service)"
     fi
     if [[ -s /var/lib/vos/health-ok ]]; then ok health-ok "$(tr -d '\n' </var/lib/vos/health-ok)"; else bad health-ok "no /var/lib/vos/health-ok"; fi
 }

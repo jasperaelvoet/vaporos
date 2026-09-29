@@ -1,11 +1,13 @@
 [Unit]
 Description=VaporOS boot health check
 Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
-# boot-complete.target is only part of a boot that systemd-boot is counting
-# (systemd-bless-boot pulls it in): the first boots of a freshly written
-# update. If this check fails, the entry is never blessed and the machine
-# reboots; after three failed tries systemd-boot falls back to the previous
-# slot, and vosd records the version as failed.
+# Runs on every boot, so /var/lib/vos/health-ok always records what worked
+# last time. It only fails on a boot systemd-boot is counting (the first
+# boots of a freshly written update, where systemd-bless-boot pulls in
+# boot-complete.target): then the entry is never blessed and the machine
+# reboots, and after three failed tries systemd-boot falls back to the
+# previous slot and vosd records the version as failed. On any other boot
+# there is nothing to fall back to, so vos health reports and exits 0.
 ConditionKernelCommandLine=!vos.mode=live
 Wants=vosd.service
 After=vosd.service systemd-logind.service network.target
@@ -21,3 +23,4 @@ TimeoutStartSec=180
 
 [Install]
 RequiredBy=boot-complete.target
+WantedBy=multi-user.target
