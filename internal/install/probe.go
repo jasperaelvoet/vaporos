@@ -243,7 +243,7 @@ func (s *Service) steamLibraries(ctx context.Context, g *diskGroup, mountAllowed
 	}
 	out := []SteamLibrary{}
 	for _, c := range cands {
-		if c.UUID == "" || !libraryFS[c.FSType] || strings.HasPrefix(labels[filepath.Base(c.Path)], "vos_") ||
+		if c.UUID == "" || !storage.LibraryFS(c.FSType) || strings.HasPrefix(labels[filepath.Base(c.Path)], "vos_") ||
 			c.Label == "vos_data" || c.Label == "VOS_ESP" {
 			continue
 		}

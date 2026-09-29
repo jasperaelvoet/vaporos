@@ -216,19 +216,6 @@ func clearStaged(root string) error {
 	return config.WriteJSONAtomic(path, st, perm)
 }
 
-// libraryFS is storage.LibraryFS as a set over the filesystem names lsblk
-// reports, for the probe. The rule itself lives in storage, which the
-// generator that mounts the libraries shares.
-var libraryFS = func() map[string]bool {
-	m := map[string]bool{}
-	for _, name := range []string{"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "ntfs", "ntfs3", "exfat", "vfat"} {
-		if storage.LibraryFS(name) {
-			m[name] = true
-		}
-	}
-	return m
-}()
-
 var unsafeLabelRE = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // libraryMountpoint is /var/mnt/<label>, or /var/mnt/<uuid> for an

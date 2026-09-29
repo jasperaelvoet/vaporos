@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
@@ -195,6 +196,7 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 			return nil
 		})
 		logf("health: ok")
+		healthSerial("ok", nil)
 		return 0
 	}
 	// Failing reboots, and only a counted entry with another one behind it
@@ -206,6 +208,7 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 	switch {
 	case env.counting() && env.fallback():
 		logf("health: FAILED; this boot is on trial, so the next boot can fall back")
+		healthSerial("failed", res.failures)
 		return 1
 	case env.counting():
 		logf("health: this boot is on trial, but no other entry would boot instead")
@@ -216,7 +219,27 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 		logf("health-ok: %v", err)
 	}
 	logf("health: degraded (%s); not failing a boot that has nothing to fall back to", strings.Join(res.failures, "; "))
+	healthSerial("degraded", res.failures)
 	return 0
+}
+
+// HealthSerial is where vos health announces its verdict for test harnesses
+// (docs/CONTRACTS.md "Serial lines"); tests point it elsewhere.
+var HealthSerial = "/dev/ttyS0"
+
+// healthSerial writes "VOS-HEALTH result=<r> failures=<a; b|->" to the
+// serial console, best effort: no serial port is not an error.
+func healthSerial(result string, failures []string) {
+	f, err := os.OpenFile(HealthSerial, os.O_WRONLY|os.O_APPEND|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	list := "-"
+	if len(failures) > 0 {
+		list = strings.Join(strings.Fields(strings.Join(failures, "; ")), " ")
+	}
+	fmt.Fprintf(f, "VOS-HEALTH result=%s failures=%s\n", result, list)
 }
 
 // supportedGPU reports whether a DRM card is driven by a supported driver.

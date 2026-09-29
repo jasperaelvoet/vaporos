@@ -80,7 +80,16 @@ func Main(args []string) int {
 		up := update.NewService(cfg)
 		sun := sunshine.NewService(cfg)
 		sto := storage.NewService(cfg)
-		pow := power.NewService(cfg, disp.Streaming, sun.Busy, up.Busy)
+		// The display's session only counts while Sunshine agrees a client is
+		// (or may soon be) connected: a stream abandoned without quitting,
+		// whose app Sunshine could not close, must not keep the PC awake.
+		streaming := func() (bool, string) {
+			if on, _ := sun.Busy(); !on {
+				return false, ""
+			}
+			return disp.Streaming()
+		}
+		pow := power.NewService(cfg, streaming, sun.Busy, up.Busy)
 		// Someone using the web UI keeps the machine from idling off.
 		srv.OnActivity(pow.Touch)
 		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow} {
@@ -89,6 +98,7 @@ func Main(args []string) int {
 		runners = append(runners,
 			runner{"update", up.Run},
 			runner{"sunshine", sun.Run},
+			runner{"storage", sto.Run},
 			runner{"power", pow.Run},
 			runner{"system", sys.Run})
 		// The session socket (vos session begin|end) is served by disp.Run.

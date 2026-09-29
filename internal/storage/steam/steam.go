@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Root returns the Steam installation directory in home. Steam keeps a
@@ -208,11 +209,19 @@ func isLibraryDir(dir string) bool {
 // ReadFileLimited reads a small Steam metadata file, refusing anything
 // larger than a real one could be.
 func ReadFileLimited(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	// Steam's files belong to the gaming user and vosd reads them as root:
+	// never follow a final symlink, never block on a FIFO, and read only
+	// regular files.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxVDFSize+1))
 	if err != nil {
 		return nil, err

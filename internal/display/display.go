@@ -429,27 +429,6 @@ func MachineCmdlineFor(connector string) string {
 // swap them out of existing boot entries.
 var machineArgPrefixes = []string{"video=", "drm.edid_firmware=", "firmware_class.path="}
 
-// replaceMachineArgs removes old machine args (and any arg we own) from an
-// entry's options and appends the new machine cmdline.
-func replaceMachineArgs(options, oldMachine, newMachine string) string {
-	old := map[string]bool{}
-	for _, a := range strings.Fields(oldMachine) {
-		old[a] = true
-	}
-	var keep []string
-	for _, a := range strings.Fields(options) {
-		owned := old[a]
-		for _, p := range machineArgPrefixes {
-			owned = owned || strings.HasPrefix(a, p)
-		}
-		if !owned {
-			keep = append(keep, a)
-		}
-	}
-	keep = append(keep, strings.Fields(newMachine)...)
-	return strings.Join(keep, " ")
-}
-
 func readTrim(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {

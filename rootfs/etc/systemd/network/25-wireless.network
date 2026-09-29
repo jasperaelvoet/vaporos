@@ -7,3 +7,5 @@ IgnoreCarrierLoss=3s
 
 [DHCPv4]
 RouteMetric=600
+# Same address in the installer and the installed system (see 20-wired).
+ClientIdentifier=mac

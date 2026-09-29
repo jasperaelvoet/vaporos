@@ -36,12 +36,12 @@ func TestResolveLibrariesUsesTheSharedRule(t *testing.T) {
 		}
 	}
 	for _, fs := range []string{"exfat", "vfat", "iso9660"} {
-		if libraryFS[fs] {
+		if storage.LibraryFS(fs) {
 			t.Errorf("probe offers %s libraries", fs)
 		}
 	}
 	for _, fs := range []string{"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "ntfs"} {
-		if !libraryFS[fs] {
+		if !storage.LibraryFS(fs) {
 			t.Errorf("probe skips %s libraries", fs)
 		}
 	}

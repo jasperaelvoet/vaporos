@@ -161,14 +161,4 @@ func TestMachineCmdline(t *testing.T) {
 	if MachineCmdlineFor("") != "" {
 		t.Error("empty connector should give an empty cmdline")
 	}
-	old := "video=DP-1:e drm.edid_firmware=DP-1:edid/vaporos.bin firmware_class.path=/var/lib/vos/firmware"
-	opts := "vos.slot=a quiet loglevel=3 " + old
-	got := replaceMachineArgs(opts, old, MachineCmdlineFor("DP-2"))
-	if !strings.HasPrefix(got, "vos.slot=a quiet loglevel=3 video=DP-2:e") || strings.Contains(got, "DP-1") {
-		t.Errorf("replaceMachineArgs = %q", got)
-	}
-	// Entries without machine args just gain them.
-	if got := replaceMachineArgs("vos.slot=b quiet", "", "video=DP-1:e"); got != "vos.slot=b quiet video=DP-1:e" {
-		t.Errorf("replaceMachineArgs = %q", got)
-	}
 }

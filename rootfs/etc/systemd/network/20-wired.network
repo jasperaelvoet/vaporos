@@ -6,3 +6,7 @@ DHCP=yes
 
 [DHCPv4]
 RouteMetric=100
+# Identify by MAC, not by the machine-id-derived DUID: the live installer and
+# the installed system then get the same address, which the installer's
+# "restarting" page and the welcome screen have already shown the user.
+ClientIdentifier=mac

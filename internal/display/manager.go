@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/drm"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 	"github.com/jasperaelvoet/vaporos/internal/session"
+	"github.com/jasperaelvoet/vaporos/internal/update"
 )
 
 // Units vosd drives (docs/CONTRACTS.md "Units").
@@ -383,7 +383,6 @@ func (m *Manager) resolveVirtual() {
 // whatever also changes in it), machine kernel cmdline and both slots'
 // boot entries. It takes effect after a reboot.
 func (m *Manager) setVirtualLocked(c string, also func(*config.Config)) error {
-	old := readMachineCmdline()
 	mc := MachineCmdlineFor(c)
 	if err := m.cfg.Mutate(func(cfg *config.Config) {
 		cfg.Display.VirtualConnector = c
@@ -394,17 +393,20 @@ func (m *Manager) setVirtualLocked(c string, also func(*config.Config)) error {
 		return err
 	}
 	m.rebootNeeded = true
-	if err := boot.SetMachineCmdline("", mc); err != nil {
-		return fmt.Errorf("machine cmdline: %w", err)
-	}
-	if err := boot.RewriteOptions(config.ESP, func(e boot.Entry) string {
-		return replaceMachineArgs(e.Options, old, mc)
-	}); err != nil {
+	// The boot entries belong to the updater: rewrite them under its lock,
+	// which also keeps the boot disk (vos.disk=) the installer put there.
+	// The display lock is held, so never wait long for a running update.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := applyMachineCmdline(ctx, mc); err != nil {
 		return fmt.Errorf("boot entries: %w", err)
 	}
 	log.Printf("display: virtual connector is now %s (reboot needed)", c)
 	return nil
 }
+
+// applyMachineCmdline is update.ApplyMachineCmdline; tests replace it.
+var applyMachineCmdline = update.ApplyMachineCmdline
 
 // readMachineCmdline reads /var/lib/vos/cmdline ("" if missing).
 func readMachineCmdline() string {

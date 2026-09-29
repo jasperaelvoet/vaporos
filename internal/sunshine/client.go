@@ -13,7 +13,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -68,7 +67,9 @@ func (c *Client) verifyPin(cs tls.ConnectionState) error {
 	if len(cs.PeerCertificates) == 0 {
 		return errors.New("sunshine: no server certificate")
 	}
-	data, err := os.ReadFile(c.pinPath)
+	// The certificate lives in the gaming user's home: never follow a link or
+	// block on a FIFO a game put there.
+	data, err := readRegular(c.pinPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil // Sunshine has not created its certificate yet
 	}
