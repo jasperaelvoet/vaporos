@@ -5,12 +5,14 @@ import (
 	"image/color"
 	"strings"
 	"sync"
+	"unicode"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -78,6 +80,31 @@ type textItem struct {
 func inkBounds(t textItem) image.Rectangle {
 	b, _ := font.BoundString(face(t.Font, t.Px), t.Text)
 	return image.Rect(t.Dot.X+b.Min.X.Floor(), t.Dot.Y+b.Min.Y.Floor(), t.Dot.X+b.Max.X.Ceil(), t.Dot.Y+b.Max.Y.Ceil())
+}
+
+// drawable keeps the runes f has a glyph for. Device names come from
+// Moonlight clients and can hold anything; a rune the face can't draw (CJK
+// or emoji in the Go fonts) is dropped rather than drawn as a .notdef box,
+// and the spaces around it collapse into one.
+func drawable(f *opentype.Font, s string) string {
+	var b strings.Builder
+	var buf sfnt.Buffer
+	space := false
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			space = b.Len() > 0
+			continue
+		}
+		if g, err := f.GlyphIndex(&buf, r); err != nil || g == 0 {
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // advance is how far the pen moves over text, rounded up to a pixel.
