@@ -50,22 +50,22 @@ sudo dd if=vaporos-<version>.iso of=/dev/rdiskN bs=4m`;
 export const wizard: Item[] = [
   {
     title: 'Setup code',
-    body: 'Enter the code from the screen. Scanning the QR code fills it in for you. It keeps other people on your network from installing over your PC.',
+    body: 'Enter the code from the screen. Scanning the QR code fills it in for you. It keeps other people on your network from installing over your PC. With no monitor connected, the installer skips this step.',
     short: 'Enter the code from the screen, or scan the QR code.',
   },
   {
     title: 'Drive',
-    body: "Pick the drive to install on. The USB stick you started from isn't listed. If the drive already has VaporOS, you can repair it: games, settings and paired devices stay.",
+    body: "Pick the drive to install on. The USB stick you started from isn't listed. If the drive already has VaporOS, you can repair it: games, settings and paired devices stay, and the PC keeps its name and time zone.",
     short: 'Pick the drive. One that already has VaporOS can be repaired instead.',
   },
   {
     title: 'Name',
-    body: 'Choose the name on your network (vapor by default, so the address is vapor.local) and an admin password of at least 8 characters.',
+    body: 'Choose the name on your network (vapor by default, so the address is vapor.local) and an admin password of at least 8 characters. On a repair the name stays and the password is optional: leave it empty to keep the current one.',
     short: 'A network name (vapor by default) and an admin password.',
   },
   {
     title: 'Games',
-    body: 'Pick your time zone, and tick any Steam libraries found on other drives to keep playing those games.',
+    body: 'Pick your time zone, and tick any Steam libraries found on other drives to keep playing those games. VaporOS adds the ticked libraries to Steam for you. A repair keeps the time zone.',
     short: 'Your time zone, and Steam libraries on other drives.',
   },
   {
@@ -144,7 +144,7 @@ export interface GuideSection {
 export const installGuide = {
   eyebrow: 'Install guide',
   title: { text: 'From USB stick', accent: 'to first game.' } satisfies Headline,
-  lead: 'A few minutes of your time, most of it spent waiting. You need the PC, a USB stick, a monitor or TV for the install, and a phone or computer on the same network.' as Rich,
+  lead: 'A few minutes of your time, most of it spent waiting. You need the PC, a USB stick, a monitor or TV for the firmware settings (the installer itself runs without one), and a phone or computer on the same network.' as Rich,
   tocLabel: 'On this page',
   sections: [
     {
@@ -160,7 +160,7 @@ export const installGuide = {
           callout: {
             icon: 'alert',
             tone: 'warn',
-            text: '**The drive you install on is erased.** Back up anything on it first. Other drives are left alone.',
+            text: '**The drive you install on is erased** (unless you repair one that already has VaporOS). Back up anything on it first. Other drives are left alone.',
           },
         },
       ],
@@ -208,7 +208,7 @@ export const installGuide = {
         },
         {
           type: 'p',
-          text: 'Plug in a network cable, and connect a monitor or TV for the install: it shows the address and the setup code the installer asks for. You can unplug it afterwards.',
+          text: "Plug in a network cable. A connected monitor or TV shows the address and the setup code; you can unplug it afterwards. With no monitor, the installer doesn't ask for a code, so anyone on your network could open it: install that way only on a network you trust.",
         },
       ],
     },
@@ -230,6 +230,10 @@ export const installGuide = {
             'a QR code that opens the installer with the code filled in.',
           ],
         },
+        {
+          type: 'p',
+          text: 'If the screen says **Waiting for the network**, plug in the network cable. No monitor? Open `http://vaporos-setup.local` on your phone.',
+        },
         { type: 'figure', mock: 'installer', caption: 'Illustration of the welcome screen while the installer runs.' },
       ],
     },
@@ -237,7 +241,7 @@ export const installGuide = {
       id: 'installer',
       num: '05',
       title: 'Install from your phone',
-      summary: 'The web installer walks you through six steps.',
+      summary: 'The web installer walks you through up to six steps.',
       blocks: [
         {
           type: 'p',
@@ -259,7 +263,7 @@ export const installGuide = {
         },
         {
           type: 'p',
-          text: "If `.local` names don't work on your network, use the IP address from the welcome screen instead.",
+          text: "If `.local` names don't work on your network, use the IP address from the welcome screen instead, or find it in your router's list of devices.",
         },
       ],
     },
@@ -275,7 +279,7 @@ export const installGuide = {
           type: 'ol',
           items: [
             "Open Moonlight on the same network. It usually finds the PC by itself; tap it. If it doesn't, tap **+** (Add PC) and enter the PC's address.",
-            'Moonlight shows a 4-digit PIN. On the VaporOS page, open **Pair a device**, type the PIN and a name for the device, and press **Pair**.',
+            "Moonlight shows a 4-digit PIN. On the VaporOS page, open **Pair a device**, type the PIN (the device's name is filled in), and press **Pair**. A connected monitor also says when a device wants to pair.",
             "Pick Steam, or one of your games, in Moonlight and play. The virtual display switches to that device's resolution, frame rate and HDR.",
           ],
         },
@@ -293,26 +297,25 @@ export const installGuide = {
         },
         {
           type: 'p',
-          text: "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the Updates page lists the version that didn't start. To go back by hand, choose **Roll back** and restart.",
+          text: "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the Updates page lists the version that didn't start. To go back by hand, choose **Roll back** and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
         },
       ],
     },
     {
-      // STALE? Commit 0382231 (after the Astro copy was checked) made idle shutdown
-      // default to OFF; the installer turns it on when a wired NIC supports
-      // Wake-on-LAN (docs/CONTRACTS.md, power.idle_shutdown). Reword before launch.
+      // Idle power-off: off by default, turned on by a new install only when a
+      // wired network adapter wakes on a magic packet (internal/install/target.go).
       id: 'power',
       num: '09',
       title: 'Power and waking',
-      summary: 'It powers off when idle; Moonlight wakes it.',
+      summary: 'When Wake-on-LAN works, it powers off when idle; Moonlight wakes it.',
       blocks: [
         {
           type: 'p',
-          text: "When nobody plays for 15 minutes, VaporOS powers off, but never while it's streaming, downloading or updating. Change the time or turn it off under **Power**, or use **Stay awake** for a long download.",
+          text: 'If the PC has a wired network adapter that can wake it (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing, VaporOS powers off, but never while it streams, runs a game, downloads or updates. Without one it stays on. Change this under **Power**, or keep it awake for 1 or 4 hours with **Stay awake**.',
         },
         {
           type: 'p',
-          text: "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware.",
+          text: "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware. Any Wake-on-LAN app works too, with the MAC address shown under **Power**.",
         },
         { type: 'done', ...done },
       ],
