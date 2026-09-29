@@ -6,6 +6,8 @@
 #   build     build out/ if anything changed since the last build
 #   dev       build if anything changed, then bring the dev VM to that build:
 #             create + install it, or `vos update` + reboot it. The default.
+#             It never wipes a VM that holds a VaporOS install: if the VM
+#             does not answer, it says why and leaves it to `reset`.
 #   shell     interactive serial shell in the VM (leave with Ctrl-O)
 #   console   open the VM's display in a native Screen Sharing window
 #   log       follow the VM's serial console
@@ -63,6 +65,8 @@ use_vm() {
     REMOTE_DIR=/tmp/vos-$VMID
     LOG=$REMOTE_DIR/serial.log
     FIFO=$REMOTE_DIR/serial.in
+    # The VM's last known address, kept on the Proxmox host across brokers.
+    IP_FILE=/var/tmp/vos-$VMID.ip
 }
 use_vm "$VMID" "$VM_NAME" "$VM_HOSTNAME"
 
@@ -219,7 +223,8 @@ ensure_broker() {
 
 match_()  { pve "python3 $REMOTE_DIR/serial.py expect $LOG $(printf %q "$1") ${2:-300}"; }
 expect_() { match_ "$@" >/dev/null; }
-send_()   { pve "python3 $REMOTE_DIR/serial.py send $FIFO $(printf %q "$1")"; }
+# (Opening the FIFO blocks while no broker reads it, e.g. when the VM stopped.)
+send_()   { pve "timeout 15 python3 $REMOTE_DIR/serial.py send $FIFO $(printf %q "$1")"; }
 # Wait for "$1=<exit code>" and succeed only if it is 0, so a failure is
 # reported at once instead of after the whole timeout.
 rc_is_zero() { [[ $(match_ "$1=([0-9]+)" "$2") == 0 ]]; }
@@ -243,6 +248,93 @@ serial_shell() {
         fi
     done
     return 1
+}
+
+# QEMU's serial socket takes a single client. `make shell` and Proxmox's own
+# serial console (`qm terminal`, a socat) take it from the broker, which then
+# never hears from the VM. The [T] keeps pgrep from matching the remote shell
+# that runs it.
+serial_taken() {
+    pve "pgrep -f 'UNIX-CONNEC[T]:/var/run/qemu-server/$VMID\.serial0' >/dev/null"
+}
+
+# The dev VM's IPv4 address, or nothing. Candidates are what vosd announced
+# on serial (VOS-READY ... ip=) and the last address this script saw; one
+# counts only if the Proxmox host's neighbour table has it at the VM's own
+# MAC, so another machine that got the address since is never mistaken for
+# the VM.
+vm_ip() {
+    local mac
+    mac=$(pve "qm config $VMID 2>/dev/null" | sed -n 's/^net0: [a-z0-9]*=\([0-9A-Fa-f:]\{17\}\).*/\1/p' | tr 'A-F' 'a-f') || true
+    [[ -n $mac ]] || return 0
+    pve "{ grep -aoE 'VOS-READY mode=[a-z]+ version=[^ ]+ ip=[0-9.]+' $LOG 2>/dev/null | sed 's/.*ip=//' | tac
+           cat $IP_FILE 2>/dev/null; } | awk '!seen[\$0]++' | while read -r ip; do
+             ping -c 1 -W 1 \$ip >/dev/null 2>&1 || true
+             if ip -4 neigh show \$ip | grep -qi ' lladdr $mac '; then echo \$ip; exit; fi
+         done
+         ip -4 neigh show | awk -v m=$mac 'tolower(\$0) ~ (\" lladdr \" m \" \") { print \$1; exit }'" |
+        head -n 1 || true
+}
+
+remember_ip() { [[ -z $1 ]] || pve "echo $1 >$IP_FILE" || true; }
+
+# What the dev VM's web API says it is: "os", "installer", or nothing when
+# nothing answers (or the address is unknown).
+vm_mode() {
+    local body
+    [[ -n $1 ]] || return 0
+    body=$(pve "curl -s -m 5 http://$1/api/v1/ping" 2>/dev/null) || return 0
+    json_str mode <<<"$body"
+}
+
+# The VM's disk as the Proxmox host sees it: "vaporos" when its partition
+# table has VaporOS's partitions, "blank" when it verifiably has none (a
+# readable block device with no vos_data partition), nothing when it cannot
+# tell (e.g. a qcow2 file). Only reads.
+vm_disk() {
+    local vol
+    vol=$(pve "qm config $VMID" | sed -n 's/^scsi0: \([^,]*\).*/\1/p') || true
+    [[ -n $vol ]] || return 0
+    pve "p=\$(pvesm path $(printf %q "$vol") 2>/dev/null) && [ -b \"\$p\" ] || exit 0
+         t=\$(sfdisk --dump \"\$p\" 2>/dev/null) || { blkid -p \"\$p\" >/dev/null 2>&1 || echo blank; exit 0; }
+         case \$t in *'name=\"vos_data\"'*) echo vaporos ;; *) echo blank ;; esac" || true
+}
+
+# Reach the root shell on an existing dev VM's serial console. Sets VM_STATE to
+# "os" or "live", or to "blank" when the VM verifiably holds no VaporOS install
+# (so reinstalling it loses nothing). A console that is slow or taken is never
+# a reason to wipe the VM: its disk holds the pairings and settings, so every
+# other case ends with an error that says what to do.
+VM_STATE=""
+vm_shell() {
+    local wait=$1 waited=0 ip="" disk
+    while :; do
+        VM_STATE=$(serial_shell "$wait") && return 0
+        waited=$((waited + wait))
+        ip=$(vm_ip)
+        case $(vm_mode "$ip") in
+            installer)
+                VM_STATE=live
+                return 0 ;;
+            os)
+                remember_ip "$ip"
+                warn "VaporOS answers at http://$ip, but not on its serial console; reconnecting to it"
+                start_broker
+                VM_STATE=$(serial_shell 60) && return 0
+                fail "VM $VMID runs VaporOS (http://$ip), but its serial console does not answer. Close any 'make shell' or Proxmox serial console and run make again. (A release image has no serial shell; 'make reset' reinstalls the VM with a dev build.)" ;;
+        esac
+        # Nothing answers at all: it may be rebooting, which takes as long as
+        # a cold start. (A VM that is up answers at once.)
+        ((waited < 240)) || break
+        warn "VM $VMID does not answer yet; giving it time to boot"
+        wait=$((240 - waited))
+    done
+    disk=$(vm_disk)
+    if [[ $disk == blank ]]; then
+        VM_STATE=blank
+        return 0
+    fi
+    fail "VM $VMID answers neither on its serial console nor on its web API${ip:+ (http://$ip)}, and its disk ${disk:+holds a VaporOS install}${disk:-could not be checked}; not reinstalling it. Look with 'make console' or 'make log'; 'make reset' wipes and reinstalls it."
 }
 
 # The version of the running image, from the serial shell.
@@ -291,7 +383,7 @@ vm_destroy() {
     pve "systemctl stop vos-serial-$VMID 2>/dev/null; \
          if qm status $VMID >/dev/null 2>&1; then \
              qm stop $VMID --skiplock 1 >/dev/null 2>&1 || true; qm destroy $VMID --purge >/dev/null; \
-         fi; rm -rf $REMOTE_DIR"
+         fi; rm -rf $REMOTE_DIR $IP_FILE"
 }
 
 # installer_api METHOD PATH [JSON]: call the live ISO's installer API from the
@@ -389,9 +481,12 @@ vm_install() {
         warn "POST /install/reboot failed; resetting the VM instead"
         pve "qm reset $VMID"
     fi
-    VM_VERSION=$(match_ 'VOS-READY mode=os version=(\S+)' 300) ||
+    m=$(match_ 'VOS-READY mode=os version=(\S+)(?: ip=(\S+))?' 300) ||
         fail "the installed system never came up (VOS-READY mode=os)"
+    read -r VM_VERSION m <<<"$m"
     [[ $VM_VERSION == "$want" ]] || fail "the installed system runs $VM_VERSION, expected $want"
+    [[ -z $m ]] || VM_IP=$m
+    remember_ip "$VM_IP"
     dev_settings
 }
 
@@ -486,7 +581,7 @@ cmd_console() {
 # ---------------------------------------------------------------- commands --
 
 cmd_dev() {
-    local want state have fresh=0 wait=20
+    local want have fresh=0 wait=20
     preflight_pve
     build_if_needed
     want=$(build_version)
@@ -494,26 +589,32 @@ cmd_dev() {
 
     if ! vm_exists; then
         say "No dev VM yet"
-        vm_install; fresh=1; wait=60
-    elif ! vm_running; then
-        say "Starting VM $VMID"
-        pve "qm start $VMID"
-        start_broker
-        wait=240
+        vm_install; fresh=1
     else
-        ensure_broker
+        if ! vm_running; then
+            say "Starting VM $VMID"
+            pve "qm start $VMID"
+            start_broker
+            wait=240
+        else
+            ! serial_taken ||
+                die "VM $VMID's serial console is in use: leave 'make shell' (Ctrl-O) or close the Proxmox serial console, then run make again"
+            ensure_broker
+        fi
+        # A VM just started needs time to boot; one that is up answers at once.
+        vm_shell $wait
+        # Reinstall only what verifiably holds no VaporOS install.
+        case $VM_STATE in
+            live)
+                warn "VM $VMID is sitting in the live ISO; installing it"
+                vm_install; fresh=1 ;;
+            blank)
+                warn "VM $VMID's disk holds no VaporOS install; installing it"
+                vm_install; fresh=1 ;;
+        esac
     fi
-
-    # A VM just started needs time to boot; one that is up answers at once.
-    if ! state=$(serial_shell $wait); then
-        warn "VM $VMID does not answer on its serial console; reinstalling it"
-        vm_install; fresh=1
-        state=$(serial_shell 60) || fail "no shell after a fresh install"
-    fi
-    if [[ $state == live ]]; then
-        warn "VM $VMID is sitting in the live ISO; reinstalling it"
-        vm_install; fresh=1
-        state=$(serial_shell 60) || fail "no shell after a fresh install"
+    if ((fresh)); then
+        serial_shell 60 >/dev/null || fail "no shell after a fresh install"
     fi
 
     have=$(vm_version) || fail "could not read the VM's version"
