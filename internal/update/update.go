@@ -266,13 +266,18 @@ func (s *Service) doStage(ctx context.Context, opts Options) error {
 		events.Publish("update.progress", p)
 	}
 	res, err := Stage(ctx, s.config(), opts)
-	if err != nil && !IsBenign(err) {
-		p := Progress{Phase: "error", Error: err.Error()}
+	if err != nil {
+		// A stage that finds nothing to do still ends: otherwise its "check"
+		// stays the replayed update.progress, and a new page shows it running.
+		p := Progress{Phase: "idle"}
+		if !IsBenign(err) {
+			p = Progress{Phase: "error", Error: err.Error()}
+			log.Printf("update: %v", err)
+		}
 		if res != nil {
 			p.Version = res.Manifest.Version
 		}
 		events.Publish("update.progress", p)
-		log.Printf("update: %v", err)
 	}
 	return err
 }

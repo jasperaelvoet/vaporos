@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -146,6 +147,53 @@ func TestServiceStageErrors(t *testing.T) {
 	}
 	if !sawError || !strings.Contains(e.state().LastError, "does not fit") {
 		t.Fatalf("error event %v, state %+v", sawError, e.state())
+	}
+}
+
+// lastProgress is the update.progress a page that opens now gets replayed.
+func lastProgress(t *testing.T) Progress {
+	t.Helper()
+	for _, ev := range events.Default.Last() {
+		if ev.Topic == "update.progress" {
+			var p Progress
+			if err := json.Unmarshal(ev.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+	}
+	t.Fatal("no update.progress to replay")
+	return Progress{}
+}
+
+func TestBenignStageEndsWithIdle(t *testing.T) {
+	e := setup(t)
+	img := e.makeImage(newVersion, 200, 1000, nil)
+	s := NewService(e.cfg(e.srcDir(img)))
+	if err := s.stageNow(context.Background(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if p := lastProgress(t); p.Phase != "done" {
+		t.Fatalf("after staging: %+v", p)
+	}
+	// The 6-hourly check finds the staged version again.
+	if err := s.stageNow(context.Background(), Options{}); !errors.Is(err, ErrAlreadyStaged) {
+		t.Fatalf("second stage: %v", err)
+	}
+	if p := lastProgress(t); p.Phase != "idle" || p.Version != newVersion || p.Error != "" {
+		t.Fatalf("already staged: %+v", p)
+	}
+
+	same := e.makeImage(bootedVersion, bootedRollback, 1000, nil)
+	s = NewService(e.cfg(e.srcDir(same)))
+	if err := s.stageNow(context.Background(), Options{}); !errors.Is(err, ErrUpToDate) {
+		t.Fatalf("up to date: %v", err)
+	}
+	if p := lastProgress(t); p.Phase != "idle" || p.Version != bootedVersion {
+		t.Fatalf("up to date: %+v", p)
+	}
+	if st := e.state(); st.LastError != "" {
+		t.Fatalf("last_error %q", st.LastError)
 	}
 }
 
