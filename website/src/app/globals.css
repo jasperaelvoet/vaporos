@@ -1,73 +1,23 @@
+/* The website's stylesheet: Tailwind v4 on the REDLINE tokens.
+
+   tokens.gen.css is generated from design/tokens.json (never edit it): it
+   resets Tailwind's stock colours and fonts, so only the design's names exist
+   (bg-ash, bg-soot, text-bone, text-smoke, text-dim, bg-h0…bg-h9, text-cold,
+   text-ink-ready, the roles bg-canvas, text-ink-2, bg-accent…, the state
+   helpers [data-state] → --state, --state-heat, --state-cut-w…). The files
+   after it add the site's own layer; each one says what it offers:
+
+     theme.css     fonts (next/font), reading sizes, page gutter and width, desk:
+     base.css      page defaults, focus ring, selection, skip link
+     type.css      width is temperature: cut-cold/warm/hot/state, telemetry, .headline
+     surfaces.css  surface-hot, isotherm-rings, plate, hazard, heat-bar
+     chrome.css    the nav and its scrim, the mobile menu, the heat scale, the footer
+     motion.css    reduced motion and the Pause motion switch */
+
 @import "tailwindcss";
+@import "../styles/tokens.gen.css";
+@import "../styles/theme.css";
+@import "../styles/base.css";
 
-/*
-  VaporOS brand tokens, as Tailwind v4 theme variables: bg-bg-deep,
-  text-fg-2, border-line-2, text-brand, bg-brand/10 and so on. The base
-  values are the product web UI's own (internal/web/static/app.css), so the
-  site and the product feel like one thing; the old site added a wider
-  "vapor" palette (ice, cyan, indigo, violet) for its cinematic surfaces.
-  A design is free to replace all of it.
-*/
-@theme {
-  /* Brand (from app.css) */
-  --color-brand: #78beff;
-  --color-brand-2: #4c96e8;
-  --color-brand-3: #2a5ea6;
-  --color-brand-ink: #03111f;
-
-  /* Vapor extensions */
-  --color-ice: #bfe3ff;
-  --color-cyan: #6fe3ff;
-  --color-indigo: #5b7cff;
-  --color-violet: #9b87ff;
-
-  /* Surfaces: bg-deep is the page floor */
-  --color-bg-deep: #060a0f;
-  --color-bg: #0b1118;
-  --color-bg-2: #0e161f;
-  --color-surface: #121b25;
-  --color-surface-2: #18232f;
-  --color-surface-3: #1f2c3a;
-  --color-line: rgb(150 185 220 / 0.11);
-  --color-line-2: rgb(150 185 220 / 0.2);
-  --color-line-3: rgb(150 185 220 / 0.3);
-
-  /* Text (fg-3 lifted slightly for AA on bg-deep) */
-  --color-fg: #e8eef5;
-  --color-fg-2: #a9b7c6;
-  --color-fg-3: #8596a9;
-
-  /* Status */
-  --color-ok: #53d6a0;
-  --color-warn: #f3c15e;
-  --color-danger: #ff7b7b;
-
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-}
-
-/* The brand gradient ("vapor"): text-vapor for gradient text, bg-vapor for fills. */
-@utility text-vapor {
-  background-image: linear-gradient(115deg, #d6eeff 0%, #8ccaff 28%, #5f9cff 62%, #9b87ff 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-@utility bg-vapor {
-  background-image: linear-gradient(115deg, #d6eeff 0%, #8ccaff 28%, #5f9cff 62%, #9b87ff 100%);
-}
-
-@layer base {
-  :root {
-    color-scheme: dark;
-  }
-  body {
-    background-color: var(--color-bg-deep);
-    color: var(--color-fg);
-    -webkit-font-smoothing: antialiased;
-  }
-  :focus-visible {
-    outline: 2px solid var(--color-brand);
-    outline-offset: 2px;
-  }
-}
+/* Never scan the generated control center (the live demo export). */
+@source not "../../public/demo";

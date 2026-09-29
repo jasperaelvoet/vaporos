@@ -1,0 +1,86 @@
+/* Page defaults, the focus ring, selection and the skip link: once, here.
+   REDLINE is dark only (tokens modes.site = dark): ash page, bone text. */
+
+@layer base {
+  html {
+    background-color: var(--color-ash);
+    color: var(--color-bone);
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    /* anchors and :target land below the fixed nav */
+    scroll-padding-top: calc(var(--nav-h) + 1rem);
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--color-ash);
+    font-family: var(--font-ui);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* full-bleed art never scrolls the page sideways; clip keeps sticky working */
+    overflow-x: clip;
+  }
+
+  :where(h1, h2, h3, h4) {
+    text-wrap: balance;
+  }
+  :where(p, li, dd, figcaption) {
+    text-wrap: pretty;
+  }
+
+  a {
+    text-underline-offset: 0.2em;
+  }
+
+  /* The focus ring: 2 px white-hot on dark grounds, ash on white-hot ones. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 3px;
+  }
+  .surface-hot :focus-visible {
+    outline-color: var(--color-ash);
+  }
+  /* <main tabIndex={-1}> takes focus from the skip link without a ring. */
+  main:focus {
+    outline: none;
+  }
+
+  ::selection {
+    background-color: var(--color-h7);
+    color: var(--color-ash);
+  }
+
+  /* Tabular figures wherever numbers are telemetry. */
+  :where(code, kbd, samp, pre) {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  summary {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  /* Skip link: hidden until focused, then a white-hot tab above the nav. */
+  .skip-link {
+    position: fixed;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 100;
+    padding: 0.625rem 0.875rem;
+    border-radius: var(--radius-md);
+    background: var(--color-h9);
+    color: var(--color-ash);
+    font-weight: 600;
+    text-decoration: none;
+    translate: 0 calc(-100% - 1.5rem);
+  }
+  .skip-link:focus-visible {
+    translate: 0 0;
+    outline-color: var(--color-ash);
+  }
+}
