@@ -1,11 +1,15 @@
 // The 404 page: exported as out/404.html, which GitHub Pages serves for any
 // missing path under /vaporos/. Links and assets are absolute
 // (/vaporos/...), so it works at any depth.
+//
+// Slot D8, a cold, dead screen: the heading in the cold cut beside a screen
+// whose last heat is sinking out of it. The way on is white-hot: Home first,
+// then the pages people come for.
 import type { Metadata } from 'next';
-import { LogoMark } from '@/components/logo';
-import { Button, Container } from '@/components/plain';
-import { Rich } from '@/components/rich';
+import { DeadScreen } from '@/components/docs';
+import { Headline, LinkButton, Rich } from '@/components/ui';
 import { notFound, pageMeta } from '@/content';
+import { HEAT } from '@/direction';
 import { pageMetadata } from '@/lib/metadata';
 
 // Next adds <meta name="robots" content="noindex"> to this page by itself.
@@ -13,20 +17,27 @@ export const metadata: Metadata = { ...pageMetadata(pageMeta.notFound), robots: 
 
 export default function NotFound() {
   return (
-    <Container className="grid min-h-[70vh] place-items-center py-16 text-center">
-      <div className="grid justify-items-center gap-5">
-        <LogoMark size={72} />
-        <p className="text-vapor text-8xl font-bold tracking-tighter">{notFound.code}</p>
-        <h1 className="text-4xl font-bold">{notFound.heading}</h1>
-        <p className="text-lg text-fg-2">
+    <div
+      className="wrap grid min-h-[min(100dvh,60rem)] items-center gap-x-16 gap-y-10 pt-[calc(var(--nav-h)+clamp(2rem,6vw,5rem))] pb-[clamp(4rem,8vw,6rem)] desk:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]"
+      data-heat={HEAT.asleep}
+      data-heat-label="no signal"
+    >
+      <div className="grid gap-6 desk:order-2">
+        <Headline as="h1" cut="cold" size="page" lines={notFound.headline} />
+        <p className="max-w-read text-lead text-smoke">
           <Rich text={notFound.lead} />
         </p>
-        <div className="flex flex-wrap justify-center gap-3">
+        <ul className="mt-2 flex flex-wrap gap-3">
           {notFound.actions.map((a) => (
-            <Button key={a.href} item={a} />
+            <li key={a.href}>
+              <LinkButton href={a.href} icon={a.icon} variant={a.primary ? 'hot' : 'ghost'}>
+                {a.label}
+              </LinkButton>
+            </li>
           ))}
-        </div>
+        </ul>
       </div>
-    </Container>
+      <DeadScreen code={notFound.code} line={notFound.screen} className="desk:order-1" />
+    </div>
   );
 }
