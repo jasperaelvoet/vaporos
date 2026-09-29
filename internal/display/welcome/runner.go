@@ -60,13 +60,14 @@ func (b realBuffer) Mem() []byte      { return b.fb.Pixels }
 func (b realBuffer) Destroy()         { b.fb.Destroy() }
 
 // Run owns DRM master on every card with connectors and shows the welcome
-// screen on each connected connector until ctx ends. It never reads input.
+// screen on each connected connector until ctx ends. It never reads input,
+// and while it runs the VT keyboard is off and VT switching locked.
 func Run(ctx context.Context, opts Options) error {
 	if !platformSupported {
 		return drm.ErrUnsupported
 	}
-	restoreTTY := setGraphics(opts.TTY, &opts)
-	defer restoreTTY()
+	releaseTTY := setGraphics(opts.TTY, &opts)
+	defer releaseTTY()
 
 	r := newRunner(&opts)
 	defer r.shutdown()
