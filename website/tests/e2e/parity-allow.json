@@ -1,0 +1,4 @@
+{
+  "about": "Astro-site lines that a deliberate fact fix (spec-website.md §7.2, re-checked against the code) replaced on purpose. check-parity.mjs reports them instead of failing. Each entry: the Astro line, exactly as rendered, and why it changed.",
+  "lines": []
+}
