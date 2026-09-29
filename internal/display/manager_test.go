@@ -465,8 +465,9 @@ func TestWelcomeFileAndEvents(t *testing.T) {
 		return events.Event{Topic: topic, Data: b}
 	}
 	m.overlay.apply(ev("pairing.pending", map[string]string{"name": "Jasper's iPhone"}), clk.now())
-	if st := m.welcomeState(); st.Status != "Jasper's iPhone wants to pair" {
-		t.Errorf("pairing status = %q", st.Status)
+	// The setup code's QR wins over the pairing page's.
+	if st := m.welcomeState(); st.Status != "Jasper's iPhone wants to pair" || st.QR != "http://192.168.1.50/setup?code=ABCD-EFGH" {
+		t.Errorf("pairing = %+v", st)
 	}
 	clk.advance(3 * time.Minute)
 	if st := m.welcomeState(); strings.Contains(st.Status, "pair") {

@@ -230,6 +230,9 @@ func buildWelcome(in welcomeInputs) welcome.State {
 			st.Status = p.Name + " wants to pair"
 		}
 		st.Detail = "Enter the PIN from Moonlight at " + base + "/pair"
+		if in.code == "" {
+			st.QR = base + "/pair"
+		}
 	}
 	if p := o.install; p != nil {
 		switch p.State {

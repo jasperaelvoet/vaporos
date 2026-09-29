@@ -101,11 +101,17 @@ func TestBuildWelcome(t *testing.T) {
 		t.Errorf("finished update still shown: %+v", st)
 	}
 	in.overlay.apply(event("pairing.pending", map[string]any{}), now)
-	if st = buildWelcome(in); st.Status != "A device wants to pair" || st.Detail != "Enter the PIN from Moonlight at http://192.168.1.50/pair" {
+	if st = buildWelcome(in); st.Status != "A device wants to pair" || st.Detail != "Enter the PIN from Moonlight at http://192.168.1.50/pair" ||
+		st.QR != "http://192.168.1.50/pair" {
 		t.Errorf("pairing = %+v", st)
 	}
+	offline := in
+	offline.ips = nil
+	if st = buildWelcome(offline); st.QR != "http://vapor.local/pair" {
+		t.Errorf("pairing offline QR = %q", st.QR)
+	}
 	in.overlay.apply(event("pairing.pending", map[string]any{"pending": false}), now)
-	if st = buildWelcome(in); strings.Contains(st.Status, "pair") {
+	if st = buildWelcome(in); strings.Contains(st.Status, "pair") || st.QR != "http://192.168.1.50/" {
 		t.Errorf("cleared pairing still shown: %+v", st)
 	}
 	in.overlay.apply(event("install.progress", map[string]any{"step": "write", "percent": 37, "message": "Writing the system image", "state": "running"}), now)
