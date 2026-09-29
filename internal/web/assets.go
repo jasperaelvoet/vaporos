@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -174,4 +175,80 @@ func acceptsGzip(header string) bool {
 		return true
 	}
 	return false
+}
+
+var (
+	// staticImport is an ES module's static import or re-export, written at
+	// the start of a line (the modules keep that style): import x from
+	// './y.js', import './y.js', export { a } from './y.js'.
+	staticImport = regexp.MustCompile(`(?m)^[ \t]*(?:import|export)\b(?:[^;'"]*?\bfrom)?\s*'([^']+)'`)
+	// dynamicImport is import('./y.js') with a literal path.
+	dynamicImport = regexp.MustCompile(`\bimport\(\s*'([^']+)'\s*\)`)
+)
+
+// jsImports lists the modules src imports statically and with import(),
+// as written.
+func jsImports(src []byte) (static, lazy []string) {
+	for _, m := range staticImport.FindAllSubmatch(src, -1) {
+		static = append(static, string(m[1]))
+	}
+	for _, m := range dynamicImport.FindAllSubmatch(src, -1) {
+		lazy = append(lazy, string(m[1]))
+	}
+	return static, lazy
+}
+
+// importGraph follows entry's imports, resolved against the importing file
+// the way the browser does. static is entry and every module it reaches
+// through static imports, in a stable order; lazy is what import() reaches
+// beyond that. An import of a file that is not an asset is an error, since
+// the page would fail in the browser.
+func importGraph(files map[string]*asset, entry string) (static, lazy []string, err error) {
+	if files[entry] == nil {
+		return nil, nil, fmt.Errorf("no module %s", entry)
+	}
+	seen := map[string]bool{}
+	var walk func(name string, dynamic bool) error
+	var dyn []string
+	walk = func(name string, dynamic bool) error {
+		if seen[name] {
+			return nil
+		}
+		seen[name] = true
+		if dynamic {
+			lazy = append(lazy, name)
+		} else {
+			static = append(static, name)
+		}
+		a := files[name]
+		st, lz := jsImports(a.body)
+		for _, rel := range st {
+			target := path.Join(path.Dir(name), rel)
+			if files[target] == nil {
+				return fmt.Errorf("%s imports %s, which is not an asset", name, rel)
+			}
+			if err := walk(target, dynamic); err != nil {
+				return err
+			}
+		}
+		for _, rel := range lz {
+			target := path.Join(path.Dir(name), rel)
+			if files[target] == nil {
+				return fmt.Errorf("%s imports %s, which is not an asset", name, rel)
+			}
+			dyn = append(dyn, target)
+		}
+		return nil
+	}
+	if err := walk(entry, false); err != nil {
+		return nil, nil, err
+	}
+	for len(dyn) > 0 {
+		next := dyn[0]
+		dyn = dyn[1:]
+		if err := walk(next, true); err != nil {
+			return nil, nil, err
+		}
+	}
+	return static, lazy, nil
 }
