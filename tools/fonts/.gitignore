@@ -1,0 +1,5 @@
+# The virtualenv fonts.py makes and the downloaded originals (pinned by URL and
+# sha256 in design/fonts/fonts.json). Neither is committed.
+/.venv/
+/.cache/
+__pycache__/
