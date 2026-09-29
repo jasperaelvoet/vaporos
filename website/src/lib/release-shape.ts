@@ -108,6 +108,34 @@ export function pickNewer(current: Release | null, candidate: Release | null): R
   return now >= was ? candidate : current;
 }
 
+/**
+ * What the browser learned from the release list: ok=false when the request
+ * failed; `latest` is the newest stable release in it (latestFromList), or
+ * null when the list has none.
+ */
+export interface ListAnswer {
+  ok: boolean;
+  latest: unknown;
+}
+
+// settleLookup decides what the card shows after the browser's answer, and
+// returns `current` itself when nothing changes. It only ever upgrades: a
+// failed answer changes nothing, a `ready` card only moves to a newer release,
+// and a successful answer settles an `unknown` build (to `ready`, or to `none`
+// when the list has no stable release; a stable release without an ISO stays
+// `unknown`).
+export function settleLookup(current: ReleaseLookup, answer: ListAnswer): ReleaseLookup {
+  if (!answer.ok) return current;
+  const live = parseRelease(answer.latest);
+  if (current.state === 'ready') {
+    const next = pickNewer(current.release, live);
+    return next && next !== current.release ? { state: 'ready', release: next } : current;
+  }
+  if (live) return { state: 'ready', release: live };
+  if (current.state === 'unknown' && answer.latest === null) return { state: 'none' };
+  return current;
+}
+
 /** 3221225472 → '3.2 GB'; 0 → ''. */
 export function formatSize(bytes: number): string {
   if (!bytes) return '';
