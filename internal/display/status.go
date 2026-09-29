@@ -15,8 +15,10 @@ import (
 
 // How long transient notices stay on the welcome screen without a refresh.
 const (
-	progressTTL = 2 * time.Minute // update/pairing progress without news
+	progressTTL = 2 * time.Minute // update/pairing/power progress without news
 	messageTTL  = 5 * time.Minute
+	// sleepNotice is how long before an idle shutdown the screen says so.
+	sleepNotice = 2 * time.Minute
 )
 
 // statusOverlay is what other services told us through the event hub.
@@ -29,6 +31,10 @@ type statusOverlay struct {
 	pairingAt time.Time
 	message   string
 	messageAt time.Time
+	// sleepIn is power.idle's shutdown_in (seconds) as of sleepAt; a zero
+	// sleepAt means no shutdown is counting down.
+	sleepIn int
+	sleepAt time.Time
 }
 
 // Event payloads (docs/CONTRACTS.md "Events").
@@ -57,6 +63,10 @@ type pairingPending struct {
 	Name string `json:"name"`
 	// Pending is optional; a publisher sends false to clear the notice.
 	Pending *bool `json:"pending"`
+}
+
+type powerIdle struct {
+	ShutdownIn *int `json:"shutdown_in"`
 }
 
 type systemMessage struct {
@@ -101,6 +111,14 @@ func (o *statusOverlay) apply(ev events.Event, now time.Time) bool {
 		if json.Unmarshal(ev.Data, &m) == nil {
 			o.message, o.messageAt = m.Text, now
 		}
+	case "power.idle":
+		var p powerIdle
+		if json.Unmarshal(ev.Data, &p) == nil {
+			o.sleepAt = time.Time{}
+			if p.ShutdownIn != nil {
+				o.sleepIn, o.sleepAt = *p.ShutdownIn, now
+			}
+		}
 	default:
 		return false
 	}
@@ -117,6 +135,19 @@ func (o *statusOverlay) updateActive(now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// sleepSoon reports the time left before an idle shutdown that is at most
+// sleepNotice away.
+func (o *statusOverlay) sleepSoon(now time.Time) (time.Duration, bool) {
+	if o.sleepAt.IsZero() || now.Sub(o.sleepAt) > progressTTL {
+		return 0, false
+	}
+	left := time.Duration(o.sleepIn)*time.Second - now.Sub(o.sleepAt)
+	if left > sleepNotice {
+		return 0, false
+	}
+	return max(left, 0), true
 }
 
 // welcomeInputs is everything the welcome screen depends on.
@@ -206,6 +237,13 @@ func buildWelcome(in welcomeInputs) welcome.State {
 	}
 
 	o := in.overlay
+	if left, ok := o.sleepSoon(in.now); ok && !in.live {
+		st.Status = "Going to sleep now"
+		if mins := int((left + time.Minute - 1) / time.Minute); mins > 0 {
+			st.Status = fmt.Sprintf("Going to sleep in %d min", mins)
+		}
+		st.Detail = "Moonlight wakes it again: open Moonlight and pick this PC"
+	}
 	if o.staged != "" && !in.live {
 		st.Detail = "Update " + o.staged + " installs on the next restart"
 	}

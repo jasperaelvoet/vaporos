@@ -136,3 +136,47 @@ func TestBuildWelcome(t *testing.T) {
 		t.Error("unrelated topic changed the overlay")
 	}
 }
+
+func TestPreSleepNotice(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	in := welcomeInputs{hostname: "vapor", ips: []string{"192.168.1.50"}, port: 80, gpuSupported: true, now: now}
+	idle := func(shutdownIn any) {
+		t.Helper()
+		if !in.overlay.apply(event("power.idle", map[string]any{"idle_seconds": 60, "shutdown_in": shutdownIn}), now) {
+			t.Fatal("power.idle left the overlay alone")
+		}
+	}
+	idle(300)
+	if st := buildWelcome(in); st.Status != "Ready to stream" {
+		t.Errorf("5 min before sleep = %+v", st)
+	}
+	idle(120)
+	if st := buildWelcome(in); st.Status != "Going to sleep in 2 min" || st.Detail != "Moonlight wakes it again: open Moonlight and pick this PC" {
+		t.Errorf("2 min before sleep = %+v", st)
+	}
+	for _, c := range []struct {
+		after time.Duration
+		want  string
+	}{{59 * time.Second, "Going to sleep in 2 min"}, {60 * time.Second, "Going to sleep in 1 min"}, {119 * time.Second, "Going to sleep in 1 min"}, {2 * time.Minute, "Going to sleep now"}, {3 * time.Minute, "Ready to stream"}} {
+		in.now = now.Add(c.after)
+		if st := buildWelcome(in); st.Status != c.want {
+			t.Errorf("%v after the event: %q, want %q", c.after, st.Status, c.want)
+		}
+	}
+	in.now = now
+	s := in
+	s.session = &sessionInfo{Client: "Deck", Mode: "1280x800@90"}
+	if st := buildWelcome(s); st.Status != "Streaming to Deck" {
+		t.Errorf("session = %+v", st)
+	}
+	s = in
+	s.live = true
+	if st := buildWelcome(s); st.Status != "Ready to install" {
+		t.Errorf("installer = %+v", st)
+	}
+	// Busy again, or idle shutdown switched off: shutdown_in is null.
+	idle(nil)
+	if st := buildWelcome(in); st.Status != "Ready to stream" {
+		t.Errorf("after a busy tick = %+v", st)
+	}
+}
