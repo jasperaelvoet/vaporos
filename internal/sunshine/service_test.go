@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/events"
 )
 
 func writeCreds(t *testing.T, user, pass string) {
@@ -340,10 +341,21 @@ func TestStatusHandler(t *testing.T) {
 		t.Errorf("status = %d %v", w.Code, out)
 	}
 	h.f.setBusy(true)
-	h.s.session = &sessionInfo{Client: "iPad", Mode: "2732x2048@60"}
+	h.s.onEvent(events.Event{Topic: "session.begin", Data: []byte(
+		`{"client":"iPad","mode":"2732x2048@60","hdr":false,"app":"Hades II","since":"2026-09-29T19:12:03Z"}`)})
 	_, out = call(t, h.s.handleStatus, "GET", "")
-	if out["streaming"] != true || out["session"].(map[string]any)["mode"] != "2732x2048@60" {
+	want := map[string]any{"client": "iPad", "mode": "2732x2048@60", "hdr": false, "app": "Hades II", "since": "2026-09-29T19:12:03Z"}
+	if out["streaming"] != true || !reflect.DeepEqual(out["session"], want) {
 		t.Errorf("streaming status = %v", out)
+	}
+
+	// A session.begin without since: it started when the event came.
+	h.s.now = func() time.Time { return time.Date(2026, 9, 29, 21, 0, 5, 500, time.FixedZone("CEST", 2*3600)) }
+	h.s.onEvent(events.Event{Topic: "session.begin", Data: []byte(`{"client":"TV","mode":"3840x2160@60","hdr":true}`)})
+	_, out = call(t, h.s.handleStatus, "GET", "")
+	sess, _ := out["session"].(map[string]any)
+	if _, ok := sess["app"]; ok || sess["since"] != "2026-09-29T19:00:05Z" {
+		t.Errorf("session without app and since = %v", sess)
 	}
 }
 

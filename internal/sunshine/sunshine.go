@@ -59,6 +59,8 @@ type sessionInfo struct {
 	Client string `json:"client"`
 	Mode   string `json:"mode"`
 	HDR    bool   `json:"hdr"`
+	App    string `json:"app,omitempty"`   // Sunshine's app: "Steam" or a game's name
+	Since  string `json:"since,omitempty"` // RFC 3339, when the app was launched
 }
 
 type Service struct {
@@ -610,9 +612,13 @@ func (s *Service) onEvent(ev events.Event) {
 	case "session.begin":
 		var si sessionInfo
 		if json.Unmarshal(ev.Data, &si) == nil {
+			now := s.now()
+			if si.Since == "" {
+				si.Since = now.UTC().Truncate(time.Second).Format(time.RFC3339)
+			}
 			s.mu.Lock()
 			s.session = &si
-			s.sessionAt = s.now()
+			s.sessionAt = now
 			s.mu.Unlock()
 		}
 	case "session.end":
