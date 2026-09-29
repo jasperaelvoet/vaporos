@@ -20,6 +20,7 @@
 @import "../styles/base.css";
 @import "../styles/type.css";
 @import "../styles/surfaces.css";
+@import "../styles/chrome.css";
 @import "../styles/motion.css";
 @import "lenis/dist/lenis.css";
 

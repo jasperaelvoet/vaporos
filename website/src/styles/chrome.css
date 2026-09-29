@@ -1,0 +1,179 @@
+/* The site's chrome: the fixed nav, its mobile menu, the thermal scale on the
+   right edge and the footer. Components: src/components/site/.
+
+   The nav is transparent over a page's first frame. From the first pixel of
+   scroll a scrim fades in behind it (html[data-nav~="scrolled"]), and while a
+   white-hot block (.surface-hot) sits under it, the scrim becomes a hard ash
+   bar (html[data-nav~="onlight"]): a fade would smudge over white-hot. The
+   attribute is written by a plain scroll listener inlined in the layout
+   (src/lib/chrome-script.ts), so it works before hydration, without GSAP and
+   under reduced motion. */
+
+@layer components {
+  .site-nav {
+    position: fixed;
+    inset: 0 0 auto 0;
+    z-index: 50;
+    isolation: isolate;
+    padding-top: env(safe-area-inset-top);
+  }
+  .site-nav::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 -2rem;
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(var(--color-ash) 45%, color-mix(in srgb, var(--color-ash) 0%, transparent));
+    opacity: 0;
+    transition: opacity 0.35s var(--ease-out);
+  }
+  html[data-nav~="scrolled"] .site-nav::before,
+  .site-nav:has(.site-menu[open])::before {
+    opacity: 1;
+  }
+  html[data-nav~="onlight"] .site-nav::before,
+  .site-nav:has(.site-menu[open])::before {
+    inset: 0;
+    background: var(--color-ash);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--color-h0) 50%, transparent);
+  }
+
+  .site-nav-bar {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    height: var(--nav-h);
+    padding-inline: max(var(--spacing-page), env(safe-area-inset-left)) max(var(--spacing-page), env(safe-area-inset-right));
+  }
+
+  .site-nav-links a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    color: color-mix(in srgb, var(--color-bone) 78%, transparent);
+    font-weight: 600;
+    font-size: 0.9375rem;
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+  .site-nav-links a:hover,
+  .site-nav-links a[aria-current="page"] {
+    color: var(--color-bone);
+  }
+  .site-nav-links a[aria-current="page"] {
+    text-decoration: underline;
+    text-decoration-color: var(--color-h7);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.5em;
+  }
+
+  /* Mobile menu: a <details> disclosure, so it opens without JavaScript. */
+  .site-menu > summary {
+    list-style: none;
+  }
+  .site-menu > summary::-webkit-details-marker {
+    display: none;
+  }
+  .site-menu-panel {
+    position: absolute;
+    inset: 100% 0 auto 0;
+    max-height: calc(100dvh - var(--nav-h));
+    overflow-y: auto;
+    padding: 0.5rem var(--spacing-page) 1.5rem;
+    background: var(--color-ash);
+    border-bottom: 1px solid var(--color-line);
+  }
+  .site-menu[open] .site-menu-icon-open,
+  .site-menu:not([open]) .site-menu-icon-close {
+    display: none;
+  }
+
+  /* The thermal scale on the right edge: the Inferno ramp with a needle that
+     follows the section in view ([data-heat] and [data-heat-label]). */
+  .heat-scale {
+    position: fixed;
+    right: 1.375rem;
+    top: 50%;
+    z-index: 40;
+    width: 0.5rem;
+    height: min(46vh, 23.75rem);
+    translate: 0 -50%;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 0.4s;
+  }
+  .heat-scale[hidden] {
+    display: block;
+    opacity: 0;
+  }
+  .heat-scale-bar {
+    position: absolute;
+    inset: 0;
+    border-radius: 2px;
+    background: linear-gradient(
+      to top,
+      var(--color-h0),
+      var(--color-h1),
+      var(--color-h2),
+      var(--color-h3),
+      var(--color-h4),
+      var(--color-h5),
+      var(--color-h6),
+      var(--color-h7),
+      var(--color-h8),
+      var(--color-h9)
+    );
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-bone) 22%, transparent);
+  }
+  .heat-scale-tick {
+    position: absolute;
+    right: 0.75rem;
+    bottom: calc(var(--t) * 100%);
+    width: 5px;
+    height: 1px;
+    background: color-mix(in srgb, var(--color-bone) 45%, transparent);
+  }
+  .heat-scale-needle {
+    position: absolute;
+    right: 0.75rem;
+    bottom: 0;
+    width: 0.5rem;
+    height: 100%;
+    translate: 0 calc((1 - var(--heat, 0.42)) * 100%);
+    transition: translate var(--vos-dur-needle) var(--ease-tach);
+  }
+  .heat-scale-needle::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    top: -5px;
+    border-block: 5px solid transparent;
+    border-left: 7px solid var(--color-h9);
+  }
+  .heat-scale-label {
+    position: absolute;
+    right: -2px;
+    bottom: calc(100% + 0.625rem);
+    writing-mode: vertical-rl;
+    rotate: 180deg;
+    padding: 6px 3px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-h0) 80%, transparent);
+    color: var(--color-bone);
+    font: 600 0.65625rem/1 var(--font-mono);
+    white-space: nowrap;
+  }
+  @media (max-width: 56.25rem) {
+    .heat-scale {
+      display: none;
+    }
+  }
+
+  /* The footer's closing ember (direction/redline/footer-ember.tsx). */
+  .footer-ember {
+    display: block;
+    width: 100%;
+    height: 7.5rem;
+  }
+}
