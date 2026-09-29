@@ -47,12 +47,23 @@ type assetStore struct {
 	files   map[string]*asset // keyed by slash path relative to static/
 }
 
-func newAssetStore(fsys fs.FS) (*assetStore, error) {
+// newAssetStore holds every file in fsys that keep accepts. A directory keep
+// refuses is not read at all.
+func newAssetStore(fsys fs.FS, keep func(name string) bool) (*assetStore, error) {
 	s := &assetStore{files: map[string]*asset{}}
 	var names []string
 	err := fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		if name != "." && !keep(name) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
 		}
 		ext := path.Ext(name)
 		ctype, ok := contentTypes[ext]

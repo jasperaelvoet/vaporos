@@ -17,7 +17,9 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -56,8 +58,66 @@ func (p page) pattern() string {
 	return "GET " + p.Path
 }
 
-// pages lists every page in navigation order. CONTRACTS.md "Pages".
-var pages = []page{
+// uiSet is one complete web UI: its page shells, its own static files and
+// its routes. Two sets live side by side while a new UI is built at its final
+// paths. Only activeSet is read, parsed and served, so a half-built set can
+// never stop vosd (and with it the API) from starting.
+type uiSet struct {
+	Name      string // "legacy" or "next"
+	Templates string // directory with layout.html and pages/<page>.html
+	Static    string // directory under static/ with the set's app.css and js/ ("" is static/ itself)
+	Pages     []page // every route, in navigation order
+	Installer page   // replaces the setup page on the live ISO
+	Partials  string // glob of extra {{define}} files parsed with the layout; may match nothing
+}
+
+// legacySet is the eight-page UI. CONTRACTS.md "Pages".
+var legacySet = uiSet{
+	Name:      "legacy",
+	Templates: "templates/legacy",
+	Static:    "legacy",
+	Pages:     legacyPages,
+	Installer: legacyInstaller,
+	Partials:  "templates/legacy/partials/*.html",
+}
+
+// nextSet is the new UI. It stays empty and unreachable until the switch
+// commit makes it the active set.
+var nextSet = uiSet{
+	Name:      "next",
+	Templates: "templates",
+	Static:    "",
+	Partials:  "templates/partials/*.html",
+}
+
+// activeSet is the UI vosd serves. There is deliberately no runtime knob.
+var activeSet = legacySet
+
+// uiSets is every set, active or not.
+var uiSets = []uiSet{legacySet, nextSet}
+
+// ownsStatic reports whether name (a path under static/) is one of the set's
+// own files. Everything no set owns (icons, manifest, fonts) is shared.
+func (s uiSet) ownsStatic(name string) bool {
+	if s.Static != "" {
+		return name == s.Static || strings.HasPrefix(name, s.Static+"/")
+	}
+	return name == "app.css" || name == "js" || strings.HasPrefix(name, "js/")
+}
+
+// servesStatic reports whether the set's asset store holds name: its own
+// files and the shared ones, never another set's.
+func (s uiSet) servesStatic(name string) bool {
+	for _, o := range uiSets {
+		if o.Name != s.Name && o.ownsStatic(name) {
+			return false
+		}
+	}
+	return true
+}
+
+// legacyPages lists every legacy page in navigation order.
+var legacyPages = []page{
 	{Name: "dashboard", Path: "/", Title: "Home", Script: "dashboard", Icon: "home", Nav: true},
 	{Name: "pair", Path: "/pair", Title: "Pair a device", Label: "Pair",
 		Lead:   "Connect Moonlight on a phone, tablet, TV or computer to stream your Steam games.",
@@ -84,15 +144,15 @@ var pages = []page{
 	{Name: "setup", Path: "/setup", Title: "Welcome to VaporOS", Script: "setup", Bare: true},
 }
 
-// installerSetup replaces the setup page on the live ISO: same route, the
+// legacyInstaller replaces the setup page on the live ISO: same route, the
 // full installer wizard instead of the first-run password form.
-var installerSetup = page{Name: "setup", Path: "/setup", Title: "Install VaporOS", Script: "install", Bare: true}
+var legacyInstaller = page{Name: "setup", Path: "/setup", Title: "Install VaporOS", Script: "install", Bare: true}
 
 // pageData is what every template sees.
 type pageData struct {
 	Page      page
 	Nav       []page
-	Static    string // versioned prefix of this UI's own files, "/static/<hash>/legacy"
+	Static    string // versioned prefix of the set's own files, "/static/<hash>/legacy"
 	Shared    string // versioned prefix of the files every UI shares (icons, manifest), "/static/<hash>"
 	Version   string
 	Installer bool
@@ -103,40 +163,66 @@ type pageData struct {
 
 type ui struct {
 	srv    *api.Server
+	set    uiSet
 	assets *assetStore
 	tmpl   map[string]*template.Template
 	nav    []page
 }
 
-// Register adds the pages and static assets to srv.
+// uiHolder hands the handlers the current UI. Production stores one and
+// keeps it; the dev server can swap in a rebuilt one when a file changes.
+type uiHolder struct{ cur atomic.Pointer[ui] }
+
+func (h *uiHolder) load() *ui   { return h.cur.Load() }
+func (h *uiHolder) store(u *ui) { h.cur.Store(u) }
+
+// Register adds the active UI's pages and the static assets to srv.
 func Register(srv *api.Server) {
-	u, err := newUI(srv)
+	register(srv, activeSet, content)
+}
+
+// register serves set, read from fsys (the embedded files in production),
+// and returns the holder the handlers read the UI from.
+func register(srv *api.Server, set uiSet, fsys fs.FS) *uiHolder {
+	u, err := newUI(srv, set, fsys)
 	if err != nil {
 		// Everything here is embedded at build time, so this is a
 		// programming error the package tests catch before a release.
 		panic("web: " + err.Error())
 	}
-	for _, p := range pages {
-		srv.HandleRaw(p.pattern(), api.Public, u.pageHandler(p))
+	h := &uiHolder{}
+	h.store(u)
+	for _, p := range set.Pages {
+		srv.HandleRaw(p.pattern(), api.Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h.load().servePage(w, r, p)
+		}))
 	}
-	srv.HandleRaw("GET /static/", api.Public, u.assets)
+	srv.HandleRaw("GET /static/", api.Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.load().assets.ServeHTTP(w, r)
+	}))
 	// Browsers and tools ask for /favicon.ico whatever the page says.
 	srv.HandleRaw("GET /favicon.ico", api.Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u.assets.serveFile(w, r, "icon-192.png", false)
+		h.load().assets.serveFile(w, r, "icon-192.png", false)
 	}))
+	return h
 }
 
-func newUI(srv *api.Server) (*ui, error) {
-	static, err := fs.Sub(content, "static")
+// newUI reads one set from fsys, which holds templates/ and static/ as the
+// embed does. It opens nothing that belongs to another set.
+func newUI(srv *api.Server, set uiSet, fsys fs.FS) (*ui, error) {
+	if len(set.Pages) == 0 {
+		return nil, fmt.Errorf("UI set %q has no pages", set.Name)
+	}
+	static, err := fs.Sub(fsys, "static")
 	if err != nil {
 		return nil, err
 	}
-	assets, err := newAssetStore(static)
+	assets, err := newAssetStore(static, set.servesStatic)
 	if err != nil {
 		return nil, err
 	}
-	u := &ui{srv: srv, assets: assets, tmpl: map[string]*template.Template{}}
-	for _, p := range pages {
+	u := &ui{srv: srv, set: set, assets: assets, tmpl: map[string]*template.Template{}}
+	for _, p := range set.Pages {
 		if p.Nav {
 			u.nav = append(u.nav, p)
 		}
@@ -144,71 +230,85 @@ func newUI(srv *api.Server) (*ui, error) {
 	base, err := template.New("").Funcs(template.FuncMap{
 		"icon":   iconHTML,
 		"sprite": spriteHTML,
-	}).ParseFS(content, "templates/legacy/layout.html")
+	}).ParseFS(fsys, path.Join(set.Templates, "layout.html"))
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range pages {
+	partials, err := fs.Glob(fsys, set.Partials)
+	if err != nil {
+		return nil, err
+	}
+	if len(partials) > 0 {
+		if _, err := base.ParseFS(fsys, set.Partials); err != nil {
+			return nil, err
+		}
+	}
+	for _, p := range set.Pages {
 		t, err := base.Clone()
 		if err != nil {
 			return nil, err
 		}
-		if _, err := t.ParseFS(content, "templates/legacy/pages/"+p.Name+".html"); err != nil {
+		if _, err := t.ParseFS(fsys, path.Join(set.Templates, "pages", p.Name+".html")); err != nil {
 			return nil, err
 		}
 		u.tmpl[p.Name] = t
 	}
-	for _, p := range append(pages, installerSetup) {
-		if _, ok := assets.files["legacy/js/pages/"+p.Script+".js"]; !ok {
-			return nil, fmt.Errorf("page %s: missing script legacy/js/pages/%s.js", p.Name, p.Script)
+	for _, p := range append([]page{set.Installer}, set.Pages...) {
+		if p.Script == "" {
+			continue
+		}
+		script := path.Join(set.Static, "js/pages", p.Script+".js")
+		if _, ok := assets.files[script]; !ok {
+			return nil, fmt.Errorf("page %s: missing script static/%s", p.Name, script)
 		}
 	}
 	return u, nil
 }
 
-func (u *ui) pageHandler(p page) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		installer := u.srv.Options().Installer
-		rawQuery := r.URL.RawQuery
-		foreignCode := false
-		if q := r.URL.Query(); q.Has("code") && !api.FirstPartyNavigation(r) {
-			// Another site put a setup code in this URL (an <img>, or a
-			// popup it keeps re-navigating). Honouring it would let that
-			// site lock this browser out of setup with wrong codes, so it
-			// is dropped before the cookie, the form or the page script
-			// can use it. Someone who followed such a link types the code.
-			q.Del("code")
-			rawQuery, foreignCode = q.Encode(), true
-		}
-		withQuery := func(path string) string {
-			if rawQuery != "" {
-				return path + "?" + rawQuery
-			}
-			return path
-		}
-		// The live ISO has one job; every other page would only fail
-		// against the missing OS routes. ?code= from a QR code is kept.
-		if installer && p.Name != "setup" {
-			http.Redirect(w, r, withQuery("/setup"), http.StatusSeeOther)
-			return
-		}
-		if foreignCode && p.Name == "setup" {
-			http.Redirect(w, r, withQuery(p.Path), http.StatusSeeOther)
-			return
-		}
-		d := pageData{
-			Page:      p,
-			Nav:       u.nav,
-			Static:    u.assets.prefix() + "/legacy",
-			Shared:    u.assets.prefix(),
-			Version:   config.BinaryVersion,
-			Installer: installer,
-		}
-		if p.Name == "setup" {
-			u.prepareSetup(w, r, &d)
-		}
-		u.render(w, d)
+// static is the versioned URL prefix of the set's own files.
+func (u *ui) static() string { return path.Join(u.assets.prefix(), u.set.Static) }
+
+func (u *ui) servePage(w http.ResponseWriter, r *http.Request, p page) {
+	installer := u.srv.Options().Installer
+	rawQuery := r.URL.RawQuery
+	foreignCode := false
+	if q := r.URL.Query(); q.Has("code") && !api.FirstPartyNavigation(r) {
+		// Another site put a setup code in this URL (an <img>, or a
+		// popup it keeps re-navigating). Honouring it would let that
+		// site lock this browser out of setup with wrong codes, so it
+		// is dropped before the cookie, the form or the page script
+		// can use it. Someone who followed such a link types the code.
+		q.Del("code")
+		rawQuery, foreignCode = q.Encode(), true
 	}
+	withQuery := func(path string) string {
+		if rawQuery != "" {
+			return path + "?" + rawQuery
+		}
+		return path
+	}
+	// The live ISO has one job; every other page would only fail
+	// against the missing OS routes. ?code= from a QR code is kept.
+	if installer && p.Name != "setup" {
+		http.Redirect(w, r, withQuery("/setup"), http.StatusSeeOther)
+		return
+	}
+	if foreignCode && p.Name == "setup" {
+		http.Redirect(w, r, withQuery(p.Path), http.StatusSeeOther)
+		return
+	}
+	d := pageData{
+		Page:      p,
+		Nav:       u.nav,
+		Static:    u.static(),
+		Shared:    u.assets.prefix(),
+		Version:   config.BinaryVersion,
+		Installer: installer,
+	}
+	if p.Name == "setup" {
+		u.prepareSetup(w, r, &d)
+	}
+	u.render(w, d)
 }
 
 // prepareSetup handles the setup code for both setup flavours. The code
@@ -222,7 +322,7 @@ func (u *ui) prepareSetup(w http.ResponseWriter, r *http.Request, d *pageData) {
 		trySetSetupCookie(u.srv, w, r, code)
 	}
 	if d.Installer {
-		d.Page = installerSetup
+		d.Page = u.set.Installer
 		d.Timezones = timezoneGroups()
 		// After the install reboots, the page waits for the new system at
 		// http://<hostname>.local, a different origin. Widen connect-src for

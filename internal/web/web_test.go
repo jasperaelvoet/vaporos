@@ -45,7 +45,7 @@ func get(h http.Handler, target string, headers ...string) *httptest.ResponseRec
 
 func testUI(t *testing.T) *ui {
 	t.Helper()
-	u, err := newUI(api.New(api.Options{}))
+	u, err := newUI(api.New(api.Options{}), activeSet, content)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func testUI(t *testing.T) *ui {
 func TestPagesRender(t *testing.T) {
 	_, h := newHandler(t, false, "")
 	u := testUI(t)
-	for _, p := range pages {
+	for _, p := range activeSet.Pages {
 		t.Run(p.Name, func(t *testing.T) {
 			rec := get(h, p.Path)
 			if rec.Code != http.StatusOK {
@@ -387,7 +387,7 @@ func renderAll(t *testing.T) map[string]string {
 	out := map[string]string{}
 	for _, installer := range []bool{false, true} {
 		_, h := newHandler(t, installer, "ABCD-EFGH")
-		for _, p := range pages {
+		for _, p := range activeSet.Pages {
 			if installer && p.Name != "setup" {
 				continue
 			}
@@ -397,7 +397,7 @@ func renderAll(t *testing.T) map[string]string {
 			}
 			script := p.Script
 			if installer {
-				script = installerSetup.Script
+				script = activeSet.Installer.Script
 			}
 			out[script] = rec.Body.String()
 		}
