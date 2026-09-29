@@ -3,7 +3,10 @@ name: build
 on:
   push:
     branches: [main]
+    # The website deploys through pages.yml and never needs the OS built.
+    paths-ignore: ['website/**', '**.md', '.github/workflows/pages.yml']
   pull_request:
+    paths-ignore: ['website/**', '**.md', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 env:

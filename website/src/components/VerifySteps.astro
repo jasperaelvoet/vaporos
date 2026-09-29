@@ -1,0 +1,98 @@
+---
+// The same checks the release pipeline runs (.github/workflows/build.yml,
+// "Check the signature against keys/release.pub"), written out for people.
+import CodeBlock from './CodeBlock.astro';
+import Icon from './Icon.astro';
+import { href } from '../lib/paths';
+import { REPO_URL } from '../lib/release-shape';
+import { RELEASE_KEY as key } from '../lib/key';
+
+const sums = `sha256sum -c --ignore-missing SHA256SUMS`;
+
+const sig = `# The VaporOS release key (keys/release.pub)
+echo '${key}' > release.pub
+
+# An Ed25519 public key in DER form: a fixed 12-byte header, then the raw key
+printf '\\x30\\x2a\\x30\\x05\\x06\\x03\\x2b\\x65\\x70\\x03\\x21\\x00' > release.der
+base64 -d < release.pub >> release.der
+base64 -d < manifest.json.sig > manifest.sig
+
+openssl pkeyutl -verify -pubin -keyform DER -inkey release.der -rawin \\
+  -in manifest.json -sigfile manifest.sig`;
+---
+<ol class="verify">
+  <li class="v-step">
+    <div class="v-text">
+      <span class="v-num">1</span>
+      <div>
+        <h3>Check the download</h3>
+        <p>
+          Put <code>SHA256SUMS</code> next to the ISO and run this, on Linux or macOS. It should print <code>OK</code> for
+          the ISO. A mismatch means the file is damaged: download it again.
+        </p>
+      </div>
+    </div>
+    <CodeBlock title="Checksum" code={sums} />
+  </li>
+  <li class="v-step">
+    <div class="v-text">
+      <span class="v-num">2</span>
+      <div>
+        <h3>Check the signature</h3>
+        <p>
+          <code>manifest.json</code> lists every file of the system image with its size and SHA-256,
+          and <code>manifest.json.sig</code> is its ed25519 signature. This is the check every
+          installed VaporOS runs before it accepts an update. It needs OpenSSL 3 (on macOS, from Homebrew: the built-in LibreSSL lacks it) and bash or zsh,
+          and it should print <code>Signature Verified Successfully</code>.
+        </p>
+      </div>
+    </div>
+    <CodeBlock title="Signature" code={sig} />
+  </li>
+</ol>
+
+<div class="callout scope">
+  <Icon name="info" />
+  <p>
+    <strong>What these prove.</strong> The checksum catches a damaged download. The signature proves
+    that <code>manifest.json</code> came from the release key; it covers the system image files, not
+    the ISO file itself, and <code>SHA256SUMS</code> is not signed. The installer on the ISO only
+    installs a system image whose manifest carries a valid signature.
+  </p>
+</div>
+
+<div class="key glass">
+  <div class="key-head">
+    <span class="icon-tile"><Icon name="key" /></span>
+    <div>
+      <h3>Release public key</h3>
+      <p class="muted">ed25519, base64 of the raw 32-byte key</p>
+    </div>
+  </div>
+  <CodeBlock title="release.pub" lang="text" code={key} />
+  <p class="key-links">
+    <a class="link-arrow" href={href('/release.pub')} download>Download release.pub<Icon name="download" /></a>
+    <a class="link-arrow" href={`${REPO_URL}/blob/main/keys/release.pub`}>Compare it with the repository<Icon name="external" /></a>
+  </p>
+</div>
+
+<style>
+  .verify { list-style: none; display: grid; gap: 28px; }
+  .v-step { display: grid; gap: 16px; min-width: 0; }
+  .v-text { display: flex; gap: 16px; align-items: flex-start; }
+  .v-num {
+    display: grid; place-items: center; flex: none;
+    width: 34px; height: 34px; border-radius: 50%;
+    font: 700 .95rem/1 var(--display);
+    color: var(--brand-ink); background: var(--vapor);
+    box-shadow: 0 8px 20px -8px rgb(120 190 255 / .7);
+  }
+  .v-text h3 { font-size: 1.25rem; margin: 4px 0 8px; }
+  .v-text p { color: var(--text-2); }
+  .scope { margin-top: 28px; }
+  .key { display: grid; gap: 18px; margin-top: 36px; padding: 24px; min-width: 0; }
+  .key-head { display: flex; align-items: center; gap: 14px; }
+  .key-head h3 { font-size: 1.15rem; }
+  .key-head p { font-size: .9rem; }
+  .key-links { display: flex; flex-wrap: wrap; gap: 12px 28px; }
+</style>

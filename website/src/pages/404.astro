@@ -1,0 +1,30 @@
+---
+import Base from '../layouts/Base.astro';
+import Logo from '../components/Logo.astro';
+import Icon from '../components/Icon.astro';
+import { href } from '../lib/paths';
+---
+<Base title="Page not found" description="This page doesn't exist." noindex>
+  <section class="page-hero nf">
+    <div class="container container-narrow nf-inner">
+      <Logo size={72} wordmark={false} class="nf-logo" />
+      <p class="nf-code gradient-text">404</p>
+      <h1>This page evaporated.</h1>
+      <p class="lead">The link may be old, or the page moved. Try one of these instead.</p>
+      <div class="btn-row">
+        <a class="btn btn-primary btn-lg" href={href('/')}><Icon name="home" />Home</a>
+        <a class="btn btn-lg" href={href('/download/')}><Icon name="download" />Download</a>
+        <a class="btn btn-lg" href={href('/faq/')}><Icon name="question" />FAQ</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .nf { min-height: 80vh; display: grid; align-items: center; }
+  .nf-inner { display: grid; justify-items: center; text-align: center; gap: 18px; }
+  .nf-inner .lead { margin-top: 0; }
+  .nf h1 { margin-top: 0; font-size: clamp(2rem, 1.4rem + 3vw, 3.2rem); }
+  .nf-code { font: 700 clamp(5rem, 3rem + 10vw, 9rem)/1 var(--display); letter-spacing: -.06em; }
+  .nf .btn-row { justify-content: center; margin-top: 8px; }
+</style>

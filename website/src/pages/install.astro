@@ -1,0 +1,315 @@
+---
+import Base from '../layouts/Base.astro';
+import CodeBlock from '../components/CodeBlock.astro';
+import DeviceMock from '../components/DeviceMock.astro';
+import Requirements from '../components/Requirements.astro';
+import Icon from '../components/Icon.astro';
+import { href } from '../lib/paths';
+
+const toc = [
+  ['before', 'Before you start'],
+  ['flash', 'Write the USB stick'],
+  ['firmware', 'Firmware settings'],
+  ['boot', 'Boot the installer'],
+  ['installer', 'Install from your phone'],
+  ['first-run', 'Sign in'],
+  ['pair', 'Pair Moonlight'],
+  ['updates', 'Updates and rollback'],
+  ['power', 'Power and waking'],
+];
+
+const ddLinux = `# Find the USB stick, e.g. /dev/sdb
+lsblk
+sudo dd if=vaporos-<version>.iso of=/dev/sdX bs=4M status=progress oflag=sync`;
+const ddMac = `# Find the USB stick, e.g. /dev/disk4
+diskutil list
+diskutil unmountDisk /dev/diskN
+sudo dd if=vaporos-<version>.iso of=/dev/rdiskN bs=4m`;
+
+const wizard = [
+  ['Setup code', 'Enter the code from the screen. Scanning the QR code fills it in for you. It keeps other people on your network from installing over your PC.'],
+  ['Drive', "Pick the drive to install on. The USB stick you started from isn't listed. If the drive already has VaporOS, you can repair it: games, settings and paired devices stay."],
+  ['Name', 'Choose the name on your network (vapor by default, so the address is vapor.local) and an admin password of at least 8 characters.'],
+  ['Games', 'Pick your time zone, and tick any Steam libraries found on other drives to keep playing those games.'],
+  ['Install', 'Check the summary. If the drive will be erased, type ERASE to confirm. The install takes a few minutes; keep the USB stick in.'],
+  ['Restart', 'Remove the USB stick and press Restart now. VaporOS starts in about a minute, and the page moves on by itself.'],
+];
+
+const stores = [
+  { name: 'iPhone, iPad, Apple TV', where: 'App Store', url: 'https://apps.apple.com/app/moonlight-game-streaming/id1000551566', icon: 'phone' },
+  { name: 'Android, Google TV', where: 'Google Play', url: 'https://play.google.com/store/apps/details?id=com.limelight', icon: 'phone' },
+  { name: 'Windows, Mac, Linux', where: 'moonlight-stream.org', url: 'https://moonlight-stream.org/', icon: 'monitor' },
+] as const;
+---
+<Base title="Install guide" current="install" description="Install VaporOS step by step: write the USB stick, set the firmware, run the web installer from your phone and pair Moonlight.">
+  <section class="page-hero">
+    <div class="container">
+      <span class="eyebrow">Install guide</span>
+      <h1>From USB stick <span class="gradient-text">to first game.</span></h1>
+      <p class="lead">A few minutes of your time, most of it spent waiting. You need the PC, a USB stick, a monitor or TV for the install, and a phone or computer on the same network.</p>
+    </div>
+  </section>
+
+  <div class="container guide">
+    <nav class="toc" aria-label="On this page">
+      <details class="toc-d" open>
+        <summary class="toc-h"><span>On this page</span><Icon name="chevron-down" class="ico toc-chev" /></summary>
+        <ol>
+          {toc.map(([id, label]) => <li><a href={`#${id}`}>{label}</a></li>)}
+        </ol>
+      </details>
+    </nav>
+
+    <article class="guide-body">
+      <section id="before" class="g-sec">
+        <h2><span class="g-num">01</span>Before you start</h2>
+        <p class="muted">Check the PC against this list, and <a href={href('/download/')}>download the ISO</a>.</p>
+        <Requirements />
+        <div class="callout callout-warn">
+          <Icon name="alert" />
+          <p><strong>The drive you install on is erased.</strong> Back up anything on it first. Other drives are left alone.</p>
+        </div>
+      </section>
+
+      <section id="flash" class="g-sec">
+        <h2><span class="g-num">02</span>Write the USB stick</h2>
+        <div class="prose">
+          <p>The ISO is a disk image, not a file to copy. Write it to the stick with one of these:</p>
+          <ul>
+            <li><a href="https://etcher.balena.io/">balenaEtcher</a> (Windows, Mac, Linux): pick the ISO, pick the stick, <strong>Flash</strong>.</li>
+            <li><a href="https://rufus.ie/">Rufus</a> (Windows): pick the ISO and the stick. If Rufus asks how to write the image, choose <strong>DD Image mode</strong>.</li>
+            <li><code>dd</code> on Linux or macOS. Double-check the device name: <code>dd</code> overwrites whatever you point it at.</li>
+          </ul>
+        </div>
+        <div class="code-pair">
+          <CodeBlock title="Linux" code={ddLinux} />
+          <CodeBlock title="macOS" code={ddMac} />
+        </div>
+      </section>
+
+      <section id="firmware" class="g-sec">
+        <h2><span class="g-num">03</span>Firmware settings</h2>
+        <div class="prose">
+          <p>Open the PC's firmware setup (usually <kbd>Del</kbd> or <kbd>F2</kbd> right after power on) and check two things:</p>
+          <ul>
+            <li><strong>Boot mode: UEFI.</strong> Turn off CSM or legacy boot if it's on. The installer only boots in UEFI mode.</li>
+            <li><strong>Secure Boot: off.</strong> The VaporOS kernel isn't signed for Secure Boot.</li>
+          </ul>
+          <p>Plug in a network cable, and connect a monitor or TV for the install: it shows the address and the setup code the installer asks for. You can unplug it afterwards.</p>
+        </div>
+      </section>
+
+      <section id="boot" class="g-sec">
+        <h2><span class="g-num">04</span>Boot the installer</h2>
+        <div class="prose">
+          <p>Start the PC from the USB stick (the one-time boot menu is often <kbd>F11</kbd>, <kbd>F12</kbd> or <kbd>F8</kbd>). After a moment the screen says <strong>Ready to install</strong> and shows:</p>
+          <ul>
+            <li>the address <code>http://vaporos-setup.local</code>, and the PC's IP address;</li>
+            <li>a <strong>setup code</strong>;</li>
+            <li>a QR code that opens the installer with the code filled in.</li>
+          </ul>
+        </div>
+        <figure class="tv-figure">
+          <DeviceMock welcome="installer" phone={false} />
+          <figcaption>Illustration of the welcome screen while the installer runs.</figcaption>
+        </figure>
+      </section>
+
+      <section id="installer" class="g-sec">
+        <h2><span class="g-num">05</span>Install from your phone</h2>
+        <p class="muted">Scan the QR code, or open the address in a browser on the same network. The installer walks you through it:</p>
+        <ol class="wizard">
+          {wizard.map(([title, text], i) => (
+            <li>
+              <span class="w-dot">{i + 1}</span>
+              <div><h3>{title}</h3><p>{text}</p></div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <section id="first-run" class="g-sec">
+        <h2><span class="g-num">06</span>Sign in</h2>
+        <div class="prose">
+          <p>Open <code>http://vapor.local</code> (or the name you chose, plus <code>.local</code>) and sign in with your admin password. The dashboard shows whether VaporOS is <strong>Ready to stream</strong>, what it's doing, and quick actions to pair a device, stay awake, restart or power off.</p>
+          <p>If <code>.local</code> names don't work on your network, use the IP address from the welcome screen instead.</p>
+        </div>
+      </section>
+
+      <section id="pair" class="g-sec">
+        <h2><span class="g-num">07</span>Pair Moonlight</h2>
+        <div class="prose">
+          <p>Moonlight is the free app that plays your games from the PC. Get it for your device:</p>
+        </div>
+        <ul class="stores">
+          {stores.map((s) => (
+            <li>
+              <a href={s.url}>
+                <Icon name={s.icon} />
+                <span><strong>{s.name}</strong><small>{s.where}</small></span>
+                <Icon name="external" class="ico ext" />
+              </a>
+            </li>
+          ))}
+        </ul>
+        <div class="prose">
+          <ol>
+            <li>Open Moonlight on the same network. It usually finds the PC by itself; tap it. If it doesn't, tap <strong>+</strong> (Add PC) and enter the PC's address.</li>
+            <li>Moonlight shows a 4-digit PIN. On the VaporOS page, open <strong>Pair a device</strong>, type the PIN and a name for the device, and press <strong>Pair</strong>.</li>
+            <li>Pick Steam, or one of your games, in Moonlight and play. The virtual display switches to that device's resolution, frame rate and HDR.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="updates" class="g-sec">
+        <h2><span class="g-num">08</span>Updates and rollback</h2>
+        <div class="prose">
+          <p>VaporOS checks for new versions and, by default, downloads and prepares them in the background. A prepared update starts on the next restart; you can also restart right away from the Updates page. Turn off <strong>Download updates automatically</strong> to decide yourself.</p>
+          <p>Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the Updates page lists the version that didn't start. To go back by hand, choose <strong>Roll back</strong> and restart.</p>
+        </div>
+      </section>
+
+      <section id="power" class="g-sec">
+        <h2><span class="g-num">09</span>Power and waking</h2>
+        <div class="prose">
+          <p>When nobody plays for 15 minutes, VaporOS powers off, but never while it's streaming, downloading or updating. Change the time or turn it off under <strong>Power</strong>, or use <strong>Stay awake</strong> for a long download.</p>
+          <p>To turn it back on, select the PC in Moonlight and choose <strong>Wake</strong>. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware.</p>
+        </div>
+        <div class="done glass">
+          <Icon name="gamepad" class="ico done-ico" />
+          <div>
+            <h3>That's it. Enjoy your games.</h3>
+            <p class="muted">Stuck somewhere? The <a href={href('/faq/')}>FAQ</a> covers the common questions.</p>
+          </div>
+        </div>
+      </section>
+    </article>
+  </div>
+</Base>
+
+<script>
+  // The contents list is collapsed on small screens (it opens from its
+  // heading) and always open beside the guide on wide ones. It marks the
+  // section being read.
+  const toc = document.querySelector<HTMLDetailsElement>('.toc-d');
+  const wide = window.matchMedia('(min-width: 1024px)');
+  const sync = () => { if (toc) toc.open = wide.matches; };
+  sync();
+  wide.addEventListener('change', sync);
+  toc?.addEventListener('toggle', () => { if (wide.matches && !toc.open) toc.open = true; });
+  toc?.addEventListener('click', (e) => {
+    if (!wide.matches && (e.target as HTMLElement).closest('a')) toc.open = false;
+  });
+
+  const links = new Map<string, HTMLAnchorElement>();
+  document.querySelectorAll<HTMLAnchorElement>('.toc a').forEach((a) => links.set(a.hash.slice(1), a));
+  const mark = (id: string) => links.forEach((a, key) => {
+    if (key === id) a.setAttribute('aria-current', 'true');
+    else a.removeAttribute('aria-current');
+  });
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) if (e.isIntersecting) mark(e.target.id);
+    }, { rootMargin: '-35% 0px -60% 0px' });
+    document.querySelectorAll('.g-sec').forEach((sec) => io.observe(sec));
+  }
+</script>
+
+<style>
+  .guide {
+    display: grid; gap: 40px;
+    padding-bottom: clamp(72px, 10vw, 128px);
+  }
+  @media (min-width: 1024px) {
+    .guide { grid-template-columns: 220px minmax(0, 1fr); gap: 64px; align-items: start; }
+  }
+  .toc {
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: var(--glass), rgb(14 22 31 / .5);
+  }
+  @media (min-width: 1024px) { .toc { position: sticky; top: 104px; border: 0; background: none; } }
+  .toc-h {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 16px 20px;
+    font: 600 .78rem/1 var(--font); letter-spacing: .14em; text-transform: uppercase; color: var(--text-2);
+    cursor: pointer; list-style: none; border-radius: 16px;
+  }
+  .toc-h::-webkit-details-marker { display: none; }
+  .toc-h :global(.toc-chev) { width: 18px; height: 18px; color: var(--brand); transition: transform .3s var(--ease-out); }
+  .toc-d[open] .toc-h :global(.toc-chev) { transform: rotate(180deg); }
+  @media (min-width: 1024px) {
+    .toc-h { padding: 4px 0 14px; color: var(--text-3); cursor: default; pointer-events: none; }
+    .toc-h :global(.toc-chev) { display: none; }
+  }
+  .toc ol { list-style: none; display: grid; gap: 2px; counter-reset: toc; padding: 0 20px 16px; }
+  @media (min-width: 1024px) { .toc ol { padding: 0; } }
+  .toc li { counter-increment: toc; }
+  .toc a {
+    display: flex; gap: 10px;
+    padding: 6px 0;
+    color: var(--text-2); text-decoration: none; font-size: .94rem;
+  }
+  .toc a::before { content: counter(toc, decimal-leading-zero); font: 500 .78rem/1.8 var(--mono); color: var(--text-3); }
+  .toc a:hover { color: var(--text); }
+  .toc a[aria-current] { color: var(--text); }
+  .toc a[aria-current]::before { color: var(--brand); }
+  @media (min-width: 1024px) {
+    .toc a {
+      padding: 7px 12px; border-left: 2px solid var(--line-2);
+      transition: color .25s, border-color .25s, background-color .25s;
+    }
+    .toc a:hover { border-color: var(--line-3); }
+    .toc a[aria-current] {
+      border-color: var(--brand);
+      background: linear-gradient(90deg, var(--accent-soft), transparent);
+    }
+  }
+
+  .guide-body { display: grid; gap: clamp(56px, 8vw, 88px); min-width: 0; max-width: 780px; }
+  .g-sec { display: grid; gap: 20px; min-width: 0; scroll-margin-top: 96px; }
+  .g-sec > h2 {
+    display: flex; align-items: baseline; gap: 14px;
+    font-size: clamp(1.6rem, 1.3rem + 1.4vw, 2.2rem);
+  }
+  .g-num { font: 600 .9rem/1 var(--mono); color: var(--brand); letter-spacing: .04em; }
+  .code-pair { display: grid; gap: 14px; min-width: 0; }
+
+  .tv-figure { margin: 0; }
+  .tv-figure figcaption { margin-top: 12px; text-align: center; color: var(--text-3); font-size: .82rem; }
+
+  .wizard { list-style: none; display: grid; gap: 0; }
+  .wizard li { position: relative; display: flex; gap: 18px; padding-bottom: 26px; }
+  .wizard li:not(:last-child)::before {
+    content: ""; position: absolute; left: 17px; top: 40px; bottom: 4px; width: 2px;
+    background: linear-gradient(180deg, var(--accent-line), rgb(120 190 255 / .08));
+  }
+  .w-dot {
+    display: grid; place-items: center; flex: none;
+    width: 36px; height: 36px; border-radius: 50%;
+    font: 700 .95rem/1 var(--display); color: var(--brand);
+    background: var(--accent-soft); border: 1px solid var(--accent-line);
+  }
+  .wizard h3 { font-size: 1.1rem; margin: 6px 0 6px; }
+  .wizard p { color: var(--text-2); }
+
+  .stores { list-style: none; display: grid; gap: 10px; }
+  @media (min-width: 720px) { .stores { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .stores a {
+    display: flex; align-items: center; gap: 12px; height: 100%;
+    padding: 14px 16px; border-radius: 14px;
+    background: var(--glass), rgb(14 22 31 / .5); border: 1px solid var(--line);
+    color: var(--text); text-decoration: none;
+    transition: border-color .2s, background-color .2s;
+  }
+  .stores a:hover { border-color: var(--accent-line); }
+  .stores span { display: grid; margin-right: auto; }
+  .stores strong { font-size: .94rem; }
+  .stores small { color: var(--text-3); }
+  .stores :global(.ico) { width: 20px; height: 20px; color: var(--brand); }
+  .stores :global(.ext) { width: 16px; height: 16px; color: var(--text-3); }
+
+  .done { display: flex; gap: 18px; align-items: center; padding: 24px; margin-top: 8px; }
+  .done :global(.done-ico) { width: 36px; height: 36px; color: var(--brand); }
+  .done h3 { font-size: 1.2rem; margin-bottom: 4px; }
+</style>

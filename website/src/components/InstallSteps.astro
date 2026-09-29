@@ -1,0 +1,47 @@
+---
+import Icon from './Icon.astro';
+import { href } from '../lib/paths';
+---
+<ol class="steps">
+  <li class="step glass spot reveal" style="--i:0">
+    <span class="step-num">1</span>
+    <span class="icon-tile"><Icon name="usb" /></span>
+    <h3>Flash a USB stick</h3>
+    <p>Download the ISO and write it to a USB stick with balenaEtcher, Rufus or <code>dd</code>.</p>
+  </li>
+  <li class="step glass spot reveal" style="--i:1">
+    <span class="step-num">2</span>
+    <span class="icon-tile"><Icon name="monitor" /></span>
+    <h3>Boot the PC from it</h3>
+    <p>Start in UEFI mode with Secure Boot off. The screen shows an address, a QR code and a setup code.</p>
+  </li>
+  <li class="step glass spot reveal" style="--i:2">
+    <span class="step-num">3</span>
+    <span class="icon-tile"><Icon name="phone" /></span>
+    <h3>Finish on your phone</h3>
+    <p>Scan the code, pick a drive, set a password, and install. Then pair Moonlight at <code>vapor.local</code>.</p>
+  </li>
+</ol>
+<p class="steps-more reveal"><a class="link-arrow" href={href('/install/')}>Read the full install guide<Icon name="arrow" /></a></p>
+
+<style>
+  .steps {
+    list-style: none;
+    display: grid; gap: 14px;
+    counter-reset: step;
+  }
+  @media (min-width: 720px) { .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; } }
+  @media (min-width: 1024px) { .steps { gap: 18px; } }
+  .step { display: grid; gap: 14px; align-content: start; padding: 26px 24px 28px; }
+  .step-num {
+    position: absolute; right: 20px; top: 12px;
+    font: 700 3.6rem/1 var(--display);
+    letter-spacing: -.05em;
+    background: linear-gradient(180deg, rgb(120 190 255 / .5), rgb(120 190 255 / .04) 95%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    pointer-events: none;
+  }
+  .step h3 { font-size: 1.2rem; }
+  .step p { color: var(--text-2); }
+  .steps-more { margin-top: 24px; }
+</style>
