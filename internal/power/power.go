@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -71,6 +72,7 @@ type Service struct {
 	ioBytes      func() (uint64, bool)
 	keepFileSeen func() bool
 	ethtool      func(ctx context.Context, iface string) (string, error)
+	ifaceAddrs   func(iface string) ([]net.Addr, error)
 	sysNet       string
 }
 
@@ -93,6 +95,7 @@ func NewService(cfg *config.Config, busy ...BusyFunc) *Service {
 		},
 		keepFileSeen: func() bool { return fileExists(keepAwakePath()) },
 		ethtool:      runEthtool,
+		ifaceAddrs:   ifaceAddrs,
 		sysNet:       "/sys/class/net",
 	}
 }

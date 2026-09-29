@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,6 +76,7 @@ func newRig(t *testing.T, minutes int, enabled bool) *rig {
 	s.ioBytes = func() (uint64, bool) { return r.io, r.ioOK }
 	s.keepFileSeen = func() bool { return r.keepFile }
 	s.ethtool = func(context.Context, string) (string, error) { return "", errors.New("no ethtool") }
+	s.ifaceAddrs = func(string) ([]net.Addr, error) { return nil, errors.New("no interfaces") }
 	s.sysNet = t.TempDir()
 	r.Service = s
 	s.start()
@@ -539,5 +541,64 @@ func TestIdleEventCarriesReason(t *testing.T) {
 	r.step()
 	if r.lastIdle.Busy != nil || r.lastIdle.ShutdownIn == nil || *r.lastIdle.ShutdownIn != 90 {
 		t.Errorf("idle event = %s", payload())
+	}
+}
+
+func ipNet(cidr string) *net.IPNet {
+	ip, n, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(err)
+	}
+	n.IP = ip
+	return n
+}
+
+func TestWoLAddresses(t *testing.T) {
+	r := newRig(t, 15, true)
+	for _, name := range []string{"enp4s0", "enp5s0"} {
+		d := filepath.Join(r.sysNet, name)
+		os.MkdirAll(filepath.Join(d, "device"), 0o755)
+		os.WriteFile(filepath.Join(d, "type"), []byte("1\n"), 0o644)
+		os.WriteFile(filepath.Join(d, "address"), []byte("9c:6b:00:12:34:56\n"), 0o644)
+	}
+	r.ethtool = func(context.Context, string) (string, error) { return "Supports Wake-on: pumbg\nWake-on: g\n", nil }
+	r.ifaceAddrs = func(name string) ([]net.Addr, error) {
+		if name != "enp4s0" {
+			return []net.Addr{ipNet("fe80::1/64"), ipNet("169.254.7.7/16")}, nil
+		}
+		return []net.Addr{ipNet("fe80::1/64"), ipNet("169.254.7.7/16"), ipNet("192.168.1.50/24"), ipNet("10.0.0.2/8")}, nil
+	}
+	w := httptest.NewRecorder()
+	r.handleGet(w, httptest.NewRequest("GET", "/api/v1/power", nil))
+	var got struct{ WoL []json.RawMessage }
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || len(got.WoL) != 2 {
+		t.Fatalf("GET = %s", w.Body)
+	}
+	if s := string(got.WoL[0]); s != `{"iface":"enp4s0","mac":"9c:6b:00:12:34:56","enabled":true,"supported":true,"ipv4":"192.168.1.50","prefix":24,"broadcast":"192.168.1.255"}` {
+		t.Errorf("wol[0] = %s", s)
+	}
+	if s := string(got.WoL[1]); s != `{"iface":"enp5s0","mac":"9c:6b:00:12:34:56","enabled":true,"supported":true}` {
+		t.Errorf("wol[1] without an IPv4 address = %s", s)
+	}
+
+	cases := []struct {
+		addrs           []net.Addr
+		ipv4, broadcast string
+		prefix          int
+	}{
+		{[]net.Addr{ipNet("192.168.4.77/22")}, "192.168.4.77", "192.168.7.255", 22},
+		{[]net.Addr{ipNet("10.1.2.3/8")}, "10.1.2.3", "10.255.255.255", 8},
+		{[]net.Addr{ipNet("192.168.1.4/30")}, "192.168.1.4", "192.168.1.7", 30},
+		{[]net.Addr{ipNet("192.168.1.4/31")}, "192.168.1.4", "", 31},
+		{[]net.Addr{ipNet("192.168.1.4/32")}, "192.168.1.4", "", 32},
+		{[]net.Addr{&net.IPAddr{IP: net.ParseIP("192.168.1.9")}, ipNet("127.0.0.1/8"), ipNet("fd00::50/64")}, "", "", 0},
+		{nil, "", "", 0},
+	}
+	for _, c := range cases {
+		var w WoLIface
+		w.setIPv4(c.addrs)
+		if w.IPv4 != c.ipv4 || w.Prefix != c.prefix || w.Broadcast != c.broadcast {
+			t.Errorf("setIPv4(%v) = %q/%d %q", c.addrs, w.IPv4, w.Prefix, w.Broadcast)
+		}
 	}
 }

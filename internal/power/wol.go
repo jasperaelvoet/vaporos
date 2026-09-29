@@ -2,6 +2,7 @@ package power
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,13 @@ type WoLIface struct {
 	MAC       string `json:"mac"`
 	Enabled   bool   `json:"enabled"`   // magic-packet wake armed ("Wake-on: g")
 	Supported bool   `json:"supported"` // the NIC can wake on a magic packet
+	// The interface's IPv4 address and prefix length, and the subnet's
+	// broadcast address, where a Wake-on-LAN app sends the magic packet.
+	// All three are omitted without an IPv4 address, and Broadcast on a
+	// /31 or /32, which has none.
+	IPv4      string `json:"ipv4,omitempty"`
+	Prefix    int    `json:"prefix,omitempty"`
+	Broadcast string `json:"broadcast,omitempty"`
 }
 
 // arphrdEther is ARPHRD_ETHER, /sys/class/net/<if>/type for Ethernet.
@@ -78,7 +86,47 @@ func wolCapable(ctx context.Context, sysNet string, ethtool func(context.Context
 }
 
 func (s *Service) wolStatus(ctx context.Context) []WoLIface {
-	return wolStatus(ctx, s.sysNet, s.ethtool)
+	out := wolStatus(ctx, s.sysNet, s.ethtool)
+	for i := range out {
+		if addrs, err := s.ifaceAddrs(out[i].Iface); err == nil {
+			out[i].setIPv4(addrs)
+		}
+	}
+	return out
+}
+
+// ifaceAddrs lists the addresses of the interface called name.
+func ifaceAddrs(name string) ([]net.Addr, error) {
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	return ifc.Addrs()
+}
+
+// setIPv4 takes the first IPv4 address that is neither loopback nor
+// link-local: a link-local address says the LAN gave the machine none.
+func (w *WoLIface) setIPv4(addrs []net.Addr) {
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := n.IP.To4()
+		ones, bits := n.Mask.Size()
+		if ip == nil || bits != 32 || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		w.IPv4, w.Prefix = ip.String(), ones
+		if ones <= 30 {
+			b := make(net.IP, net.IPv4len)
+			for i := range b {
+				b[i] = ip[i] | ^n.Mask[i]
+			}
+			w.Broadcast = b.String()
+		}
+		return
+	}
 }
 
 // wolStatus asks ethtool about every wired interface. ethtool prints the
