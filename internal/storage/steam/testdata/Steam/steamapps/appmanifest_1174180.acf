@@ -1,0 +1,80 @@
+"AppState"
+{
+	"appid"		"1174180"
+	"Universe"		"1"
+	"name"		"Red Dead Redemption 2"
+	"StateFlags"		"4"
+	"installdir"		"Red Dead Redemption 2"
+	"LastUpdated"		"1790545479"
+	"LastPlayed"		"1790546634"
+	"SizeOnDisk"		"128281316135"
+	"StagingSize"		"0"
+	"buildid"		"13773296"
+	"LastOwner"		"0"
+	"DownloadType"		"3"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"4702912"
+	"BytesDownloaded"		"4702912"
+	"BytesToStage"		"43711512"
+	"BytesStaged"		"43711512"
+	"TargetBuildID"		"0"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"1174181"
+		{
+			"manifest"		"4757128409362785099"
+			"size"		"746"
+		}
+		"1174182"
+		{
+			"manifest"		"2258488483491377476"
+			"size"		"78804578319"
+		}
+		"1174183"
+		{
+			"manifest"		"4785346550216140531"
+			"size"		"390640"
+		}
+		"1174184"
+		{
+			"manifest"		"2698939236196220127"
+			"size"		"5460348964"
+		}
+		"1174185"
+		{
+			"manifest"		"8173342615013177810"
+			"size"		"17767404187"
+		}
+		"1174186"
+		{
+			"manifest"		"357926288062992323"
+			"size"		"26009156930"
+		}
+		"1899671"
+		{
+			"manifest"		"3914969219305676290"
+			"size"		"239826989"
+		}
+	}
+	"InstallScripts"
+	{
+		"1174181"		"installscript.vdf"
+		"1899671"		"installscript_sdk.vdf"
+	}
+	"SharedDepots"
+	{
+		"228987"		"228980"
+		"228990"		"228980"
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+	"MountedConfig"
+	{
+		"language"		"english"
+	}
+}

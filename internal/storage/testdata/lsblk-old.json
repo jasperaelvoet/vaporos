@@ -1,0 +1,14 @@
+{
+   "blockdevices": [
+      {"name": "vda", "path": "/dev/vda", "pkname": null, "type": "disk", "size": "53687091200", "model": null, "tran": null, "rm": "0", "uuid": null, "label": null, "fstype": null, "mountpoint": null, "partlabel": null, "fsavail": null,
+         "children": [
+            {"name": "vda1", "path": "/dev/vda1", "pkname": "vda", "type": "part", "size": "53686042624", "model": null, "tran": null, "rm": "0", "uuid": "0f0e0d0c-0000-4000-8000-000000000001", "label": "games", "fstype": "btrfs", "mountpoint": "/mnt/games", "partlabel": null, "fsavail": "12345"},
+            {"name": "vda2", "path": "/dev/vda2", "pkname": "vda", "type": "part", "size": "1.5G", "model": null, "tran": null, "rm": "1", "uuid": null, "label": null, "fstype": "crypto_LUKS", "mountpoint": null, "partlabel": null, "fsavail": null,
+               "children": [
+                  {"name": "luks-x", "path": "/dev/mapper/luks-x", "pkname": "vda2", "type": "crypt", "size": "1073741824", "model": null, "tran": null, "rm": "0", "uuid": "0f0e0d0c-0000-4000-8000-000000000002", "label": null, "fstype": "xfs", "mountpoint": null, "partlabel": null, "fsavail": null}
+               ]
+            }
+         ]
+      }
+   ]
+}

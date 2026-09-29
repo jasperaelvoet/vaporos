@@ -1,0 +1,51 @@
+"AppState"
+{
+	"appid"		"949230"
+	"Universe"		"1"
+	"name"		"Cities: Skylines II"
+	"StateFlags"		"4"
+	"installdir"		"Cities Skylines II"
+	"LastUpdated"		"1790511190"
+	"LastPlayed"		"1790608110"
+	"SizeOnDisk"		"90276049826"
+	"StagingSize"		"0"
+	"buildid"		"25127643"
+	"LastOwner"		"0"
+	"DownloadType"		"3"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"2357920"
+	"BytesDownloaded"		"2357920"
+	"BytesToStage"		"2495616"
+	"BytesStaged"		"2495616"
+	"TargetBuildID"		"0"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"949231"
+		{
+			"manifest"		"759759680630981357"
+			"size"		"82891646983"
+		}
+		"2427743"
+		{
+			"manifest"		"6492682286361914639"
+			"size"		"7384402843"
+			"dlcappid"		"2427743"
+		}
+	}
+	"SharedDepots"
+	{
+		"228988"		"228980"
+		"228989"		"228980"
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+	"MountedConfig"
+	{
+		"language"		"english"
+	}
+}
