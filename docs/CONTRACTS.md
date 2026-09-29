@@ -240,7 +240,7 @@ systemd-boot counting does the rest.
 
 **Errors:** `{"error":"message"}` with a proper status.
 
-**Events:** `GET /api/v1/events` (Authed or Setup) is an SSE stream: `event: <topic>`, `data: <json>`. A new stream starts with the latest event of each topic except `system.message` and `pairing.pending`, which are live-only.
+**Events:** `GET /api/v1/events` (Authed or Setup) is an SSE stream: `event: <topic>`, `data: <json>`. A new stream starts with the latest event of each topic except `system.message` and `pairing.pending`, which are live-only. `session.begin` and `session.end` replace each other, so only the newer of the two is replayed.
 
 | Topic | Data |
 | --- | --- |
@@ -250,6 +250,7 @@ systemd-boot counting does the rest.
 | `session.begin` | `{client,mode,hdr}` |
 | `session.end` | `{}` |
 | `pairing.pending` | `{name?}` |
+| `pairing.state` | `{pairings:[{id,name,address}]}`: who waits for a PIN (as in GET `/sunshine` `pairings`), sent after vosd's first poll of Sunshine and whenever the list changes. An empty list ends any pairing prompt; Sunshine not answering counts as an empty list |
 | `display.changed` | `{}` |
 | `power.idle` | `{idle_seconds,shutdown_in,busy}` (as in GET `/power`; `busy` is null while idle; sent every 15 s while idle and whenever the busy reason changes) |
 | `system.message` | `{level,text}` |
@@ -271,13 +272,14 @@ systemd-boot counting does the rest.
 | POST `/update/activate` | Authed | → `{}` (reboots into the staged version) |
 | POST `/update/rollback` | Authed | → `{}` (next boot = other slot; UI then offers reboot); 409 with the reason |
 | PUT `/update/settings` | Authed | `{"channel","auto"}` → `{}` |
-| GET `/sunshine` | Authed | `{"running":bool,"version","streaming":bool,"session":{"client","mode","hdr"}\|null,"pending_pairing":bool,"pairings":[{"id","name","address"}]}` (`session.client`: the device that started the running app) |
+| GET `/sunshine` | Authed | `{"running":bool,"version","streaming":bool,"session":{"client","mode","hdr","app"?,"since"}\|null,"pending_pairing":bool,"pairings":[{"id","name","address"}]}` (`session.client`: the device that started the running app; `session.app` and `session.since` as in `session.begin`; `since` falls back to when vosd saw the `session.begin`) |
 | POST `/sunshine/pair` | Authed | `{"pin","name","pairing_id"?}` → `{}` (Sunshine `POST /api/pin`); 409 when no device waits, or several wait and none is named |
 | GET `/sunshine/clients` | Authed | `{"clients":[{"uuid","name"}]}` |
 | DELETE `/sunshine/clients/{uuid}` | Authed | → `{}` |
-| GET/PUT `/sunshine/settings` | Authed | `{"encoder","bitrate_kbps_max","audio_sink"?,"gamepad"}`, a whitelisted subset |
+| GET/PUT `/sunshine/settings` | Authed | `{"encoder","bitrate_kbps_max","audio_sink","gamepad"}`, a whitelisted subset (`audio_sink` `""` = Sunshine's default sink). Both answers add `"choices":{"encoder":["vulkan","vaapi","software"],"gamepad":["auto","xone","xseries","x360","ds4","ds5","switch","generic"],"bitrate_kbps_max":{"min":0,"max":1000000}}`: what the UI offers. PUT also accepts `nvenc`, ignores `choices` and answers the saved settings; 400 on any other value |
 | GET `/sunshine/logs` | Authed | `text/plain`, last 2000 lines |
 | POST `/sunshine/restart` | Authed | → `{}` |
+| POST `/sunshine/end-stream` | Authed | → `{}`: closes the running Sunshine app (`POST /api/apps/close`), which ends every client's stream. Sunshine then runs the prep-cmd undo, so `session.end` follows. A Steam game the app started keeps running. 409 when nothing streams; 502/503 as the other Sunshine calls |
 | GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"available_connectors":["DP-2"],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none","planes":N}` (`physical`: connected and not the virtual connector; `available_connectors`: disconnected DP/HDMI ports of a supported GPU other than the current one, what the UI offers as `virtual_connector`; `planes`: fb-backed planes on the virtual connector's CRTC, 1 while gamescope composites) |
 | POST `/display/modes` | Authed | `{"mode":"WxH@R"}` → `{"reboot_needed":true}` |
 | PUT `/display/settings` | Authed | `{"hdr":bool,"virtual_connector"?}` → `{}`; a new `virtual_connector` must be a DP/HDMI connector of the GPU |
