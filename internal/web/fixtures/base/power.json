@@ -1,0 +1,11 @@
+{
+  "idle_shutdown": true,
+  "idle_minutes": 15,
+  "wol": [
+    {"iface": "enp6s0", "mac": "02:5e:a1:3c:4d:7f", "enabled": true, "supported": true,
+     "ipv4": "192.168.1.40", "prefix": 24, "broadcast": "192.168.1.255"}
+  ],
+  "busy": null,
+  "idle_seconds": 0,
+  "shutdown_in": null
+}

@@ -1,0 +1,17 @@
+{
+  "hostname": "vapor",
+  "version": "20260929.101500",
+  "channel": "main",
+  "booted_slot": "a",
+  "uptime_s": 93600,
+  "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+  "gpu": {"vendor": "amd", "name": "AMD Radeon RX 9070 XT", "driver": "amdgpu", "card": "/dev/dri/card1", "supported": true},
+  "ips": ["192.168.1.40", "fe80::5e:a1ff:fe3c:4d7f"],
+  "mdns": "vapor.local",
+  "disk": {"data_total": 960000000000, "data_free": 612000000000},
+  "temps": [
+    {"name": "k10temp Tctl", "c": 48.5},
+    {"name": "amdgpu edge", "c": 41},
+    {"name": "nvme Composite", "c": 38.9}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "booted": "20260929.101500",
+  "staged": null,
+  "failed": ["20260921.083000"],
+  "available": null,
+  "checked": "@-40m",
+  "last_error": "",
+  "config": {"source": "oci://ghcr.io/jasperaelvoet/vaporos", "channel": "main", "auto": "stage"},
+  "booted_slot": "a",
+  "other_slot": {
+    "version": "20260927.190000", "running": false, "bootable": true, "counting": false,
+    "tries_left": 0, "tries_done": 0, "entry": "vos-20260927.190000.conf"
+  },
+  "next_boot": null,
+  "busy": false,
+  "progress": null
+}

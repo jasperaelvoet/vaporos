@@ -1,0 +1,7 @@
+{
+  "clients": [
+    {"uuid": "3F1C9A52-7B0E-4D6A-9C21-5E8B7A0D4F13", "name": "Sam's iPhone", "enabled": true},
+    {"uuid": "A07D2E91-44C3-4B8F-8E6D-1B2C3D4E5F60", "name": "Living room TV", "enabled": true},
+    {"uuid": "C52B8F10-9A3D-4E7C-B1F2-6D7E8F9A0B1C", "name": "MacBook Pro", "enabled": true}
+  ]
+}

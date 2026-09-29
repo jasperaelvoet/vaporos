@@ -1,0 +1,19 @@
+[
+  "[2026-09-29 14:00:02.118]: Info: Sunshine version: v2026.928.143000",
+  "[2026-09-29 14:00:02.121]: Info: Package Publisher: VaporOS",
+  "[2026-09-29 14:00:02.402]: Info: Found display [DP-1]",
+  "[2026-09-29 14:00:02.405]: Info: Detected display: DP-1 (id: 0) connected: true",
+  "[2026-09-29 14:00:02.611]: Info: Encoder [vulkan] is supported",
+  "[2026-09-29 14:00:02.614]: Info: // Testing for available encoders, this may generate errors. You can safely ignore those errors. //",
+  "[2026-09-29 14:00:03.020]: Info: Found H.264 encoder: h264_vulkan [vulkan]",
+  "[2026-09-29 14:00:03.022]: Info: Found HEVC encoder: hevc_vulkan [vulkan]",
+  "[2026-09-29 14:00:03.024]: Info: Found AV1 encoder: av1_vulkan [vulkan]",
+  "[2026-09-29 14:00:03.110]: Info: Configuration UI available at [https://localhost:47990]",
+  "[2026-09-29 14:00:03.112]: Info: Adding avahi service vapor",
+  "[2026-09-29 14:00:03.330]: Info: Avahi service vapor successfully established.",
+  "[2026-09-29 14:12:44.502]: Info: CLIENT CONNECTED",
+  "[2026-09-29 14:12:44.781]: Info: Executing [Desktop]",
+  "[2026-09-29 14:12:45.004]: Info: New streaming session started [active sessions: 1]",
+  "[2026-09-29 14:48:10.227]: Info: CLIENT DISCONNECTED",
+  "[2026-09-29 14:48:10.402]: Info: Process terminated"
+]

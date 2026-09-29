@@ -1,0 +1,21 @@
+{
+  "disks": [
+    {"path": "/dev/nvme0n1p4", "parent": "/dev/nvme0n1", "type": "part", "model": "Samsung SSD 990 PRO 1TB", "size": 960000000000,
+     "transport": "nvme", "removable": false, "uuid": "8c1f5a2e-3b7d-4e90-a6c4-1d2e3f4a5b6c", "label": "vos_data", "fstype": "ext4",
+     "partlabel": "vos_data", "mounted_at": "/state", "is_system": true, "steam_library": false, "adopted": false,
+     "free": 612000000000, "registered": false},
+    {"path": "/dev/sda1", "parent": "/dev/sda", "type": "part", "model": "Samsung SSD 870 EVO 1TB", "size": 1000000000000,
+     "transport": "sata", "removable": false, "uuid": "5e1daa01-7c2b-4f3a-9d8e-0a1b2c3d4e5f", "label": "Games", "fstype": "ext4",
+     "mounted_at": "/var/mnt/Games", "is_system": false, "steam_library": true, "library_dir": ".", "adopted": true,
+     "free": 420000000000, "registered": true},
+    {"path": "/dev/sdb1", "parent": "/dev/sdb", "type": "part", "model": "WDC WD20EZAZ", "size": 2000000000000,
+     "transport": "sata", "removable": false, "uuid": "77b2c9d0-1e2f-4a5b-8c6d-7e8f9a0b1c2d", "label": "Library2", "fstype": "btrfs",
+     "is_system": false, "steam_library": true, "library_dir": "SteamLibrary", "adopted": false, "registered": false},
+    {"path": "/dev/sdc1", "parent": "/dev/sdc", "type": "part", "model": "Crucial X9", "size": 500000000000,
+     "transport": "usb", "removable": false, "uuid": "E0A133F2B4C5D6E7", "label": "WINDATA", "fstype": "ntfs",
+     "is_system": false, "steam_library": false, "adopted": false, "registered": false},
+    {"path": "/dev/sdd1", "parent": "/dev/sdd", "type": "part", "model": "SanDisk Extreme", "size": 256000000000,
+     "transport": "usb", "removable": true, "uuid": "6A1B-2C3D", "label": "CAMERA", "fstype": "exfat",
+     "is_system": false, "steam_library": false, "adopted": false, "registered": false}
+  ]
+}
