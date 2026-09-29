@@ -19,14 +19,15 @@ import (
 // for the duration of one test.
 func isolate(t *testing.T) {
 	t.Helper()
-	oldState, oldImage, oldCmdline, oldRun := config.StateDir, config.ImageInfoPath, config.ProcCmdline, config.RunDir
+	oldState, oldImage, oldCmdline, oldRun, oldHome := config.StateDir, config.ImageInfoPath, config.ProcCmdline, config.RunDir, config.GamerHome
 	t.Cleanup(func() {
-		config.StateDir, config.ImageInfoPath, config.ProcCmdline, config.RunDir = oldState, oldImage, oldCmdline, oldRun
+		config.StateDir, config.ImageInfoPath, config.ProcCmdline, config.RunDir, config.GamerHome = oldState, oldImage, oldCmdline, oldRun, oldHome
 	})
 	config.StateDir = t.TempDir()
 	config.ImageInfoPath = filepath.Join(t.TempDir(), "image.json")
 	config.ProcCmdline = filepath.Join(t.TempDir(), "cmdline")
 	config.RunDir = t.TempDir()
+	config.GamerHome = t.TempDir()
 }
 
 func TestEscapePath(t *testing.T) {
@@ -246,12 +247,19 @@ type fakeSystemd struct {
 	calls  []string
 	fail   map[string]error
 	active map[string]bool
+	start  func(unit string) // runs for a successful start: the "mount"
 }
 
 func (f *fakeSystemd) systemctl(_ context.Context, args ...string) error {
 	c := strings.Join(args, " ")
 	f.calls = append(f.calls, c)
-	return f.fail[c]
+	if err := f.fail[c]; err != nil {
+		return err
+	}
+	if len(args) == 2 && args[0] == "start" && f.start != nil {
+		f.start(args[1])
+	}
+	return nil
 }
 
 func newTestService(t *testing.T) (*Service, *fakeSystemd) {
@@ -270,6 +278,7 @@ func newTestService(t *testing.T) (*Service, *fakeSystemd) {
 	s.scan = func(context.Context) ([]Disk, error) { return append([]Disk(nil), disks...), nil }
 	s.systemctl = fs.systemctl
 	s.isActive = func(_ context.Context, unit string) bool { return fs.active[unit] }
+	s.steamRunning = func() bool { return false }
 	s.mntBase = filepath.Join(t.TempDir(), "mnt")
 	return s, fs
 }
@@ -369,12 +378,12 @@ func TestAdoptRollsBackWhenMountFails(t *testing.T) {
 
 func TestMountNameCollisions(t *testing.T) {
 	s, _ := newTestService(t)
-	s.cfg.Storage.Libraries = []config.Library{{UUID: "x", Mountpoint: filepath.Join(s.mntBase, "SATA500GB")}}
+	libs := []config.Library{{UUID: "x", Mountpoint: filepath.Join(s.mntBase, "SATA500GB")}}
 	os.MkdirAll(filepath.Join(s.mntBase, "SATA500GB-2", "lost+found"), 0o755)
-	if got := s.mountName(Disk{Label: "SATA500GB", UUID: "u"}); got != "SATA500GB-3" {
+	if got := s.mountName(libs, Disk{Label: "SATA500GB", UUID: "u"}); got != "SATA500GB-3" {
 		t.Errorf("mountName = %q", got)
 	}
-	if got := s.mountName(Disk{UUID: "87DBDC4A-1e76-4f22"}); got != "disk-87dbdc4a" {
+	if got := s.mountName(libs, Disk{UUID: "87DBDC4A-1e76-4f22"}); got != "disk-87dbdc4a" {
 		t.Errorf("unlabelled mountName = %q", got)
 	}
 	for in, want := range map[string]string{"..x": "x", "a/b": "a_b", "***": "", "ok-1.2_x": "ok-1.2_x"} {
@@ -457,6 +466,9 @@ func TestGenerator(t *testing.T) {
 		{UUID: "5C3A4F9E3A4F75A8", Label: "100% Games\n", Mountpoint: "/var/mnt/Games", FSType: "ntfs"},
 		{UUID: "11112222", Label: "evil", Mountpoint: "/usr", FSType: "ext4"},
 		{UUID: "33334444", Label: "odd", Mountpoint: "/var/mnt/x", FSType: "vfat"},
+		{UUID: "55556666", Label: "stick", Mountpoint: "/var/mnt/y", FSType: "exfat"},
+		{UUID: "77778888", Label: "old", Mountpoint: "/var/mnt/Old", FSType: "ext3"},
+		{UUID: "9999aaaa", Label: "flash", Mountpoint: "/var/mnt/Flash", FSType: "f2fs"},
 	}
 	cfg.SSH.Enabled = true
 	if err := cfg.Save(); err != nil {
@@ -476,19 +488,21 @@ func TestGenerator(t *testing.T) {
 		"What=/dev/disk/by-uuid/1de127b9-77c4-4ca1-ae49-15f137071861\n",
 		"Where=/var/mnt/SATA1TB\n",
 		"Type=ext4\n",
-		"Options=nofail,noatime,x-systemd.device-timeout=10s\n",
+		// A disk from another install must not bring its setuid binaries
+		// and device nodes along.
+		"Options=nofail,noatime,nosuid,nodev,x-systemd.device-timeout=10s\n",
 	} {
 		if !strings.Contains(string(unit), want) {
 			t.Errorf("ext4 unit lacks %q:\n%s", want, unit)
 		}
 	}
 	ntfs, _ := os.ReadFile(filepath.Join(dir, "var-mnt-Games.mount"))
-	for _, want := range []string{"Description=Game library 100%% Games\n", "Type=ntfs3\n", "Options=nofail,noatime,x-systemd.device-timeout=10s,uid=1000,gid=1000\n"} {
+	for _, want := range []string{"Description=Game library 100%% Games\n", "Type=ntfs3\n", "Options=nofail,noatime,nosuid,nodev,x-systemd.device-timeout=10s,uid=1000,gid=1000\n"} {
 		if !strings.Contains(string(ntfs), want) {
 			t.Errorf("ntfs unit lacks %q:\n%s", want, ntfs)
 		}
 	}
-	for _, u := range []string{"var-mnt-SATA1TB.mount", "var-mnt-Games.mount"} {
+	for _, u := range []string{"var-mnt-SATA1TB.mount", "var-mnt-Games.mount", "var-mnt-Old.mount", "var-mnt-Flash.mount"} {
 		if target, err := os.Readlink(filepath.Join(dir, "local-fs.target.wants", u)); err != nil || target != "../"+u {
 			t.Errorf("wants link for %s = %q, %v", u, target, err)
 		}
@@ -506,8 +520,8 @@ func TestGenerator(t *testing.T) {
 		names = append(names, e.Name())
 	}
 	for _, n := range names {
-		if strings.HasPrefix(n, "usr") || n == "var-mnt-x.mount" {
-			t.Errorf("unsafe library generated %s", n)
+		if strings.HasPrefix(n, "usr") || n == "var-mnt-x.mount" || n == "var-mnt-y.mount" {
+			t.Errorf("unsafe or unusable library generated %s", n)
 		}
 	}
 

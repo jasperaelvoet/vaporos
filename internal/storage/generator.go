@@ -71,7 +71,7 @@ func writeLibraryUnit(dir string, lib config.Library) error {
 		return fmt.Errorf("mountpoint %q is not a directory under %s", where, generatorMntBase)
 	}
 	fstype := mountType(lib.FSType)
-	if !adoptable[fstype] {
+	if !LibraryFS(fstype) {
 		return fmt.Errorf("unsupported filesystem %q", lib.FSType)
 	}
 	unit, err := MountUnitName(where)
@@ -84,7 +84,11 @@ func writeLibraryUnit(dir string, lib config.Library) error {
 		return err
 	}
 
-	opts := []string{"nofail", "noatime", "x-systemd.device-timeout=" + deviceTimeout}
+	// A library never needs setuid binaries, file capabilities or device
+	// nodes, and a disk from another Linux install may carry that system's
+	// root filesystem, whose setuid-root binaries would otherwise work for
+	// anything running as the gaming user. Not noexec: games run from here.
+	opts := []string{"nofail", "noatime", "nosuid", "nodev", "x-systemd.device-timeout=" + deviceTimeout}
 	if fstype == "ntfs3" {
 		// NTFS has no Unix owners; show everything as vapor's.
 		uid := strconv.Itoa(config.GamerUID)

@@ -21,16 +21,27 @@ import (
 // otherwise replay their journal (a write), and btrfs its log tree.
 var probeOptions = map[string]string{
 	"ext4":  "ro,noload",
+	"ext3":  "ro,noload",
+	"ext2":  "ro", // no journal to skip
 	"xfs":   "ro,norecovery",
 	"btrfs": "ro,rescue=nologreplay",
+	"f2fs":  "ro,norecovery",
 	"ntfs":  "ro",
 	"ntfs3": "ro",
 }
 
-// adoptable filesystems can hold a Steam library that Proton games run
-// from: they need Unix permissions and symlinks, which rules out FAT and
-// exFAT. NTFS works through the in-kernel ntfs3 driver.
-var adoptable = map[string]bool{"ext4": true, "btrfs": true, "xfs": true, "ntfs": true, "ntfs3": true}
+// libraryFS are the kernel filesystems (mountType names) a Steam library
+// can live on. Proton and native games need Unix permissions and symlinks,
+// which rules out FAT and exFAT. NTFS works through the in-kernel ntfs3
+// driver, mounted with uid/gid so everything on it is the gaming user's.
+var libraryFS = map[string]bool{
+	"ext4": true, "ext3": true, "ext2": true, "btrfs": true, "xfs": true, "f2fs": true, "ntfs3": true,
+}
+
+// LibraryFS reports whether a filesystem, as lsblk or config.json names it,
+// can hold a game library. It is the one rule for the Storage page, the
+// installer and the generator, so nothing is adopted that is not mounted.
+func LibraryFS(fstype string) bool { return libraryFS[mountType(fstype)] }
 
 // mountType maps lsblk's filesystem name to the kernel driver to mount it
 // with. lsblk says "ntfs", but the "ntfs" name in current kernels is a
