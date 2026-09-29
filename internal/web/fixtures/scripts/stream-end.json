@@ -1,0 +1,4 @@
+{
+  "description": "The stream ends.",
+  "steps": [{"events": [["session.end", {}]]}, {"after": 300, "events": [["display.changed", {}]]}]
+}

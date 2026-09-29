@@ -1,0 +1,13 @@
+{
+  "description": "A check finds a newer version.",
+  "steps": [
+    {
+      "patch": {
+        "update": {
+          "available": {"version": "20261001.090000", "size": 1420000000, "checked": "@now"},
+          "checked": "@now"
+        }
+      }
+    }
+  ]
+}

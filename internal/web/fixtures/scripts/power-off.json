@@ -1,0 +1,4 @@
+{
+  "description": "VaporOS powers off and stays off until the wake script (or POST /__dev/down {\"seconds\":0}).",
+  "steps": [{"events": [["system.message", {"level": "info", "text": "Shutting down…"}]]}, {"after": 1000, "down": -1}]
+}

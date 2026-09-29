@@ -1,0 +1,14 @@
+{
+  "description": "The living room TV starts streaming (the fake follows session.begin as Sunshine and the display do).",
+  "steps": [
+    {
+      "events": [
+        [
+          "session.begin",
+          {"client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@now"}
+        ]
+      ]
+    },
+    {"after": 300, "events": [["display.changed", {}]]}
+  ]
+}
