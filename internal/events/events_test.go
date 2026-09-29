@@ -49,3 +49,25 @@ func TestPublishNeverBlocksOnSlowSubscribers(t *testing.T) {
 		h.Publish("update.progress", map[string]int{"percent": 1})
 	}
 }
+
+func TestSessionBeginAndEndReplaceEachOther(t *testing.T) {
+	h := NewHub()
+	topics := func() []string {
+		var out []string
+		for _, ev := range h.Last() {
+			out = append(out, ev.Topic+" "+string(ev.Data))
+		}
+		sort.Strings(out)
+		return out
+	}
+	h.Publish("display.changed", struct{}{})
+	h.Publish("session.begin", map[string]string{"client": "A"})
+	h.Publish("session.end", struct{}{})
+	if got, want := topics(), []string{"display.changed {}", "session.end {}"}; !slices.Equal(got, want) {
+		t.Errorf("after begin, end: Last() = %q, want %q", got, want)
+	}
+	h.Publish("session.begin", map[string]string{"client": "B"})
+	if got, want := topics(), []string{`display.changed {}`, `session.begin {"client":"B"}`}; !slices.Equal(got, want) {
+		t.Errorf("after begin, end, begin: Last() = %q, want %q", got, want)
+	}
+}

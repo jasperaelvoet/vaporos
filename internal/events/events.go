@@ -31,6 +31,11 @@ var Default = NewHub()
 // (pending pairings, for one) over REST.
 var transient = map[string]bool{"system.message": true, "pairing.pending": true}
 
+// replaces pairs topics that describe the same state: publishing one retires
+// the other's last event, so a late subscriber never replays a session.end
+// after a newer session.begin (Last's order is not publish order).
+var replaces = map[string]string{"session.begin": "session.end", "session.end": "session.begin"}
+
 // Publish sends data (marshalled to JSON) to every subscriber. Slow
 // subscribers drop events rather than block the publisher.
 func (h *Hub) Publish(topic string, data any) {
@@ -43,6 +48,9 @@ func (h *Hub) Publish(topic string, data any) {
 	defer h.mu.Unlock()
 	if !transient[topic] {
 		h.last[topic] = ev
+	}
+	if old, ok := replaces[topic]; ok {
+		delete(h.last, old)
 	}
 	for ch := range h.subs {
 		select {
