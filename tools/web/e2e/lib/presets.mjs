@@ -50,10 +50,17 @@ export const APP_TOPICS = {
 
 const ALL = '*';
 
+// Fault answers some presets are designed to give, as the real handlers do
+// (internal/sunshine/handlers.go): the browser logs every one of them.
+// The console line carries no URL, so the request line pins it down.
+const SUNSHINE_STARTING = [/status of 503/, /503 GET .*\/api\/v1\/sunshine$/];
+const LOGS_UNREADABLE = [/status of 502/, /502 GET .*\/api\/v1\/sunshine\/logs$/];
+
 // PRESETS follows MASTER-PLAN Appendix B. topics: the pages the preset is
 // about ("*" = every signed-in page); env: the pre-v2 alias switches.
-// A page entry may be an object { path, allow } where allow lists console
-// messages that page is designed to produce.
+// pages, when given, replaces topics: each entry a topic, or an object
+// { topic or path, allow, note } where allow lists the console and request
+// lines that page is designed to produce.
 export const PRESETS = [
   { name: 'idle', group: 'os', topics: ALL, env: {} },
   { name: 'headless', group: 'os', topics: ['home', 'screen'] },
@@ -79,7 +86,8 @@ export const PRESETS = [
   { name: 'update-trial', group: 'updates', topics: ['home', 'updates'], env: { VOS_WEB_TRIAL: '1' } },
   { name: 'rollback-pending', group: 'updates', topics: ['home', 'updates'] },
   { name: 'no-gpu', group: 'faults', topics: ['home', 'screen'] },
-  { name: 'sunshine-starting', group: 'faults', topics: ['home', 'stream'] },
+  // /sunshine answers 503 while Sunshine is still being set up.
+  { name: 'sunshine-starting', group: 'faults', pages: [{ topic: 'home', allow: SUNSHINE_STARTING }, { topic: 'stream', allow: SUNSHINE_STARTING }] },
   { name: 'sunshine-stopped', group: 'faults', topics: ['home', 'stream'] },
   { name: 'sunshine-unreachable', group: 'faults', topics: ['home', 'stream'] },
   { name: 'reboot-needed', group: 'faults', topics: ['home', 'screen'] },
@@ -87,7 +95,9 @@ export const PRESETS = [
   { name: 'storage-missing', group: 'storage', topics: ['storage'] },
   { name: 'storage-pending', group: 'storage', topics: ['storage'] },
   { name: 'logs-empty', group: 'storage', topics: ['logs'] },
-  { name: 'logs-error', group: 'storage', topics: ['logs'] },
+  // /sunshine/logs answers 502 when neither Sunshine, its log file nor the
+  // journal has a log.
+  { name: 'logs-error', group: 'storage', pages: [{ topic: 'logs', allow: LOGS_UNREADABLE }] },
   {
     name: 'installer-code',
     group: 'installer',
