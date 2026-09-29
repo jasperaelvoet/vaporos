@@ -3,7 +3,6 @@
 (function () {
   'use strict';
   var d = document.documentElement;
-  d.dataset.js = '';
   addEventListener('pageswap', function (e) {
     if (e.viewTransition) try { sessionStorage.setItem('vos-vt-from', d.dataset.order); } catch (err) { /* private mode */ }
   });

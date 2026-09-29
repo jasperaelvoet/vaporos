@@ -1433,3 +1433,21 @@ func TestA11yMarkup(t *testing.T) {
 		}
 	}
 }
+
+// {{handshake .Hostname}} draws the host's 5×5 mark in its two colours,
+// the same for any spelling of the name, never from the setup code.
+func TestHandshakeHTML(t *testing.T) {
+	a, b := string(handshakeHTML("Vapor.local.")), string(handshakeHTML("vapor"))
+	if a != b {
+		t.Error("the mark depends on how the name is spelled")
+	}
+	if !strings.HasPrefix(a, `<svg class="handshake" viewBox="0 0 5 5"`) || !strings.Contains(a, `aria-hidden="true"`) {
+		t.Errorf("handshake = %s", a)
+	}
+	if n := strings.Count(a, "h1v1h-1z"); n < 4 || n > 25 {
+		t.Errorf("%d cells on, want 4 to 25", n)
+	}
+	if handshakeHTML("vapor") == handshakeHTML("den") {
+		t.Error("two hosts share a mark")
+	}
+}
