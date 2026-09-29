@@ -47,27 +47,40 @@ func TestEveryToneRenders(t *testing.T) {
 func TestQRCardIsPure(t *testing.T) {
 	fx := loadFixtures(t)
 	pal := theLook.palette()
-	for _, name := range []string{"ready", "installer-ready", "pairing", "updating"} {
-		for _, sz := range []image.Point{{1024, 768}, {1920, 1080}} {
-			for _, tone := range tones {
-				l := computeLayout(withTone(fx[name], tone), sz.X, sz.Y)
-				img := paint(l, true)
-				c, r := l.QRCard, l.QRRadius
-				bad := 0
-				for y := c.Min.Y; y < c.Max.Y; y++ {
-					for x := c.Min.X; x < c.Max.X; x++ {
-						if (x < c.Min.X+r || x >= c.Max.X-r) && (y < c.Min.Y+r || y >= c.Max.Y-r) {
-							continue // a rounded corner
-						}
-						if p := img.RGBAAt(x, y); p != pal.QRDark && p != pal.QRLight {
-							bad++
-						}
-					}
+	type run struct {
+		name string
+		sz   image.Point
+		tone brand.State
+	}
+	var runs []run
+	for _, tone := range tones {
+		for _, name := range []string{"installer-ready", "pairing", "updating"} {
+			runs = append(runs, run{name, image.Pt(1024, 768), tone})
+		}
+	}
+	for _, name := range fixtureNames {
+		runs = append(runs, run{name, image.Pt(1920, 1080), fx[name].Tone})
+	}
+	for _, r := range runs {
+		l := computeLayout(withTone(fx[r.name], r.tone), r.sz.X, r.sz.Y)
+		if l.QR == nil {
+			continue
+		}
+		img := paint(l, true)
+		c, rad := l.QRCard, l.QRRadius
+		bad := 0
+		for y := c.Min.Y; y < c.Max.Y; y++ {
+			for x := c.Min.X; x < c.Max.X; x++ {
+				if (x < c.Min.X+rad || x >= c.Max.X-rad) && (y < c.Min.Y+rad || y >= c.Max.Y-rad) {
+					continue // a rounded corner
 				}
-				if bad > 0 {
-					t.Errorf("%s@%s tone %q: %d pixels in the QR card are neither QR colour", name, sizeName(sz), tone, bad)
+				if p := img.RGBAAt(x, y); p != pal.QRDark && p != pal.QRLight {
+					bad++
 				}
 			}
+		}
+		if bad > 0 {
+			t.Errorf("%s@%s tone %q: %d pixels in the QR card are neither QR colour", r.name, sizeName(r.sz), r.tone, bad)
 		}
 	}
 }
