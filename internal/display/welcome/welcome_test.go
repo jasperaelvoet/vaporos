@@ -33,7 +33,7 @@ func TestQRMatchesEncoder(t *testing.T) {
 	}
 	for _, sz := range []image.Point{{1920, 1080}, {1280, 800}, {1080, 1920}, {3840, 2160}, {1024, 768}} {
 		l := computeLayout(sample, sz.X, sz.Y)
-		img := draw1(l)
+		img := paint(l, true)
 		if l.QR == nil || l.QR.Size != want.Size || l.Module < 3 {
 			t.Fatalf("%v: layout QR %+v module %d", sz, l.QR, l.Module)
 		}
@@ -58,7 +58,7 @@ func TestQRMatchesEncoder(t *testing.T) {
 func TestTextDrawn(t *testing.T) {
 	for _, sz := range []image.Point{{1920, 1080}, {1080, 1920}, {1280, 720}} {
 		l := computeLayout(sample, sz.X, sz.Y)
-		img := draw1(l)
+		img := paint(l, true)
 		if len(l.Texts) < 9 { // Vapor, OS, status, detail, url, ip, label, code, caption, version
 			t.Fatalf("%v: only %d text items", sz, len(l.Texts))
 		}
