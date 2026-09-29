@@ -448,3 +448,96 @@ func TestHandlers(t *testing.T) {
 		}
 	}
 }
+
+// getPower is one GET /power, decoded loosely.
+func getPower(t *testing.T, r *rig) map[string]any {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.handleGet(w, httptest.NewRequest("GET", "/api/v1/power", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d", w.Code)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestGetPowerSeparatesWebActivity(t *testing.T) {
+	r := newRig(t, 15, true)
+	r.Touch()
+	m := getPower(t, r)
+	busy, _ := m["busy"].(map[string]any)
+	if busy["reason"] != "web UI in use" || busy["web"] != true || m["web_until"] != "2026-09-29T20:05:00Z" {
+		t.Fatalf("GET with only web activity = %v", m)
+	}
+	if m["idle_seconds"] != float64(0) || m["shutdown_in"] != nil {
+		t.Errorf("idle timer while busy: %v", m)
+	}
+
+	r.game = true
+	r.step()
+	m = getPower(t, r)
+	busy, _ = m["busy"].(map[string]any)
+	if _, web := busy["web"]; busy["reason"] != "Steam game" || web || m["web_until"] != "2026-09-29T20:05:00Z" {
+		t.Errorf("GET with a game and web activity = %v", m)
+	}
+
+	r.game = false
+	r.steps(18) // 20:04:45, the last pass that sees web activity
+	if r.state != "web UI in use" {
+		t.Fatalf("state = %q", r.state)
+	}
+	r.clock = r.clock.Add(20 * time.Second) // web activity has ended; no pass yet
+	m = getPower(t, r)
+	if _, ok := m["web_until"]; ok || m["busy"] != nil || m["idle_seconds"] != float64(20) || m["shutdown_in"] != float64(880) {
+		t.Errorf("GET after web activity ended = %v", m)
+	}
+	r.steps(24)
+	if m = getPower(t, r); m["busy"] != nil || m["web_until"] != nil || m["shutdown_in"] == nil {
+		t.Errorf("GET six minutes later = %v", m)
+	}
+}
+
+func TestIdleEventCarriesReason(t *testing.T) {
+	r := newRig(t, 2, true)
+	sent := func() int { return strings.Count(strings.Join(r.events, ","), "power.idle") }
+	payload := func() string {
+		b, _ := json.Marshal(r.lastIdle)
+		return string(b)
+	}
+
+	r.game = true
+	r.step()
+	if got := payload(); got != `{"idle_seconds":0,"shutdown_in":null,"busy":{"reason":"Steam game"}}` {
+		t.Fatalf("busy event = %s", got)
+	}
+	n := sent()
+	r.steps(3)
+	if sent() != n {
+		t.Errorf("%d events while the reason stayed the same", sent()-n)
+	}
+
+	r.game, r.download = false, true
+	r.step()
+	if sent() != n+1 || r.lastIdle.Busy == nil || r.lastIdle.Busy.Reason != "Steam download/update" {
+		t.Fatalf("after the reason changed: %d events, last %s", sent()-n, payload())
+	}
+
+	r.download = false
+	r.Touch()
+	r.step()
+	if got := payload(); got != `{"idle_seconds":0,"shutdown_in":null,"busy":{"reason":"web UI in use","web":true}}` {
+		t.Fatalf("web event = %s", got)
+	}
+
+	r.steps(19) // five minutes after the touch: idle since the pass before
+	if got := payload(); got != `{"idle_seconds":15,"shutdown_in":105,"busy":null}` {
+		t.Errorf("idle event = %s", got)
+	}
+	r.step()
+	if r.lastIdle.Busy != nil || r.lastIdle.ShutdownIn == nil || *r.lastIdle.ShutdownIn != 90 {
+		t.Errorf("idle event = %s", payload())
+	}
+}

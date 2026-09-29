@@ -45,6 +45,8 @@ const (
 	webActivityWindow = 5 * time.Minute
 	// maxKeepAwake caps one keep-awake request.
 	maxKeepAwake = 7 * 24 * time.Hour
+	// webReason is the busy reason for web UI activity, the last one checked.
+	webReason = "web UI in use"
 )
 
 type Service struct {
@@ -191,10 +193,21 @@ func (s *Service) quickReason(now time.Time) string {
 	return ""
 }
 
-func (s *Service) webActive(now time.Time) bool {
+func (s *Service) webActive(now time.Time) bool { return !s.webUntil(now).IsZero() }
+
+// webUntil is when the last web UI activity stops keeping the machine
+// awake; the zero time when it no longer does.
+func (s *Service) webUntil(now time.Time) time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.lastTouch.IsZero() && now.Sub(s.lastTouch) < webActivityWindow
+	if s.lastTouch.IsZero() {
+		return time.Time{}
+	}
+	until := s.lastTouch.Add(webActivityWindow)
+	if !now.Before(until) {
+		return time.Time{}
+	}
+	return until
 }
 
 // busyReason is one evaluation of every check, in the reference's order
@@ -213,15 +226,16 @@ func (s *Service) busyReason(now time.Time) string {
 	case delta >= ioBusyBytes:
 		return "Steam disk activity"
 	case s.webActive(now):
-		return "web UI in use"
+		return webReason
 	}
 	return ""
 }
 
 // idleEvent is the power.idle event payload.
 type idleEvent struct {
-	IdleSeconds int  `json:"idle_seconds"`
-	ShutdownIn  *int `json:"shutdown_in"` // seconds; null when idle shutdown is off or busy
+	IdleSeconds int       `json:"idle_seconds"`
+	ShutdownIn  *int      `json:"shutdown_in"` // seconds; null when idle shutdown is off or busy
+	Busy        *busyInfo `json:"busy"`        // null while idle
 }
 
 // tick is one pass of the policy loop.
@@ -239,9 +253,7 @@ func (s *Service) tick(ctx context.Context) {
 		s.mu.Unlock()
 		if prevState != reason {
 			log.Printf("power: busy: %s", reason)
-		}
-		if prevState == "idle" || prevState == "" {
-			s.publish("power.idle", idleEvent{})
+			s.publish("power.idle", idleEvent{Busy: newBusy(reason)})
 		}
 		return
 	}
@@ -284,9 +296,19 @@ func (s *Service) tick(ctx context.Context) {
 	}
 }
 
-// busyInfo is the "busy" object of GET /power.
+// busyInfo is the "busy" object of GET /power and power.idle. Web is set
+// when web UI activity is the only reason, so the UI can tell its own
+// requests apart from something real.
 type busyInfo struct {
 	Reason string `json:"reason"`
+	Web    bool   `json:"web,omitempty"`
+}
+
+func newBusy(reason string) *busyInfo {
+	if reason == "" {
+		return nil
+	}
+	return &busyInfo{Reason: reason, Web: reason == webReason}
 }
 
 type powerState struct {
@@ -295,13 +317,15 @@ type powerState struct {
 	KeepAwakeUntil *time.Time `json:"keep_awake_until,omitempty"`
 	WoL            []WoLIface `json:"wol"`
 	Busy           *busyInfo  `json:"busy"`
+	WebUntil       *time.Time `json:"web_until,omitempty"`
 	IdleSeconds    int        `json:"idle_seconds"`
 	ShutdownIn     *int       `json:"shutdown_in"`
 }
 
 // snapshot builds the GET /power answer. The busy reason is the cheap
 // checks now, else what the last policy pass saw (the process, download
-// and I/O checks are too slow to repeat per request), else web activity.
+// and I/O checks are too slow to repeat per request), else web activity,
+// which is cheap and so always read fresh.
 func (s *Service) snapshot(ctx context.Context) powerState {
 	now := s.now()
 	pc := s.settings()
@@ -315,14 +339,18 @@ func (s *Service) snapshot(ctx context.Context) powerState {
 	}
 	last, idleSince := s.state, s.idleSince
 	s.mu.Unlock()
-	if reason == "" && last != "idle" && last != "" {
+	if reason == "" && last != "idle" && last != "" && last != webReason {
 		reason = last
 	}
-	if reason == "" && s.webActive(now) {
-		reason = "web UI in use"
+	if until := s.webUntil(now); !until.IsZero() {
+		t := until.UTC().Truncate(time.Second)
+		st.WebUntil = &t
+		if reason == "" {
+			reason = webReason
+		}
 	}
 	if reason != "" {
-		st.Busy = &busyInfo{Reason: reason}
+		st.Busy = newBusy(reason)
 		return st
 	}
 	if !idleSince.IsZero() {
