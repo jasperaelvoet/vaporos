@@ -4,7 +4,7 @@
   "private": true,
   "description": "The VaporOS website: landing page, downloads and install guide (Next.js static export for GitHub Pages).",
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=24"
   },
   "scripts": {
     "prebuild": "node scripts/copy-key.mjs",
@@ -12,7 +12,10 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --conditions=react-server --import ./tests/unit/check-ts-hooks.mjs tests/unit/check-release-unit.mjs",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "verify": "node tests/e2e/verify.mjs"
   },
   "dependencies": {
     "next": "16.3.7",
