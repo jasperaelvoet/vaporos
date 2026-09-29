@@ -12,12 +12,14 @@
    text-fine, text-meta; wrap (the page column), px-page, max-w-page,
    max-w-read; desk:… (≥ 901 px). */
 
+/* next/font's variables already carry their metric-matched fallbacks; the
+   stacks here only apply where those variables are missing. */
 @theme inline {
-  --font-display: var(--font-anybody), "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
-  --font-ui: var(--font-mona), -apple-system, "Segoe UI", system-ui, sans-serif;
-  --font-mono: var(--font-martian), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --default-font-family: var(--font-mona), -apple-system, "Segoe UI", system-ui, sans-serif;
-  --default-mono-font-family: var(--font-martian), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-display: var(--font-anybody, "Arial Narrow", "Helvetica Neue", Arial, sans-serif);
+  --font-ui: var(--font-mona, -apple-system, "Segoe UI", system-ui, sans-serif);
+  --font-mono: var(--font-martian, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  --default-font-family: var(--font-mona, -apple-system, "Segoe UI", system-ui, sans-serif);
+  --default-mono-font-family: var(--font-martian, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
 }
 
 @theme {
