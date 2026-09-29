@@ -287,3 +287,34 @@ func mustRead(t *testing.T, p string) []byte {
 	}
 	return b
 }
+
+// A library the installer adopted is offered to Steam once when vosd
+// starts, and once only: if the user later removes it in Steam, it stays
+// removed.
+func TestInstallerAdoptedLibraryIsOfferedOnce(t *testing.T) {
+	s, _ := newTestService(t)
+	list := steamHome(t)
+	mp := filepath.Join(s.mntBase, "SATA500GB")
+	if err := os.MkdirAll(filepath.Join(mp, "steamapps"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.cfg.Mutate(func(c *config.Config) {
+		c.Storage.Libraries = append(c.Storage.Libraries, config.Library{UUID: sata500, Label: "SATA500GB", Mountpoint: mp, FSType: "ext4"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.seedAdopted()
+	if got := listedIn(t, list); got[len(got)-1] != mp {
+		t.Fatalf("Steam's list after the first start = %q", got)
+	}
+
+	// The user removes it in Steam; later starts leave it alone.
+	steamHome(t)
+	s.seedAdopted()
+	for _, p := range listedIn(t, list) {
+		if p == mp {
+			t.Errorf("a library the user removed was added again")
+		}
+	}
+}

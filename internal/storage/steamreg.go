@@ -59,6 +59,9 @@ func pendingPath() string { return filepath.Join(config.StateDir, "steam-librari
 
 type pendingLibraries struct {
 	Pending []string `json:"pending"`
+	// Seeded lists adopted filesystems (by UUID) whose library was offered
+	// to Steam once. One the user later removes in Steam stays removed.
+	Seeded []string `json:"seeded,omitempty"`
 }
 
 // Run adds waiting libraries to Steam's list whenever Steam is not
@@ -67,6 +70,7 @@ func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
 	}
+	s.seedAdopted()
 	s.applyPending()
 	t := time.NewTicker(regInterval)
 	defer t.Stop()
@@ -75,8 +79,47 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.seedAdopted()
 			s.applyPending()
 		}
+	}
+}
+
+// seedAdopted offers every adopted library to Steam once. Libraries the
+// installer adopted never went through the adopt route, and a disk that
+// was not mounted yet is tried again on the next round.
+func (s *Service) seedAdopted() {
+	libs := s.cfg.Snapshot().Storage.Libraries
+	s.regMu.Lock()
+	seeded := s.loadPendingFile().Seeded
+	s.regMu.Unlock()
+	for _, lib := range libs {
+		if lib.UUID == "" || slices.Contains(seeded, lib.UUID) {
+			continue
+		}
+		rel, ok := steam.LibraryIn(lib.Mountpoint)
+		if !ok {
+			continue
+		}
+		if _, err := s.registerLibrary(filepath.Join(lib.Mountpoint, rel)); err != nil {
+			log.Printf("storage: %v", err)
+			continue
+		}
+		s.markSeeded(lib.UUID)
+	}
+}
+
+// markSeeded records that uuid's library was offered to Steam.
+func (s *Service) markSeeded(uuid string) {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	p := s.loadPendingFile()
+	if slices.Contains(p.Seeded, uuid) {
+		return
+	}
+	p.Seeded = append(p.Seeded, uuid)
+	if err := config.WriteJSONAtomic(pendingPath(), p, 0o644); err != nil {
+		log.Printf("storage: cannot save %s: %v", pendingPath(), err)
 	}
 }
 
@@ -166,19 +209,23 @@ func (s *Service) unqueueLocked(dir string) error {
 	return s.savePending(slices.DeleteFunc(slices.Clone(pending), func(p string) bool { return p == dir }))
 }
 
-func (s *Service) loadPending() []string {
+func (s *Service) loadPendingFile() pendingLibraries {
 	var p pendingLibraries
 	if err := config.ReadJSON(pendingPath(), &p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("storage: %v", err)
 	}
-	return p.Pending
+	return p
 }
+
+func (s *Service) loadPending() []string { return s.loadPendingFile().Pending }
 
 func (s *Service) savePending(dirs []string) error {
 	if dirs == nil {
 		dirs = []string{}
 	}
-	if err := config.WriteJSONAtomic(pendingPath(), pendingLibraries{Pending: dirs}, 0o644); err != nil {
+	p := s.loadPendingFile()
+	p.Pending = dirs
+	if err := config.WriteJSONAtomic(pendingPath(), p, 0o644); err != nil {
 		return fmt.Errorf("cannot save %s: %w", pendingPath(), err)
 	}
 	return nil

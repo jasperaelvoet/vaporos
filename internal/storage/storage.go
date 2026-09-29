@@ -220,6 +220,8 @@ func (s *Service) handleAdopt(w http.ResponseWriter, r *http.Request) {
 		registered, err = s.registerLibrary(library)
 		if err != nil {
 			log.Printf("storage: %v", err)
+		} else {
+			s.markSeeded(lib.UUID)
 		}
 		pending = !registered && err == nil
 	}
