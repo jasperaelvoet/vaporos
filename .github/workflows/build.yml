@@ -239,6 +239,8 @@ jobs:
             -v "$SCRATCH/work:/work" \
             -e VERSION -e CHANNEL -e GIT -e VOS_DEBUG -e VOS_PHASE -e COMPRESS -e REFRESH \
             vos-builder:ci /src/build/build.sh
+          # The container wrote out/ as root; the steps after this run as us.
+          sudo chown -R "$(id -u):$(id -g)" out
           ls -l out
 
       - name: Check the output

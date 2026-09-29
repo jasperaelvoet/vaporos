@@ -579,6 +579,9 @@ rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.
 for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
     if [[ -f $STAGE/vos/$f ]]; then cp "$STAGE/vos/$f" "$OUT/"; fi
 done
+# Published files, all public: mkinitcpio makes the initramfs 0600, which
+# the unprivileged CI runner (and the dev loop's HTTP server) cannot read.
+chmod 0644 "$OUT"/*
 info "root.erofs  $(mib "$(stat -c %s "$OUT/root.erofs")") MiB ($COMPRESS)"
 if [[ -n $ISO ]]; then
     mv "$WORK/$ISO" "$OUT/"
