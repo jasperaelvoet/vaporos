@@ -1,0 +1,203 @@
+---
+// The download card. It is rendered from the release found at build time,
+// and a small script re-reads the GitHub API in the browser, because a new
+// release doesn't rebuild the site. With no release it never shows a
+// download link, only ways to follow the project.
+import Icon from './Icon.astro';
+import Logo from './Logo.astro';
+import { getLatestRelease } from '../lib/release';
+import { formatDate, formatSize, REPO_URL, RELEASES_URL } from '../lib/release-shape';
+import { href } from '../lib/paths';
+
+interface Props {
+  compact?: boolean;
+  // The card title's level: h3 when the card sits under a section heading.
+  headingLevel?: 'h2' | 'h3';
+}
+const { compact = false, headingLevel = 'h2' } = Astro.props;
+const H = headingLevel;
+const r = await getLatestRelease();
+const size = r ? formatSize(r.iso.size) : '';
+---
+<div class:list={['dl glass spot', { compact }]} data-download-card data-state={r ? 'ready' : 'empty'}>
+  <div class="dl-glow" aria-hidden="true"></div>
+
+  <div class="dl-ready" hidden={!r}>
+    <div class="dl-head">
+      <Logo size={52} wordmark={false} />
+      <div class="dl-title">
+        <p class="dl-kicker">Latest release</p>
+        <H class="dl-version">VaporOS <span class="dl-date" data-r="date">{r ? formatDate(r.published) : ''}</span></H>
+      </div>
+    </div>
+    <ul class="dl-meta">
+      <li><Icon name="tag" /><span class="mono" data-r="version">{r?.version ?? ''}</span></li>
+      <li><Icon name="cpu" />x86-64-v3 · UEFI</li>
+      <li><Icon name="hdr" />AMD Radeon</li>
+    </ul>
+    <a class="btn btn-primary btn-lg dl-main" href={r?.iso.url ?? RELEASES_URL} data-r-href="iso">
+      <Icon name="download" />
+      <span>Download ISO<span class="dl-size" data-r="size-paren">{size ? ` (${size})` : ''}</span></span>
+    </a>
+    <p class="dl-file mono" data-r="iso-name">{r?.iso.name ?? ''}</p>
+    {!compact && (
+      <ul class="dl-assets" aria-label="Checksums and signature">
+        <li hidden={!r?.sums}><a href={r?.sums?.url ?? RELEASES_URL} data-r-href="sums"><Icon name="check" />SHA256SUMS</a></li>
+        <li hidden={!r?.manifest}><a href={r?.manifest?.url ?? RELEASES_URL} data-r-href="manifest"><Icon name="file" />manifest.json</a></li>
+        <li hidden={!r?.sig}><a href={r?.sig?.url ?? RELEASES_URL} data-r-href="sig"><Icon name="key" />manifest.json.sig</a></li>
+        <li><a href={r?.url ?? RELEASES_URL} data-r-href="notes"><Icon name="book" />Release notes</a></li>
+      </ul>
+    )}
+    <p class="dl-foot">
+      {compact
+        ? <><a class="link-arrow" href={href('/download/#verify')}>Verify this download<Icon name="arrow" /></a>
+            <a class="link-arrow" href={href('/download/#req-title')}>Requirements<Icon name="arrow" /></a></>
+        : <a class="link-arrow" href={RELEASES_URL}>All releases<Icon name="arrow" /></a>}
+    </p>
+  </div>
+
+  <div class="dl-empty" hidden={!!r}>
+    <div class="dl-head">
+      <Logo size={52} wordmark={false} />
+      <div class="dl-title">
+        <p class="dl-kicker"><span class="badge badge-warn"><span class="dot"></span>In development</span></p>
+        <H class="dl-version">First release coming soon</H>
+      </div>
+    </div>
+    <p class="muted dl-copy">
+      VaporOS hasn't published a release yet. Watch the repository on GitHub
+      (<strong>Watch → Custom → Releases</strong>) to hear the moment the first ISO is out, or build it
+      from source today.
+    </p>
+    <div class="btn-row">
+      <a class="btn btn-primary btn-lg" href={REPO_URL}><Icon name="eye" />Watch releases on GitHub</a>
+      <a class="btn btn-lg" href={`${REPO_URL}#development`}><Icon name="code" />Build from source</a>
+    </div>
+  </div>
+</div>
+
+<script>
+  import { LIST_API, formatDate, formatSize, latestFromList, parseRelease, type Release } from '../lib/release-shape';
+
+  const cards = document.querySelectorAll<HTMLElement>('[data-download-card]');
+
+  // render only ever upgrades a card: a response without a stable release
+  // (rate limits, a page full of branch prereleases) keeps the build's state.
+  function render(card: HTMLElement, r: Release) {
+    card.dataset.state = 'ready';
+    card.querySelector<HTMLElement>('.dl-ready')!.hidden = false;
+    card.querySelector<HTMLElement>('.dl-empty')!.hidden = true;
+    const size = formatSize(r.iso.size);
+    const text: Record<string, string> = {
+      version: r.version,
+      date: formatDate(r.published),
+      'size-paren': size ? ` (${size})` : '',
+      'iso-name': r.iso.name,
+    };
+    card.querySelectorAll<HTMLElement>('[data-r]').forEach((el) => {
+      el.textContent = text[el.dataset.r!] ?? '';
+    });
+    const links: Record<string, string | undefined> = {
+      iso: r.iso.url,
+      sums: r.sums?.url,
+      manifest: r.manifest?.url,
+      sig: r.sig?.url,
+      notes: r.url,
+    };
+    card.querySelectorAll<HTMLAnchorElement>('[data-r-href]').forEach((a) => {
+      const url = links[a.dataset.rHref!];
+      const li = a.closest('li');
+      if (url) a.href = url;
+      if (li) li.hidden = !url;
+    });
+  }
+
+  // The unauthenticated API allows 60 requests an hour per visitor, so one
+  // answer (or failure) is reused across pages for ten minutes.
+  const CACHE_KEY = 'vaporos-latest-release';
+  const CACHE_MS = 10 * 60 * 1000;
+
+  function cached(): { latest: unknown } | null {
+    try {
+      const c = JSON.parse(sessionStorage.getItem(CACHE_KEY) ?? 'null');
+      return c && Date.now() - c.at < CACHE_MS ? c : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function remember(latest: unknown) {
+    try {
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), latest }));
+    } catch {}
+  }
+
+  if (cards.length) {
+    const hit = cached();
+    const latest: Promise<unknown> = hit
+      ? Promise.resolve(hit.latest)
+      : fetch(LIST_API, { headers: { Accept: 'application/vnd.github+json' } })
+          .then(async (res) => {
+            // Errors (rate limits, outages) keep what the build found.
+            if (!res.ok) throw new Error(String(res.status));
+            const l = latestFromList(await res.json());
+            remember(l);
+            return l;
+          })
+          .catch(() => {
+            remember(null);
+            return null;
+          });
+    latest.then((l) => {
+      const r = parseRelease(l);
+      if (r) cards.forEach((c) => render(c, r));
+    });
+  }
+</script>
+
+<style>
+  .dl {
+    position: relative;
+    padding: 26px 22px;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border-color: var(--accent-line);
+    box-shadow: var(--shadow), 0 40px 120px -50px rgb(76 150 232 / .7);
+  }
+  @media (min-width: 640px) { .dl { padding: 40px; } }
+  .dl-glow {
+    position: absolute; inset: -40% -20% auto auto;
+    width: 80%; aspect-ratio: 1;
+    background: radial-gradient(closest-side, rgb(120 190 255 / .2), transparent);
+    pointer-events: none;
+  }
+  .dl-ready, .dl-empty { position: relative; display: grid; gap: 22px; justify-items: start; }
+  .dl-head { display: flex; align-items: center; gap: 18px; }
+  .dl-head :global(.logo-mark) { width: 52px; height: 52px; }
+  .dl-title { display: grid; gap: 6px; min-width: 0; }
+  .dl-kicker { font-size: .8rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--brand); }
+  .dl-version { font-size: clamp(1.5rem, 1.1rem + 2vw, 2.3rem); text-wrap: balance; }
+  .dl-date { color: var(--text-2); font-weight: 550; white-space: nowrap; }
+  .dl-meta { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--text-2); font-size: .92rem; }
+  .dl-meta li { display: inline-flex; align-items: center; gap: 8px; }
+  .dl-meta li:has(span:empty) { display: none; }
+  .dl-meta :global(.ico) { width: 17px; height: 17px; color: var(--brand); }
+  .dl-main { width: 100%; }
+  @media (min-width: 640px) { .dl-main { width: auto; min-width: 300px; } }
+  .dl-file { margin-top: -10px; color: var(--text-3); font-size: .8rem; overflow-wrap: anywhere; }
+  .dl-assets { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; }
+  .dl-assets a {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 13px; border-radius: 11px;
+    font: 500 .85rem/1 var(--mono); text-decoration: none;
+    color: var(--text-2);
+    background: rgb(255 255 255 / .035); border: 1px solid var(--line-2);
+    transition: color .2s, border-color .2s, background-color .2s;
+  }
+  .dl-assets a:hover { color: var(--text); border-color: var(--accent-line); background: var(--accent-soft); }
+  .dl-assets :global(.ico) { width: 15px; height: 15px; color: var(--brand); }
+  .dl-foot { display: flex; flex-wrap: wrap; gap: 10px 26px; }
+  .dl-copy { max-width: 60ch; }
+  .dl-empty .btn-row { width: 100%; }
+  .compact .dl-ready, .compact .dl-empty { gap: 18px; }
+</style>

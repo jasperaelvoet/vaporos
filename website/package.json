@@ -1,0 +1,19 @@
+{
+  "name": "vaporos-website",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "The VaporOS website: landing page, downloads and install guide.",
+  "scripts": {
+    "prebuild": "node scripts/copy-key.mjs",
+    "predev": "node scripts/copy-key.mjs",
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "3.7.4",
+    "@fontsource-variable/space-grotesk": "5.3.0",
+    "astro": "7.3.5"
+  }
+}

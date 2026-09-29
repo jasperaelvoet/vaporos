@@ -1,0 +1,208 @@
+---
+import Icon from './Icon.astro';
+---
+<section class="section how" id="how" aria-labelledby="how-title">
+  <div class="container">
+    <div class="section-head center reveal">
+      <span class="eyebrow">How it works</span>
+      <h2 id="how-title" class="h2">Steam runs on the PC.<br /><span class="gradient-text">You play wherever you are.</span></h2>
+      <p class="lead">
+        Steam runs on a virtual display that nobody has to plug in. Sunshine captures it and
+        encodes it on the GPU, and Moonlight plays it on the screen in front of you.
+      </p>
+    </div>
+
+    <figure class="diagram reveal" aria-labelledby="how-caption">
+      <figcaption id="how-caption" class="sr-only">
+        The VaporOS PC runs Steam in gamescope on a virtual display. Sunshine captures and encodes it
+        and sends it over your home network to Moonlight on a TV, phone or laptop. A monitor on the PC,
+        if there is one, shows only the welcome screen with the setup address.
+      </figcaption>
+
+      <div class="node pc glass spot">
+        <header class="node-head">
+          <span class="icon-tile"><Icon name="cpu" /></span>
+          <span><strong>Your PC</strong><small>VaporOS · AMD GPU</small></span>
+        </header>
+        <ol class="pipe">
+          <li><span class="pipe-ico"><Icon name="gamepad" /></span><span><strong>Steam</strong><small>in gamescope</small></span></li>
+          <li class="pipe-arrow" aria-hidden="true"><Icon name="chevron" /></li>
+          <li><span class="pipe-ico"><Icon name="hdr" /></span><span><strong>Virtual display</strong><small>your device's mode</small></span></li>
+          <li class="pipe-arrow" aria-hidden="true"><Icon name="chevron" /></li>
+          <li><span class="pipe-ico"><Icon name="zap" /></span><span><strong>Sunshine</strong><small>GPU encode</small></span></li>
+        </ol>
+        <div class="welcome-note">
+          <Icon name="monitor" />
+          <span>After the install, a monitor is optional. If one is connected, it shows only the welcome screen: the address and a QR code.</span>
+        </div>
+      </div>
+
+      <div class="link" aria-hidden="true">
+        <svg class="link-h" viewBox="0 0 160 40" preserveAspectRatio="none" focusable="false">
+          <defs>
+            <linearGradient id="link-grad-h" x1="0" x2="1">
+              <stop offset="0" stop-color="#78beff" />
+              <stop offset="1" stop-color="#9b87ff" />
+            </linearGradient>
+          </defs>
+          <path class="track" d="M0 20H160" />
+          <path class="flow" d="M0 20H160" stroke="url(#link-grad-h)" />
+        </svg>
+        <svg class="link-v" viewBox="0 0 40 90" preserveAspectRatio="none" focusable="false">
+          <defs>
+            <linearGradient id="link-grad-v" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#78beff" />
+              <stop offset="1" stop-color="#9b87ff" />
+            </linearGradient>
+          </defs>
+          <path class="track" d="M20 0V90" />
+          <path class="flow" d="M20 0V90" stroke="url(#link-grad-v)" />
+        </svg>
+        <span class="link-label"><Icon name="ethernet" />Home network</span>
+      </div>
+
+      <div class="node devices glass spot">
+        <header class="node-head">
+          <span class="icon-tile"><Icon name="gamepad" /></span>
+          <span><strong>Moonlight</strong><small>on the screen in front of you</small></span>
+        </header>
+        <ul class="device-list">
+          <li><Icon name="tv" /><span><strong>TV</strong><small>Apple TV, Google TV</small></span></li>
+          <li><Icon name="phone" /><span><strong>Phone and tablet</strong><small>iPhone, iPad, Android</small></span></li>
+          <li><Icon name="laptop" /><span><strong>Computer</strong><small>Windows, Mac, Linux</small></span></li>
+        </ul>
+      </div>
+    </figure>
+
+    <ol class="how-steps">
+      <li class="reveal" style="--i:0">
+        <span class="num">01</span>
+        <h3>Always ready</h3>
+        <p>With no monitor attached, Steam and Sunshine run all the time, so a game is one tap away in Moonlight.</p>
+      </li>
+      <li class="reveal" style="--i:1">
+        <span class="num">02</span>
+        <h3>Fits every screen</h3>
+        <p>When a stream starts, VaporOS switches the virtual display to that device's resolution, refresh rate and HDR.</p>
+      </li>
+      <li class="reveal" style="--i:2">
+        <span class="num">03</span>
+        <h3>Nothing to maintain</h3>
+        <p>The system is one read-only image. Updates arrive whole and signed, and the old version stays as a fallback.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<style>
+  .how { overflow: hidden; }
+  .how::before {
+    content: "";
+    position: absolute; left: 50%; top: 32%;
+    width: min(1100px, 140vw); height: 620px;
+    transform: translateX(-50%);
+    background:
+      radial-gradient(closest-side, rgb(91 124 255 / .12), transparent),
+      radial-gradient(40% 50% at 30% 50%, rgb(120 190 255 / .08), transparent);
+    pointer-events: none;
+  }
+  .diagram {
+    position: relative;
+    margin: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  @media (min-width: 960px) {
+    .diagram { grid-template-columns: minmax(0, 1.55fr) 150px minmax(0, 1fr); align-items: center; }
+  }
+
+  .node { padding: 22px; display: grid; gap: 18px; border-radius: var(--radius-lg); }
+  @media (min-width: 640px) { .node { padding: 26px; } }
+  .node-head { display: flex; align-items: center; gap: 14px; }
+  .node-head > span:last-child { display: grid; }
+  .node-head strong { font-family: var(--display); font-size: 1.2rem; letter-spacing: -.02em; }
+  .node-head small { color: var(--text-3); font-size: .85rem; }
+
+  .pipe {
+    list-style: none;
+    display: grid; gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pipe > li:not(.pipe-arrow) {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgb(6 10 15 / .5);
+    border: 1px solid var(--line);
+  }
+  .pipe li span:last-child { display: grid; min-width: 0; }
+  .pipe strong { font-size: .95rem; }
+  .pipe small { color: var(--text-3); font-size: .8rem; }
+  .pipe-ico { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--accent-soft); color: var(--brand); flex: none; }
+  .pipe-ico :global(.ico) { width: 18px; height: 18px; }
+  .pipe-arrow { display: grid; place-items: center; color: var(--brand); height: 14px; }
+  .pipe-arrow :global(.ico) { width: 16px; height: 16px; transform: rotate(90deg); opacity: .8; }
+  @media (min-width: 640px) {
+    .pipe { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) 18px minmax(0, 1fr); align-items: stretch; }
+    .pipe > li:not(.pipe-arrow) { flex-direction: column; align-items: flex-start; }
+    .pipe-arrow { height: auto; }
+    .pipe-arrow :global(.ico) { transform: none; }
+  }
+
+  .welcome-note {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 12px 14px; border-radius: 12px;
+    border: 1px dashed var(--line-2);
+    color: var(--text-2); font-size: .88rem;
+  }
+  .welcome-note :global(.ico) { width: 18px; height: 18px; margin-top: 2px; color: var(--text-3); }
+
+  .link { position: relative; display: grid; place-items: center; height: 96px; }
+  .link svg { position: absolute; overflow: visible; }
+  .link-h { display: none; }
+  .link-v { width: 40px; height: 100%; }
+  @media (min-width: 960px) {
+    .link { height: 100%; min-height: 120px; }
+    .link-h { display: block; width: 100%; height: 40px; }
+    .link-v { display: none; }
+  }
+  .track { fill: none; stroke: rgb(150 185 220 / .18); stroke-width: 2; }
+  .flow {
+    fill: none; stroke-width: 3; stroke-linecap: round;
+    stroke-dasharray: 10 14;
+    animation: packets 1.1s linear infinite;
+    filter: drop-shadow(0 0 6px rgb(120 190 255 / .8));
+  }
+  @keyframes packets { to { stroke-dashoffset: -24; } }
+  .link-label {
+    position: relative;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-radius: 99px;
+    background: var(--bg-deep); border: 1px solid var(--line-2);
+    color: var(--text-2); font-size: .8rem; font-weight: 600; white-space: nowrap;
+  }
+  .link-label :global(.ico) { width: 15px; height: 15px; color: var(--brand); }
+
+  .device-list { list-style: none; display: grid; gap: 8px; }
+  .device-list li {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 14px; border-radius: 14px;
+    background: rgb(6 10 15 / .5); border: 1px solid var(--line);
+  }
+  .device-list li > :global(.ico) { width: 22px; height: 22px; color: var(--violet); flex: none; }
+  .device-list span { display: grid; }
+  .device-list strong { font-size: .95rem; }
+  .device-list small { color: var(--text-3); font-size: .8rem; }
+
+  .how-steps {
+    list-style: none;
+    display: grid; gap: 28px;
+    margin-top: clamp(40px, 6vw, 72px);
+  }
+  @media (min-width: 760px) { .how-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; } }
+  .how-steps li { display: grid; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line-2); }
+  .num { font: 600 .82rem/1 var(--mono); color: var(--brand); letter-spacing: .08em; }
+  .how-steps h3 { font-size: 1.2rem; }
+  .how-steps p { color: var(--text-2); }
+</style>
