@@ -24,7 +24,7 @@ export function SiteHeader({ release }: { release: ReleaseLookup }) {
         <nav aria-label={nav.mainLabel} className="max-desk:hidden">
           <NavLinks items={nav.items} className="site-nav-links flex items-center gap-7.5" />
         </nav>
-        <ReleaseChip initial={release} className="max-desk:hidden" />
+        <ReleaseChip initial={release} tone="nav" className="max-desk:hidden" />
         <LinkButton href={nav.cta.href} size="sm" icon={nav.cta.icon} className="max-[25rem]:[&>svg]:hidden">
           {nav.cta.label}
         </LinkButton>

@@ -25,6 +25,10 @@ export default async function RootLayout({ children }: LayoutProps<'/'>) {
     <html lang="en" className={fontVariables} suppressHydrationWarning>
       <body className="flex min-h-dvh flex-col">
         <script dangerouslySetInnerHTML={{ __html: chromeScript }} />
+        {/* Without JavaScript the nav keeps its scrim, so nothing scrolls under bare links. */}
+        <noscript>
+          <style>{'.site-nav::before{opacity:1}'}</style>
+        </noscript>
         <a href="#main" className="skip-link">
           {nav.skipLink}
         </a>
