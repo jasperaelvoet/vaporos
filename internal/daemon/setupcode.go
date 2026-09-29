@@ -26,8 +26,9 @@ var codeRE = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$`)
 func setupCodePath() string { return filepath.Join(config.RunDir, "setup-code") }
 
 // setupCode returns the code that unlocks Setup routes when one is needed:
-// always in installer mode, and on an installed system until an admin
-// password exists. "" means none.
+// always in installer mode (where the api may still waive it while no
+// monitor is attached; see headless), and on an installed system until an
+// admin password exists. "" means none.
 func setupCode(live bool) string {
 	if !live && auth.HasAdmin() {
 		forgetSetupCode()

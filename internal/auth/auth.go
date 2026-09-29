@@ -10,6 +10,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -61,7 +62,8 @@ const (
 
 // hashSlots caps concurrent argon2 computations. Each one allocates
 // params.memory (64 MiB), so a burst of logins must queue rather than run
-// the appliance out of memory.
+// the appliance out of memory. A caller that gives up (its context ends)
+// leaves the queue instead of hashing for nobody.
 var hashSlots = make(chan struct{}, 2)
 
 var (
@@ -97,7 +99,10 @@ func HashPassword(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("reading random salt: %w", err)
 	}
-	key := derive(password, salt, p)
+	key, err := derive(context.Background(), password, salt, p)
+	if err != nil {
+		return "", err
+	}
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.memory, p.time, p.threads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
@@ -106,18 +111,37 @@ func HashPassword(password string) (string, error) {
 // CheckPassword reports whether password matches the encoded hash. A
 // malformed hash never matches.
 func CheckPassword(encoded, password string) bool {
-	p, salt, want, err := parseHash(encoded)
-	if err != nil {
-		return false
-	}
-	got := derive(password, salt, p)
-	return subtle.ConstantTimeCompare(got, want) == 1
+	ok, _ := CheckPasswordContext(context.Background(), encoded, password)
+	return ok
 }
 
-func derive(password string, salt []byte, p hashParams) []byte {
-	hashSlots <- struct{}{}
+// CheckPasswordContext is CheckPassword that stops waiting for a hash slot
+// when ctx ends; it then returns ctx's error and the password was not
+// checked.
+func CheckPasswordContext(ctx context.Context, encoded, password string) (bool, error) {
+	p, salt, want, err := parseHash(encoded)
+	if err != nil {
+		return false, nil
+	}
+	got, err := derive(ctx, password, salt, p)
+	if err != nil {
+		return false, err
+	}
+	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+func derive(ctx context.Context, password string, salt []byte, p hashParams) ([]byte, error) {
+	select {
+	case hashSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	defer func() { <-hashSlots }()
-	return argon2.IDKey([]byte(password), salt, p.time, p.memory, p.threads, p.keyLen)
+	// Checked again: a select with both cases ready picks either one.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return argon2.IDKey([]byte(password), salt, p.time, p.memory, p.threads, p.keyLen), nil
 }
 
 // parseHash decodes a PHC argon2id string into its parameters, salt and key.
@@ -223,9 +247,16 @@ func HasAdmin() bool {
 // VerifyAdmin checks password against auth.json. It returns ErrNoAdmin
 // when no usable admin password exists.
 func VerifyAdmin(password string) (bool, error) {
+	return VerifyAdminContext(context.Background(), password)
+}
+
+// VerifyAdminContext is VerifyAdmin for a request: when ctx ends while the
+// check waits for a hash slot (the client went away), it returns ctx's
+// error without checking the password.
+func VerifyAdminContext(ctx context.Context, password string) (bool, error) {
 	f, err := Load()
 	if err != nil {
 		return false, ErrNoAdmin
 	}
-	return CheckPassword(f.Hash, password), nil
+	return CheckPasswordContext(ctx, f.Hash, password)
 }

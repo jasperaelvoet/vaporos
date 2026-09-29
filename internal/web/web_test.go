@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"html"
 	"io"
 	"io/fs"
@@ -171,6 +172,53 @@ func TestFirstRunSetup(t *testing.T) {
 	_, h = newHandler(t, false, "")
 	if body := get(h, "/setup").Body.String(); strings.Contains(body, `id="setup-code"`) {
 		t.Error("setup code field shown although no code is needed")
+	}
+}
+
+// A page on another site can make a browser load /setup?code=… as often as
+// it likes. The code is dropped before it is checked, so wrong ones cannot
+// lock the browser out, and it never reaches the form or the page script.
+func TestSetupCodeFromAnotherSiteIsDropped(t *testing.T) {
+	for _, installer := range []bool{true, false} {
+		srv, h := newHandler(t, installer, "ABCD-EFGH")
+		srv.Handle("GET", "/probe", api.Setup, func(w http.ResponseWriter, r *http.Request) { api.OK(w) })
+		foreign := [][]string{
+			{"Sec-Fetch-Site", "cross-site", "Sec-Fetch-Dest", "image"},
+			{"Sec-Fetch-Site", "cross-site", "Sec-Fetch-Dest", "document"},
+			{"Sec-Fetch-Site", "same-site", "Sec-Fetch-Dest", "document"},
+		}
+		for i := range 12 {
+			rec := get(h, "/setup?code=WRONG-000"+fmt.Sprint(i%10)+"&next=/pair", foreign[i%len(foreign)]...)
+			if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/setup?next=%2Fpair" {
+				t.Fatalf("installer=%v: foreign ?code= got %d → %q", installer, rec.Code, rec.Header().Get("Location"))
+			}
+			if len(rec.Result().Cookies()) != 0 {
+				t.Fatal("a foreign ?code= set a cookie")
+			}
+		}
+		if installer {
+			// The QR code's /?code= redirect drops it too.
+			if rec := get(h, "/?code=ABCD-EFGH", foreign[0]...); rec.Header().Get("Location") != "/setup" {
+				t.Fatalf("foreign /?code= → %q", rec.Header().Get("Location"))
+			}
+		}
+		// The browser was not locked out: the right code still works.
+		if rec := get(h, "/api/v1/probe", "X-VOS-Setup", "ABCD-EFGH"); rec.Code != http.StatusOK {
+			t.Fatalf("installer=%v: locked out by foreign requests: %d", installer, rec.Code)
+		}
+		// A scanned QR code (Sec-Fetch-Site: none) is honoured.
+		rec := get(h, "/setup?code=ABCD-EFGH", "Sec-Fetch-Site", "none", "Sec-Fetch-Dest", "document")
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `value="ABCD-EFGH"`) || len(rec.Result().Cookies()) != 1 {
+			t.Fatalf("installer=%v: QR navigation: %d, cookies %v", installer, rec.Code, rec.Result().Cookies())
+		}
+	}
+}
+
+func TestFirstRunIgnoresTheCodeWaiver(t *testing.T) {
+	srv, h := newHandler(t, false, "ABCD-EFGH")
+	srv.SetSetupWaiver(func() bool { return true }) // ignored outside installer mode
+	if body := get(h, "/setup").Body.String(); !strings.Contains(body, `id="setup-code"`) {
+		t.Error("first-run setup must always ask for the code")
 	}
 }
 

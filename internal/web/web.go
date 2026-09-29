@@ -168,14 +168,31 @@ func newUI(srv *api.Server) (*ui, error) {
 func (u *ui) pageHandler(p page) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		installer := u.srv.Options().Installer
-		// The live ISO has one job; every other page would only fail
-		// against the missing OS routes.
-		if installer && p.Name != "setup" {
-			target := "/setup"
-			if r.URL.RawQuery != "" {
-				target += "?" + r.URL.RawQuery // keep ?code= from a QR code
+		rawQuery := r.URL.RawQuery
+		foreignCode := false
+		if q := r.URL.Query(); q.Has("code") && !api.FirstPartyNavigation(r) {
+			// Another site put a setup code in this URL (an <img>, or a
+			// popup it keeps re-navigating). Honouring it would let that
+			// site lock this browser out of setup with wrong codes, so it
+			// is dropped before the cookie, the form or the page script
+			// can use it. Someone who followed such a link types the code.
+			q.Del("code")
+			rawQuery, foreignCode = q.Encode(), true
+		}
+		withQuery := func(path string) string {
+			if rawQuery != "" {
+				return path + "?" + rawQuery
 			}
-			http.Redirect(w, r, target, http.StatusSeeOther)
+			return path
+		}
+		// The live ISO has one job; every other page would only fail
+		// against the missing OS routes. ?code= from a QR code is kept.
+		if installer && p.Name != "setup" {
+			http.Redirect(w, r, withQuery("/setup"), http.StatusSeeOther)
+			return
+		}
+		if foreignCode && p.Name == "setup" {
+			http.Redirect(w, r, withQuery(p.Path), http.StatusSeeOther)
 			return
 		}
 		d := pageData{
@@ -197,7 +214,7 @@ func (u *ui) pageHandler(p page) http.HandlerFunc {
 // and sends it as X-VOS-Setup, and when the api package offers it we also
 // set the vos_setup cookie, which EventSource needs (it cannot send headers).
 func (u *ui) prepareSetup(w http.ResponseWriter, r *http.Request, d *pageData) {
-	d.NeedCode = u.srv.SetupCode() != ""
+	d.NeedCode = u.srv.SetupCode() != "" && !u.srv.SetupWaived()
 	if code := cleanCode(r.URL.Query().Get("code")); code != "" {
 		d.Code = code
 		trySetSetupCookie(u.srv, w, r, code)
