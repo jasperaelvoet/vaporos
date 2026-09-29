@@ -304,3 +304,51 @@ func TestRunnerNoVirtualConfigured(t *testing.T) {
 		t.Errorf("setcrtc = %v", k.setcrtc)
 	}
 }
+
+// An 8K monitor would need a 132 MB buffer for a still: it is lit at the
+// largest 16:9 mode at or under 4K, at the refresh closest to its preferred
+// one. The virtual display keeps its 1080p splash.
+func TestRunnerCapsHugeModes(t *testing.T) {
+	k := newFakeKMS()
+	interlaced := mode(3840, 2160, 60, false)
+	interlaced.Flags |= 1 << 4
+	k.conns[21].Modes = []drm.ModeInfo{
+		mode(7680, 4320, 60, true),
+		mode(5120, 2880, 60, false), // larger than 4K
+		mode(4096, 2160, 60, false), // DCI: another aspect ratio
+		interlaced,
+		mode(3840, 2160, 30, false),
+		mode(3840, 2160, 120, false),
+		mode(3840, 2160, 60, false),
+		mode(2560, 1440, 60, false),
+	}
+	cards := []drm.SysCard{{Name: "card1", Dev: "/dev/dri/card1"}}
+	r, _ := newTestRunner(k, &cards)
+	r.scan(false)
+	if !slices.Contains(k.setcrtc, "11:HDMI-A-1@3840x2160@60") || !slices.Contains(k.setcrtc, "10:DP-1@1920x1080@60") {
+		t.Errorf("setcrtc = %v", k.setcrtc)
+	}
+	for _, b := range k.live {
+		if w, h := b.Dims(); w*h > maxWelcomeArea {
+			t.Errorf("buffer %dx%d is larger than 4K", w, h)
+		}
+	}
+
+	for _, c := range []struct {
+		modes []drm.ModeInfo
+		want  string
+	}{
+		{[]drm.ModeInfo{mode(3840, 2160, 60, true), mode(1920, 1080, 60, false)}, "3840x2160@60"},   // 4K itself is kept
+		{[]drm.ModeInfo{mode(7680, 4320, 60, true), mode(4096, 2160, 60, false)}, "7680x4320@60"},   // nothing fits: preferred
+		{[]drm.ModeInfo{mode(5120, 2160, 60, true), mode(3440, 1440, 100, false)}, "3440x1440@100"}, // 21:9 within 1%
+		{[]drm.ModeInfo{mode(7680, 4320, 60, true), mode(2560, 1440, 144, false), mode(1920, 1080, 60, false)}, "2560x1440@144"},
+	} {
+		got, ok := welcomeMode(&drm.Connector{Modes: c.modes})
+		if !ok || got.String() != c.want {
+			t.Errorf("welcomeMode(%v) = %s, want %s", c.modes[0].String(), got.String(), c.want)
+		}
+	}
+	if _, ok := welcomeMode(&drm.Connector{}); ok {
+		t.Error("a connector without modes has no mode")
+	}
+}

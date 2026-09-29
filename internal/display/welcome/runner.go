@@ -239,7 +239,7 @@ func (r *runner) syncCard(cs *cardState, probe bool, virtual string) {
 			mode, ok = conn.FindMode(1920, 1080, 60)
 		}
 		if !ok {
-			mode, ok = conn.PreferredMode()
+			mode, ok = welcomeMode(conn)
 		}
 		if ok {
 			wants = append(wants, want{conn, mode})
@@ -292,6 +292,58 @@ func (r *runner) syncCard(cs *cardState, probe bool, virtual string) {
 		cs.outs[w.conn.ID] = o
 		r.opts.logf("vos welcome: %s on %s at %s", w.conn.Name, cs.name, w.mode.String())
 	}
+}
+
+// maxWelcomeArea caps the mode of a physical connector at 4K. An 8K
+// preferred mode would need a 132 MB dumb buffer and four times the render
+// work for a still that looks the same.
+const maxWelcomeArea = 3840 * 2160
+
+// welcomeMode is the mode a physical connector shows the welcome screen in:
+// its preferred mode, unless that is larger than 4K. Then it is the largest
+// progressive mode at or under 4K with the same aspect ratio (within 1%),
+// at the refresh rate closest to the preferred one (the higher on a tie);
+// the preferred mode if there is none.
+func welcomeMode(conn *drm.Connector) (drm.ModeInfo, bool) {
+	pref, ok := conn.PreferredMode()
+	if !ok || modeArea(&pref) <= maxWelcomeArea {
+		return pref, ok
+	}
+	aspect := float64(pref.HDisplay) / float64(pref.VDisplay)
+	var best *drm.ModeInfo
+	for i := range conn.Modes {
+		m := &conn.Modes[i]
+		a := modeArea(m)
+		if a == 0 || a > maxWelcomeArea || m.Flags&(1<<4) != 0 { // DRM_MODE_FLAG_INTERLACE
+			continue
+		}
+		if r := float64(m.HDisplay) / float64(m.VDisplay) / aspect; r < 0.99 || r > 1.01 {
+			continue
+		}
+		if best == nil || a > modeArea(best) || a == modeArea(best) && closerRefresh(m, best, pref.Refresh()) {
+			best = m
+		}
+	}
+	if best == nil {
+		return pref, true
+	}
+	return *best, true
+}
+
+func modeArea(m *drm.ModeInfo) int { return int(m.HDisplay) * int(m.VDisplay) }
+
+// closerRefresh reports whether a's refresh is nearer to want than b's, or
+// as near and higher.
+func closerRefresh(a, b *drm.ModeInfo, want int) bool {
+	da, db := abs(a.Refresh()-want), abs(b.Refresh()-want)
+	return da < db || da == db && a.Refresh() > b.Refresh()
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // light allocates a framebuffer for o, draws the current state and sets the CRTC.

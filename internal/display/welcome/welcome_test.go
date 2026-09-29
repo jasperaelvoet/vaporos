@@ -197,10 +197,3 @@ func TestMainPNG(t *testing.T) {
 		t.Errorf("bad size: exit %d", code)
 	}
 }
-
-func abs(v int) int {
-	if v < 0 {
-		return -v
-	}
-	return v
-}
