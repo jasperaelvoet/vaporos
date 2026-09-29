@@ -63,9 +63,8 @@ func (c Clients) Record(name string, cm ClientMode) {
 	}
 }
 
-// Modes returns the distinct client modes, most recently seen first, so the
-// EDID's extra-mode cap drops the stalest ones.
-func (c Clients) Modes() []edid.Mode {
+// newestFirst returns the client names, most recently seen first.
+func (c Clients) newestFirst() []string {
 	names := make([]string, 0, len(c))
 	for n := range c {
 		names = append(names, n)
@@ -77,9 +76,15 @@ func (c Clients) Modes() []edid.Mode {
 		}
 		return names[i] < names[j]
 	})
+	return names
+}
+
+// Modes returns the distinct client modes, most recently seen first, so the
+// EDID's extra-mode cap drops the stalest ones.
+func (c Clients) Modes() []edid.Mode {
 	seen := map[edid.Mode]bool{}
 	var out []edid.Mode
-	for _, n := range names {
+	for _, n := range c.newestFirst() {
 		m := c[n].Mode()
 		if m.W > 0 && m.H > 0 && m.Refresh > 0 && !seen[m] {
 			seen[m] = true
@@ -87,4 +92,34 @@ func (c Clients) Modes() []edid.Mode {
 		}
 	}
 	return out
+}
+
+// deviceMode is one clients.json entry as GET /display lists it.
+type deviceMode struct {
+	Name     string    `json:"name"`
+	Mode     string    `json:"mode"`
+	HDR      bool      `json:"hdr"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+// devices lists every client's last mode, most recently seen first.
+func (c Clients) devices() []deviceMode {
+	out := []deviceMode{}
+	for _, n := range c.newestFirst() {
+		cm := c[n]
+		out = append(out, deviceMode{Name: n, Mode: cm.Mode().String(), HDR: cm.HDR, LastSeen: cm.LastSeen})
+	}
+	return out
+}
+
+// forget deletes every entry that asked for md and reports whether any did.
+func (c Clients) forget(md edid.Mode) bool {
+	found := false
+	for n, cm := range c {
+		if cm.Mode() == md {
+			delete(c, n)
+			found = true
+		}
+	}
+	return found
 }

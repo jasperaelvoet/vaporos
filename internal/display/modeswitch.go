@@ -324,6 +324,8 @@ func (m *Manager) virtualEDID(gpu GPUInfo, virtual string) []byte {
 // learn records the client's mode and, when the EDID lacks it, adds it to
 // the learned EDID for the next boot.
 func (m *Manager) learn(client string, asked edid.Mode, hdr, exact bool) {
+	m.edidMu.Lock()
+	defer m.edidMu.Unlock()
 	clients, err := LoadClients(config.ClientsPath())
 	if err != nil {
 		log.Printf("display: %v (starting a new clients.json)", err)
@@ -344,16 +346,21 @@ func (m *Manager) learn(client string, asked edid.Mode, hdr, exact bool) {
 	}
 }
 
-// extraModes are the configured extra modes, then learned client modes.
-func (m *Manager) extraModes() []edid.Mode {
+// configuredModes are the modes in display.extra_modes that parse.
+func (m *Manager) configuredModes() []edid.Mode {
 	var out []edid.Mode
 	for _, s := range m.displayConfig().ExtraModes {
 		if md, err := edid.ParseMode(s); err == nil {
 			out = append(out, md)
 		}
 	}
+	return out
+}
+
+// extraModes are the configured extra modes, then learned client modes.
+func (m *Manager) extraModes() []edid.Mode {
 	clients, _ := LoadClients(config.ClientsPath())
-	return append(out, clients.Modes()...)
+	return append(m.configuredModes(), clients.Modes()...)
 }
 
 // regenerateEDID rewrites /var/lib/vos/firmware/edid/vaporos.bin from the

@@ -1,6 +1,7 @@
 package display
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -16,6 +17,7 @@ import (
 func (m *Manager) Routes(srv *api.Server) {
 	srv.Handle(http.MethodGet, "/display", api.Authed, m.handleGet)
 	srv.Handle(http.MethodPost, "/display/modes", api.Authed, m.handleAddMode)
+	srv.Handle(http.MethodDelete, "/display/modes/{mode}", api.Authed, m.handleRemoveMode)
 	srv.Handle(http.MethodPut, "/display/settings", api.Authed, m.handleSettings)
 	srv.Handle(http.MethodGet, "/welcome", api.Local, m.handleWelcome)
 }
@@ -42,11 +44,14 @@ type displayInfo struct {
 	// Planes counts the fb-backed planes on the virtual connector's CRTC:
 	// 1 while gamescope composites (what Sunshine's KMS capture needs), more
 	// when it scans out directly, 0 when nothing is shown or observable.
-	Planes       int      `json:"planes"`
-	HDR          bool     `json:"hdr"`
-	Learned      []string `json:"learned"`
-	RebootNeeded bool     `json:"reboot_needed"`
-	State        string   `json:"state"`
+	Planes int  `json:"planes"`
+	HDR    bool `json:"hdr"`
+	// Learned is Added plus the modes learned from clients.
+	Learned      []string     `json:"learned"`
+	Added        []string     `json:"added"`
+	Devices      []deviceMode `json:"devices"`
+	RebootNeeded bool         `json:"reboot_needed"`
+	State        string       `json:"state"`
 }
 
 func (m *Manager) info() displayInfo {
@@ -60,6 +65,7 @@ func (m *Manager) info() displayInfo {
 	}
 	conns := slices.Clone(m.conns)
 	m.mu.Unlock()
+	clients, _ := LoadClients(config.ClientsPath())
 
 	d := displayInfo{
 		Profile:             "none",
@@ -69,6 +75,8 @@ func (m *Manager) info() displayInfo {
 		Modes:               []string{},
 		HDR:                 hdr,
 		Learned:             m.learnedModes(),
+		Added:               beyondCatalogue(m.configuredModes()),
+		Devices:             clients.devices(),
 		RebootNeeded:        m.rebootNeededNow(),
 		State:               state,
 	}
@@ -103,13 +111,17 @@ func (m *Manager) info() displayInfo {
 
 // learnedModes are the extra modes beyond the catalogue (configured and
 // learned from clients).
-func (m *Manager) learnedModes() []string {
+func (m *Manager) learnedModes() []string { return beyondCatalogue(m.extraModes()) }
+
+// beyondCatalogue keeps the valid modes the catalogue lacks, once each,
+// sorted as GET /display lists modes.
+func beyondCatalogue(extra []edid.Mode) []string {
 	seen := map[edid.Mode]bool{}
 	for _, c := range edid.Catalogue {
 		seen[c] = true
 	}
 	var modes []edid.Mode
-	for _, md := range m.extraModes() {
+	for _, md := range extra {
 		if !seen[md] && edid.Check(md) == nil {
 			seen[md] = true
 			modes = append(modes, md)
@@ -159,22 +171,86 @@ func (m *Manager) handleAddMode(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "%v", err)
 		return
 	}
+	if err := m.addMode(md); err != nil {
+		api.Error(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	m.hub.Publish("display.changed", struct{}{})
+	api.WriteJSON(w, http.StatusOK, map[string]bool{"reboot_needed": m.rebootNeededNow()})
+}
+
+func (m *Manager) addMode(md edid.Mode) error {
+	m.edidMu.Lock()
+	defer m.edidMu.Unlock()
 	if !slices.Contains(m.displayConfig().ExtraModes, md.String()) {
 		if err := m.cfg.Mutate(func(c *config.Config) {
 			if !slices.Contains(c.Display.ExtraModes, md.String()) {
 				c.Display.ExtraModes = append(c.Display.ExtraModes, md.String())
 			}
 		}); err != nil {
-			api.Error(w, http.StatusInternalServerError, "saving config: %v", err)
-			return
+			return fmt.Errorf("saving config: %w", err)
 		}
 	}
 	if _, err := m.regenerateEDID(); err != nil {
-		api.Error(w, http.StatusInternalServerError, "writing EDID: %v", err)
+		return fmt.Errorf("writing EDID: %w", err)
+	}
+	return nil
+}
+
+// handleRemoveMode is DELETE /display/modes/{mode}: it forgets a mode that
+// was added by hand or learned from clients, and rewrites the learned EDID.
+// A client that asks for the mode again teaches it again.
+func (m *Manager) handleRemoveMode(w http.ResponseWriter, r *http.Request) {
+	md, err := edid.ParseMode(r.PathValue("mode"))
+	if err != nil {
+		api.Error(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	found, err := m.removeMode(md)
+	if err != nil {
+		api.Error(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if !found {
+		api.Error(w, http.StatusNotFound, "%s is neither an added nor a learned mode", md)
 		return
 	}
 	m.hub.Publish("display.changed", struct{}{})
 	api.WriteJSON(w, http.StatusOK, map[string]bool{"reboot_needed": m.rebootNeededNow()})
+}
+
+// removeMode drops md from display.extra_modes and from every clients.json
+// entry that asked for it. It reports whether either held it.
+func (m *Manager) removeMode(md edid.Mode) (bool, error) {
+	m.edidMu.Lock()
+	defer m.edidMu.Unlock()
+	same := func(s string) bool {
+		p, err := edid.ParseMode(s)
+		return err == nil && p == md
+	}
+	added := slices.ContainsFunc(m.displayConfig().ExtraModes, same)
+	if added {
+		if err := m.cfg.Mutate(func(c *config.Config) {
+			c.Display.ExtraModes = slices.DeleteFunc(c.Display.ExtraModes, same)
+		}); err != nil {
+			return false, fmt.Errorf("saving config: %w", err)
+		}
+	}
+	// An unreadable clients.json holds nothing to remove; learn replaces it.
+	clients, err := LoadClients(config.ClientsPath())
+	learned := err == nil && clients.forget(md)
+	if learned {
+		if err := clients.Save(config.ClientsPath()); err != nil {
+			return false, fmt.Errorf("saving clients: %w", err)
+		}
+	}
+	if !added && !learned {
+		return false, nil
+	}
+	if _, err := m.regenerateEDID(); err != nil {
+		return true, fmt.Errorf("writing EDID: %w", err)
+	}
+	return true, nil
 }
 
 // handleSettings changes HDR and, optionally, the virtual connector (which

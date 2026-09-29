@@ -102,6 +102,9 @@ type Manager struct {
 	// composite watchdog and the hotplug watcher, whose channel is hot.
 	startOnce sync.Once
 	hot       <-chan struct{}
+	// edidMu serialises the read-modify-writes of display.extra_modes,
+	// clients.json and the learned EDID. Never take it while holding mu.
+	edidMu sync.Mutex
 
 	mu           sync.Mutex // guards everything below
 	code         string

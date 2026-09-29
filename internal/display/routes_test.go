@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -180,6 +183,162 @@ func TestAddMode(t *testing.T) {
 	}
 	if l := m.learnedModes(); !slices.Equal(l, []string{"2560x1080@100"}) {
 		t.Errorf("learned = %v", l)
+	}
+}
+
+func TestGetDisplayAddedAndDevices(t *testing.T) {
+	m, _, _, _ := newTestManager(t, false)
+	m.init(context.Background())
+	if d := m.info(); d.Added == nil || d.Devices == nil || len(d.Added)+len(d.Devices) != 0 {
+		t.Errorf("fresh added %#v devices %#v", d.Added, d.Devices)
+	}
+	m.cfg.Mutate(func(c *config.Config) {
+		c.Display.ExtraModes = []string{"2560x1080@100", "1920x1080@60", "junk", "3200x1800@90"}
+	})
+	mustWrite(t, config.ClientsPath(), `{
+		"Deck":{"w":1280,"h":800,"fps":90,"hdr":false,"last_seen":"2026-09-28T12:00:00Z"},
+		"Pixel":{"w":2400,"h":1080,"fps":120,"hdr":false,"last_seen":"2026-09-29T12:00:00Z"},
+		"TV":{"w":3840,"h":2160,"fps":60,"hdr":true,"last_seen":"2026-09-27T12:00:00Z"}}`)
+	w, _ := call(t, m.handleGet, http.MethodGet, "")
+	var d displayInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(d.Added, []string{"3200x1800@90", "2560x1080@100"}) {
+		t.Errorf("added = %v", d.Added)
+	}
+	var names []string
+	for _, dev := range d.Devices {
+		names = append(names, dev.Name)
+	}
+	if !slices.Equal(names, []string{"Pixel", "Deck", "TV"}) {
+		t.Errorf("devices = %+v", d.Devices)
+	}
+	if p := d.Devices[0]; p.Mode != "2400x1080@120" || p.HDR || !p.LastSeen.Equal(time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("Pixel = %+v", p)
+	}
+	if tv := d.Devices[2]; tv.Mode != "3840x2160@60" || !tv.HDR {
+		t.Errorf("TV = %+v", tv)
+	}
+	// learned stays the union of both, beyond the catalogue.
+	if !slices.Equal(d.Learned, []string{"3200x1800@90", "2560x1080@100", "2400x1080@120"}) {
+		t.Errorf("learned = %v", d.Learned)
+	}
+	for _, k := range []string{`"added"`, `"devices"`, `"name":"Deck"`, `"mode":"1280x800@90"`, `"last_seen"`} {
+		if !strings.Contains(w.Body.String(), k) {
+			t.Errorf("response lacks %s: %s", k, w.Body.String())
+		}
+	}
+}
+
+func removeMode(t *testing.T, m *Manager, mode string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodDelete, "/api/v1/display/modes/x", nil)
+	r.SetPathValue("mode", mode)
+	w := httptest.NewRecorder()
+	m.handleRemoveMode(w, r)
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	return w, out
+}
+
+func learnedEDIDHas(t *testing.T, mode edid.Mode) bool {
+	t.Helper()
+	b, err := os.ReadFile(config.LearnedEDIDPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := edid.Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Has(mode)
+}
+
+func TestRemoveMode(t *testing.T) {
+	m, _, _, hub := newTestManager(t, false)
+	m.init(context.Background())
+	evs, unsubscribe := hub.Subscribe()
+	defer unsubscribe()
+
+	if w, _ := call(t, m.handleAddMode, http.MethodPost, `{"mode":"2560x1080@100"}`); w.Code != 200 {
+		t.Fatalf("add: %d", w.Code)
+	}
+	if !learnedEDIDHas(t, md(2560, 1080, 100)) {
+		t.Fatal("added mode missing from the EDID")
+	}
+	w, out := removeMode(t, m, "2560x1080@100")
+	if w.Code != 200 || out["reboot_needed"] != true {
+		t.Fatalf("remove added: %d %v", w.Code, out)
+	}
+	if len(m.cfg.Display.ExtraModes) != 0 {
+		t.Errorf("extra_modes = %v", m.cfg.Display.ExtraModes)
+	}
+	if saved, _ := config.Load(); len(saved.Display.ExtraModes) != 0 {
+		t.Errorf("saved extra_modes = %v", saved.Display.ExtraModes)
+	}
+	if learnedEDIDHas(t, md(2560, 1080, 100)) {
+		t.Error("removed mode still in the EDID")
+	}
+
+	// A learned mode goes with every client that asked for it.
+	m.learn("Pixel", md(2400, 1080, 120), false, false)
+	m.learn("Pixel 2", md(2400, 1080, 120), false, false)
+	m.learn("Deck", md(1280, 800, 90), false, true)
+	if !learnedEDIDHas(t, md(2400, 1080, 120)) {
+		t.Fatal("learned mode missing from the EDID")
+	}
+	drain(evs, "")
+	if w, out := removeMode(t, m, "2400x1080@120"); w.Code != 200 || out["reboot_needed"] != true {
+		t.Fatalf("remove learned: %d %v", w.Code, out)
+	}
+	clients, err := LoadClients(config.ClientsPath())
+	if err != nil || len(clients) != 1 || clients["Deck"].FPS != 90 {
+		t.Errorf("clients.json = %+v %v", clients, err)
+	}
+	if learnedEDIDHas(t, md(2400, 1080, 120)) {
+		t.Error("forgotten mode still in the EDID")
+	}
+	if drain(evs, "display.changed") == nil {
+		t.Error("no display.changed after a removal")
+	}
+	if l := m.learnedModes(); len(l) != 0 {
+		t.Errorf("learned = %v", l)
+	}
+
+	for mode, code := range map[string]int{"garbage": 400, "3440x1080@100": 404, "2400x1080@120": 404, "": 400} {
+		w, out := removeMode(t, m, mode)
+		if w.Code != code || out["error"] == nil {
+			t.Errorf("%q: %d %v", mode, w.Code, out)
+		}
+	}
+}
+
+// TestModeEditsSerialise: learning clients while a mode is removed loses
+// none of them (both rewrite clients.json).
+func TestModeEditsSerialise(t *testing.T) {
+	m, _, _, _ := newTestManager(t, false)
+	m.init(context.Background())
+	m.learn("Old", md(2400, 1080, 120), false, true)
+	var wg sync.WaitGroup
+	for i := range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.learn(fmt.Sprintf("client %d", i), md(1920, 1080, 60), false, true)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := m.removeMode(md(2400, 1080, 120)); err != nil {
+			t.Error(err)
+		}
+	}()
+	wg.Wait()
+	clients, err := LoadClients(config.ClientsPath())
+	if err != nil || len(clients) != 12 {
+		t.Errorf("clients.json holds %d entries (%v): %v", len(clients), err, slices.Sorted(maps.Keys(clients)))
 	}
 }
 
