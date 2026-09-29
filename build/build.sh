@@ -21,7 +21,8 @@
 #   EROFS_PCLUSTER   physical cluster size for zstd/lzma (default: 262144)
 #   REFRESH=1        re-pacstrap even though packages.txt and pacman.conf are unchanged
 #   VOS_SIGNING_KEY  base64 ed25519 private key; if set, signs the manifest
-#                    (release builds; debug builds use /keys/dev.key)
+#                    (release builds; debug builds use /keys/dev.key). Only
+#                    `vos sign` gets to see it.
 #   VOS_ALLOW_STUB=1 tolerate `vos edid generate` and `vos sign` reporting
 #                    "not implemented" (while those Go subcommands are stubs)
 #
@@ -38,6 +39,12 @@
 #   checks    the finished erofs is mounted read-only and inspected; a bad
 #             image never reaches /out.
 set -euo pipefail
+
+# The release signing key goes to `vos sign` and nothing else: out of the
+# environment with it before anything runs, or every package scriptlet
+# pacstrap runs (and mkinitcpio, locale-gen, ...) could read it.
+SIGNING_KEY=${VOS_SIGNING_KEY:-}
+unset VOS_SIGNING_KEY
 
 SRC=/src
 # shellcheck source=build/lib.sh
@@ -507,11 +514,11 @@ jq -n --arg version "$VERSION" --argjson rollback_index "$ROLLBACK_INDEX" \
 
 # `vos sign --key KEYSPEC MANIFEST` writes MANIFEST.sig. The signature is then
 # checked independently (verify_ed25519, with openssl) against the public key
-# devices will use.
+# devices will use. The release key is in vos's environment alone.
 sign_manifest() { # sign_manifest KEYSPEC PUBKEY
     local msg
     rm -f "$STAGE/vos/manifest.json.sig"
-    if ! msg=$("$VOS" sign --key "$1" "$STAGE/vos/manifest.json" 2>&1); then
+    if ! msg=$(VOS_SIGNING_KEY=$SIGNING_KEY "$VOS" sign --key "$1" "$STAGE/vos/manifest.json" 2>&1); then
         stub_ok "vos sign" "$msg" && return 0
         die "vos sign failed: $msg"
     fi
@@ -526,7 +533,7 @@ sign_manifest() { # sign_manifest KEYSPEC PUBKEY
 }
 
 step "Writing manifest.json"
-if [[ -n ${VOS_SIGNING_KEY:-} ]]; then
+if [[ -n $SIGNING_KEY ]]; then
     sign_manifest env:VOS_SIGNING_KEY "$SRC/keys/release.pub"
 elif [[ $VOS_DEBUG == 1 && -s $KEYS/dev.key ]]; then
     sign_manifest "$KEYS/dev.key" "$KEYS/dev.pub"
