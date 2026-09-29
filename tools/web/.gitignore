@@ -1,0 +1,7 @@
+# Installed by `npm ci` from package-lock.json.
+node_modules/
+# Harness output and caches; gate runs write to --out, never here.
+out/
+.cache/
+# The dev server's state (hostname, sessions, settings) when VOS_WEB_STATE is not set.
+.state/
