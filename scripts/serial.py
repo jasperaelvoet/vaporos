@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Drive a Proxmox VM's serial console from scripts.
+"""Drive a VM's serial console from scripts.
 
 QEMU's serial socket takes a single client, so one long-lived broker owns it:
 everything the VM prints is appended to a log file, and anything written to a
 FIFO is typed into the VM. `expect` and `send` then work on those two files,
-which makes them safe to call repeatedly over ssh.
+which makes them safe to call repeatedly over ssh. `expect` also works on any
+plain log file, such as the one QEMU writes for `-serial file:` in CI.
 
   serial.py broker SOCKET LOG FIFO
   serial.py expect LOG REGEX [TIMEOUT]    wait for REGEX after the last match;
-                                          prints group 1 (or the whole match)
+                                          prints group 1 (or the whole match),
+                                          or every group, space-separated, when
+                                          REGEX has more than one
   serial.py mark LOG                      skip everything logged so far
   serial.py send FIFO TEXT                type TEXT followed by Enter
 """
@@ -44,15 +47,25 @@ def broker(sock_path, log_path, fifo_path):
                     s.sendall(data)
 
 
+def render(m):
+    """What `expect` prints for a match: the one group, all groups, or the match."""
+    if m.re.groups == 0:
+        return m.group(0).decode(errors="replace")
+    if m.re.groups == 1:
+        return (m.group(1) or b"").decode(errors="replace")
+    return " ".join((g or b"").decode(errors="replace") for g in m.groups())
+
+
 def expect(log_path, pattern, timeout=300):
     pos_path = log_path + ".pos"
     try:
-        pos = int(open(pos_path).read())
+        with open(pos_path) as f:
+            pos = int(f.read())
     except (OSError, ValueError):
         pos = 0
     rx = re.compile(pattern.encode(), re.M)
     deadline = time.time() + float(timeout)
-    while time.time() < deadline:
+    while True:
         try:
             with open(log_path, "rb") as f:
                 f.seek(pos)
@@ -61,9 +74,12 @@ def expect(log_path, pattern, timeout=300):
             buf = b""
         m = rx.search(buf)
         if m:
-            open(pos_path, "w").write(str(pos + m.end()))
-            print(m.group(1 if rx.groups else 0).decode(errors="replace"))
+            with open(pos_path, "w") as f:
+                f.write(str(pos + m.end()))
+            print(render(m))
             return 0
+        if time.time() >= deadline:
+            break
         time.sleep(0.5)
     sys.stderr.write(f"timeout after {timeout}s waiting for /{pattern}/\n")
     return 1
@@ -74,7 +90,8 @@ def mark(log_path):
         size = os.path.getsize(log_path)
     except OSError:
         size = 0
-    open(log_path + ".pos", "w").write(str(size))
+    with open(log_path + ".pos", "w") as f:
+        f.write(str(size))
     return 0
 
 
@@ -85,7 +102,7 @@ def send(fifo_path, text):
 
 
 if __name__ == "__main__":
-    cmd, *args = sys.argv[1:]
+    cmd, *args = sys.argv[1:] or [""]
     if cmd == "broker":
         broker(*args)
     elif cmd == "expect":

@@ -1,0 +1,55 @@
+# Every push publishes a release and an OCI version (build.yml), so prune the
+# old ones once a week: branch prereleases beyond the newest 10 (with their
+# tags), and ghcr.io versions beyond the newest 30. Releases from main stay.
+name: cleanup
+
+on:
+  schedule:
+    - cron: '23 4 * * 1' # Mondays, 04:23 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: cleanup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prereleases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      KEEP: 10
+    steps:
+      - name: Delete prereleases beyond the newest ${{ env.KEEP }}
+        run: |
+          gh release list --limit 1000 --json tagName,isPrerelease,createdAt \
+            --jq "[.[] | select(.isPrerelease)] | sort_by(.createdAt) | reverse | .[$KEEP:] | .[].tagName" \
+            >"$RUNNER_TEMP/old"
+          echo "$(wc -l <"$RUNNER_TEMP/old") prereleases to delete"
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "deleting $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done <"$RUNNER_TEMP/old"
+
+  packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: vaporos
+          package-type: container
+          min-versions-to-keep: 30

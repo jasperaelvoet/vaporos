@@ -1,99 +1,499 @@
+# Build, test and publish VaporOS on every push.
+#
+#   go        gofmt, vet, race-enabled unit tests, the static `vos` binary
+#   image     the OS (root.erofs, kernel, initramfs, manifest.json) and the
+#             ISO, built by build/build.sh in the same container as the dev loop
+#   vm-test   installs the ISO in QEMU through the web installer and boots it
+#   publish   pushes only: signs the manifest, pushes the OS to ghcr.io as an
+#             OCI artifact tagged <version> and <channel>, and attaches the ISO
+#             to a GitHub release (main: latest; other branches: prerelease)
+#
+# The version is the commit's UTC time (YYYYMMDD.HHMMSS), so every job and
+# every re-run of a commit agree on it. The channel is the branch name, which
+# is also the OCI tag installed machines on that branch follow.
 name: build
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
+# One run per branch or PR at a time. A new push to a PR replaces the running
+# build; pushes to a branch queue, so releases are published in order.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  # bootc is a long Rust build, so it gets its own cached image and only
-  # rebuilds when this workflow or the packages recipe changes.
-  packages:
+  go:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: Version and channel
+        id: meta
+        run: |
+          version=$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y%m%d.%H%M%S)
+          # The branch as an OCI tag: [A-Za-z0-9_][A-Za-z0-9._-]{0,127}.
+          # A PR builds for its head branch (but never publishes).
+          ref=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
+          channel=$(printf '%s' "$ref" | tr -c 'A-Za-z0-9._-' '-' | sed -E 's/^[.-]+//' | cut -c1-128)
+          [ -n "$channel" ] || channel=unnamed
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "channel=$channel" >>"$GITHUB_OUTPUT"
+          echo "### VaporOS $version (channel \`$channel\`)" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            for f in $unformatted; do echo "::error file=$f::not formatted with gofmt"; done
+            gofmt -d $unformatted
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      - name: Build vos
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v3
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA" \
+            -o .build/vos ./cmd/vos
+          file .build/vos
+          if ! file .build/vos | grep -q 'statically linked'; then
+            echo "::error::.build/vos is not a static binary"
+            exit 1
+          fi
+          have=$(.build/vos version)
+          if [ "$have" != "$VERSION" ]; then
+            echo "::error::'vos version' prints '$have', expected $VERSION"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
         with:
-          context: .
-          file: Containerfile.packages
-          platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE }}/aur-packages:latest
-          cache-from: type=gha,scope=packages
-          cache-to: type=gha,mode=max,scope=packages
+          name: vos
+          path: .build/vos
+          # .build is a dot directory, which counts as hidden.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
   image:
-    needs: packages
-    # Native x86_64. Building this under qemu emulation on an arm64 machine
-    # takes ~15 minutes for the bootc compile alone; here it is a few minutes.
+    needs: go
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.go.outputs.version }}
+      CHANNEL: ${{ needs.go.outputs.channel }}
+      # The package cache and the build tree (pacstrap base, rootfs overlay,
+      # stage) take tens of GB: they go on the runner's second disk.
+      SCRATCH: /mnt/vos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # buildx cannot push and write a local tarball in one pass, so build
-      # the tarball, then load and push it.
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Containerfile
-          platforms: linux/amd64
-          tags: ${{ env.IMAGE }}:latest
-          build-args: PACKAGES_IMAGE=${{ env.IMAGE }}/aur-packages:latest
-          cache-from: type=gha,scope=os
-          cache-to: type=gha,mode=max,scope=os
-          outputs: type=docker,dest=/tmp/image.tar
-
-      - name: Push to ghcr.io
-        if: github.event_name != 'pull_request'
+      - name: Free disk space
         run: |
-          docker load -i /tmp/image.tar
-          docker push "$IMAGE:latest"
+          df -h / /mnt || true
+          # Toolchains this job never uses.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+            /usr/local/share/powershell /usr/local/share/chromium
+          # Docker's storage moves to /mnt as well.
+          sudo systemctl stop docker.service docker.socket
+          sudo python3 - <<'EOF'
+          import json
+          path = "/etc/docker/daemon.json"
+          try:
+              with open(path) as f:
+                  conf = json.load(f)
+          except (OSError, ValueError):
+              conf = {}
+          conf["data-root"] = "/mnt/docker"
+          with open(path, "w") as f:
+              json.dump(conf, f, indent=2)
+          EOF
+          sudo rm -rf /var/lib/docker
+          sudo systemctl start docker.service
+          docker info --format 'docker data-root: {{.DockerRootDir}}'
+          sudo mkdir -p "$SCRATCH/pkgcache" "$SCRATCH/work"
+          sudo chown -R "$(id -u):$(id -g)" "$SCRATCH"
+          df -h / "$SCRATCH"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: image
-          path: /tmp/image.tar
+          name: vos
+          path: .build
 
-  iso:
-    needs: image
+      - name: Check vos
+        run: |
+          # Artifacts do not keep file modes.
+          chmod +x .build/vos
+          .build/vos version
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the builder image
+        uses: docker/build-push-action@v7
+        with:
+          context: build
+          file: build/Dockerfile
+          platforms: linux/amd64
+          tags: vos-builder:ci
+          load: true
+          pull: true
+          cache-from: type=gha,scope=vos-builder
+          cache-to: type=gha,mode=max,scope=vos-builder
+
+      # Weekly keys: packages.txt rarely changes, but the repos do, and an
+      # exact cache hit is never saved again. A new key each week keeps the
+      # cache close to the current repos at the cost of one save a week.
+      - name: Package cache key
+        id: pkgkey
+        run: echo "week=$(date -u +%G-W%V)" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.SCRATCH }}/pkgcache
+          key: pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-${{ steps.pkgkey.outputs.week }}
+          restore-keys: |
+            pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-
+            pacman-
+
+      - name: Build the image
+        env:
+          VOS_DEBUG: '0'
+          COMPRESS: zstd
+          GIT: ${{ github.sha }}
+        run: |
+          mkdir -p out
+          # As scripts/build.sh runs it, but with the package cache and the
+          # build tree in host directories on the big disk instead of volumes.
+          docker run --rm --privileged --platform linux/amd64 \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/out:/out" \
+            -v "$SCRATCH/pkgcache:/var/cache/pacman/pkg" \
+            -v "$SCRATCH/work:/work" \
+            -e VERSION -e CHANNEL -e GIT -e VOS_DEBUG -e COMPRESS -e REFRESH \
+            vos-builder:ci /src/build/build.sh
+          ls -l out
+
+      - name: Check the output
+        run: |
+          iso=out/vaporos-$VERSION.iso
+          [ -s "$iso" ] || { echo "::error::the build produced no $iso"; exit 1; }
+          # The manifest must describe this build, and its checksums the files
+          # next to it: this is what publish signs.
+          python3 - "$VERSION" "$CHANNEL" "$GITHUB_SHA" <<'EOF'
+          import hashlib, json, os, sys
+          version, channel, git = sys.argv[1:]
+          with open("out/manifest.json") as f:
+              m = json.load(f)
+          errors = []
+          want = {"schema": 1, "product": "vaporos", "version": version, "channel": channel}
+          for key, value in want.items():
+              if m.get(key) != value:
+                  errors.append(f"{key} is {m.get(key)!r}, expected {value!r}")
+          if m.get("git") != git:
+              print(f"::warning file=out/manifest.json::git is {m.get('git')!r}, expected {git!r}")
+          for role in ("root", "kernel", "initrd"):
+              a = (m.get("artifacts") or {}).get(role) or {}
+              path = os.path.join("out", a.get("name") or f"<no artifacts.{role}.name>")
+              if not os.path.isfile(path):
+                  errors.append(f"artifacts.{role}: no file {path}")
+                  continue
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for block in iter(lambda: f.read(1 << 20), b""):
+                      h.update(block)
+              if os.path.getsize(path) != a.get("size") or h.hexdigest() != a.get("sha256"):
+                  errors.append(f"{path} does not match its size/sha256 in the manifest")
+          for e in errors:
+              print(f"::error file=out/manifest.json::{e}")
+          sys.exit(1 if errors else 0)
+          EOF
+          size=$(stat -c %s "$iso")
+          {
+            echo "| file | size |"
+            echo "| --- | ---: |"
+            for f in out/*; do
+              printf '| %s | %s |\n' "${f#out/}" "$(numfmt --to=iec-i --suffix=B "$(stat -c %s "$f")")"
+            done
+          } >>"$GITHUB_STEP_SUMMARY"
+          # GitHub refuses release assets of 2 GiB or more; keep a margin.
+          if [ "$size" -ge 2093796556 ]; then
+            echo "::error::the ISO is $(numfmt --to=iec-i --suffix=B "$size"); it must stay under 1.95 GiB to be a release asset"
+            exit 1
+          fi
+
+      - name: Trim the package cache
+        run: |
+          # pacman ran as root in the container; actions/cache saves as us.
+          sudo chown -R "$(id -u):$(id -g)" "$SCRATCH/pkgcache"
+          # Leftover download directories, and every package this build did
+          # not install, so the cache holds exactly the current package set.
+          find "$SCRATCH/pkgcache" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          db=$SCRATCH/work/base/var/lib/pacman/local
+          if [ -d "$db" ]; then
+            for f in "$SCRATCH"/pkgcache/*.pkg.tar.*; do
+              [ -e "$f" ] || continue
+              id=$(basename "$f")
+              id=${id%-*.pkg.tar.*}
+              [ -d "$db/$id" ] || rm -f "$f"
+            done
+          else
+            echo "::warning::no package database at $db; the package cache is saved untrimmed"
+          fi
+          du -sh "$SCRATCH/pkgcache"
+
+      - name: Upload the ISO
+        uses: actions/upload-artifact@v7
+        with:
+          name: iso
+          path: |
+            out/vaporos-${{ env.VERSION }}.iso
+            out/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload the OS files
+        uses: actions/upload-artifact@v7
+        with:
+          name: os
+          path: |
+            out/
+            !out/*.iso
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  vm-test:
+    needs: [go, image]
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.go.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: image
+          name: iso
           path: out
 
-      - name: Build ISO
-        run: ./scripts/build-iso.sh
+      - name: Enable KVM
+        id: kvm
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+              sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            sudo udevadm settle
+          fi
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "accel=kvm" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning title=No KVM::this runner has no usable /dev/kvm, so the VM test runs under TCG emulation; it may time out, and does not fail the build"
+            echo "accel=tcg" >>"$GITHUB_OUTPUT"
+          fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            qemu-system-x86 qemu-utils ovmf >/dev/null
+          qemu-system-x86_64 --version
+
+      - name: Install the ISO through the web installer and boot it
+        continue-on-error: ${{ steps.kvm.outputs.accel != 'kvm' }}
+        env:
+          ACCEL: ${{ steps.kvm.outputs.accel }}
+        run: bash tests/qemu-smoke.sh "out/vaporos-$VERSION.iso" "$VERSION" vm-smoke
+
+      - name: Upload the VM logs
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: vaporos-iso
-          path: out/*.iso
+          name: vm-smoke
+          path: |
+            vm-smoke/*.log
+            vm-smoke/screens/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: [go, image]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.go.outputs.version }}
+      CHANNEL: ${{ needs.go.outputs.channel }}
+    steps:
+      - name: Check for the signing key
+        id: key
+        env:
+          VOS_SIGNING_KEY: ${{ secrets.VOS_SIGNING_KEY }}
+        run: |
+          if [ -z "$VOS_SIGNING_KEY" ]; then
+            echo "::notice title=Not published::the VOS_SIGNING_KEY secret is not set, so $VERSION is neither signed nor published. Create a key pair with 'vos keygen', commit the public key as keys/release.pub and store the private key with 'gh secret set VOS_SIGNING_KEY'."
+            echo "enabled=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.key.outputs.enabled == 'true'
+        with:
+          # For the release notes.
+          fetch-depth: 30
+
+      - uses: actions/download-artifact@v8
+        if: steps.key.outputs.enabled == 'true'
+        with:
+          name: vos
+          path: .build
+
+      - uses: actions/download-artifact@v8
+        if: steps.key.outputs.enabled == 'true'
+        with:
+          name: iso
+          path: out
+
+      - uses: actions/download-artifact@v8
+        if: steps.key.outputs.enabled == 'true'
+        with:
+          name: os
+          path: out
+
+      - name: Sign the manifest
+        if: steps.key.outputs.enabled == 'true'
+        env:
+          VOS_SIGNING_KEY: ${{ secrets.VOS_SIGNING_KEY }}
+        run: |
+          chmod +x .build/vos
+          .build/vos sign --key env:VOS_SIGNING_KEY out/manifest.json
+          if [ ! -s out/manifest.json.sig ]; then
+            echo "::error::vos sign wrote no out/manifest.json.sig"
+            exit 1
+          fi
+
+      # A release signed with a key that installed systems do not trust would
+      # be rejected by every one of them, so check before publishing anything.
+      - name: Check the signature against keys/release.pub
+        if: steps.key.outputs.enabled == 'true'
+        run: |
+          if [ ! -f keys/release.pub ]; then
+            echo "::warning::keys/release.pub is not in the repository; images from this build trust no release key"
+            exit 0
+          fi
+          # An Ed25519 SubjectPublicKeyInfo is a fixed 12-byte DER header
+          # followed by the raw 32-byte key.
+          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; base64 -d keys/release.pub; } \
+            >"$RUNNER_TEMP/release.der"
+          base64 -d out/manifest.json.sig >"$RUNNER_TEMP/manifest.sig"
+          if ! openssl pkeyutl -verify -pubin -keyform DER -inkey "$RUNNER_TEMP/release.der" -rawin \
+              -in out/manifest.json -sigfile "$RUNNER_TEMP/manifest.sig"; then
+            echo "::error::the signature does not verify with keys/release.pub: VOS_SIGNING_KEY is not the release key"
+            exit 1
+          fi
+
+      - name: Checksums
+        if: steps.key.outputs.enabled == 'true'
+        working-directory: out
+        run: |
+          sha256sum "vaporos-$VERSION.iso" manifest.json manifest.json.sig >SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: oras-project/setup-oras@v2
+        if: steps.key.outputs.enabled == 'true'
+
+      - name: Push the OS to ghcr.io
+        if: steps.key.outputs.enabled == 'true'
+        working-directory: out
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          repo=ghcr.io/${GITHUB_REPOSITORY,,}
+          printf '%s' "$REGISTRY_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # oras records each file's name as its org.opencontainers.image.title
+          # annotation, which is how `vos update` finds the files.
+          oras push "$repo:$VERSION,$CHANNEL" \
+            --artifact-type application/vnd.vaporos.os.v1 \
+            --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "org.opencontainers.image.version=$VERSION" \
+            manifest.json:application/vnd.vaporos.manifest.v1+json \
+            manifest.json.sig:application/vnd.vaporos.manifest.signature.v1 \
+            root.erofs:application/vnd.vaporos.root.v1.erofs \
+            vmlinuz:application/vnd.vaporos.kernel.v1 \
+            initramfs.img:application/vnd.vaporos.initrd.v1
+          echo "OCI: \`$repo:$VERSION\`, \`$repo:$CHANNEL\`" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub release
+        if: steps.key.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=v$VERSION
+          repo=ghcr.io/${GITHUB_REPOSITORY,,}
+          {
+            echo "VaporOS $VERSION, built from \`$CHANNEL\` at $GITHUB_SHA."
+            echo
+            echo "- **Install:** write \`vaporos-$VERSION.iso\` to a USB stick and boot it in UEFI mode."
+            echo "- **Update:** machines on the \`$CHANNEL\` channel pull \`$repo:$CHANNEL\`."
+            echo
+            echo "### Recent commits"
+            git log -n 15 --no-merges --format='- %h %s' "$GITHUB_SHA"
+          } >"$RUNNER_TEMP/notes.md"
+          files=("out/vaporos-$VERSION.iso" out/manifest.json out/manifest.json.sig out/SHA256SUMS)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # A re-run of this job: refresh the assets of the existing release.
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            if [ "$GITHUB_REF_NAME" = main ]; then
+              kind=(--latest)
+            else
+              kind=(--prerelease --latest=false)
+            fi
+            gh release create "$tag" "${files[@]}" "${kind[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "VaporOS $VERSION ($CHANNEL)" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          echo "Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag" >>"$GITHUB_STEP_SUMMARY"
