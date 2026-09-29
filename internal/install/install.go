@@ -109,8 +109,10 @@ type installer struct {
 	parts    partSet // kernel names of the four partitions
 
 	connector      string // virtual connector for this hardware ("" = none)
-	machineCmdline string // kernel args for connector
-	keepCmdline    bool   // repair: vos_data already has machine args
+	machineCmdline string // kernel args for connector, and vos.disk once known
+	keepCmdline    bool   // repair: vos_data already has exactly these machine args
+	diskGUID       string // the target's GPT disk GUID ("" = unknown)
+	hadConfig      bool   // repair: vos_data has a readable config.json
 	libraries      []config.Library
 
 	step         string
@@ -306,7 +308,8 @@ func (in *installer) execute(ctx context.Context) error {
 		return err
 	}
 	steps := []func(context.Context) error{
-		in.fetchBoot, in.partition, in.writeRoot, in.installBootloader, in.configure, in.finish,
+		in.fetchBoot, in.partition, in.writeRoot, in.installBootloader, in.inspectTarget, in.configure,
+		in.configurePower, in.finish,
 	}
 	for _, step := range steps {
 		if err := step(ctx); err != nil {
@@ -356,6 +359,7 @@ func (in *installer) partition(ctx context.Context) error {
 		return err
 	}
 	in.parts = parts
+	in.recordDisk()
 
 	in.report(StepPartition, 8, "Creating filesystems")
 	for _, p := range parts.list() {
@@ -434,8 +438,22 @@ func (in *installer) prepareRepair(ctx context.Context) error {
 	if err := in.run(ctx, "mkfs.vfat", "-F", "32", "-n", "VOS_ESP", devPath(in.parts.esp)); err != nil {
 		return err
 	}
+	in.recordDisk()
 	in.report(StepPartition, 10, "Disk prepared")
 	return nil
+}
+
+// recordDisk reads the target's GPT disk GUID for vos.disk=: the initramfs
+// and updates then find VaporOS's partitions on this disk only, even with
+// another disk with VaporOS partitions attached. Without it they go by
+// partition label, as installs before vos.disk do.
+func (in *installer) recordDisk() {
+	guid, err := in.env.diskGUID(devPath(in.disk))
+	if err != nil {
+		in.env.logf("install: reading the GPT disk GUID of %s: %v; partitions will be found by label", devName(in.disk), err)
+		return
+	}
+	in.diskGUID = guid
 }
 
 // installBootloader installs systemd-boot and the entry for slot a. The
@@ -450,6 +468,11 @@ func (in *installer) installBootloader(ctx context.Context) error {
 	in.espDir = esp
 	if err := in.run(ctx, "bootctl", "install", "--esp-path="+esp, "--graceful", "--no-pager"); err != nil {
 		return err
+	}
+	// NVRAM outlives the disk: a menu timeout or pinned entry from an
+	// earlier systemd-boot on this PC would beat loader.conf.
+	if err := in.env.clearLoaderVars(); err != nil {
+		in.env.logf("install: clearing systemd-boot's saved settings: %v", err)
 	}
 	if err := in.env.writeLoaderConf(esp); err != nil {
 		return fmt.Errorf("loader.conf: %w", err)
@@ -493,15 +516,106 @@ func hasWord(s, w string) bool {
 
 // entryMachineCmdline is the machine part of the entry's options: what
 // vos_data already has on a repair (the user may have changed the
-// connector since), else what this hardware needs.
+// connector since), else what this hardware needs; with vos.disk= naming
+// the target. configure writes the same to /var/lib/vos/cmdline.
 func (in *installer) entryMachineCmdline() string {
+	machine, existing, found := in.machineCmdline, "", false
 	if in.opts.Mode == ModeRepair {
 		if b, err := os.ReadFile(filepath.Join(in.rootDir, config.MachineCmdlinePath())); err == nil {
-			in.keepCmdline = true
-			return strings.TrimSpace(string(b))
+			existing, found = strings.TrimSpace(string(b)), true
+			machine = existing
 		}
 	}
-	return in.machineCmdline
+	if in.diskGUID != "" {
+		machine = boot.WithDiskArg(machine, in.diskGUID)
+	}
+	in.machineCmdline = machine
+	in.keepCmdline = found && machine == existing
+	return machine
+}
+
+// inspectTarget reads what a repair keeps from vos_data, now that it is
+// mounted. An empty hostname or timezone means "keep the installed
+// system's", found in the /etc overlay's upper layer (what the user set,
+// not the image's defaults).
+func (in *installer) inspectTarget(ctx context.Context) error {
+	if in.opts.Mode != ModeRepair {
+		return nil
+	}
+	upper := filepath.Join(in.rootDir, "state", "etc", "upper")
+	if in.opts.Hostname == "" {
+		if h := config.ReadLine(filepath.Join(upper, "hostname")); hostnameRE.MatchString(h) {
+			in.opts.Hostname = h
+		}
+	}
+	if in.opts.Timezone == "" {
+		if link, err := os.Readlink(filepath.Join(upper, "localtime")); err == nil {
+			// Only a zone the new image still has; otherwise the link stays.
+			tz := zoneFromLink(link)
+			if tz != "" && checkTimezone(filepath.Join(in.rootDir, "usr", "share", "zoneinfo"), tz) == nil {
+				in.opts.Timezone = tz
+			}
+		}
+	}
+	in.hadConfig = config.ReadJSON(filepath.Join(in.rootDir, config.ConfigPath()), config.Defaults()) == nil
+	return nil
+}
+
+// configurePower turns idle shutdown on in a new config.json when a wired
+// NIC can wake the PC with a magic packet. Without one, a PC switched off
+// for being idle stays off until someone presses its power button. A
+// repair keeps the user's setting.
+func (in *installer) configurePower(ctx context.Context) error {
+	if in.hadConfig {
+		return nil
+	}
+	nic := in.wakeOnLANNIC(ctx)
+	if nic == "" {
+		in.env.logf("install: no wired network interface supports Wake-on-LAN; idle shutdown stays off")
+		return nil
+	}
+	path := filepath.Join(in.rootDir, config.ConfigPath())
+	cfg := config.Defaults()
+	if err := config.ReadJSON(path, cfg); err != nil {
+		return fmt.Errorf("config.json: %w", err)
+	}
+	cfg.Power.IdleShutdown = true
+	in.env.logf("install: %s wakes on a magic packet; idle shutdown is on", nic)
+	return config.WriteJSONAtomic(path, cfg, 0o644)
+}
+
+// wakeOnLANNIC returns a wired network interface whose driver can wake the
+// machine with a magic packet (ethtool's "Supports Wake-on:" lists g).
+func (in *installer) wakeOnLANNIC(ctx context.Context) string {
+	entries, err := os.ReadDir(paths.ClassNet)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		name := e.Name()
+		dir := filepath.Join(paths.ClassNet, name)
+		// Hardware (a device), Ethernet (ARPHRD_ETHER), not Wi-Fi.
+		if strings.HasPrefix(name, "-") || !exists(filepath.Join(dir, "device")) ||
+			readSys(filepath.Join(dir, "type")) != "1" ||
+			exists(filepath.Join(dir, "wireless")) || exists(filepath.Join(dir, "phy80211")) {
+			continue
+		}
+		out, err := in.env.run.Run(ctx, "ethtool", name)
+		if err == nil && supportsMagicPacket(out) {
+			return name
+		}
+	}
+	return ""
+}
+
+// supportsMagicPacket reads ethtool's "Supports Wake-on: pumbg" line.
+func supportsMagicPacket(ethtool string) bool {
+	for _, line := range strings.Split(ethtool, "\n") {
+		if modes, ok := strings.CutPrefix(strings.TrimSpace(line), "Supports Wake-on:"); ok {
+			return strings.Contains(strings.TrimSpace(modes), "g")
+		}
+	}
+	return false
 }
 
 // mount runs mount(8) with args (the mount point last) and records the

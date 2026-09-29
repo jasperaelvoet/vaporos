@@ -55,6 +55,10 @@ type env struct {
 	installEntry      func(esp, version, slot, srcDir, options string, tries int) error
 	setMachineCmdline func(root, cmdline string) error
 	setAdminPassword  func(root, password string) error
+	// diskGUID reads a disk's GPT disk GUID (vos.disk=).
+	diskGUID func(dev string) (string, error)
+	// clearLoaderVars drops systemd-boot settings left in NVRAM.
+	clearLoaderVars func() error
 
 	// sleep waits d or until ctx ends; tests make it instant.
 	sleep func(ctx context.Context, d time.Duration) error
@@ -73,6 +77,8 @@ func defaultEnv() *env {
 		installEntry:      boot.InstallEntry,
 		setMachineCmdline: boot.SetMachineCmdline,
 		setAdminPassword:  auth.SetAdminPassword,
+		diskGUID:          boot.DiskGUID,
+		clearLoaderVars:   boot.ClearLoaderOverrides,
 		sleep:             sleepCtx,
 		logf:              log.Printf,
 	}

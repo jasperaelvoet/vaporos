@@ -137,11 +137,15 @@ func TestInstallErase(t *testing.T) {
 	if e.slot != "a" || e.version != img.man.Version || e.tries != 0 || e.srcDir == "" || e.srcDir == config.LiveMedium || exists(e.srcDir) {
 		t.Errorf("entry = %+v", e)
 	}
-	if wantOpts := "vos.slot=a quiet loglevel=3 console=ttyS0,115200 video=DP-1:e drm.edid_firmware=DP-1:edid/vaporos.bin"; e.options != wantOpts {
+	// vos.disk names this disk, for the initramfs and for updates.
+	if wantOpts := "vos.slot=a quiet loglevel=3 console=ttyS0,115200 video=DP-1:e drm.edid_firmware=DP-1:edid/vaporos.bin vos.disk=" + testDiskGUID; e.options != wantOpts {
 		t.Errorf("options = %q, want %q", e.options, wantOpts)
 	}
 	if !exists(filepath.Join(e.esp, "loader/loader.conf")) {
 		t.Error("no loader.conf")
+	}
+	if f.loaderCleared != 1 {
+		t.Errorf("systemd-boot's NVRAM settings cleared %d times", f.loaderCleared)
 	}
 
 	// First-boot state.
@@ -155,7 +159,7 @@ func TestInstallErase(t *testing.T) {
 	if f.adminPass != "correct horse" || !exists(filepath.Join(root, "var/lib/vos/auth.json")) {
 		t.Errorf("admin password not written (%q)", f.adminPass)
 	}
-	if got := readFile(t, filepath.Join(root, "var/lib/vos/cmdline")); !strings.HasPrefix(got, "video=DP-1:e") {
+	if got := readFile(t, filepath.Join(root, "var/lib/vos/cmdline")); !strings.HasPrefix(got, "video=DP-1:e") || !strings.HasSuffix(got, " vos.disk="+testDiskGUID+"\n") {
 		t.Errorf("machine cmdline = %q", got)
 	}
 	if fi, err := os.Stat(filepath.Join(root, "var/roothome")); err != nil || fi.Mode().Perm() != 0o700 {
@@ -167,6 +171,9 @@ func TestInstallErase(t *testing.T) {
 	}
 	if cfg.Schema != 1 || cfg.Update.Channel != "testing" || cfg.Update.Source != config.DefaultUpdateSrc || cfg.Display.VirtualConnector != "DP-1" {
 		t.Errorf("config = %+v", cfg)
+	}
+	if cfg.Power.IdleShutdown {
+		t.Error("idle shutdown on without a NIC that wakes the PC")
 	}
 	wantLib := config.Library{UUID: "1de127b9-77c4", Label: "SATA 1TB", Mountpoint: "/var/mnt/SATA_1TB", FSType: "ext4"}
 	if len(cfg.Storage.Libraries) != 1 || cfg.Storage.Libraries[0] != wantLib {
@@ -184,6 +191,7 @@ func TestInstallErase(t *testing.T) {
 func TestInstallNoGPUNoPassword(t *testing.T) {
 	f, _ := installMachine(t)
 	f.gpu.Supported = false
+	f.diskGUID = "" // and no readable disk GUID: partitions go by label
 	r := f.runner()
 	if err := runInstall(context.Background(), f.env(r), Options{Disk: "sda"}, nil); err != nil {
 		t.Fatal(err)
@@ -197,6 +205,71 @@ func TestInstallNoGPUNoPassword(t *testing.T) {
 	}
 	if f.entry.options != "vos.slot=a quiet loglevel=3 console=ttyS0,115200" {
 		t.Errorf("options = %q", f.entry.options)
+	}
+}
+
+// Without a GPU the machine args are only the boot disk.
+func TestInstallNoGPUHasDisk(t *testing.T) {
+	f, _ := installMachine(t)
+	f.gpu.Supported = false
+	if err := runInstall(context.Background(), f.env(f.runner()), Options{Disk: "sda"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(config.RunDir, "target/root")
+	if got := readFile(t, filepath.Join(root, "var/lib/vos/cmdline")); got != "vos.disk="+testDiskGUID+"\n" {
+		t.Errorf("machine cmdline = %q", got)
+	}
+	if f.entry.options != "vos.slot=a quiet loglevel=3 console=ttyS0,115200 vos.disk="+testDiskGUID {
+		t.Errorf("options = %q", f.entry.options)
+	}
+}
+
+// Idle shutdown is on only when a wired NIC can wake the PC again.
+func TestInstallIdleShutdownNeedsWakeOnLAN(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		nics     map[string]bool   // name -> wifi
+		ethtool  map[string]string // name -> "Supports Wake-on:" modes
+		wantIdle bool
+	}{
+		{"magic packet", map[string]bool{"enp5s0": false}, map[string]string{"enp5s0": "pumbg"}, true},
+		{"no magic packet", map[string]bool{"enp5s0": false}, map[string]string{"enp5s0": "pumb"}, false},
+		{"no wake-on-lan", map[string]bool{"enp5s0": false}, map[string]string{"enp5s0": "d"}, false},
+		{"only wifi", map[string]bool{"wlan0": true}, map[string]string{"wlan0": "g"}, false},
+		{"second nic", map[string]bool{"enp4s0": false, "enp5s0": false}, map[string]string{"enp4s0": "d", "enp5s0": "g"}, true},
+		{"no nic", nil, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := installMachine(t)
+			for n, wifi := range tc.nics {
+				f.addNIC(n, wifi)
+			}
+			f.mkdir("sys/class/net/lo") // virtual: no device
+			r := f.runner()
+			r.hook = func(name string, args []string) (string, error, bool) {
+				if name != "ethtool" {
+					return "", nil, false
+				}
+				modes, ok := tc.ethtool[args[0]]
+				if !ok {
+					return "", errors.New("ethtool: no such device"), true
+				}
+				return "Settings for " + args[0] + ":\n\tSupports Wake-on: " + modes + "\n\tWake-on: d\n", nil, true
+			}
+			if err := runInstall(context.Background(), f.env(r), Options{Disk: "sda"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			var cfg config.Config
+			if err := config.ReadJSON(filepath.Join(config.RunDir, "target/root/var/lib/vos/config.json"), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Power.IdleShutdown != tc.wantIdle || cfg.Power.IdleMinutes != 15 || cfg.Display.VirtualConnector != "DP-1" {
+				t.Errorf("config power %+v, display %+v", cfg.Power, cfg.Display)
+			}
+			if r.called("ethtool lo") {
+				t.Error("asked ethtool about lo")
+			}
+		})
 	}
 }
 
@@ -269,13 +342,14 @@ func TestInstallRepair(t *testing.T) {
 	if !slotHas(t, f.path("dev/nvme0n1p2"), img.root) {
 		t.Error("slot a not rewritten")
 	}
-	// The machine cmdline on vos_data wins over the detected connector.
-	if f.entry.options != "vos.slot=a quiet loglevel=3 console=ttyS0,115200 video=HDMI-A-1:e keep" {
+	// The machine cmdline on vos_data wins over the detected connector; it
+	// gains the boot disk.
+	if f.entry.options != "vos.slot=a quiet loglevel=3 console=ttyS0,115200 video=HDMI-A-1:e keep vos.disk="+testDiskGUID {
 		t.Errorf("options = %q", f.entry.options)
 	}
 	root := filepath.Join(config.RunDir, "target/root")
-	if got := readFile(t, filepath.Join(root, "var/lib/vos/cmdline")); got != "video=HDMI-A-1:e keep\n" {
-		t.Errorf("cmdline rewritten: %q", got)
+	if got := readFile(t, filepath.Join(root, "var/lib/vos/cmdline")); got != "video=HDMI-A-1:e keep vos.disk="+testDiskGUID+"\n" {
+		t.Errorf("cmdline: %q", got)
 	}
 	var cfg config.Config
 	config.ReadJSON(filepath.Join(root, "var/lib/vos/config.json"), &cfg)
@@ -297,6 +371,54 @@ func TestInstallRepair(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(root, "etc/hostname")); got != "vapor\n" {
 		t.Errorf("repair without a hostname changed it: %q", got)
+	}
+}
+
+// A repair with no hostname or timezone keeps what the user set, read from
+// the /etc overlay's upper layer on vos_data; a config.json there keeps
+// its idle shutdown setting whatever the NIC can do.
+func TestInstallRepairKeepsIdentity(t *testing.T) {
+	f := newFakeSys(t)
+	f.addDisk("sda", "8:0", "ata1", 64*gib, "SSD")
+	f.vosParts("sda", 8, 8192)
+	writeImage(t, config.LiveMedium, 1<<20)
+	f.addNIC("enp5s0", false)
+	r := f.runner()
+	r.hook = func(name string, args []string) (string, error, bool) {
+		switch {
+		case name == "ethtool":
+			return "Supports Wake-on: pumbg\n", nil, true
+		case name == "mount" && args[0] == "--bind":
+			upper := filepath.Join(filepath.Dir(args[1]), "etc", "upper")
+			os.WriteFile(filepath.Join(upper, "hostname"), []byte("den\n"), 0o644)
+			os.Symlink("../usr/share/zoneinfo/Europe/Brussels", filepath.Join(upper, "localtime"))
+			config.WriteJSONAtomic(filepath.Join(args[2], "lib/vos/config.json"),
+				map[string]any{"schema": 1, "power": map[string]any{"idle_shutdown": false, "idle_minutes": 30}}, 0o644)
+		}
+		return "", nil, false
+	}
+	var recs []progressRec
+	if err := runInstall(context.Background(), f.env(r), Options{Disk: "sda", Mode: ModeRepair}, recorder(&recs)); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(config.RunDir, "target/root")
+	if got := readFile(t, filepath.Join(root, "etc/hostname")); got != "den\n" {
+		t.Errorf("hostname = %q", got)
+	}
+	if got, _ := os.Readlink(filepath.Join(root, "etc/localtime")); got != "../usr/share/zoneinfo/Europe/Brussels" {
+		t.Errorf("localtime -> %q", got)
+	}
+	configuring := false
+	for _, rec := range recs {
+		configuring = configuring || rec.message == "Configuring den"
+	}
+	if !configuring {
+		t.Errorf("progress never named the kept hostname: %+v", recs)
+	}
+	var cfg config.Config
+	config.ReadJSON(filepath.Join(root, "var/lib/vos/config.json"), &cfg)
+	if cfg.Power.IdleShutdown || cfg.Power.IdleMinutes != 30 {
+		t.Errorf("repair changed power settings: %+v", cfg.Power)
 	}
 }
 

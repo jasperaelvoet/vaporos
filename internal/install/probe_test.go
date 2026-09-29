@@ -168,17 +168,33 @@ func TestProbe(t *testing.T) {
 	}
 }
 
+// The disk scan (storage.ScanDisks) mounts filesystems to look for
+// libraries too: during an install it must not run at all, or a mount on
+// the target could make the install's wipefs fail. The last scan stands in.
 func TestProbeNoMountWhileInstalling(t *testing.T) {
 	_, r, s := probeMachine(t)
+	scans := 0
+	scan := s.env.scanDisks
+	s.env.scanDisks = func(ctx context.Context) ([]storage.Disk, error) { scans++; return scan(ctx) }
+	s.probe(context.Background(), "", "")
+	calls := len(r.callList())
 	s.status.State = StateRunning
 	res := s.probe(context.Background(), "", "")
-	if len(r.callList()) != 0 {
-		t.Errorf("probe mounted during an install: %v", r.callList())
+	if scans != 1 || len(r.callList()) != calls {
+		t.Errorf("probe scanned (%d scans) or mounted during an install: %v", scans, r.callList()[calls:])
 	}
 	for _, d := range res.Disks {
 		if d.Path == "/dev/sda" && len(d.SteamLibraries) != 1 {
 			t.Error("already-mounted libraries should still be found")
 		}
+	}
+
+	// Without an earlier scan, sysfs lists the disks.
+	_, r, s = probeMachine(t)
+	s.env.scanDisks = func(context.Context) ([]storage.Disk, error) { t.Error("scanned during an install"); return nil, nil }
+	s.status.State = StateRunning
+	if res := s.probe(context.Background(), "", ""); len(res.Disks) != 4 || len(r.callList()) != 0 {
+		t.Errorf("disks %+v, calls %v", res.Disks, r.callList())
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
+	"github.com/jasperaelvoet/vaporos/internal/storage"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
@@ -58,10 +59,11 @@ type Service struct {
 	mu     sync.Mutex
 	status Status
 
-	// scanMu serialises library detection (which mounts filesystems) with
-	// the start of an install.
+	// scanMu serialises disk scans and library detection (both mount
+	// filesystems) with the start of an install.
 	scanMu   sync.Mutex
 	libCache map[string][]SteamLibrary
+	lastScan []storage.Disk // the last disk scan, reused while an install runs
 }
 
 // NewService creates the installer service. The live system's machine

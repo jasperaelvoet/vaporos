@@ -18,6 +18,7 @@ import (
 // are variables so tests can point them at a fake tree.
 type sysPaths struct {
 	ClassBlock string // /sys/class/block: every block device by kernel name
+	ClassNet   string // /sys/class/net: network interfaces
 	DevBlock   string // /sys/dev/block: the same, by major:minor
 	Dev        string // device nodes
 	Mountinfo  string
@@ -30,6 +31,7 @@ type sysPaths struct {
 
 var paths = sysPaths{
 	ClassBlock: "/sys/class/block",
+	ClassNet:   "/sys/class/net",
 	DevBlock:   "/sys/dev/block",
 	Dev:        "/dev",
 	Mountinfo:  "/proc/self/mountinfo",

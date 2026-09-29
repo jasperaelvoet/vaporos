@@ -33,10 +33,13 @@ type fakeSys struct {
 	scan  []storage.Disk
 	gpu   display.GPUInfo
 
-	mu        sync.Mutex
-	entry     entryCall
-	entryN    int
-	adminPass string
+	diskGUID string // what the target's GPT header says ("" = unreadable)
+
+	mu            sync.Mutex
+	entry         entryCall
+	entryN        int
+	adminPass     string
+	loaderCleared int
 
 	// onStep, if set, runs for every progress report of f.recorder, in
 	// the installer's goroutine: tests use it to act between steps.
@@ -57,7 +60,7 @@ func newFakeSys(t *testing.T) *fakeSys {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeSys{t: t, root: root, disks: map[string]string{},
+	f := &fakeSys{t: t, root: root, disks: map[string]string{}, diskGUID: testDiskGUID,
 		gpu: display.GPUInfo{Vendor: "amd", Name: "RX 9070 XT", Driver: "amdgpu", Supported: true}}
 
 	oldPaths, oldBlock, oldAllow := paths, isBlockDevice, allowAnywhere
@@ -71,6 +74,7 @@ func newFakeSys(t *testing.T) *fakeSys {
 
 	paths = sysPaths{
 		ClassBlock: f.path("sys/class/block"),
+		ClassNet:   f.path("sys/class/net"),
 		DevBlock:   f.path("sys/dev/block"),
 		Dev:        f.path("dev"),
 		Mountinfo:  f.path("proc/mountinfo"),
@@ -174,6 +178,19 @@ func (f *fakeSys) addPart(disk, name, majmin string, n int, label string, size i
 
 // fakePartCap caps the size of a fake partition node.
 const fakePartCap = 64 << 20
+
+// testDiskGUID is the fake target's GPT disk GUID.
+const testDiskGUID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+// addNIC adds a network interface: wired Ethernet hardware unless wifi.
+func (f *fakeSys) addNIC(name string, wifi bool) {
+	dir := filepath.Join("sys/class/net", name)
+	f.mkdir(filepath.Join(dir, "device"))
+	f.write(filepath.Join(dir, "type"), "1\n")
+	if wifi {
+		f.mkdir(filepath.Join(dir, "wireless"))
+	}
+}
 
 // slotHas reports whether the partition node at p starts with want.
 func slotHas(t *testing.T, p string, want []byte) bool {
@@ -436,6 +453,18 @@ func (f *fakeSys) env(r Runner) *env {
 			f.adminPass = password
 			f.mu.Unlock()
 			return config.WriteJSONAtomic(filepath.Join(root, config.AuthPath()), map[string]string{"user": "admin"}, 0o600)
+		},
+		diskGUID: func(dev string) (string, error) {
+			if f.diskGUID == "" {
+				return "", fmt.Errorf("%s: no GPT", dev)
+			}
+			return f.diskGUID, nil
+		},
+		clearLoaderVars: func() error {
+			f.mu.Lock()
+			f.loaderCleared++
+			f.mu.Unlock()
+			return nil
 		},
 		sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
 		logf:  f.t.Logf,

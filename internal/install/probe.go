@@ -169,9 +169,23 @@ func (s *Service) probe(ctx context.Context, source, channel string) ProbeResult
 // sysfs) with the Steam libraries on each.
 func (s *Service) probeDisks(ctx context.Context) []ProbeDisk {
 	out := []ProbeDisk{}
-	scanned, err := s.env.scanDisks(ctx)
-	if err != nil {
-		s.env.logf("install: listing disks: %v", err)
+	// Library detection mounts filesystems, and so does the disk scan
+	// (storage.ScanDisks looks for libraries too): an install must never
+	// start while one of them is mounted (see handleInstall), and none are
+	// mounted once one runs; the last scan (or sysfs) lists the disks then.
+	// A mount on the target between the job's checks and its wipefs would
+	// fail the install.
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	mountAllowed := !s.running()
+	scanned := s.lastScan
+	if mountAllowed {
+		var err error
+		if scanned, err = s.env.scanDisks(ctx); err != nil {
+			s.env.logf("install: listing disks: %v", err)
+		} else {
+			s.lastScan = scanned
+		}
 	}
 	groups := groupDisks(scanned)
 	if len(groups) == 0 {
@@ -179,13 +193,6 @@ func (s *Service) probeDisks(ctx context.Context) []ProbeDisk {
 	}
 	mounts, _ := readMountinfo()
 	live := liveDisks(mounts)
-
-	// Library detection mounts filesystems; an install must never start
-	// while one of them is mounted (see runJob), and none are mounted
-	// once one runs.
-	s.scanMu.Lock()
-	defer s.scanMu.Unlock()
-	mountAllowed := !s.running()
 
 	for _, g := range groups {
 		d := ProbeDisk{
@@ -384,15 +391,23 @@ func guessTimezone() string {
 	if err != nil {
 		return "UTC"
 	}
-	_, tz, ok := strings.Cut(t, "zoneinfo/")
+	if tz := zoneFromLink(t); tz != "" {
+		return tz
+	}
+	return "UTC"
+}
+
+// zoneFromLink turns an /etc/localtime link target into a tz name, or "".
+func zoneFromLink(target string) string {
+	_, tz, ok := strings.Cut(target, "zoneinfo/")
 	if !ok {
-		return "UTC"
+		return ""
 	}
 	for _, p := range []string{"posix/", "right/"} {
 		tz = strings.TrimPrefix(tz, p)
 	}
 	if !validTimezoneName(tz) {
-		return "UTC"
+		return ""
 	}
 	return tz
 }
