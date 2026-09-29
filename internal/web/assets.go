@@ -25,9 +25,11 @@ var contentTypes = map[string]string{
 	".webmanifest": "application/manifest+json",
 	".json":        "application/json",
 	".txt":         "text/plain; charset=utf-8",
+	".woff2":       "font/woff2",
 }
 
-// compressible are the types worth gzipping; PNGs are already compressed.
+// compressible are the types worth gzipping; PNGs and WOFF2 fonts are
+// already compressed.
 var compressible = map[string]bool{".css": true, ".js": true, ".svg": true, ".webmanifest": true, ".json": true, ".txt": true}
 
 // asset is one static file, held in memory with its precomputed variants.

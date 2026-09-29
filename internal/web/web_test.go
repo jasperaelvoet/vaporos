@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 	_ "time/tzdata" // validate the timezone list against a known database
 
@@ -314,6 +315,26 @@ func TestStaticGzip(t *testing.T) {
 	}
 	if rec := get(h, u.assets.prefix()+"/icon-192.png", "Accept-Encoding", "gzip"); rec.Header().Get("Content-Encoding") != "" {
 		t.Error("PNG was gzipped")
+	}
+}
+
+// A WOFF2 font is served as font/woff2 and never gzipped: it is already
+// Brotli-compressed inside.
+func TestStaticWOFF2(t *testing.T) {
+	s, err := newAssetStore(fstest.MapFS{"fonts/ui.woff2": {Data: bytes.Repeat([]byte("wOF2"), 4096)}},
+		func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := s.files["fonts/ui.woff2"]; a == nil || a.gz != nil {
+		t.Fatalf("fonts/ui.woff2 stored as %+v, want it without a gzip variant", a)
+	}
+	req := httptest.NewRequest("GET", s.prefix()+"/fonts/ui.woff2", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "font/woff2" || rec.Header().Get("Content-Encoding") != "" {
+		t.Errorf("woff2: %d %v", rec.Code, rec.Header())
 	}
 }
 
