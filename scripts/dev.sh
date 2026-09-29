@@ -392,6 +392,25 @@ vm_install() {
     VM_VERSION=$(match_ 'VOS-READY mode=os version=(\S+)' 300) ||
         fail "the installed system never came up (VOS-READY mode=os)"
     [[ $VM_VERSION == "$want" ]] || fail "the installed system runs $VM_VERSION, expected $want"
+    dev_settings
+}
+
+# The dev VM has no Wake-on-LAN, so an idle shutdown in the middle of a test
+# would just switch it off: turn it off through the admin API, the way a
+# user would in the web UI.
+dev_settings() {
+    local login power
+    login=$(printf '{"password":"%s"}' "$ADMIN_PASS")
+    power='{"idle_shutdown":false}'
+    pve "set -e; jar=\$(mktemp); trap 'rm -f \$jar' EXIT
+         curl -sS --fail-with-body -m 30 -c \$jar -H 'Content-Type: application/json' \
+              -d $(printf %q "$login") http://$VM_IP/api/v1/auth/login >/dev/null
+         csrf=\$(curl -sS -m 30 -b \$jar http://$VM_IP/api/v1/auth/me |
+                python3 -c 'import json,sys; print(json.load(sys.stdin)[\"csrf\"])')
+         curl -sS --fail-with-body -m 30 -b \$jar -X PUT -H \"X-VOS-CSRF: \$csrf\" \
+              -H 'Content-Type: application/json' -d $(printf %q "$power") \
+              http://$VM_IP/api/v1/power >/dev/null" ||
+        warn "could not switch idle shutdown off; the VM may power itself off when idle"
 }
 
 # Reboot the VM from its serial shell and wait for vosd to announce the
