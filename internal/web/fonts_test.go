@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -90,8 +91,11 @@ func (m fontManifest) webFaces() []fontFace {
 type cssFontFace map[string]string
 
 var (
-	cssURL   = regexp.MustCompile(`url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)`)
-	cssLocal = regexp.MustCompile(`local\(\s*"([^"]*)"\s*\)`)
+	// cssFontStack matches a font-family or --font-* declaration that lists
+	// more than one family.
+	cssFontStack = regexp.MustCompile(`((?:--[\w-]*font-family|--font-[\w-]+|font-family))\s*:\s*([^;{}]*,[^;{}]*)`)
+	cssURL       = regexp.MustCompile(`url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)`)
+	cssLocal     = regexp.MustCompile(`local\(\s*"([^"]*)"\s*\)`)
 )
 
 // fontFaceRules parses every @font-face rule in css. Comments and strings are
@@ -244,7 +248,161 @@ func TestFonts(t *testing.T) {
 		}
 	})
 
+	t.Run("tokens", func(t *testing.T) { testFontsMatchTokens(t, m) })
+
+	t.Run("font-face", func(t *testing.T) { testFontFaceDecls(t, m, faces, byAsset) })
+
+	t.Run("preloads", func(t *testing.T) {
+		forEachSet(t, func(t *testing.T, set uiSet) { testFontPreloads(t, set, faces) })
+	})
+
 	t.Run("fallback", func(t *testing.T) { testFallbackFaces(t, faces) })
+}
+
+// testFontFaceDecls checks each set's app.css: every @font-face for a web
+// font points to a file fonts.json produces, relative to the stylesheet, with
+// that face's family, weight and width and a font-display; a set that uses the
+// fonts also carries their fallback faces and names them in a font stack; and
+// once any stylesheet declares the fonts, every shipped WOFF2 is declared.
+func testFontFaceDecls(t *testing.T, m fontManifest, faces []fontFace, byAsset map[string]fontFace) {
+	declared := map[string]bool{}
+	for _, set := range uiSets {
+		b, err := content.ReadFile(path.Join("static", set.Static, "app.css"))
+		if err != nil {
+			continue
+		}
+		css := string(b)
+		families := map[string]bool{}
+		for _, r := range fontFaceRules(css) {
+			if strings.HasSuffix(r.family(), " fallback") {
+				continue
+			}
+			if !strings.Contains(r["src"], "url(") {
+				continue
+			}
+			if r["font-display"] == "" {
+				t.Errorf("%s: @font-face for %q has no font-display", set.Name, r.family())
+			}
+			for _, u := range cssURL.FindAllStringSubmatch(r["src"], -1) {
+				ref := u[1] + u[2] + u[3]
+				if strings.HasPrefix(ref, "/") || strings.Contains(ref, ":") {
+					t.Errorf("%s: @font-face url(%s) must be relative to app.css", set.Name, ref)
+					continue
+				}
+				name := path.Join(set.Static, ref)
+				f, ok := byAsset[name]
+				switch {
+				case !ok:
+					t.Errorf("%s: @font-face url(%s) is not a font fonts.json produces", set.Name, ref)
+				case r.family() != m.Families[f.Family].Family || !r.matches(f):
+					t.Errorf("%s: @font-face for %s declares %q %s %s, want %q %v %v%%", set.Name, ref,
+						r.family(), r["font-weight"], r["font-stretch"], m.Families[f.Family].Family, f.Wght, f.Wdth)
+				default:
+					declared[name] = true
+					families[r.family()] = true
+				}
+			}
+		}
+		// A set that uses the web fonts carries their fallback faces, and
+		// every font stack that names a family names its fallback right
+		// after it, so the swap moves nothing.
+		for fam := range families {
+			rules := 0
+			for _, r := range fontFaceRules(css) {
+				if r.family() == fam+" fallback" {
+					rules++
+				}
+			}
+			if rules == 0 {
+				t.Errorf("%s: app.css declares %q without its fallback faces; import styles/fonts-fallback.css", set.Name, fam)
+			}
+		}
+		for _, d := range cssFontStack.FindAllStringSubmatch(css, -1) {
+			stack := strings.Split(d[2], ",")
+			for i, name := range stack {
+				if fam := unquote(strings.TrimSpace(name)); families[fam] && (i+1 == len(stack) || unquote(strings.TrimSpace(stack[i+1])) != fam+" fallback") {
+					t.Errorf("%s: %s lists %q without %q right after it; list it in tokens.json", set.Name, d[1], fam, fam+" fallback")
+				}
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Logf("no stylesheet declares the web fonts yet (tokens.json lists no web files)")
+		return
+	}
+	for _, f := range faces {
+		if !declared[f.asset()] {
+			t.Errorf("%s ships, but no stylesheet declares it: drop it from fonts.json or use it", f.Web)
+		}
+	}
+}
+
+var (
+	htmlLink = regexp.MustCompile(`<link\b[^>]*>`)
+	htmlAttr = regexp.MustCompile(`([a-zA-Z-]+)(?:\s*=\s*"([^"]*)")?`)
+)
+
+// testFontPreloads checks every page's <link rel="preload" as="font">: only
+// the faces fonts.json marks, typed and CORS-mode (or the browser fetches the
+// font twice), at most two, and all of them once the set's stylesheet uses them.
+func testFontPreloads(t *testing.T, set uiSet, faces []fontFace) {
+	u := testUI(t, set)
+	want := map[string]bool{}
+	for _, f := range faces {
+		if f.Preload {
+			want[f.asset()] = true
+		}
+	}
+	css, _ := content.ReadFile(path.Join("static", set.Static, "app.css"))
+	usesFonts := false
+	for _, f := range faces {
+		usesFonts = usesFonts || bytes.Contains(css, []byte(path.Base(f.Web)))
+	}
+	seen := map[string]bool{}
+	for script, body := range renderAll(t, set) {
+		n := 0
+		for _, tag := range htmlLink.FindAllString(body, -1) {
+			attrs := map[string]string{}
+			for _, a := range htmlAttr.FindAllStringSubmatch(strings.TrimSuffix(strings.TrimPrefix(tag, "<link"), ">"), -1) {
+				attrs[strings.ToLower(a[1])] = a[2]
+			}
+			if attrs["rel"] != "preload" || attrs["as"] != "font" {
+				continue
+			}
+			n++
+			name := strings.TrimPrefix(attrs["href"], u.assets.prefix()+"/")
+			if !want[name] {
+				t.Errorf("%s: preloads %s, which fonts.json does not mark preload", script, attrs["href"])
+			}
+			if _, ok := attrs["crossorigin"]; !ok || attrs["type"] != "font/woff2" {
+				t.Errorf("%s: the preload of %s needs type=\"font/woff2\" and crossorigin", script, attrs["href"])
+			}
+			seen[name] = true
+		}
+		if n > budgetPreloads {
+			t.Errorf("%s: %d font preloads, budget is %d", script, n, budgetPreloads)
+		}
+	}
+	if !usesFonts {
+		if len(seen) > 0 {
+			t.Errorf("the set's stylesheet declares no web font, but its pages preload %v", keysOf(seen))
+		}
+		return
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("no page preloads %s, which fonts.json marks preload", name)
+		}
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // testFallbackFaces checks the generated styles/fonts-fallback.css against the
@@ -288,6 +446,67 @@ func testFallbackFaces(t *testing.T, faces []fontFace) {
 		if !used[i] {
 			t.Errorf("styles/fonts-fallback.css: face %q %s %s belongs to no web face", r.family(), r["font-weight"], r["font-stretch"])
 		}
+	}
+}
+
+// testFontsMatchTokens checks that tokens.json and fonts.json describe the same
+// faces. tokens.json names each face's web file and preload once the fonts are
+// wired in; until then it may name none, but never only some.
+func testFontsMatchTokens(t *testing.T, m fontManifest) {
+	b, err := os.ReadFile(filepath.Join(repoRoot, "design", "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tok struct {
+		Font map[string]struct {
+			Family string
+			Faces  map[string]struct {
+				Wdth, Wght float64
+				Web        string
+				Preload    bool
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &tok); err != nil {
+		t.Fatalf("design/tokens.json: %v", err)
+	}
+	listed := 0
+	for _, role := range tok.Font {
+		for _, fc := range role.Faces {
+			if fc.Web != "" {
+				listed++
+			}
+		}
+	}
+	webFaces := map[string]fontFace{}
+	for _, f := range m.Faces {
+		role, ok := tok.Font[f.Role]
+		fc, okFace := role.Faces[f.Face]
+		switch {
+		case !ok || !okFace:
+			t.Errorf("%s: fonts.json cuts a face tokens.json does not define", f.key())
+			continue
+		case role.Family != m.Families[f.Family].Family:
+			t.Errorf("%s: tokens.json family %q, fonts.json %q", f.key(), role.Family, m.Families[f.Family].Family)
+		case fc.Wdth != f.Wdth || fc.Wght != f.Wght:
+			t.Errorf("%s: tokens.json wdth %v wght %v, fonts.json wdth %v wght %v", f.key(), fc.Wdth, fc.Wght, f.Wdth, f.Wght)
+		}
+		if f.Web != "" {
+			webFaces[f.key()] = f
+		}
+		if listed > 0 && (fc.Web != f.Web || fc.Preload != f.Preload) {
+			t.Errorf("%s: tokens.json web %q preload %v, fonts.json web %q preload %v", f.key(), fc.Web, fc.Preload, f.Web, f.Preload)
+		}
+	}
+	for r, role := range tok.Font {
+		for k, fc := range role.Faces {
+			if _, ok := webFaces[r+"/"+k]; fc.Web != "" && !ok {
+				t.Errorf("%s/%s: tokens.json names %s, which fonts.json does not produce", r, k, fc.Web)
+			}
+		}
+	}
+	if listed == 0 {
+		t.Logf("tokens.json lists no web font files yet")
 	}
 }
 
