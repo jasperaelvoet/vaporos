@@ -1,0 +1,30 @@
+/* The control center's stylesheet entry. tools/web/css.mjs builds it with the
+   pinned Tailwind CLI into internal/web/static/app.css, which is committed and
+   embedded; this directory is not embedded.
+     npm --prefix tools/web run css         rebuild after changing a class
+     npm --prefix tools/web run css:check   what web.yml runs
+   Never edit static/app.css by hand. css_test.go enforces the class rules
+   (ARCH §2.5): components are classes here, layout is utilities in the
+   markup, state lives in data-* and aria-* attributes. */
+@import "tailwindcss" source(none);   /* preflight, theme, utilities; no automatic scanning */
+@import "./tokens.css";               /* generated from design/tokens.json by internal/brand; never edit */
+@import "./base.css";
+@import "./components.css";
+@import "./motion.css";
+@import "./direction.css";
+@import "./basic.css";
+@import "./safelist.css";
+
+/* What Tailwind scans for class names: the new UI's shells and scripts and
+   nothing else, never legacy/. These are exactly the files the input hash in
+   the first line of static/app.css covers (tools/web/lib/css-hash.mjs and
+   css_test.go): change all three together. */
+@source "../templates/layout.html";
+@source "../templates/pages";
+@source "../templates/partials";
+@source "../static/js/**/*.js";
+
+/* Words in scripts that name utilities but are not styling: the "blur" event
+   and the words "inline" and "lowercase". Keep this short;
+   `node tools/web/css.mjs --utilities` lists what got generated. */
+@source not inline("{blur,inline,lowercase}");

@@ -1,0 +1,5 @@
+/* Every class a template, a script or Go assigns: buttons, rows, sheets, the
+   tab bar and so on (ARCH §6). No name here may also be a Tailwind utility
+   (TestNoUtilityCollisions). Filled by the shell (C0b). */
+@layer components {
+}

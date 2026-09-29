@@ -1,0 +1,3 @@
+/* Last resort for a utility no template or script names in full (ARCH §2.5
+   R-C5): one @source inline("…") per line, each with a comment naming the
+   script that needs it. Normally empty. */
