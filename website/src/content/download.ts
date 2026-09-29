@@ -1,4 +1,4 @@
-// The download page and the download card's two states.
+// The download page and the download card's three states (ready, none, unknown).
 // Ported from pages/download.astro and components/DownloadCard.astro.
 // The card's data (version, date, size, URLs) comes from the release:
 // src/lib/release.ts at build time, src/lib/use-latest-release.ts in the browser.
@@ -49,8 +49,11 @@ export const downloadCard = {
     ] satisfies LinkItem[],
     fullLinks: [{ label: 'All releases', href: links.releases, icon: 'arrow' }] satisfies LinkItem[],
   },
-  /** No release yet (or none could be read): never a download link, only ways to follow the project. */
-  empty: {
+  /**
+   * GitHub says there is no release (404 on /releases/latest, or an empty
+   * list): never a download link, only ways to follow the project.
+   */
+  none: {
     badge: 'In development',
     heading: 'First release coming soon',
     text: "VaporOS hasn't published a release yet. Watch the repository on GitHub (**Watch → Custom → Releases**) to hear the moment the first ISO is out, or build it from source today." as Rich,
@@ -58,6 +61,20 @@ export const downloadCard = {
     actions: [
       { label: 'Watch releases on GitHub', href: links.repo, icon: 'eye', primary: true },
       { label: 'Build from source', href: links.buildFromSource, icon: 'code' },
+    ] satisfies ButtonItem[],
+  },
+  /**
+   * The lookup failed (offline build, rate limit, outage): the card can't say
+   * which release is the latest, so it sends people to GitHub, whose latest
+   * release link is always valid.
+   */
+  unknown: {
+    kicker: 'Latest release',
+    heading: 'Get VaporOS on GitHub',
+    text: "The latest release couldn't be loaded here. Get it from the releases page on GitHub." as Rich,
+    actions: [
+      { label: 'Open the latest release', href: links.latestRelease, icon: 'download', primary: true },
+      { label: 'All releases', href: links.releases, icon: 'arrow' },
     ] satisfies ButtonItem[],
   },
 };

@@ -50,6 +50,13 @@ export interface Release {
   sig: Asset | null;
 }
 
+/**
+ * What the download card shows: a release, GitHub's word that there is none,
+ * or "couldn't tell" (the card then points at the releases page).
+ */
+export type ReleaseLookup = { state: 'ready'; release: Release } | { state: 'none' } | { state: 'unknown' };
+export type ReleaseState = ReleaseLookup['state'];
+
 interface ApiAsset {
   name?: unknown;
   browser_download_url?: unknown;

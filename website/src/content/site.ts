@@ -31,6 +31,8 @@ export const site = {
 export const links = {
   repo: REPO_URL,
   releases: RELEASES_URL,
+  /** Always the newest stable release's page on GitHub (GitHub redirects it). */
+  latestRelease: `${RELEASES_URL}/latest`,
   issues: `${REPO_URL}/issues`,
   buildFromSource: `${REPO_URL}#development`,
   keyInRepo: `${REPO_URL}/blob/main/keys/release.pub`,
