@@ -1,0 +1,175 @@
+{{define "content"}}
+{{if .Installer}}{{template "wizard" .}}{{else}}{{template "first-run" .}}{{end}}
+{{end}}
+
+{{define "setup-code-field"}}
+<div class="field">
+  <label for="setup-code">Setup code</label>
+  <input id="setup-code" name="code" value="{{.Code}}" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" class="mono code-input" placeholder="ABCD-EFGH" aria-describedby="setup-code-hint">
+  <p class="hint" id="setup-code-hint">It's on the screen connected to the VaporOS PC. Scanning the QR code there fills it in for you.</p>
+</div>
+{{end}}
+
+{{define "first-run"}}
+<section class="auth-card card" id="first-run">
+  <h1>Welcome to VaporOS</h1>
+  <p class="muted">Choose the admin password you'll use to manage this PC from your phone or computer.</p>
+  <form id="setup-form" class="stack">
+    <input type="text" name="username" value="admin" autocomplete="username" class="sr-only" tabindex="-1" aria-hidden="true">
+    {{if .NeedCode}}{{template "setup-code-field" .}}{{end}}
+    <div class="field">
+      <label for="setup-password">New password</label>
+      <input id="setup-password" name="password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="setup-password-hint">
+      <p class="hint" id="setup-password-hint">At least 8 characters.</p>
+    </div>
+    <div class="field">
+      <label for="setup-password2">Repeat password</label>
+      <input id="setup-password2" type="password" autocomplete="new-password" required>
+    </div>
+    <p class="field-error" id="setup-error" role="alert" hidden></p>
+    <button class="btn btn-primary btn-block" type="submit">Save and continue</button>
+  </form>
+</section>
+{{end}}
+
+{{define "wizard"}}
+<section class="wizard card" id="wizard" aria-labelledby="wizard-title">
+  <header class="wizard-head">
+    <h1 id="wizard-title">Install VaporOS</h1>
+    <ol class="stepper" id="stepper" aria-label="Install steps">
+      <li data-step="disk"><span class="stepper-dot">1</span><span class="stepper-label">Drive</span></li>
+      <li data-step="account"><span class="stepper-dot">2</span><span class="stepper-label">Name</span></li>
+      <li data-step="extras"><span class="stepper-dot">3</span><span class="stepper-label">Games</span></li>
+      <li data-step="confirm"><span class="stepper-dot">4</span><span class="stepper-label">Install</span></li>
+    </ol>
+  </header>
+
+  <form class="step" data-step="code" id="code-form" hidden>
+    <h2 tabindex="-1">Enter the setup code</h2>
+    <p class="muted">The setup code keeps other people on your network from installing over your PC.</p>
+    {{template "setup-code-field" .}}
+    <p class="field-error" id="code-error" role="alert" hidden></p>
+    <div class="wizard-nav"><span></span><button class="btn btn-primary" type="submit">Continue</button></div>
+  </form>
+
+  <div class="step" data-step="disk" hidden>
+    <h2 tabindex="-1">Where should VaporOS go?</h2>
+    <p class="muted">Pick the drive to install on. The USB stick you started from isn't listed.</p>
+    <div class="banner" id="gpu-note" hidden>{{icon "monitor"}}<div class="banner-text" id="gpu-text"></div></div>
+    <div class="choices" id="disk-list" role="radiogroup" aria-label="Drives"></div>
+    <p class="empty" id="disk-empty" hidden>No drives found. Connect a drive of at least 25 GB and rescan.</p>
+    <p class="field-error" id="disk-error" role="alert" hidden></p>
+    <div class="wizard-nav">
+      <button class="btn btn-ghost" id="disk-rescan" type="button">{{icon "restart"}}Rescan</button>
+      <button class="btn btn-primary" id="disk-next" type="button">Next</button>
+    </div>
+  </div>
+
+  <form class="step" data-step="account" id="account-form" hidden>
+    <h2 tabindex="-1">Name and password</h2>
+    <fieldset class="field" id="mode-field" hidden>
+      <legend>This drive already has VaporOS</legend>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="mode" value="repair" checked><span class="choice-body"><span class="choice-main"><strong>Repair</strong><span class="muted">Reinstall VaporOS. Games, settings and paired devices stay.</span></span></span></label>
+        <label class="choice"><input type="radio" name="mode" value="erase"><span class="choice-body"><span class="choice-main"><strong>Erase and install</strong><span class="muted">Start over. Everything on the drive is deleted.</span></span></span></label>
+      </div>
+    </fieldset>
+    <div class="field">
+      <label for="hostname">Name on your network</label>
+      <div class="input-affix">
+        <input id="hostname" name="hostname" value="vapor" required maxlength="63" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="hostname-hint">
+        <span class="affix" aria-hidden="true">.local</span>
+      </div>
+      <p class="hint" id="hostname-hint">You'll manage VaporOS at <strong id="host-preview">http://vapor.local</strong>. Use lowercase letters, digits and dashes.</p>
+    </div>
+    <div class="field">
+      <label for="password">Admin password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="password-hint">
+      <p class="hint" id="password-hint">At least 8 characters. You'll use it to sign in to this page.</p>
+    </div>
+    <div class="field">
+      <label for="password2">Repeat password</label>
+      <input id="password2" type="password" autocomplete="new-password" required>
+    </div>
+    <div class="wizard-nav">
+      <button class="btn btn-ghost" type="button" data-back>{{icon "back"}}Back</button>
+      <button class="btn btn-primary" type="submit">Next</button>
+    </div>
+  </form>
+
+  <form class="step" data-step="extras" id="extras-form" hidden>
+    <h2 tabindex="-1">Games and time</h2>
+    <div class="field">
+      <label for="timezone">Time zone</label>
+      <select id="timezone" name="timezone">
+        {{- range .Timezones}}
+        <optgroup label="{{.Region}}">{{range .Zones}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</optgroup>
+        {{- end}}
+      </select>
+    </div>
+    <fieldset class="field">
+      <legend>Steam libraries on other drives</legend>
+      <p class="hint">Keep playing games you already downloaded. Checked libraries are mounted for Steam; nothing on them is changed.</p>
+      <div class="checks" id="library-list"></div>
+      <p class="empty" id="library-empty" hidden>No Steam libraries found on other drives. You can add drives later under Storage.</p>
+    </fieldset>
+    <div class="wizard-nav">
+      <button class="btn btn-ghost" type="button" data-back>{{icon "back"}}Back</button>
+      <button class="btn btn-primary" type="submit">Next</button>
+    </div>
+  </form>
+
+  <form class="step" data-step="confirm" id="confirm-form" hidden>
+    <h2 tabindex="-1">Ready to install</h2>
+    <dl class="kv" id="summary"></dl>
+    <div class="banner banner-danger" id="erase-warning" hidden>
+      {{icon "alert"}}
+      <div class="banner-text"><strong>Everything on <span id="erase-disk"></span> will be erased.</strong> This can't be undone.</div>
+    </div>
+    <div class="field" id="erase-field" hidden>
+      <label for="erase-confirm">Type <strong class="mono">ERASE</strong> to confirm</label>
+      <input id="erase-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false" class="mono code-input">
+    </div>
+    <p class="field-error" id="install-error" role="alert" hidden></p>
+    <div class="wizard-nav">
+      <button class="btn btn-ghost" type="button" data-back>{{icon "back"}}Back</button>
+      <button class="btn btn-primary" id="install-btn" type="submit">{{icon "download"}}Install VaporOS</button>
+    </div>
+  </form>
+
+  <div class="step" data-step="progress" hidden>
+    <h2 tabindex="-1">Installing VaporOS…</h2>
+    <p class="muted">This takes a few minutes. Keep the USB stick in and this page open.</p>
+    <div class="progress-block">
+      <div class="row-between"><span class="strong" id="progress-step">Starting</span><span class="mono" id="progress-pct">0%</span></div>
+      <progress id="progress-bar" max="100" aria-labelledby="progress-step"></progress>
+      <p class="muted small" id="progress-message" aria-live="polite"></p>
+    </div>
+    <div class="banner banner-danger" id="progress-failed" role="alert" hidden>
+      {{icon "alert"}}
+      <div class="banner-text"><strong>The install failed.</strong> <span id="progress-error"></span></div>
+    </div>
+    <div class="wizard-nav" id="progress-retry" hidden>
+      <span></span>
+      <button class="btn btn-primary" id="retry-btn" type="button">Back to the summary</button>
+    </div>
+  </div>
+
+  <div class="step" data-step="done" hidden>
+    <div class="done-mark">{{icon "check"}}</div>
+    <h2 tabindex="-1">VaporOS is installed</h2>
+    <ol class="numbered">
+      <li><strong>Remove the USB stick</strong> from the PC.</li>
+      <li>Press <strong>Restart now</strong>. VaporOS starts in about a minute.</li>
+    </ol>
+    <div class="wizard-nav"><span></span><button class="btn btn-primary btn-lg" id="reboot-btn" type="button">{{icon "restart"}}Restart now</button></div>
+  </div>
+
+  <div class="step" data-step="restart" hidden>
+    <div class="done-mark pending"><span class="spinner spinner-lg"></span></div>
+    <h2 tabindex="-1">Restarting…</h2>
+    <p class="muted" id="restart-status" aria-live="polite">Waiting for VaporOS to start. This page moves on by itself.</p>
+    <p class="small muted">If it doesn't, open <a id="restart-link" href="http://vapor.local/">http://vapor.local</a><span id="restart-alt"></span>.</p>
+  </div>
+</section>
+{{end}}

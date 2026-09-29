@@ -1,0 +1,63 @@
+{{define "content"}}
+<section class="hero card" id="status" data-tone="idle" aria-labelledby="status-title">
+  <div class="hero-icon" id="status-icon" aria-hidden="true">
+    <span class="hero-ring"></span>
+    <span class="hero-glyph" data-for="idle">{{icon "gamepad"}}</span>
+    <span class="hero-glyph" data-for="streaming">{{icon "gamepad"}}</span>
+    <span class="hero-glyph" data-for="updating">{{icon "download"}}</span>
+    <span class="hero-glyph" data-for="welcome">{{icon "monitor"}}</span>
+    <span class="hero-glyph" data-for="warn">{{icon "alert"}}</span>
+  </div>
+  <div class="hero-text">
+    <p class="eyebrow" id="status-host">VaporOS</p>
+    <h2 class="hero-title" id="status-title" aria-live="polite">Checking…</h2>
+    <p class="muted" id="status-detail"></p>
+    <div class="chips" id="status-chips"></div>
+    <progress id="status-progress" max="100" hidden aria-label="Update progress"></progress>
+  </div>
+  <div class="hero-actions" id="status-actions"></div>
+</section>
+
+<div class="banner banner-accent" id="pairing-banner" hidden>
+  {{icon "phone"}}
+  <div class="banner-text"><strong>A device wants to pair.</strong> Enter the PIN that Moonlight shows.</div>
+  <a class="btn btn-primary btn-sm" href="/pair">Enter PIN</a>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="update-h">
+    <header class="card-head">
+      <h2 id="update-h">{{icon "update"}}Updates</h2>
+      <a class="card-link" href="/updates">Details{{icon "chevron"}}</a>
+    </header>
+    <div class="card-body" id="update-body" aria-live="polite"><p class="skeleton"></p><p class="skeleton short"></p></div>
+  </section>
+
+  <section class="card" aria-labelledby="system-h">
+    <header class="card-head">
+      <h2 id="system-h">{{icon "cpu"}}This PC</h2>
+      <a class="card-link" href="/advanced">Settings{{icon "chevron"}}</a>
+    </header>
+    <dl class="kv" id="system-kv"><dt class="skeleton"></dt><dd class="skeleton"></dd></dl>
+  </section>
+
+  <section class="card" aria-labelledby="disk-h">
+    <header class="card-head">
+      <h2 id="disk-h">{{icon "drive"}}Storage</h2>
+      <a class="card-link" href="/storage">Drives{{icon "chevron"}}</a>
+    </header>
+    <div class="card-body" id="disk-body"><p class="skeleton"></p></div>
+  </section>
+
+  <section class="card" aria-labelledby="quick-h">
+    <header class="card-head"><h2 id="quick-h">{{icon "zap"}}Quick actions</h2></header>
+    <div class="quick">
+      <a class="quick-btn" href="/pair">{{icon "phone"}}<span>Pair a device</span></a>
+      <button class="quick-btn" id="quick-awake" type="button">{{icon "coffee"}}<span>Stay awake 1 h</span></button>
+      <button class="quick-btn" id="quick-restart" type="button">{{icon "restart"}}<span>Restart</span></button>
+      <button class="quick-btn quick-danger" id="quick-off" type="button">{{icon "power"}}<span>Power off</span></button>
+    </div>
+    <p class="small muted" id="power-note" aria-live="polite"></p>
+  </section>
+</div>
+{{end}}

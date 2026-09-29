@@ -1,0 +1,97 @@
+{{- /*
+  The page shell. The API's CSP forbids inline scripts and style attributes,
+  so this file has neither: behaviour lives in /static/js, looks in app.css.
+  Each page template defines "content".
+*/ -}}
+{{define "layout"}}<!doctype html>
+<html lang="en" data-page="{{.Page.Name}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b1118" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2f6fa" media="(prefers-color-scheme: light)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="VaporOS">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>{{.Page.Title}} · VaporOS</title>
+<link rel="icon" href="{{.Static}}/icon.svg" type="image/svg+xml">
+<link rel="icon" href="{{.Static}}/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="{{.Static}}/icon-180.png">
+<link rel="manifest" href="{{.Static}}/manifest.webmanifest">
+<link rel="stylesheet" href="{{.Static}}/app.css">
+<link rel="modulepreload" href="{{.Static}}/js/lib.js">
+<link rel="modulepreload" href="{{.Static}}/js/fmt.js">
+<script type="module" src="{{.Static}}/js/pages/{{.Page.Script}}.js"></script>
+</head>
+<body class="{{if .Page.Bare}}bare{{else}}shell{{end}}">
+{{sprite}}
+<a class="skip" href="#main">Skip to content</a>
+{{if .Page.Bare}}
+<div class="bare-brand">{{template "logo"}}<span class="brand-name">Vapor<b>OS</b></span></div>
+{{else}}
+<header class="appbar" id="appbar">
+  <a class="brand" href="/" aria-label="VaporOS home">{{template "logo"}}<span class="brand-name">Vapor<b>OS</b></span></a>
+  <span class="live" id="live" data-state="connecting" title="Live updates">
+    <span class="live-dot" aria-hidden="true"></span><span class="live-label" id="live-label">Connecting</span>
+  </span>
+  <button class="menu-btn" id="menu-btn" type="button" aria-controls="nav" aria-expanded="false" aria-label="Menu">
+    <span class="menu-open">{{icon "menu"}}</span><span class="menu-close">{{icon "close"}}</span>
+  </button>
+  <nav class="nav" id="nav" aria-label="Main">
+    <ul>
+      {{- range .Nav}}
+      <li><a href="{{.Path}}"{{if eq .Name $.Page.Name}} aria-current="page"{{end}}>{{icon .Icon}}<span>{{.NavLabel}}</span></a></li>
+      {{- end}}
+    </ul>
+    <div class="nav-foot">
+      <button class="nav-btn" id="logout" type="button">{{icon "logout"}}<span>Sign out</span></button>
+      <p class="nav-version">VaporOS <span class="mono">{{.Version}}</span></p>
+    </div>
+  </nav>
+</header>
+{{end}}
+<main class="main" id="main" tabindex="-1">
+  <div class="boot" id="boot" aria-hidden="true"><span class="spinner"></span></div>
+  <div class="page" id="page">
+    {{if not .Page.Bare}}
+    <div class="page-head">
+      <h1>{{.Page.Title}}</h1>
+      {{with .Page.Lead}}<p class="lead">{{.}}</p>{{end}}
+    </div>
+    {{end}}
+    {{template "content" .}}
+  </div>
+  <div class="fatal" id="fatal" role="alert" hidden>
+    {{icon "wifi"}}
+    <h2>Can't reach VaporOS</h2>
+    <p id="fatal-text" class="muted">Check that the PC is on and that this device is on the same network.</p>
+    <button class="btn btn-primary" id="fatal-retry" type="button">{{icon "restart"}}Try again</button>
+  </div>
+</main>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<dialog class="dialog" id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+  <form method="dialog">
+    <h2 id="confirm-title">Are you sure?</h2>
+    <p id="confirm-body" class="muted"></p>
+    <div class="actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn btn-primary" id="confirm-ok" value="ok">Continue</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="dialog overlay" id="overlay" aria-labelledby="overlay-title" aria-describedby="overlay-text">
+  <div class="overlay-icon" id="overlay-icon"><span class="spinner spinner-lg"></span></div>
+  <h2 id="overlay-title">Restarting…</h2>
+  <p id="overlay-text" class="muted" aria-live="polite"></p>
+  <div class="actions" id="overlay-actions" hidden>
+    <button class="btn btn-primary" id="overlay-reload" type="button">Reload</button>
+  </div>
+</dialog>
+<noscript><p class="noscript">VaporOS needs JavaScript to show this page.</p></noscript>
+</body>
+</html>
+{{end}}
+
+{{define "logo"}}<svg class="logo" viewBox="0 0 64 64" width="32" height="32" aria-hidden="true" focusable="false"><defs><linearGradient id="vlogo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8ccaff"/><stop offset=".55" stop-color="#529ce9"/><stop offset="1" stop-color="#2a5ea6"/></linearGradient></defs><rect x="2" y="2" width="60" height="60" rx="17" fill="url(#vlogo)"/><g fill="none" stroke="#fff" stroke-linecap="round" stroke-width="5.5"><path d="M20 47c-5-4 5-8.5 0-12.5s5-8.5 0-12.5" opacity=".78"/><path d="M32 52c-6-5 6-11.5 0-17s6-11.5 0-17"/><path d="M44 47c-5-4 5-8.5 0-12.5s5-8.5 0-12.5" opacity=".78"/></g></svg>{{end}}

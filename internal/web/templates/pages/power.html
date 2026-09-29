@@ -1,0 +1,46 @@
+{{define "content"}}
+<section class="card" aria-labelledby="pstate-h">
+  <header class="card-head">
+    <h2 id="pstate-h">{{icon "moon"}}<span id="pstate-title">Checking…</span></h2>
+  </header>
+  <p class="muted" id="pstate-detail" aria-live="polite"></p>
+</section>
+
+<div class="grid">
+  <section class="card" aria-labelledby="idle-h">
+    <header class="card-head"><h2 id="idle-h">{{icon "clock"}}Power off when idle</h2></header>
+    <form id="idle-form" class="stack">
+      <label class="switch">
+        <input type="checkbox" role="switch" id="idle-on" name="idle_shutdown">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span class="switch-text"><strong>Power off when nobody plays</strong><span class="muted">Not while streaming, downloading or updating.</span></span>
+      </label>
+      <div class="field">
+        <label for="idle-minutes">After</label>
+        <div class="input-affix">
+          <input id="idle-minutes" name="idle_minutes" type="number" inputmode="numeric" min="5" max="720" step="1" required>
+          <span class="affix" aria-hidden="true">minutes</span>
+        </div>
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+    </form>
+  </section>
+
+  <section class="card" aria-labelledby="awake-h">
+    <header class="card-head"><h2 id="awake-h">{{icon "coffee"}}Stay awake</h2></header>
+    <p class="muted" id="awake-status">Keep VaporOS on for a while, for example during a long download.</p>
+    <div class="segmented" role="group" aria-label="Stay awake">
+      <button class="btn" type="button" data-minutes="60">1 hour</button>
+      <button class="btn" type="button" data-minutes="240">4 hours</button>
+      <button class="btn btn-ghost" type="button" data-minutes="0" id="awake-clear">Clear</button>
+    </div>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="wol-h">
+  <header class="card-head"><h2 id="wol-h">{{icon "zap"}}Wake-on-LAN</h2></header>
+  <p class="muted small">Moonlight wakes a paired PC that is off: select it and choose <strong>Wake</strong>. Any Wake-on-LAN app works with the address below.</p>
+  <ul class="list" id="wol"><li class="list-item"><span class="skeleton"></span></li></ul>
+  <p class="empty" id="wol-empty" hidden>No wired network adapter found. Wake-on-LAN needs a cable connection.</p>
+</section>
+{{end}}
