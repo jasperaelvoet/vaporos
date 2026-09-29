@@ -1,42 +1,43 @@
-# Build the website (website/, Astro) and deploy it to GitHub Pages at
-# https://jasperaelvoet.github.io/vaporos/.
+# Check, build and (by hand only) deploy the website (website/, Next.js
+# static export) to GitHub Pages at https://jasperaelvoet.github.io/vaporos/.
 #
-#   build     npm ci and astro build; the download card reads the latest
-#             release from the GitHub API at build time
-#   deploy    publishes website/dist through actions/deploy-pages
+# Pre-launch shape: the Next.js site replaces the Astro one while the redesign
+# is under way, so nothing here deploys by itself.
 #
-# Releases that build.yml creates with GITHUB_TOKEN fire no other workflows,
-# and a `release` run would carry a tag ref, which the github-pages
-# environment refuses by default. So there is no release trigger: the daily
-# run keeps the build-time release data fresh, and the page also refreshes it
-# in the browser. Only main deploys (the environment allows only the default
-# branch); a manual run from another branch builds but does not deploy.
+#   check     every push and pull request that touches website/**: npm ci,
+#             then lint, typecheck and unit tests (npm run check)
+#   build     main only: the static export in website/out, uploaded as the
+#             Pages artifact; the download card reads the latest release from
+#             the GitHub API at build time
+#   deploy    only a manual run (workflow_dispatch) on main publishes it
+#
+# There is no schedule and no deploy on push until the site launches. Only
+# main deploys (the github-pages environment allows only the default branch);
+# a manual run from another branch checks but neither builds nor deploys.
 #
 # One-time setup: Pages must be enabled with the Actions source before the
-# first run, or configure-pages fails:
+# first deploy, or configure-pages fails:
 #   gh api -X POST repos/jasperaelvoet/vaporos/pages -f build_type=workflow
 name: pages
 
 on:
   push:
-    branches: [main]
     paths:
       - 'website/**'
-      - 'keys/release.pub'
       - '.github/workflows/pages.yml'
-  schedule:
-    - cron: '17 5 * * *'
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
-# One deployment at a time; a running deployment is never cut off halfway.
+# One run per ref at a time; a newer pull request push replaces an older check.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 defaults:
   run:
@@ -44,7 +45,7 @@ defaults:
     working-directory: website
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -52,7 +53,31 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: lts/*
+          node-version-file: website/.nvmrc
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint, typecheck and unit tests
+        run: npm run check
+
+  build:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: website/.nvmrc
           cache: npm
           cache-dependency-path: website/package-lock.json
 
@@ -64,19 +89,30 @@ jobs:
           # For the release lookup: authenticated requests are not rate-limited
           # like anonymous ones.
           GITHUB_TOKEN: ${{ github.token }}
+          # A lookup that fails fails the build, so a degraded download card
+          # is never uploaded.
+          VAPOROS_RELEASE_REQUIRED: '1'
+          VAPOROS_SITE_COMMIT: ${{ github.sha }}
         run: npm run build
 
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: website/dist
+          path: website/out
 
   deploy:
     needs: build
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # One deployment at a time; a running deployment is never cut off halfway.
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
