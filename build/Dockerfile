@@ -24,10 +24,20 @@ RUN pacman-key --init \
         cachyos-v4-mirrorlist cachyos/pacman \
     && rm /tmp/cachyos.conf /tmp/pacman.conf
 
+# jq writes image.json and manifest.json; libcap (setcap/getcap) gives Sunshine
+# its capabilities and checks them in the finished image; nftables checks the
+# firewall ruleset; openssl verifies the manifest signature independently of
+# the Go code that made it. (edid-decode is not in the Arch repos; the EDID is
+# checked by the Go tests instead.)
 RUN pacman -Syu --noconfirm --needed \
         arch-install-scripts \
         erofs-utils \
         dosfstools mtools \
+        e2fsprogs \
         libisoburn \
         rsync \
+        jq \
+        libcap \
+        nftables \
+        openssl \
     && pacman -Scc --noconfirm

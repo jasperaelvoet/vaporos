@@ -5,12 +5,16 @@
 #
 # Installed:  vos.slot=a|b
 #   /            erofs, read-only        PARTLABEL=vos_<slot>
-#   /state       ext4, read-write        PARTLABEL=vos_data
+#   /state       ext4, read-write        PARTLABEL=vos_data (e2fsck'd first)
 #   /var         bind of /state/var
 #   /etc         overlay: image /etc + /state/etc/upper
 #
 # Live:       vos.mode=live
 #   /            overlay: erofs image on the ISO + tmpfs, all changes lost on reboot
+#
+# VaporOS never shows a shell. Anything that goes wrong here reboots the
+# machine instead; on a freshly updated slot, systemd-boot's boot counting
+# then falls back to the previous one. The reason goes to the serial console.
 
 run_hook() {
     vos_mode="$(getarg vos.mode disk)"
@@ -20,10 +24,26 @@ run_hook() {
     export mount_handler="vos_mount_handler"
 }
 
+# mkinitcpio calls this right before every emergency shell it would open
+# (a failed mount, a missing init, break=...), so none of them ever opens.
+run_emergencyhook() {
+    vos_reboot "the initramfs could not start the system"
+}
+
+vos_reboot() {
+    # stderr is redirected first, so a ttyS0 without a UART fails silently.
+    if [ -c /dev/ttyS0 ]; then
+        echo "VaporOS: $* -- rebooting in 5 seconds" 2>/dev/null >/dev/ttyS0
+    fi
+    sleep 5
+    reboot -f
+    # reboot -f does not return; if it somehow does, ask the kernel directly.
+    echo b >/proc/sysrq-trigger
+}
+
 vos_die() {
     err "$*"
-    echo "VaporOS could not assemble its root filesystem. Dropping to a shell."
-    launch_interactive_shell
+    vos_reboot "$*"
 }
 
 vos_mount_handler() {
@@ -32,6 +52,26 @@ vos_mount_handler() {
         live) vos_mount_live "$root" ;;
         *)    vos_mount_disk "$root" ;;
     esac
+}
+
+# Check the data partition before mounting it: it is the only writable
+# filesystem, and power loss is routine for a box that is switched off at the
+# wall. -p repairs whatever is safe to repair unattended; anything worse gets
+# -y, because nobody is at a console to answer questions. If even that fails,
+# mount anyway -- the kernel refuses a filesystem it cannot use, and that ends
+# in vos_die.
+vos_fsck_data() {
+    dev="$1"
+    e2fsck -p "$dev"
+    rc=$?
+    if [ "$rc" -ge 4 ]; then
+        msg ":: repairing ${dev} (e2fsck -p exit ${rc})"
+        e2fsck -y "$dev"
+        rc=$?
+    fi
+    if [ "$rc" -ge 4 ]; then
+        err "e2fsck could not repair ${dev} (exit ${rc}); mounting it anyway"
+    fi
 }
 
 vos_mount_disk() {
@@ -45,12 +85,14 @@ vos_mount_disk() {
     poll_device "$slot_dev" 30 || vos_die "slot ${vos_slot} not found at ${slot_dev}"
     poll_device "$data_dev" 30 || vos_die "data partition not found at ${data_dev}"
 
+    vos_fsck_data "$data_dev"
+
     msg ":: mounting VaporOS slot ${vos_slot}"
     mount -t erofs -o ro "$slot_dev" "$root" || vos_die "cannot mount ${slot_dev}"
     mount -t ext4 -o rw,noatime "$data_dev" "$root/state" || vos_die "cannot mount ${data_dev}"
 
     mkdir -p "$root/state/var" "$root/state/etc/upper" "$root/state/etc/work"
-    mount -o bind "$root/state/var" "$root/var"
+    mount -o bind "$root/state/var" "$root/var" || vos_die "cannot bind /var"
     # index=off: the lower /etc is a different erofs after every A/B switch.
     # With the index on, overlayfs pins the upper layer to the lower it was
     # created on and refuses to mount it on the other slot (ESTALE).
@@ -74,26 +116,36 @@ vos_mount_live() {
         vos_die "cannot attach root.erofs"
     mount -t erofs -o ro "$loopdev" "$base/lower" || vos_die "cannot mount root.erofs"
 
-    mount -t tmpfs -o mode=0755,size=75% cow "$base/cow"
+    mount -t tmpfs -o mode=0755,size=75% cow "$base/cow" || vos_die "cannot mount the live tmpfs"
     mkdir -p "$base/cow/upper" "$base/cow/work"
     mount -t overlay overlay \
         -o "lowerdir=$base/lower,upperdir=$base/cow/upper,workdir=$base/cow/work" \
         "$root" || vos_die "cannot assemble live root"
 
-    # Live-session conveniences, written into the throwaway overlay so they can
-    # never leak into an installed system.
-    for unit in getty@tty1 serial-getty@ttyS0; do
-        mkdir -p "$root/etc/systemd/system/${unit}.service.d"
-        cat > "$root/etc/systemd/system/${unit}.service.d/autologin.conf" <<UNIT
+    # Everything below is written into the throwaway overlay, so it can never
+    # leak into an installed system.
+
+    # The installer is a web page (vosd + the welcome screen show where), so
+    # the live session has no login anywhere -- except that debug images get
+    # a root shell on the serial console, as installed debug images do, for
+    # the dev loop.
+    if grep -Eq '"debug"[[:space:]]*:[[:space:]]*true' "$base/lower/usr/lib/vos/image.json" 2>/dev/null; then
+        unit=serial-getty@ttyS0.service
+        mkdir -p "$root/etc/systemd/system/${unit}.d" "$root/etc/systemd/system/getty.target.wants"
+        cat >"$root/etc/systemd/system/${unit}.d/autologin.conf" <<UNIT
 [Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin root --noclear --keep-baud %I 115200,38400,9600 \$TERM
 UNIT
-    done
-    cp "$root/usr/share/vos/live-motd" "$root/etc/motd"
+        rm -f "$root/etc/systemd/system/serial-getty@.service"
+        ln -sf /usr/lib/systemd/system/serial-getty@.service \
+            "$root/etc/systemd/system/getty.target.wants/${unit}"
+    fi
+
     # There is no ESP to automount in a live session. Left in, the automount
     # is triggered by every sandboxed service's mount namespace and fails
     # them all after a 90s device timeout (D-Bus first).
     sed -i '/vos_esp/d' "$root/etc/fstab"
-    echo vapor-live > "$root/etc/hostname"
+    # What the welcome screen and mDNS announce: http://vaporos-setup.local
+    echo vaporos-setup > "$root/etc/hostname"
 }

@@ -1,0 +1,61 @@
+#!/usr/bin/bash
+# Load the VaporOS firewall: the fixed ruleset in nftables.nft, plus the ports
+# that /var/lib/vos/config.json switches on. vos-firewall.service runs this at
+# boot and on `systemctl reload vos-firewall`, which is how vosd applies a
+# changed setting.
+#
+#   vos-firewall            load the rules
+#   vos-firewall --check    check them with nft -c; change nothing
+#   vos-firewall --print    print what would be loaded
+#
+#   config.json          opens
+#   ssh.enabled          tcp 22 from the local network
+#   web.https            tcp 443 from the local network (like port 80)
+#   web.allow_public     tcp 80 (443 with https, 22 with ssh) from anywhere
+#
+# VOS_NFT_RULES and VOS_CONFIG override the two input paths (the build uses
+# them to check the rules against test configurations).
+set -euo pipefail
+
+rules=${VOS_NFT_RULES:-/usr/lib/vos/nftables.nft}
+config=${VOS_CONFIG:-/var/lib/vos/config.json}
+
+# True only for a literal JSON true. A missing file, a missing key or
+# malformed JSON all read as false, so a broken config.json can close ports
+# but never open them.
+enabled() {
+    [[ -r $config ]] && [[ $(jq -r "($1) == true" "$config" 2>/dev/null) == true ]]
+}
+
+# Optional ports are reachable from the local network only (the lan4/lan6
+# sets in nftables.nft), unless web.allow_public opens them to everyone.
+public=0
+enabled .web.allow_public && public=1
+
+optional=()
+allow() { # allow PORT COMMENT
+    if (( public )); then
+        optional+=("tcp dport $1 accept comment \"$2\"")
+    else
+        optional+=("ip saddr @lan4 tcp dport $1 accept comment \"$2\""
+                   "ip6 saddr @lan6 tcp dport $1 accept comment \"$2\"")
+    fi
+}
+(( public )) && allow 80 web.allow_public
+enabled .web.https && allow 443 web.https
+enabled .ssh.enabled && allow 22 ssh.enabled
+
+ruleset() {
+    cat "$rules"
+    local rule
+    for rule in "${optional[@]}"; do
+        printf 'add rule inet vos optional %s\n' "$rule"
+    done
+}
+
+case ${1:-} in
+    "")      ruleset | nft -f - ;;
+    --check) ruleset | nft -c -f - ;;
+    --print) ruleset ;;
+    *)       echo "usage: vos-firewall [--check | --print]" >&2; exit 2 ;;
+esac

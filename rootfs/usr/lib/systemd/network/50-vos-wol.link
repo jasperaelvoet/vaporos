@@ -1,0 +1,16 @@
+# Wake-on-LAN (magic packet) on every wired interface: VaporOS powers off when
+# idle, and Moonlight wakes it up again. Devices without WoL support log a
+# warning and carry on.
+#
+# The first .link file that matches an interface is the only one applied, so
+# this one repeats the naming policy of systemd's 99-default.link; otherwise
+# wired interfaces would lose their predictable names. The build checks that
+# the two stay in step.
+[Match]
+Type=ether
+
+[Link]
+NamePolicy=keep kernel database onboard slot path
+AlternativeNamesPolicy=database onboard slot path mac
+MACAddressPolicy=persistent
+WakeOnLan=magic

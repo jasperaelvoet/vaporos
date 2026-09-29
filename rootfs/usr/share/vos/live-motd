@@ -1,8 +1,0 @@
-
-  VaporOS live session
-  -------------------------
-  Nothing you do here is saved.
-
-  Install to a disk:   vos install
-  Networking:          wired DHCP is automatic; Wi-Fi via `iwctl`
-

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Reboot instead of opening a shell. VaporOS has no console anyone could type
+# into, and a shell on the screen is exactly what it must never show. Used by
+# the emergency.service and rescue.service drop-ins; if the failing boot is a
+# fresh update, systemd-boot's boot counting then falls back to the previous
+# slot. The message reaches the journal and the serial console.
+echo "VaporOS: ${1:-emergency} mode reached -- rebooting in 5 seconds" >&2
+sleep 5
+# The normal path stops services and unmounts cleanly. If the manager cannot
+# even do that, reboot on the spot.
+systemctl reboot || exec systemctl --force --force reboot

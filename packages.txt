@@ -1,8 +1,17 @@
-# Everything that goes into the VaporOS image. One package per line.
-# The whole set is installed as prebuilt CachyOS/Arch packages (repo order in
-# build/pacman.conf); nothing is compiled.
+# Everything that goes into the VaporOS image. One package per line; a
+# "repo/package" line pins the repository. The whole set is installed as
+# prebuilt CachyOS/Arch packages (repo order in build/pacman.conf); nothing is
+# compiled.
+#
+# pacstrap runs with --noconfirm, which answers every "which provider?"
+# question with the first candidate. Virtual dependencies (vulkan-driver,
+# lib32-vulkan-driver, ttf-font, jack, ...) are therefore named explicitly.
+#
+# Not here on purpose: Wine and Proton (Steam downloads Proton itself; baking
+# it in would put the ISO over GitHub's 2 GiB asset limit), cachyos-gaming-meta,
+# man pages and shell completion (nobody reads them on an appliance).
 
-# The system
+# ---- The system
 base
 # The CachyOS kernel: BORE scheduler, sched-ext, CachyOS patchset
 linux-cachyos
@@ -10,25 +19,67 @@ linux-firmware
 intel-ucode
 amd-ucode
 mkinitcpio
-
 # CachyOS tuning: sysctl/udev (I/O schedulers, THP, ...), zram swap via
 # zram-generator, and ananicy-cpp with the CachyOS process priority rules.
 cachyos-settings
 
-# Administration
-sudo
-openssh
+# ---- Installer tools (vos install partitions and formats disks)
 e2fsprogs
 dosfstools
 gptfdisk
 
-# Networking (systemd-networkd + resolved come with base)
+# ---- Networking (systemd-networkd + resolved come with base)
 iwd
+# vapor.local and Sunshine's _nvstream._tcp announcement
+avahi
+nss-mdns
+# vos-firewall.service (and jq to read config.json for it)
+nftables
+jq
+# Wake-on-LAN and link diagnostics
+ethtool
 
-# Shell comforts
+# ---- Power
+power-profiles-daemon
+
+# ---- Graphics: AMD (Mesa radeonsi/RADV), 64 and 32 bit
+mesa
+lib32-mesa
+vulkan-radeon
+lib32-vulkan-radeon
+vulkan-icd-loader
+lib32-vulkan-icd-loader
+libva
+# modetest, for looking at DRM state over SSH
+libdrm
+# PCI/USB/monitor vendor names (gamescope reads the PNP ids)
+hwdata
+
+# ---- The gaming session
+# 3.16.31 from Arch: cachyos-v3 carries an older gamescope (3.16.25) and would
+# win on repo order. The mode-save-file/backend_set_dirty path VaporOS uses to
+# follow the client's resolution was verified against 3.16.31.
+extra/gamescope
+xorg-xwayland
+xorg-xprop
+seatd
+steam
+# Stock prebuilt Sunshine from the cachyos repo (never compiled here)
+sunshine
+
+# ---- Audio: PipeWire for everything, 32-bit clients included
+pipewire
+pipewire-pulse
+pipewire-alsa
+pipewire-jack
+wireplumber
+lib32-pipewire
+
+# ---- Fonts (ttf-liberation is also Steam's ttf-font provider)
+ttf-liberation
+noto-fonts
+
+# ---- For SSH debugging, when SSH is switched on
+openssh
 vim
-nano
 less
-man-db
-man-pages
-bash-completion

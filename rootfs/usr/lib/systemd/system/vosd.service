@@ -1,0 +1,21 @@
+[Unit]
+Description=VaporOS daemon (web UI, updates, display and power policy)
+Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
+# Up early, network or not: the web UI is the only way into the machine, and
+# vosd puts the address on the welcome screen once DHCP answers. There is no
+# dependency on network-online.target on purpose -- that would hold vosd back
+# for minutes on a machine without a cable.
+After=network.target systemd-resolved.service
+# vosd must always come back, however often it crashes.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vos daemon
+Restart=always
+RestartSec=2
+# The control plane is the last thing the OOM killer should pick.
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target
