@@ -1,237 +1,575 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/auth"
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 )
 
-// TestDevServer serves the real pages against an in-memory fake of the
-// /api/v1 contract, for working on the UI without a VaporOS machine:
+// TestDevServer serves a web UI set on the real api core (sessions, CSRF,
+// Host and Origin checks, rate limits, the event stream and its replay)
+// with fake services behind it, so the UI can be worked on without a
+// VaporOS machine:
 //
-//	VOS_WEB_DEV=127.0.0.1:8080 go test ./internal/web -run TestDevServer -timeout 0
+//	VOS_WEB_DEV=127.0.0.1:8081 go test ./internal/web -run '^TestDevServer$' -count=1 -timeout 0
 //
-// VOS_WEB_INSTALLER=1 serves the installer; VOS_WEB_SIGNED_OUT=1 starts
-// signed out (password "vaporvapor"); VOS_WEB_STREAMING=1 starts mid-stream;
-// VOS_WEB_SETUP=1 starts without an admin password (first-run setup);
-// VOS_WEB_PAIRING=1 starts with two devices waiting to pair;
-// VOS_WEB_HEADLESS=1 waives the installer's setup code (no monitor);
-// VOS_WEB_HELD=1 starts after a rollback from the newest version (held);
-// VOS_WEB_TRIAL=1 makes a stage stop because the running version is on trial.
+// Sign in with the password vaporvapor. Sessions, the admin password and
+// the hostname live in $VOS_WEB_STATE (default tools/web/.state), so a
+// browser stays signed in across restarts.
+//
+//	VOS_WEB_PRESET=<name>  the starting state, from fixtures/presets (default idle);
+//	                       VOS_WEB_STREAMING, _PAIRING, _SIGNED_OUT, _SETUP, _HELD,
+//	                       _TRIAL, _INSTALLER and _HEADLESS=1 are aliases (presetAliases)
+//	VOS_WEB_UI=legacy|next the UI set to serve (default: the one vosd serves)
+//	VOS_WEB_LIVE=1         read templates/ and static/ from disk and reload on change
+//	VOS_WEB_LATENCY=1      start with realistic slow calls on
+//	VOS_WEB_STATE=<dir>    where the real core keeps its files
+//
+// Controls, answered only to loopback clients (see serveDev):
+//
+//	POST /__dev/preset  {"name"}            reset to base plus that preset
+//	POST /__dev/event   {"topic","data"}    publish an event
+//	POST /__dev/down    {"seconds"}         restart (n > 0), wake (0) or power off (n < 0)
+//	POST /__dev/latency {"enabled"}         realistic slow calls on or off
+//	POST /__dev/script  {"name"}            run fixtures/scripts/<name>.json
+//	GET  /__dev/state                       the preset, the documents and the knobs
 func TestDevServer(t *testing.T) {
 	addr := os.Getenv("VOS_WEB_DEV")
 	if addr == "" {
 		t.Skip("set VOS_WEB_DEV=host:port to run the UI dev server")
 	}
-	installer := os.Getenv("VOS_WEB_INSTALLER") == "1"
-	srv := api.New(api.Options{Installer: installer})
-	if installer || os.Getenv("VOS_WEB_SETUP") == "1" {
-		srv.SetSetupCode("ABCD-EFGH")
+	fx, err := loadFixtures(fixturesDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	Register(srv)
-	fake := newFakeAPI(installer)
-	fake.authed = os.Getenv("VOS_WEB_SIGNED_OUT") != "1" && os.Getenv("VOS_WEB_SETUP") != "1"
-	fake.needsSetup = os.Getenv("VOS_WEB_SETUP") == "1"
-	if os.Getenv("VOS_WEB_STREAMING") == "1" {
-		fake.session = map[string]any{"client": "Jasper's iPhone", "mode": "2796x1290@120", "hdr": true}
+	preset, err := presetFromEnv(fx, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if os.Getenv("VOS_WEB_PAIRING") == "1" {
-		fake.pairings = []map[string]string{
-			{"id": "7f3a0c1e9b2d4a6f8e1c3b5d7a9f0e2c", "name": "Steam Deck", "address": "192.168.1.31"},
-			{"id": "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e", "name": "Pixel 9", "address": "192.168.1.44"},
-		}
+	set, err := uiSetFromEnv(os.Getenv("VOS_WEB_UI"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if os.Getenv("VOS_WEB_HEADLESS") == "1" {
-		fake.headless = true
-		srv.SetSetupWaiver(func() bool { return true })
+	live := os.Getenv("VOS_WEB_LIVE") == "1"
+	var fsys fs.FS = content
+	if live {
+		fsys = os.DirFS(".") // go test runs in internal/web, beside templates/ and static/
 	}
-	if os.Getenv("VOS_WEB_HELD") == "1" {
-		fake.update["held"] = map[string]any{"version": "20260929.143000", "rollback_index": 1790699400}
-		fake.update["other_slot"] = map[string]any{"version": "20260929.143000", "bootable": false}
-		fake.update["available"] = nil
+	state, err := devStateDir(os.Getenv("VOS_WEB_STATE"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	fake.onTrial = os.Getenv("VOS_WEB_TRIAL") == "1"
-	mux := http.NewServeMux()
-	mux.Handle("/api/v1/", fake)
-	mux.Handle("/", srv.Handler())
-	t.Logf("VaporOS UI on http://%s (installer=%v)", addr, installer)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	redirectConfig(t, state)
+
+	d := &devServer{fx: fx, set: set, fsys: fsys}
+	d.slow.Store(os.Getenv("VOS_WEB_LATENCY") == "1")
+	if err := d.loadPreset(preset); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if live {
+		go d.watch(ctx, 250*time.Millisecond)
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("VaporOS UI (%s set, preset %s) on http://%s; password vaporvapor; state in %s", set.Name, preset, ln.Addr(), state)
+	hs := &http.Server{Handler: d, ReadHeaderTimeout: 10 * time.Second}
+	if err := hs.Serve(ln); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// fakeAPI is a small, stateful stand-in for vosd that follows the request
-// and response shapes in docs/CONTRACTS.md.
-// Each API resource's routes and starting state are in its own file,
-// devserver_<resource>_test.go.
-type fakeAPI struct {
-	mu         sync.Mutex
-	mux        *http.ServeMux
-	hub        *events.Hub
-	installer  bool
-	authed     bool
-	needsSetup bool
-	downUntil  time.Time
-	booted     time.Time
-	hostname   string
-	session    map[string]any
-	pairings   []map[string]string // devices waiting for a PIN
-	headless   bool                // the installer waives its setup code
-	onTrial    bool                // stages stop with the server's on-trial refusal
-	clients    []map[string]string
-	update     map[string]any
-	display    map[string]any
-	power      map[string]any
-	ssh        map[string]any
-	settings   map[string]any
-	libraries  map[string]string // adopted uuid -> Steam: "registered", "pending" or ""
-	install    map[string]any
-}
-
-func newFakeAPI(installer bool) *fakeAPI {
-	f := &fakeAPI{
-		mux: http.NewServeMux(), hub: events.NewHub(), installer: installer,
-		booted: time.Now().Add(-26 * time.Hour),
+func uiSetFromEnv(name string) (uiSet, error) {
+	if name == "" {
+		return activeSet, nil
 	}
-	f.seedSunshine()
-	f.seedDisplay()
-	f.seedUpdate()
-	f.seedPower()
-	f.seedStorage()
-	f.seedSystem()
-	f.seedInstall()
-	f.routes()
-	go f.ticker()
-	return f
+	for _, s := range uiSets {
+		if s.Name == name {
+			return s, nil
+		}
+	}
+	return uiSet{}, fmt.Errorf("VOS_WEB_UI=%q: want legacy or next", name)
 }
 
-func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	down := time.Now().Before(f.downUntil)
-	f.mu.Unlock()
-	if down {
-		// A restarting machine drops connections rather than answering.
-		if hj, ok := w.(http.Hijacker); ok {
-			if c, _, err := hj.Hijack(); err == nil {
-				c.Close()
-				return
-			}
+// devStateDir is dir, else tools/web/.state at the repository root.
+func devStateDir(dir string) (string, error) {
+	if dir == "" {
+		dir = filepath.Join("..", "..", "tools", "web", ".state")
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return dir, os.MkdirAll(filepath.Join(dir, "run"), 0o700)
+}
+
+// redirectConfig points the real core's files (sessions, auth.json, the
+// hostname) into dir for the rest of the test.
+func redirectConfig(t *testing.T, dir string) {
+	oldState, oldRun, oldHost := config.StateDir, config.RunDir, config.HostnamePath
+	config.StateDir, config.RunDir, config.HostnamePath = dir, filepath.Join(dir, "run"), filepath.Join(dir, "hostname")
+	t.Cleanup(func() { config.StateDir, config.RunDir, config.HostnamePath = oldState, oldRun, oldHost })
+}
+
+// devPassword is the admin password of every preset but first-run.
+const devPassword = "vaporvapor"
+
+// devSetupCode is the installer's and first-run's setup code.
+const devSetupCode = "ABCD-EFGH"
+
+// devServer is the outer handler: /__dev/* controls, the "down" state of a
+// restarting box, and the current world (one real api.Server with its fake
+// services), which a preset change or a boot replaces.
+type devServer struct {
+	fx   *fixtureSet
+	set  uiSet
+	fsys fs.FS
+	slow atomic.Bool // realistic latency
+
+	mu     sync.Mutex
+	preset string
+	world  *devWorld
+	down   bool
+	boot   *devBoot    // what comes up when the box is woken
+	timer  *time.Timer // the end of a restart
+	runs   []func()    // cancels running scripts
+}
+
+// devWorld is one boot of the fake box.
+type devWorld struct {
+	srv   *api.Server
+	fake  *devFake
+	ui    *uiHolder
+	h     http.Handler
+	ctx   context.Context // ends with the world: event streams, tickers
+	stop  context.CancelFunc
+	hub   *events.Hub
+	start time.Time
+}
+
+// devBoot is the state a box boots with after a restart or power-off.
+type devBoot struct {
+	docs      map[string]any
+	errs      map[string]fakeError
+	installer bool
+	preset    string // the preset the box runs from now on ("" keeps it)
+	password  string // the admin password the installer set ("" keeps it)
+}
+
+// loadPreset resets everything to base plus the preset.
+func (d *devServer) loadPreset(name string) error {
+	p := d.fx.presets[name]
+	if p == nil {
+		return fmt.Errorf("no preset %q", name)
+	}
+	docs, err := d.fx.docs(p, time.Now())
+	if err != nil {
+		return err
+	}
+	switch p.Auth {
+	case "first-run":
+		if err := os.Remove(config.AuthPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
 		}
-		http.Error(w, "down", http.StatusServiceUnavailable)
+	default:
+		if err := auth.SetAdminPassword("", devPassword); err != nil {
+			return err
+		}
+	}
+	if p.Auth == "signed-out" {
+		if err := os.Remove(config.SessionsPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	w, err := d.newWorld(p, docs, p.installer(), true)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.cancelRunsLocked()
+	if d.timer != nil {
+		d.timer.Stop()
+	}
+	old := d.world
+	d.preset, d.world, d.down, d.boot = name, w, false, nil
+	d.mu.Unlock()
+	if old != nil {
+		old.stop()
+	}
+	return nil
+}
+
+// newWorld builds a real api.Server with the UI and the fake services on
+// docs. fresh publishes the preset's events (history before this boot).
+func (d *devServer) newWorld(p *fakePreset, docs map[string]any, installer, fresh bool) (*devWorld, error) {
+	if err := config.WriteFileAtomic(config.HostnamePath, []byte(asStr(asObj(docs["system"])["hostname"])+"\n"), 0o644); err != nil {
+		return nil, err
+	}
+	// A new vosd starts with an empty hub: nothing to replay yet.
+	hub := events.NewHub()
+	events.Default = hub
+	version := asStr(asObj(docs["update"])["booted"])
+	srv := api.New(api.Options{Installer: installer, Version: version})
+	if installer || !auth.HasAdmin() {
+		srv.SetSetupCode(devSetupCode)
+	}
+	if installer && p.Headless {
+		srv.SetSetupWaiver(func() bool { return true })
+	}
+	holder, err := registerUI(srv, d.set, d.fsys)
+	if err != nil {
+		return nil, err
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	w := &devWorld{srv: srv, ui: holder, h: srv.Handler(), ctx: ctx, stop: stop, hub: hub, start: time.Now()}
+	w.fake = newDevFake(d, w, p, docs, installer)
+	w.fake.register(srv)
+	if !installer {
+		srv.OnActivity(w.fake.touch)
+	}
+	w.fake.start(ctx)
+	if fresh {
+		for _, ev := range p.Events {
+			w.fake.publishRaw(ev)
+		}
+	}
+	return w, nil
+}
+
+// registerUI is register, with a broken UI as an error instead of a panic.
+func registerUI(srv *api.Server, set uiSet, fsys fs.FS) (h *uiHolder, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return register(srv, set, fsys), nil
+}
+
+func (d *devServer) current() (*devWorld, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.world, d.down
+}
+
+func (d *devServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/__dev/") {
+		d.serveDev(w, r)
 		return
 	}
-	f.mux.ServeHTTP(w, r)
+	world, down := d.current()
+	if down {
+		dropConnection(w)
+		return
+	}
+	if r.URL.Path == api.Prefix+"/events" {
+		// The stream ends with its world, as it does when vosd restarts.
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		defer context.AfterFunc(world.ctx, cancel)()
+		r = r.WithContext(ctx)
+	}
+	world.h.ServeHTTP(w, r)
 }
 
-// handle registers a route; authed routes answer 401 while signed out.
-func (f *fakeAPI) handle(pattern string, authed bool, h func(w http.ResponseWriter, r *http.Request) any) {
-	method, path, _ := strings.Cut(pattern, " ")
-	f.mux.HandleFunc(method+" "+api.Prefix+path, func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if authed && !f.authed {
-			api.Error(w, http.StatusUnauthorized, "not signed in")
+// dropConnection closes the connection without an answer, as a machine
+// that is restarting does.
+func dropConnection(w http.ResponseWriter) {
+	if hj, ok := w.(http.Hijacker); ok {
+		if c, _, err := hj.Hijack(); err == nil {
+			c.Close()
 			return
 		}
-		time.Sleep(120 * time.Millisecond) // make spinners visible
-		if v := h(w, r); v != nil {
-			api.WriteJSON(w, http.StatusOK, v)
-		}
-	})
+	}
+	http.Error(w, "down", http.StatusServiceUnavailable)
 }
 
-func body(r *http.Request) map[string]any {
-	m := map[string]any{}
-	json.NewDecoder(r.Body).Decode(&m)
-	return m
-}
-
-func (f *fakeAPI) reboot(d time.Duration) {
-	f.downUntil = time.Now().Add(d)
-	f.booted = f.downUntil
-}
-
-func (f *fakeAPI) routes() {
-	ok := struct{}{}
-	f.handle("GET /ping", false, func(w http.ResponseWriter, r *http.Request) any {
-		mode := "os"
-		if f.installer {
-			mode = "installer"
-		}
-		return map[string]any{"ok": true, "mode": mode, "version": "20260929.101500"}
-	})
-	f.handle("GET /auth/me", false, func(w http.ResponseWriter, r *http.Request) any {
-		return map[string]any{"authenticated": f.authed, "csrf": "dev-csrf", "needs_setup": f.needsSetup, "installer": f.installer}
-	})
-	f.handle("POST /auth/login", false, func(w http.ResponseWriter, r *http.Request) any {
-		if body(r)["password"] != "vaporvapor" {
-			api.Error(w, http.StatusUnauthorized, "wrong password")
-			return nil
-		}
-		f.authed = true
-		return map[string]string{"csrf": "dev-csrf"}
-	})
-	f.handle("POST /auth/logout", true, func(w http.ResponseWriter, r *http.Request) any { f.authed = false; return ok })
-	f.handle("POST /auth/setup", false, func(w http.ResponseWriter, r *http.Request) any {
-		if r.Header.Get("X-VOS-Setup") != "ABCD-EFGH" {
-			api.Error(w, http.StatusForbidden, "wrong setup code")
-			return nil
-		}
-		f.authed, f.needsSetup = true, false
-		return map[string]string{"csrf": "dev-csrf"}
-	})
-	f.handle("POST /auth/password", true, func(w http.ResponseWriter, r *http.Request) any {
-		if body(r)["current"] != "vaporvapor" {
-			api.Error(w, http.StatusForbidden, "current password is wrong")
-			return nil
-		}
-		return ok
-	})
-
-	f.systemRoutes()
-	f.updateRoutes()
-	f.sunshineRoutes()
-	f.displayRoutes()
-	f.storageRoutes()
-	f.powerRoutes()
-	f.installRoutes()
-
-	f.mux.HandleFunc("GET "+api.Prefix+"/events", f.serveEvents)
-}
-
-func (f *fakeAPI) serveEvents(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	authed := f.authed || f.installer
-	f.mu.Unlock()
-	if !authed {
-		api.Error(w, http.StatusUnauthorized, "not signed in")
+// goDown takes the box down with what it boots with next: for dur, or
+// until woken when dur < 0.
+func (d *devServer) goDown(dur time.Duration, boot *devBoot) {
+	d.mu.Lock()
+	if d.down {
+		d.mu.Unlock()
 		return
 	}
-	fl, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	fl.Flush()
-	ch, cancel := f.hub.Subscribe()
-	defer cancel()
+	old := d.world
+	d.down, d.boot = true, boot
+	if d.timer != nil {
+		d.timer.Stop()
+	}
+	if dur >= 0 {
+		d.timer = time.AfterFunc(dur, d.wake)
+	}
+	d.mu.Unlock()
+	old.stop()
+}
+
+// wake boots the box again with the state it went down with.
+func (d *devServer) wake() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.down {
+		return
+	}
+	b := d.boot
+	if b.preset != "" {
+		d.preset = b.preset
+	}
+	p := d.fx.presets[d.preset]
+	if b.password != "" {
+		if err := auth.SetAdminPassword("", b.password); err != nil {
+			log.Printf("dev server: %v", err)
+		}
+	}
+	w, err := d.newWorld(p, b.docs, b.installer, false)
+	if err != nil {
+		log.Printf("dev server: booting: %v", err)
+		return
+	}
+	w.fake.errs = b.errs
+	d.world, d.down, d.boot = w, false, nil
+}
+
+func (d *devServer) cancelRunsLocked() {
+	for _, c := range d.runs {
+		c()
+	}
+	d.runs = nil
+}
+
+// devRequest decodes a control's JSON body.
+func devRequest(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		api.Error(w, http.StatusBadRequest, "%v", err)
+		return false
+	}
+	return true
+}
+
+// serveDev answers /__dev/*: only to loopback clients, and never to a page
+// of another origin (a web page could otherwise post to localhost).
+func (d *devServer) serveDev(w http.ResponseWriter, r *http.Request) {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		api.Error(w, http.StatusForbidden, "dev controls answer only on this machine")
+		return
+	}
+	if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+		api.Error(w, http.StatusForbidden, "cross-origin request refused")
+		return
+	}
+	switch r.Method + " " + r.URL.Path {
+	case "POST /__dev/preset":
+		var req struct {
+			Name string `json:"name"`
+		}
+		if !devRequest(w, r, &req) {
+			return
+		}
+		if err := d.loadPreset(req.Name); err != nil {
+			api.Error(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]string{"preset": req.Name})
+	case "POST /__dev/event":
+		var req struct {
+			Topic string          `json:"topic"`
+			Data  json.RawMessage `json:"data"`
+		}
+		if !devRequest(w, r, &req) {
+			return
+		}
+		world, down := d.current()
+		if down || req.Topic == "" {
+			api.Error(w, http.StatusConflict, "the box is down, or no topic")
+			return
+		}
+		if req.Data == nil {
+			req.Data = json.RawMessage("{}")
+		}
+		world.fake.publishRaw(fakeEvent{Topic: req.Topic, Data: req.Data})
+		api.OK(w)
+	case "POST /__dev/down":
+		var req struct {
+			Seconds *float64 `json:"seconds"`
+		}
+		if !devRequest(w, r, &req) {
+			return
+		}
+		if req.Seconds == nil {
+			api.Error(w, http.StatusBadRequest, "seconds: > 0 restarts, 0 wakes, < 0 powers off until woken")
+			return
+		}
+		d.setDown(*req.Seconds)
+		api.OK(w)
+	case "POST /__dev/latency":
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if !devRequest(w, r, &req) {
+			return
+		}
+		d.slow.Store(req.Enabled)
+		api.WriteJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
+	case "POST /__dev/script":
+		var req struct {
+			Name string `json:"name"`
+		}
+		if !devRequest(w, r, &req) {
+			return
+		}
+		s := d.fx.scripts[req.Name]
+		if s == nil {
+			api.Error(w, http.StatusBadRequest, "no script %q", req.Name)
+			return
+		}
+		d.runScript(s)
+		api.OK(w)
+	case "GET /__dev/state":
+		api.WriteJSON(w, http.StatusOK, d.state())
+	default:
+		api.Error(w, http.StatusNotFound, "no such dev control")
+	}
+}
+
+// setDown restarts (n > 0 seconds), wakes (0) or powers off (n < 0).
+func (d *devServer) setDown(seconds float64) {
+	if seconds == 0 {
+		d.wake()
+		return
+	}
+	world, down := d.current()
+	if down {
+		return
+	}
+	dur := time.Duration(seconds * float64(time.Second))
+	if seconds < 0 {
+		dur = -1
+	}
+	d.goDown(dur, world.fake.bootState(nil))
+}
+
+// runScript runs a script's steps in the background.
+func (d *devServer) runScript(s *fakeScript) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mu.Lock()
+	d.runs = append(d.runs, cancel)
+	preset := d.preset
+	d.mu.Unlock()
+	go func() {
+		for _, st := range s.Steps {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(st.After) * time.Millisecond):
+			}
+			if st.Reset {
+				if err := d.loadPreset(preset); err != nil {
+					log.Printf("dev server: %v", err)
+				}
+				return
+			}
+			if st.Down != nil {
+				d.setDown(float64(*st.Down))
+			}
+			world, down := d.current()
+			if down {
+				continue
+			}
+			if err := world.fake.applyStep(st); err != nil {
+				log.Printf("dev server: script: %v", err)
+			}
+		}
+	}()
+}
+
+func (d *devServer) state() map[string]any {
+	world, down := d.current()
+	d.mu.Lock()
+	preset := d.preset
+	d.mu.Unlock()
+	var scripts []string
+	for n := range d.fx.scripts {
+		scripts = append(scripts, n)
+	}
+	sort.Strings(scripts)
+	st := map[string]any{
+		"preset": preset, "presets": d.fx.presetNames(), "scripts": scripts,
+		"ui": d.set.Name, "down": down, "latency": d.slow.Load(),
+	}
+	if !down {
+		st["installer"] = world.fake.installer
+		st["docs"] = world.fake.snapshot()
+	}
+	return st
+}
+
+// watch rebuilds the UI whenever a file under templates/ or static/
+// changes (name, size or time), and keeps the old one on an error.
+func (d *devServer) watch(ctx context.Context, every time.Duration) {
+	last := fingerprint(d.fsys)
+	t := time.NewTicker(every)
+	defer t.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
-		case ev, ok := <-ch:
-			if !ok {
-				return
-			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Topic, ev.Data)
-			fl.Flush()
+		case <-t.C:
 		}
+		fp := fingerprint(d.fsys)
+		if fp == last {
+			continue
+		}
+		last = fp
+		world, down := d.current()
+		if down {
+			continue
+		}
+		u, err := newUI(world.srv, d.set, d.fsys)
+		if err != nil {
+			log.Printf("dev server: keeping the old UI: %v", err)
+			continue
+		}
+		world.ui.store(u)
+		log.Printf("dev server: reloaded the UI")
 	}
+}
+
+func fingerprint(fsys fs.FS) string {
+	var b strings.Builder
+	for _, root := range []string{"templates", "static"} {
+		fs.WalkDir(fsys, root, func(p string, e fs.DirEntry, err error) error {
+			if err != nil || e.IsDir() {
+				return nil
+			}
+			if info, err := e.Info(); err == nil {
+				fmt.Fprintf(&b, "%s %d %d\n", p, info.Size(), info.ModTime().UnixNano())
+			}
+			return nil
+		})
+	}
+	return b.String()
 }

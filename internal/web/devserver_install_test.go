@@ -1,83 +1,220 @@
 package web
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 )
 
-// The dev server's fake of the live ISO's installer: the disk probe, the
-// install job and its progress events. TestDevServer and the fake's core are
-// in devserver_test.go.
+// The dev server's fake of the live ISO's installer (internal/install):
+// the disk probe, the install job with the real steps and messages, and
+// the restart into the installed system. Documents: base/install-probe.json
+// and install-status.json. These routes need the setup code (Setup).
 
-func (f *fakeAPI) seedInstall() {
-	f.install = map[string]any{"state": "idle", "step": "", "percent": 0, "message": "", "error": ""}
+// The request checks of install/options.go.
+var (
+	fakeInstallHostRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	fakeTimezoneRe    = regexp.MustCompile(`^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,3}$`)
+	fakeLibraryRe     = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+)
+
+func (f *devFake) installRoutes(add fakeAdder) {
+	add("GET", "/install/probe", api.Setup, func(w http.ResponseWriter, r *http.Request) any {
+		p := cloneDoc(f.doc("install-probe"))
+		q := r.URL.Query()
+		p["source"] = q.Get("source")
+		delete(p, "channel")
+		if ch := q.Get("channel"); ch != "" {
+			p["channel"] = ch
+		}
+		return p
+	})
+	add("POST", "/install", api.Setup, func(w http.ResponseWriter, r *http.Request) any {
+		var req struct {
+			Disk      string   `json:"disk"`
+			Mode      string   `json:"mode"`
+			Hostname  string   `json:"hostname"`
+			Password  string   `json:"password"`
+			Timezone  string   `json:"timezone"`
+			Libraries []string `json:"libraries"`
+			Source    string   `json:"source"`
+			Channel   string   `json:"channel"`
+		}
+		if !strictBody(w, r, &req) {
+			return nil
+		}
+		if f.installing {
+			api.Error(w, http.StatusConflict, "an installation is already running")
+			return nil
+		}
+		disk, err := f.checkInstallLocked(&req.Disk, &req.Mode, &req.Hostname, req.Password, req.Timezone, req.Libraries)
+		if err != nil {
+			api.Error(w, http.StatusBadRequest, "%v", err)
+			return nil
+		}
+		f.installing = true
+		f.setInstallLocked("running", "probe", 0, "Starting the installation", "")
+		go f.runInstall(disk, req.Mode, req.Hostname, req.Password)
+		b := make([]byte, 8)
+		rand.Read(b)
+		return fakeStatus{http.StatusAccepted, map[string]string{"job": hex.EncodeToString(b)}}
+	})
+	add("GET", "/install/status", api.Setup, func(w http.ResponseWriter, r *http.Request) any {
+		return f.doc("install-status")
+	})
+	add("POST", "/install/reboot", api.Setup, func(w http.ResponseWriter, r *http.Request) any {
+		if f.installing {
+			api.Error(w, http.StatusConflict, "an installation is running")
+			return nil
+		}
+		// The ISO restarts into the installed system, or into itself.
+		f.restartInto(20*time.Second, f.installed)
+		return fakeOK
+	})
 }
 
-func (f *fakeAPI) installRoutes() {
-	ok := struct{}{}
-	setup := func(h func(w http.ResponseWriter, r *http.Request) any) func(w http.ResponseWriter, r *http.Request) any {
-		return func(w http.ResponseWriter, r *http.Request) any {
-			if !f.headless && r.Header.Get("X-VOS-Setup") != "ABCD-EFGH" {
-				if c, err := r.Cookie("vos_setup"); err != nil || c.Value != "ABCD-EFGH" {
-					api.Error(w, http.StatusForbidden, "setup code required")
-					return nil
-				}
-			}
-			return h(w, r)
+// checkInstallLocked is the request check of install.validateRequest.
+func (f *devFake) checkInstallLocked(disk, mode, hostname *string, password, timezone string, libraries []string) (map[string]any, error) {
+	*disk = strings.TrimSpace(*disk)
+	if *disk == "" {
+		return nil, fmt.Errorf("no disk given")
+	}
+	*mode = strings.ToLower(strings.TrimSpace(*mode))
+	switch *mode {
+	case "":
+		*mode = "erase"
+	case "erase", "repair":
+	default:
+		return nil, fmt.Errorf("mode must be %q or %q, not %q", "erase", "repair", *mode)
+	}
+	*hostname = strings.ToLower(strings.TrimSpace(*hostname))
+	if *hostname == "" && *mode == "erase" {
+		*hostname = "vapor"
+	}
+	switch {
+	case *hostname == "":
+	case !fakeInstallHostRe.MatchString(*hostname):
+		return nil, fmt.Errorf("invalid hostname %q: use 1-63 letters, digits and hyphens", *hostname)
+	case *hostname == "localhost":
+		return nil, fmt.Errorf(`invalid hostname: "localhost" is reserved`)
+	}
+	if password != "" {
+		if utf8.RuneCountInString(password) < 8 {
+			return nil, fmt.Errorf("the admin password needs at least %d characters", 8)
+		}
+		if len(password) > 1024 || !utf8.ValidString(password) || strings.ContainsRune(password, 0) {
+			return nil, fmt.Errorf("the admin password is not valid")
 		}
 	}
-	f.handle("GET /install/probe", false, setup(func(w http.ResponseWriter, r *http.Request) any {
-		return map[string]any{
-			"disks": []map[string]any{
-				{"path": "/dev/nvme0n1", "model": "Samsung SSD 990 PRO 1TB", "size": 1_000_204_886_016, "transport": "nvme", "removable": false, "is_live": false, "has_vaporos": true, "steam_libraries": []any{}},
-				{"path": "/dev/sda", "model": "Samsung SSD 870 EVO 1TB", "size": 1_000_204_886_016, "transport": "sata", "removable": false, "is_live": false, "has_vaporos": false,
-					"steam_libraries": []map[string]string{{"uuid": "5e1d-aa01", "label": "SATA1TB", "path": "/SteamLibrary"}}},
-				{"path": "/dev/sdb", "model": "SanDisk Ultra Fit", "size": 32_000_000_000, "transport": "usb", "removable": true, "is_live": true, "has_vaporos": false},
-				{"path": "/dev/sdc", "model": "Kingston DataTraveler", "size": 16_000_000_000, "transport": "usb", "removable": true, "is_live": false, "has_vaporos": false},
-			},
-			"ips": []string{"192.168.1.167"}, "timezone": "UTC", "min_size": 26_306_674_688, "source": "",
-			"gpu": map[string]any{"vendor": "amd", "name": "AMD Radeon RX 9070 XT", "driver": "amdgpu", "supported": true},
+	if tz := strings.TrimSpace(timezone); tz != "" && !fakeTimezoneRe.MatchString(tz) {
+		return nil, fmt.Errorf("invalid timezone %q", tz)
+	}
+	for _, u := range libraries {
+		if u = strings.TrimSpace(u); u != "" && !fakeLibraryRe.MatchString(u) {
+			return nil, fmt.Errorf("invalid filesystem UUID %q", u)
 		}
-	}))
-	f.handle("POST /install", false, setup(func(w http.ResponseWriter, r *http.Request) any {
-		go f.fakeInstall()
-		return map[string]string{"job": "1"}
-	}))
-	f.handle("GET /install/status", false, setup(func(w http.ResponseWriter, r *http.Request) any { return f.install }))
-	f.handle("POST /install/reboot", false, setup(func(w http.ResponseWriter, r *http.Request) any {
-		f.installer = false
-		f.reboot(8 * time.Second)
-		return ok
-	}))
+	}
+	dev := "/dev/" + strings.TrimPrefix(*disk, "/dev/")
+	for _, x := range asList(f.doc("install-probe")["disks"]) {
+		d := asObj(x)
+		if asStr(d["path"]) != dev {
+			continue
+		}
+		switch {
+		case d["is_live"] == true:
+			return nil, fmt.Errorf("%s holds the VaporOS installer itself; choose another disk", dev)
+		case *mode == "repair" && d["has_vaporos"] != true:
+			return nil, fmt.Errorf("%s holds no VaporOS installation to repair", dev)
+		}
+		return d, nil
+	}
+	return nil, fmt.Errorf("%s is not a disk VaporOS can be installed on", dev)
 }
 
-func (f *fakeAPI) fakeInstall() {
-	steps := []struct {
-		step, msg string
-		pct       int
-	}{
-		{"partition", "Creating partitions on /dev/nvme0n1", 5},
-		{"format", "Formatting the data partition", 12},
-		{"write", "Writing the system image (1.4 GB)", 20},
-		{"write", "Writing the system image (1.4 GB)", 45},
-		{"write", "Writing the system image (1.4 GB)", 70},
-		{"verify", "Checking what was written", 85},
-		{"boot", "Installing the boot loader", 93},
-		{"config", "Saving your settings", 98},
+func (f *devFake) setInstallLocked(state, step string, pct int, msg, errText string) {
+	st := map[string]any{"state": state, "step": step, "percent": pct, "message": msg, "error": errText}
+	f.docs["install-status"] = st
+	f.emitLocked("install.progress", map[string]any{"step": step, "percent": pct, "message": msg, "state": state})
+}
+
+// runInstall walks the real steps and messages (install/install.go,
+// image.go, target.go), then waits for POST /install/reboot, which boots
+// the installed system with the name and password the wizard chose.
+func (f *devFake) runInstall(disk map[string]any, mode, hostname, password string) {
+	dev := asStr(disk["path"])
+	part := dev + "2"
+	if strings.Contains(dev, "nvme") {
+		part = dev + "p2"
 	}
+	version := asStr(f.doc("install-probe")["version"])
+	type step struct {
+		step string
+		pct  int
+		msg  string
+	}
+	steps := []step{
+		{"probe", 0, "Checking the system"},
+		{"probe", 1, "Reading the VaporOS image from /run/vos/medium/vos"},
+		{"probe", 2, fmt.Sprintf("Ready to install VaporOS %s on %s", version, dev)},
+	}
+	if mode == "repair" {
+		steps = append(steps, step{"partition", 3, "Checking the data partition"},
+			step{"partition", 6, "Formatting the boot partition"}, step{"partition", 10, "Disk prepared"})
+	} else {
+		steps = append(steps, step{"partition", 3, "Erasing " + dev}, step{"partition", 5, "Creating partitions"},
+			step{"partition", 8, "Creating filesystems"}, step{"partition", 10, "Disk prepared"})
+	}
+	for pct := 10; pct < 75; pct += 8 {
+		steps = append(steps, step{"write", pct, fmt.Sprintf("Writing VaporOS %s to %s", version, part)})
+	}
+	steps = append(steps, step{"verify", 75, "Verifying " + part}, step{"verify", 90, "Image verified"},
+		step{"bootloader", 90, "Installing the bootloader"}, step{"bootloader", 92, "Writing the boot entry"},
+		step{"bootloader", 95, "Bootloader installed"},
+		step{"configure", 95, "Configuring " + map[bool]string{true: hostname, false: "the system"}[hostname != ""]},
+		step{"configure", 99, "Finishing"})
 	for _, s := range steps {
-		st := map[string]any{"state": "running", "step": s.step, "percent": s.pct, "message": s.msg, "error": ""}
+		select {
+		case <-f.ctx.Done():
+			return
+		case <-time.After(700 * time.Millisecond):
+		}
 		f.mu.Lock()
-		f.install = st
+		if fail := f.preset.Sim.InstallFail; fail != "" && s.step == "write" {
+			f.installing = false
+			f.setInstallLocked("failed", s.step, s.pct, "Installation failed: "+fail, fail)
+			f.mu.Unlock()
+			return
+		}
+		f.setInstallLocked("running", s.step, s.pct, s.msg, "")
 		f.mu.Unlock()
-		f.hub.Publish("install.progress", st)
-		time.Sleep(900 * time.Millisecond)
 	}
-	done := map[string]any{"state": "done", "step": "done", "percent": 100, "message": "VaporOS is installed", "error": ""}
 	f.mu.Lock()
-	f.install = done
-	f.mu.Unlock()
-	f.hub.Publish("install.progress", done)
+	defer f.mu.Unlock()
+	f.installing = false
+	f.setInstallLocked("done", "done", 100, fmt.Sprintf("VaporOS %s is installed on %s", version, dev), "")
+	if f.d == nil {
+		return
+	}
+	// What the restart boots: a fresh system (the empty preset) with the
+	// name and password from the wizard. A repair keeps the disk's name.
+	docs, err := f.d.fx.docs(f.d.fx.presets["empty"], time.Now())
+	if err != nil {
+		return
+	}
+	if hostname == "" {
+		hostname = asStr(disk["hostname"])
+	}
+	if hostname == "" {
+		hostname = "vapor"
+	}
+	sys := asObj(docs["system"])
+	sys["hostname"], sys["mdns"], sys["uptime_s"] = hostname, hostname+".local", 0
+	f.installed = &devBoot{docs: docs, errs: map[string]fakeError{}, preset: "empty", password: password}
 }

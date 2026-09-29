@@ -3,80 +3,115 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"path"
+	"regexp"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/storage"
 )
 
-// The dev server's fake of storage: drives and the Steam libraries VaporOS
-// adopts. TestDevServer and the fake's core are in devserver_test.go.
+// The dev server's fake of storage (internal/storage): drives and the
+// Steam libraries VaporOS adopts. Document: base/storage.json, the GET
+// /storage answer. Adopting a drive while a stream runs (Steam is busy)
+// leaves its library pending, as on the box.
 
-func (f *fakeAPI) seedStorage() {
-	f.libraries = map[string]string{"5e1d-aa01": "registered", "3c4d-5e6f": ""}
-}
+var fakeFSUUIDRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z-]{0,63}$`) // storage.validUUID
 
-func (f *fakeAPI) storageRoutes() {
-	ok := struct{}{}
-	f.handle("GET /storage", true, func(w http.ResponseWriter, r *http.Request) any {
-		disks := []map[string]any{
-			{"path": "/dev/nvme0n1p4", "model": "Samsung SSD 990 PRO 1TB", "size": 960_000_000_000, "uuid": "sys-0001", "label": "vos_data", "fstype": "ext4", "mounted_at": "/state", "is_system": true, "free": 612_000_000_000},
-			{"path": "/dev/sda1", "model": "Samsung SSD 870 EVO 1TB", "size": 1_000_000_000_000, "uuid": "5e1d-aa01", "label": "SATA1TB", "fstype": "ext4", "steam_library": true, "library_dir": "."},
-			{"path": "/dev/sdb1", "model": "WDC WD20EZAZ", "size": 2_000_000_000_000, "uuid": "77b2-c9d0", "label": "Games2", "fstype": "btrfs", "steam_library": true, "library_dir": "SteamLibrary"},
-			{"path": "/dev/sdc1", "model": "Crucial X9", "size": 500_000_000_000, "uuid": "E0A1-33F2", "label": "WINDATA", "fstype": "ntfs", "steam_library": false},
-			{"path": "/dev/sdd1", "model": "SanDisk Extreme", "size": 256_000_000_000, "uuid": "6A1B-2C3D", "label": "CAMERA", "fstype": "exfat", "steam_library": false},
+func (f *devFake) storageRoutes(add fakeAdder) {
+	add("GET", "/storage", api.Authed, func(w http.ResponseWriter, r *http.Request) any { return f.doc("storage") })
+	add("POST", "/storage/libraries", api.Authed, func(w http.ResponseWriter, r *http.Request) any {
+		var req struct {
+			UUID string `json:"uuid"`
 		}
-		attached := map[string]bool{}
-		for _, d := range disks {
-			uuid := d["uuid"].(string)
-			attached[uuid] = true
-			st, adopted := f.libraries[uuid]
-			d["registered"] = adopted && st == "registered"
-			if !adopted {
-				continue
-			}
-			d["adopted"], d["mounted_at"], d["free"] = true, "/var/mnt/"+d["label"].(string), 420_000_000_000
-			d["registration_pending"] = st == "pending"
-			if d["steam_library"] != true {
-				d["steam_library"], d["library_dir"] = true, "SteamLibrary" // made on adoption
-			}
-		}
-		for uuid, st := range f.libraries {
-			if !attached[uuid] {
-				disks = append(disks, map[string]any{"uuid": uuid, "label": "OldSSD", "fstype": "ext4", "is_system": false, "steam_library": false,
-					"adopted": true, "missing": true, "registered": st == "registered", "registration_pending": st == "pending"})
-			}
-		}
-		return map[string]any{"disks": disks}
-	})
-	f.handle("POST /storage/libraries", true, func(w http.ResponseWriter, r *http.Request) any {
-		uuid := fmt.Sprint(body(r)["uuid"])
-		label, ok := map[string]string{"5e1d-aa01": "SATA1TB", "77b2-c9d0": "Games2", "E0A1-33F2": "WINDATA"}[uuid]
-		if !ok {
-			api.Error(w, http.StatusBadRequest, "exfat filesystems cannot hold a Steam library (use ext4, btrfs, xfs, f2fs or NTFS)")
+		if !strictBody(w, r, &req) {
 			return nil
 		}
-		// Games2 waits for Steam to stop, like a disk adopted mid-stream.
-		st, hadGames := "registered", uuid != "E0A1-33F2"
-		if uuid == "77b2-c9d0" {
-			st = "pending"
+		if !fakeFSUUIDRe.MatchString(req.UUID) {
+			api.Error(w, http.StatusBadRequest, "invalid filesystem uuid")
+			return nil
 		}
-		f.libraries[uuid] = st
-		mp, lib := "/var/mnt/"+label, "/var/mnt/"+label
-		if uuid != "5e1d-aa01" {
-			lib += "/SteamLibrary"
+		var d map[string]any
+		for _, x := range asList(f.doc("storage")["disks"]) {
+			if x := asObj(x); asStr(x["uuid"]) == req.UUID && asStr(x["fstype"]) != "" && x["missing"] != true {
+				d = x
+			}
 		}
-		games := ""
-		if hadGames {
-			games = " Its installed games appear in Steam without downloading."
+		switch {
+		case d == nil:
+			api.Error(w, http.StatusNotFound, "no filesystem with uuid %s is attached", req.UUID)
+			return nil
+		case d["is_system"] == true:
+			api.Error(w, http.StatusBadRequest, "%s is part of the VaporOS system disk", asStr(d["path"]))
+			return nil
+		case !storage.LibraryFS(asStr(d["fstype"])):
+			api.Error(w, http.StatusBadRequest, "%s filesystems cannot hold a Steam library (use ext4, btrfs, xfs, f2fs or NTFS)", asStr(d["fstype"]))
+			return nil
 		}
-		hint := lib + " is one of Steam's game libraries." + games
-		if st == "pending" {
-			hint = "VaporOS adds " + lib + " to Steam's game libraries the next time Steam is not running (at the latest after a restart)." + games +
-				" To use it right away, open Steam > Settings > Storage > Add Drive and choose " + lib + "."
+		mp := "/var/mnt/" + asStr(d["label"])
+		library, hadGames := mp, d["steam_library"] == true
+		if dir := asStr(d["library_dir"]); hadGames && dir != "" && dir != "." {
+			library = path.Join(mp, dir)
+		} else if !hadGames {
+			library = path.Join(mp, "SteamLibrary") // made on adoption, owned by vapor
+			d["steam_library"], d["library_dir"] = true, "SteamLibrary"
 		}
-		return map[string]any{"mountpoint": mp, "library": lib, "registered": st == "registered", "registration_pending": st == "pending", "hint": hint}
+		pending := f.doc("sunshine")["streaming"] == true
+		d["adopted"], d["mounted_at"], d["registered"] = true, mp, !pending
+		if d["free"] == nil {
+			d["free"] = asNum(d["size"]) * 0.6
+		}
+		delete(d, "registration_pending")
+		if pending {
+			d["registration_pending"] = true
+		}
+		return map[string]any{"mountpoint": mp, "library": library, "registered": !pending,
+			"registration_pending": pending, "hint": fakeAdoptHint(library, hadGames, !pending, pending)}
 	})
-	f.handle("DELETE /storage/libraries/{uuid}", true, func(w http.ResponseWriter, r *http.Request) any {
-		delete(f.libraries, r.PathValue("uuid"))
-		return ok
+	add("DELETE", "/storage/libraries/{uuid}", api.Authed, func(w http.ResponseWriter, r *http.Request) any {
+		uuid := r.PathValue("uuid")
+		if !fakeFSUUIDRe.MatchString(uuid) {
+			api.Error(w, http.StatusBadRequest, "invalid filesystem uuid")
+			return nil
+		}
+		st := f.doc("storage")
+		keep, found := []any{}, false
+		for _, x := range asList(st["disks"]) {
+			d := asObj(x)
+			if asStr(d["uuid"]) != uuid || d["adopted"] != true {
+				keep = append(keep, x)
+				continue
+			}
+			found = true
+			if d["missing"] == true {
+				continue // an adopted drive that is not attached is simply forgotten
+			}
+			d["adopted"], d["registered"] = false, false
+			for _, k := range []string{"mounted_at", "free", "registration_pending"} {
+				delete(d, k)
+			}
+			keep = append(keep, d)
+		}
+		if !found {
+			api.Error(w, http.StatusNotFound, "no adopted library with uuid %s", uuid)
+			return nil
+		}
+		st["disks"] = keep
+		return fakeOK
 	})
+}
+
+// fakeAdoptHint is storage.adoptHint's text.
+func fakeAdoptHint(library string, hadGames, registered, pending bool) string {
+	games := ""
+	if hadGames {
+		games = " Its installed games appear in Steam without downloading."
+	}
+	switch {
+	case registered:
+		return fmt.Sprintf("%s is one of Steam's game libraries.%s", library, games)
+	case pending:
+		return fmt.Sprintf("VaporOS adds %s to Steam's game libraries the next time Steam is not running (at the latest after a restart).%s "+
+			"To use it right away, open Steam > Settings > Storage > Add Drive and choose %s.", library, games, library)
+	}
+	return fmt.Sprintf("In Steam, open Settings > Storage > Add Drive and choose %s.%s", library, games)
 }
