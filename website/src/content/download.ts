@@ -2,12 +2,14 @@
 // Ported from pages/download.astro and components/DownloadCard.astro.
 // The card's data (version, date, size, URLs) comes from the release:
 // src/lib/release.ts at build time, src/lib/use-latest-release.ts in the browser.
-import { links, routes } from './site';
+import { anchors, links, routes } from './site';
 import type { ButtonItem, Callout, Headline, IconName, LinkItem, Rich } from './types';
 
 export const downloadPage = {
   eyebrow: 'Download',
   title: { text: 'Get', accent: 'VaporOS' } satisfies Headline,
+  /** The H1 as it is set, line by line. */
+  headline: ['Get VaporOS.'],
   lead: 'One ISO. Write it to a USB stick, boot the PC from it, and finish the setup on your phone.' as Rich,
   /** Under the card. */
   channels: {
@@ -16,6 +18,12 @@ export const downloadPage = {
   } satisfies Callout,
   channelsShort: 'An installed PC follows its channel by itself, so you only download an ISO once.' as Rich,
   next: { label: 'Next: the install guide', href: routes.install, icon: 'arrow' } satisfies LinkItem,
+  /** In-page links under the card, to the two sections below it. */
+  jump: [
+    { label: 'What you need', href: `#${anchors.requirements}` },
+    { label: 'Check your download', href: `#${anchors.verify}` },
+  ] satisfies LinkItem[],
+  jumpLabel: 'On this page',
 };
 
 export type AssetKey = 'sums' | 'manifest' | 'sig' | 'notes';
@@ -48,6 +56,11 @@ export const downloadCard = {
       { label: 'Requirements', href: routes.requirements, icon: 'arrow' },
     ] satisfies LinkItem[],
     fullLinks: [{ label: 'All releases', href: links.releases, icon: 'arrow' }] satisfies LinkItem[],
+    /** The requirement summary under the button: `${needs}` then every requirements[].label, linking to the list. */
+    needs: 'Needs',
+    needsLink: { label: 'Requirements', href: routes.requirements },
+    /** Before the date in the card's readout. */
+    released: 'Released',
   },
   /**
    * GitHub says there is no release (404 on /releases/latest, or an empty

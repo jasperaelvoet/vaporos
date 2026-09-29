@@ -17,6 +17,10 @@ export interface QA {
 export const faqPage = {
   eyebrow: 'FAQ',
   title: { text: 'Questions,', accent: 'answered.' } satisfies Headline,
+  /** The H1 as it is set, line by line. */
+  headline: ['Questions, answered.'],
+  /** The label of the topic links under the lead. */
+  topicsLabel: 'Topics',
   lead: 'What VaporOS runs on, what it does to your PC, and how it keeps itself up to date.' as Rich,
   ask: {
     icon: 'question' as IconName,
@@ -64,7 +68,7 @@ export const faq: QA[] = [
     id: 'dual-boot',
     q: 'Can I dual boot it with Windows?',
     a: [
-      'No. VaporOS installs to a whole drive and erases it. Other drives in the PC are left alone, and if they hold Steam libraries you can pick them during setup (or later, under Storage) and keep playing those games. Nothing on them is changed.',
+      'No. VaporOS installs to a whole drive and erases it. Other drives in the PC are left alone, and if they hold Steam libraries you can pick them during setup (or later, under [[Storage]]) and keep playing those games. Nothing on them is changed.',
     ],
     short: 'No. VaporOS installs to a whole drive and erases it. Other drives are left alone.',
   },
@@ -97,7 +101,7 @@ export const faq: QA[] = [
     id: 'updates',
     q: 'Where do updates come from?',
     a: [
-      "From this project's GitHub container registry, `ghcr.io/jasperaelvoet/vaporos`. By default VaporOS downloads new versions in the background and prepares them; they start on the next restart. You can turn that off and update by hand under Updates.",
+      "From this project's GitHub container registry, `ghcr.io/jasperaelvoet/vaporos`. By default VaporOS downloads new versions in the background and prepares them; they start on the next restart. You can turn that off and update by hand under [[Updates]].",
       'Every update has to carry a valid ed25519 signature from the release key, before VaporOS writes anything, and every file has to match its size and SHA-256 before the new version can start. The `main` channel is the stable one; other channels are test builds.',
     ],
     short: 'From `ghcr.io/jasperaelvoet/vaporos`, signed with the release key.',
@@ -107,7 +111,7 @@ export const faq: QA[] = [
     q: 'What if an update breaks something?',
     a: [
       "VaporOS keeps two copies of the system. An update goes to the one you aren't running, and the old one stays as it was. If the new version doesn't start cleanly, the PC goes back to the previous version by itself and won't install that version again.",
-      "You can also go back by hand: open Updates, choose **Roll back**, and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+      "You can also go back by hand: open [[Updates]], choose [[Roll back]], and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
     ],
     short: "If a new version doesn't start cleanly, the PC goes back to the previous one by itself.",
   },
@@ -117,7 +121,7 @@ export const faq: QA[] = [
     id: 'power',
     q: 'Does it stay on all the time?',
     a: [
-      'It depends on the PC. When a wired network adapter can wake it from Moonlight (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing it powers off, but never while it streams, runs a game, downloads or updates. Otherwise it stays on. You can change this, or keep it awake for 1 or 4 hours, under Power.',
+      'It depends on the PC. When a wired network adapter can wake it from Moonlight (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing it powers off, but never while it streams, runs a game, downloads or updates. Otherwise it stays on. You can change this, or keep it awake for 1 or 4 hours, under [[Power]].',
     ],
     short: 'It powers off when idle only if Moonlight can wake it again.',
   },
@@ -129,10 +133,10 @@ export const faq: QA[] = [
     q: 'Can I wake it from my phone?',
     a: [
       'Yes, when the PC is on a network cable and Wake-on-LAN works. In Moonlight, pick the PC and choose **Wake**; this works for a PC Moonlight has paired with.',
-      'Any Wake-on-LAN app on the same network works too, with the MAC address shown under Power. Note it down while the PC is on.',
+      'Any Wake-on-LAN app on the same network works too, with the MAC address shown under [[Power]]. Note it down while the PC is on.',
       "The VaporOS web page itself can't wake the PC: the PC serves that page, and a web page can't send the wake packet.",
     ],
-    short: 'Yes: Moonlight wakes it, and so does any Wake-on-LAN app with the MAC address shown under Power.',
+    short: 'Yes: Moonlight wakes it, and so does any Wake-on-LAN app with the MAC address shown under [[Power]].',
   },
   {
     id: 'wifi',
@@ -154,7 +158,7 @@ export const faq: QA[] = [
     id: 'internet',
     q: 'Can other people on the internet reach it?',
     a: [
-      "The web page only answers devices on private networks, such as your home network, and asks for your admin password. Sunshine's own admin page is never reachable from other devices. SSH is off unless you turn it on under Advanced, and then only with keys you add.",
+      "The web page only answers devices on private networks, such as your home network, and asks for your admin password. Sunshine's own admin page is never reachable from other devices. SSH is off unless you turn it on under [[Advanced]], and then only with keys you add.",
     ],
     short: 'The web page only answers devices on private networks, and asks for your admin password.',
   },
@@ -175,6 +179,24 @@ export const faq: QA[] = [
     ],
     short: `Check \`SHA256SUMS\` and the signed \`manifest.json\`: the [download page](${routes.verify}) shows how.`,
   },
+];
+
+/**
+ * The FAQ page's topics, each an <h2> over its questions (by id, in order).
+ * Every question in `faq` is in exactly one topic (tests/unit checks it).
+ */
+export interface FaqGroup {
+  /** The anchor: /faq/#installing. */
+  id: string;
+  title: string;
+  ids: string[];
+}
+
+export const faqGroups: FaqGroup[] = [
+  { id: 'hardware', title: 'Basics and hardware', ids: ['what', 'gpu', 'monitor', 'headless', 'drives'] },
+  { id: 'installing', title: 'Installing', ids: ['dual-boot', 'secure-boot', 'address'] },
+  { id: 'safety', title: 'Updates and safety', ids: ['updates', 'rollback', 'verify', 'internet', 'apps'] },
+  { id: 'everyday', title: 'Everyday use', ids: ['power', 'wake', 'switching', 'wifi'] },
 ];
 
 /** faq entries by id, in the order given. */

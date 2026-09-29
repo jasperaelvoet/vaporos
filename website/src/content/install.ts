@@ -141,11 +141,34 @@ export interface GuideSection {
   blocks: GuideBlock[];
 }
 
+// ---------------------------------------------------------------------------
+// The welcome screen while the installer waits, as the PC draws it
+// (internal/display/status.go: the installer's status and detail;
+// internal/display/welcome: the code label and the QR caption). The IP
+// address and the setup code are examples: every PC shows its own.
+
+export const installerScreen = {
+  status: 'Ready to install',
+  detail: 'Open this address on a phone or computer to install VaporOS',
+  url: 'http://vaporos-setup.local',
+  ip: 'http://192.168.1.50',
+  or: 'or',
+  codeLabel: 'Setup code',
+  code: 'K7QF-3M2P',
+  qrLabel: 'Scan to open',
+};
+
 export const installGuide = {
   eyebrow: 'Install guide',
   title: { text: 'From USB stick', accent: 'to first game.' } satisfies Headline,
+  /** The H1 as it is set, line by line. */
+  headline: ['From USB stick', 'to first game.'],
   lead: 'A few minutes of your time, most of it spent waiting. You need the PC, a USB stick, a monitor or TV for the firmware settings (the installer itself runs without one), and a phone or computer on the same network.' as Rich,
   tocLabel: 'On this page',
+  /** The TOC's summary on phones, where it starts collapsed: `${tocLabel} · ${n} ${tocUnit}`. */
+  tocUnit: 'sections',
+  /** Under each step of the installer's wizard: `${n} ${of} ${total}`. */
+  of: 'of',
   sections: [
     {
       id: 'before',
@@ -279,7 +302,7 @@ export const installGuide = {
           type: 'ol',
           items: [
             "Open Moonlight on the same network. It usually finds the PC by itself; tap it. If it doesn't, tap **+** (Add PC) and enter the PC's address.",
-            "Moonlight shows a 4-digit PIN. On the VaporOS page, open **Pair a device**, type the PIN (the device's name is filled in), and press **Pair**. A connected monitor also says when a device wants to pair.",
+            "Moonlight shows a 4-digit PIN. On the VaporOS page, open [[Pair a device]], type the PIN (the device's name is filled in), and press [[Pair]]. A connected monitor also says when a device wants to pair.",
             "Pick Steam, or one of your games, in Moonlight and play. The virtual display switches to that device's resolution, frame rate and HDR.",
           ],
         },
@@ -293,11 +316,11 @@ export const installGuide = {
       blocks: [
         {
           type: 'p',
-          text: 'VaporOS checks for new versions and, by default, downloads and prepares them in the background. A prepared update starts on the next restart; you can also restart right away from the Updates page. Turn off **Download updates automatically** to decide yourself.',
+          text: 'VaporOS checks for new versions and, by default, downloads and prepares them in the background. A prepared update starts on the next restart; you can also restart right away from the [[Updates]] page. Turn off [[Download updates automatically]] to decide yourself.',
         },
         {
           type: 'p',
-          text: "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the Updates page lists the version that didn't start. To go back by hand, choose **Roll back** and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+          text: "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the [[Updates]] page lists the version that didn't start. To go back by hand, choose [[Roll back]] and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
         },
       ],
     },
@@ -311,11 +334,11 @@ export const installGuide = {
       blocks: [
         {
           type: 'p',
-          text: 'If the PC has a wired network adapter that can wake it (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing, VaporOS powers off, but never while it streams, runs a game, downloads or updates. Without one it stays on. Change this under **Power**, or keep it awake for 1 or 4 hours with **Stay awake**.',
+          text: 'If the PC has a wired network adapter that can wake it (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing, VaporOS powers off, but never while it streams, runs a game, downloads or updates. Without one it stays on. Change this under [[Power]], or keep it awake for 1 or 4 hours with [[Stay awake]].',
         },
         {
           type: 'p',
-          text: "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware. Any Wake-on-LAN app works too, with the MAC address shown under **Power**.",
+          text: "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware. Any Wake-on-LAN app works too, with the MAC address shown under [[Power]].",
         },
         { type: 'done', ...done },
       ],

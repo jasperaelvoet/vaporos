@@ -16,6 +16,8 @@ export const verifySection = {
   eyebrow: 'Verify',
   title: { text: 'Check your download' } satisfies Headline,
   lead: 'Optional, and quick. Download `SHA256SUMS`, `manifest.json` and `manifest.json.sig` from the same release as the ISO, then run these in that folder.' as Rich,
+  /** Before each step's `expect`. */
+  expectLabel: 'A good run prints',
 };
 
 /** Step 1's command. Exact. */
