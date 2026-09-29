@@ -15,13 +15,13 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 	"github.com/jasperaelvoet/vaporos/internal/session"
 )
 
@@ -59,14 +59,14 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	}
 	defer m.op.Unlock()
 
+	dc := m.displayConfig()
+	virtual, hdrAllowed := dc.VirtualConnector, dc.HDR
 	m.mu.Lock()
 	sess.Since = m.now()
 	m.session = sess
 	m.holdUntil = time.Time{}
 	canGame := m.canGameLocked()
 	gpu := m.gpu
-	virtual := m.cfg.Display.VirtualConnector
-	hdrAllowed := m.cfg.Display.HDR
 	m.mu.Unlock()
 	log.Printf("display: session begin: %s wants %s hdr=%v (%s)", client, asked, req.HDR, req.App)
 
@@ -89,6 +89,19 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	m.publishWelcomeLater()
 
 	gsUp := m.h.UnitActive(ctx, GamescopeUnit, true)
+	// Switching HDR restarts gamescope, and with it Steam and everything
+	// Steam runs. A game can outlive its Moonlight session (Sunshine's
+	// apps are placebos; quitting one leaves the game running), so never
+	// restart under a game: stream with the HDR state gamescope has.
+	var note string
+	if gsUp && m.gsHDR != hdr && m.h.GameRunning() {
+		log.Printf("display: keeping gamescope at hdr=%v for %s (wants hdr=%v): a Steam game is running", m.gsHDR, client, hdr)
+		note = fmt.Sprintf("a game is running, so HDR stays %s until it exits", onOff(m.gsHDR))
+		hdr = m.gsHDR
+		m.mu.Lock()
+		sess.HDR = hdr
+		m.mu.Unlock()
+	}
 	keys := m.writeModesCfg(ctx, virtual, mode, gsUp)
 	m.ensureStopped(ctx, WelcomeUnit, false)
 
@@ -145,7 +158,19 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	if msg == "" && !exact {
 		msg = fmt.Sprintf("%s is not offered yet; using %s (learned for the next boot)", asked, mode)
 	}
+	if note != "" && msg != "" {
+		msg = note + "; " + msg
+	} else if note != "" {
+		msg = note
+	}
 	return session.Response{OK: ok, Mode: mode.String(), HDR: hdr, Message: msg}
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 func (m *Manager) publishBegin(s *sessionInfo) {
@@ -321,11 +346,8 @@ func (m *Manager) learn(client string, asked edid.Mode, hdr, exact bool) {
 
 // extraModes are the configured extra modes, then learned client modes.
 func (m *Manager) extraModes() []edid.Mode {
-	m.mu.Lock()
-	cfgModes := slices.Clone(m.cfg.Display.ExtraModes)
-	m.mu.Unlock()
 	var out []edid.Mode
-	for _, s := range cfgModes {
+	for _, s := range m.displayConfig().ExtraModes {
 		if md, err := edid.ParseMode(s); err == nil {
 			out = append(out, md)
 		}
@@ -373,8 +395,9 @@ func (m *Manager) regenerateEDID() (bool, error) {
 // display configuration: machine cmdline args missing from /proc/cmdline,
 // or a learned EDID that differs from what the virtual connector uses.
 func (m *Manager) rebootNeededNow() bool {
+	virtual := m.virtual()
 	m.mu.Lock()
-	flag, live, gpu, virtual := m.rebootNeeded, m.live, m.gpu, m.cfg.Display.VirtualConnector
+	flag, live, gpu := m.rebootNeeded, m.live, m.gpu
 	m.mu.Unlock()
 	if flag {
 		return true
@@ -407,11 +430,16 @@ func (m *Manager) rebootNeededNow() bool {
 
 // writeModesCfg stores mode as the saved mode of the virtual display in
 // gamescope's modes.cfg and returns the display keys it used.
+// The old file is merged only when it is a plain, small regular file; a
+// symlink, FIFO or anything large is replaced from scratch.
 func (m *Manager) writeModesCfg(ctx context.Context, virtual string, mode edid.Mode, running bool) []string {
 	keys := m.displayKeys(ctx, virtual, running)
-	path := ModesCfgPath()
-	old, _ := os.ReadFile(path)
-	if err := m.writeGamerFile(path, updateModesCfg(old, keys, mode), 0o644); err != nil {
+	old, err := gamerfs.ReadFile(config.GamerHome, modesCfgRel, maxModesCfg)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("display: modes.cfg: %v (starting a new one)", err)
+		old = nil
+	}
+	if err := m.writeGamerFile(config.GamerHome, modesCfgRel, updateModesCfg(old, keys, mode)); err != nil {
 		log.Printf("display: modes.cfg: %v", err)
 	}
 	return keys
@@ -547,41 +575,33 @@ func (m *Manager) writeGamescopeEnv(output string, hdr bool) error {
 	}
 	// logind mounts the runtime dir when the user manager starts; creating
 	// it ourselves would leave our file hidden under that mount.
-	if _, err := os.Stat(UserRuntimeDir); err != nil {
+	if _, err := os.Lstat(UserRuntimeDir); err != nil {
 		return fmt.Errorf("gamescope env: %s not there yet (user manager not running?)", UserRuntimeDir)
 	}
 	data := gamescopeEnv{Output: output, HDR: hdr}.render()
-	path := GamescopeEnvPath()
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
+	if old, err := gamerfs.ReadFile(UserRuntimeDir, gamescopeEnvRel, maxGamescopeEnv); err == nil && bytes.Equal(old, data) {
 		return nil
 	}
-	if err := m.writeGamerFile(path, data, 0o644); err != nil {
+	if err := m.writeGamerFile(UserRuntimeDir, gamescopeEnvRel, data); err != nil {
 		return fmt.Errorf("gamescope env: %w", err)
 	}
 	return nil
 }
 
-// writeGamerFile writes a file the gaming user owns, creating missing
-// parent directories owned by the gaming user as well.
-func (m *Manager) writeGamerFile(path string, data []byte, perm os.FileMode) error {
-	if err := m.mkdirGamer(filepath.Dir(path)); err != nil {
-		return err
+// readGamescopeEnv reads back gamescope.env (the zero value when there is
+// none, or it is not a small regular file).
+func readGamescopeEnv() gamescopeEnv {
+	b, err := gamerfs.ReadFile(UserRuntimeDir, gamescopeEnvRel, maxGamescopeEnv)
+	if err != nil {
+		return gamescopeEnv{}
 	}
-	if err := config.WriteFileAtomic(path, data, perm); err != nil {
-		return err
-	}
-	return m.h.OwnByGamer(path)
+	return parseGamescopeEnv(b)
 }
 
-func (m *Manager) mkdirGamer(dir string) error {
-	if _, err := os.Stat(dir); err == nil {
-		return nil
-	}
-	if err := m.mkdirGamer(filepath.Dir(dir)); err != nil {
-		return err
-	}
-	if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
-	return m.h.OwnByGamer(dir)
+// writeGamerFile replaces root/rel with data (mode 0644), owned by the
+// gaming user like the directories it creates on the way (0755). root is
+// the gaming user's home or runtime dir; nothing beneath it is trusted.
+func (m *Manager) writeGamerFile(root, rel string, data []byte) error {
+	uid, gid := m.h.GamerIDs()
+	return gamerfs.WriteFile(root, rel, data, 0o644, uid, gid, gamerfs.DirPerm(0o755))
 }

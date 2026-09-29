@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
@@ -64,13 +66,28 @@ func parseXpropCardinal(out, name string) (int64, bool) {
 	return 0, false
 }
 
+// The files vosd keeps for gamescope live in the gaming user's tree, which
+// Steam and every game can change. They are read and written through
+// gamerfs (never following a planted symlink, never blocking on a FIFO),
+// relative to these roots, and reads are bounded.
+const (
+	// gamescopeEnvRel is gamescope.env, relative to UserRuntimeDir.
+	gamescopeEnvRel = "vos/gamescope.env"
+	// modesCfgRel is modes.cfg, relative to config.GamerHome.
+	modesCfgRel = ".config/gamescope/modes.cfg"
+	// maxGamescopeEnv and maxModesCfg bound the reads; a larger file is
+	// not ours and is replaced.
+	maxGamescopeEnv = 4 << 10
+	maxModesCfg     = 64 << 10
+	// maxModesCfgKept bounds the other displays' lines kept in modes.cfg.
+	maxModesCfgKept = 64
+)
+
 // GamescopeEnvPath is read by vos-gamescope.service (EnvironmentFile=).
-func GamescopeEnvPath() string { return filepath.Join(UserRuntimeDir, "vos", "gamescope.env") }
+func GamescopeEnvPath() string { return filepath.Join(UserRuntimeDir, gamescopeEnvRel) }
 
 // ModesCfgPath is gamescope's GAMESCOPE_MODE_SAVE_FILE.
-func ModesCfgPath() string {
-	return filepath.Join(config.GamerHome, ".config", "gamescope", "modes.cfg")
-}
+func ModesCfgPath() string { return filepath.Join(config.GamerHome, modesCfgRel) }
 
 // gamescopeEnv is what the gamescope unit is started with.
 type gamescopeEnv struct {
@@ -111,29 +128,39 @@ func parseGamescopeEnv(b []byte) gamescopeEnv {
 	return e
 }
 
+// modesCfgLine is one entry as gamescope reads it, sscanf("%255[^:]:%dx%d@%d %u"):
+// "<Make> <Model>:WxH@R", optionally followed by " N".
+var modesCfgLine = regexp.MustCompile(`^([^:\x00-\x1f\x7f]+):[0-9]{1,5}x[0-9]{1,5}@[0-9]{1,4}( [0-9]{1,10})?$`)
+
 // updateModesCfg sets the saved mode for each display key in gamescope's
-// mode save file, keeping lines for other displays. gamescope reads it with
-// sscanf("%255[^:]:%dx%d@%d %u") and takes the first line whose key equals
-// "<Make> <Model>" of the connector it drives.
+// mode save file, keeping entries for other displays. gamescope reads it
+// with sscanf("%255[^:]:%dx%d@%d %u") and takes the first line whose key
+// equals "<Make> <Model>" of the connector it drives. Only lines that are
+// such entries survive (at most maxModesCfgKept of them): whatever else the
+// old file held, it is never copied into the new one.
 func updateModesCfg(content []byte, keys []string, m edid.Mode) []byte {
 	want := map[string]bool{}
 	for _, k := range keys {
 		want[k] = true
 	}
 	var out bytes.Buffer
+	kept := 0
 	for _, line := range strings.Split(string(content), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+		sub := modesCfgLine.FindStringSubmatch(line)
+		if sub == nil || len(sub[1]) > 255 || !utf8.ValidString(sub[1]) || want[sub[1]] {
+			continue // not an entry, or ours (replaced below)
 		}
-		key, _, ok := strings.Cut(line, ":")
-		if ok && want[key] {
-			continue // replaced below
+		if kept++; kept > maxModesCfgKept {
+			break
 		}
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
 	for _, k := range keys {
-		fmt.Fprintf(&out, "%s:%s\n", k, m)
+		line := fmt.Sprintf("%s:%s", k, m)
+		if modesCfgLine.MatchString(line) && len(k) <= 255 {
+			out.WriteString(line + "\n")
+		}
 	}
 	return out.Bytes()
 }

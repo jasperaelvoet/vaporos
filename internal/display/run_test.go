@@ -2,6 +2,7 @@ package display
 
 import (
 	"context"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func TestRunLoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { m.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done }) // before the paths are restored
 
 	readWelcome := func() welcome.State {
 		var st welcome.State
@@ -40,7 +42,11 @@ func TestRunLoop(t *testing.T) {
 	waitFor(t, func() bool { return h.isActive(WelcomeUnit, false) })
 	waitFor(t, func() bool { return readWelcome().Status == "Ready to stream" })
 	waitFor(t, func() bool {
-		_, err := os.Stat(config.SessionSock())
+		// The file appears at bind(), a moment before listen().
+		c, err := net.Dial("unix", config.SessionSock())
+		if err == nil {
+			c.Close()
+		}
 		return err == nil
 	})
 

@@ -24,19 +24,20 @@ import (
 // `gamescopectl composite_force` and the GAMESCOPE_COMPOSITE_FORCE root
 // property, and without it the game scans out on direct planes.
 type fakeHost struct {
-	mu       sync.Mutex
-	active   map[string]bool // "unit" or "unit@user"
-	calls    []string
-	gpu      GPUInfo
-	conns    []drm.SysConnector
-	modes    []edid.Mode // what the virtual connector offers (nil: unknown)
-	scan     edid.Mode
-	scanOK   bool
-	scanErr  error
-	gsKey    string // display key the fake gamescope uses
-	gsReport string // key gamescopectl reports ("" = same as gsKey)
-	gsHDR    bool   // HDR flag the fake gamescope runs with
-	ignoreMC bool   // gamescope ignores modes.cfg (to test timeouts)
+	mu         sync.Mutex
+	active     map[string]bool // "unit" or "unit@user"
+	restarting map[string]bool // waiting out RestartSec: "activating", not active
+	calls      []string
+	gpu        GPUInfo
+	conns      []drm.SysConnector
+	modes      []edid.Mode // what the virtual connector offers (nil: unknown)
+	scan       edid.Mode
+	scanOK     bool
+	scanErr    error
+	gsKey      string // display key the fake gamescope uses
+	gsReport   string // key gamescopectl reports ("" = same as gsKey)
+	gsHDR      bool   // HDR flag the fake gamescope runs with
+	ignoreMC   bool   // gamescope ignores modes.cfg (to test timeouts)
 	// composite is gamescope's composite_force convar; props are the X root
 	// window properties of its Xwayland (both reset when gamescope starts).
 	composite bool
@@ -45,9 +46,15 @@ type fakeHost struct {
 	xErr      error         // xprop fails (no X server)
 	ctlDelay  time.Duration // gamescopectl takes this long
 	busy      string
+	game      bool   // a Steam game runs (GameRunning)
+	sunApp    string // Sunshine's serverinfo: "busy", "free" or "" (no answer)
 	ips       []string
 	startErr  error
 	hotplug   chan struct{}
+	// hotplugCalls counts Hotplug; panicIPs makes that many LocalIPs
+	// calls panic (to restart Run as the daemon does).
+	hotplugCalls int
+	panicIPs     int
 }
 
 func unitKey(unit string, user bool) string {
@@ -65,6 +72,15 @@ func (f *fakeHost) UnitActive(ctx context.Context, unit string, user bool) bool 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.active[unitKey(unit, user)]
+}
+
+// UnitStopped: the fake's units are either active or stopped, except one
+// marked restarting (waiting out RestartSec: neither).
+func (f *fakeHost) UnitStopped(ctx context.Context, unit string, user bool) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := unitKey(unit, user)
+	return !f.active[k] && !f.restarting[k]
 }
 
 func (f *fakeHost) StartUnit(ctx context.Context, unit string, user bool) error {
@@ -86,6 +102,7 @@ func (f *fakeHost) StopUnit(ctx context.Context, unit string, user bool) error {
 	defer f.mu.Unlock()
 	f.record("stop %s", unit)
 	f.active[unitKey(unit, user)] = false
+	delete(f.restarting, unitKey(unit, user)) // a stop cancels a pending restart
 	if unit == GamescopeUnit {
 		f.scanOK = false
 		f.composite, f.props = false, nil
@@ -250,11 +267,36 @@ func (f *fakeHost) Busy(ctx context.Context) (bool, string) {
 	return f.busy != "", f.busy
 }
 
-func (f *fakeHost) LocalIPs() []string { return f.ips }
+func (f *fakeHost) GameRunning() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.game
+}
 
-func (f *fakeHost) Hotplug(ctx context.Context) <-chan struct{} { return f.hotplug }
+func (f *fakeHost) SunshineApp(ctx context.Context) (bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sunApp == "busy", f.sunApp != ""
+}
 
-func (f *fakeHost) OwnByGamer(path string) error { return nil }
+func (f *fakeHost) LocalIPs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.panicIPs > 0 {
+		f.panicIPs--
+		panic("fake: LocalIPs")
+	}
+	return f.ips
+}
+
+func (f *fakeHost) Hotplug(ctx context.Context) <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hotplugCalls++
+	return f.hotplug
+}
+
+func (f *fakeHost) GamerIDs() (int, int) { return -1, -1 }
 
 func (f *fakeHost) setActive(unit string, user, on bool) {
 	f.mu.Lock()
@@ -343,8 +385,11 @@ func setupPaths(t *testing.T) *testEnv {
 	mustWrite(t, config.ProcCmdline, "quiet vos.slot=a video=DP-1:e drm.edid_firmware=DP-1:edid/vaporos.bin\n")
 	// Lines from hwdata's pnp.ids: VPR is taken (Best Buy), VOS is not listed.
 	mustWrite(t, PNPIDsPath, "DEL\tDell Inc.\nVPR\tBest Buy\n")
-	if err := os.MkdirAll(UserRuntimeDir, 0o755); err != nil {
-		t.Fatal(err)
+	// Both exist on a real system (tmpfiles, logind); vosd never makes them.
+	for _, d := range []string{UserRuntimeDir, config.GamerHome} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	res, err := edid.Generate(nil)
 	if err != nil {
@@ -380,12 +425,13 @@ func newTestManager(t *testing.T, monitor bool) (*Manager, *fakeHost, *clock, *e
 	t.Helper()
 	env := setupPaths(t)
 	h := &fakeHost{
-		active:  map[string]bool{},
-		gpu:     GPUInfo{Vendor: "amd", Name: "Navi 48", Driver: "amdgpu", Card: "/dev/dri/card1", Supported: true, cardName: "card1"},
-		gsKey:   "VOS VaporOS", // gamescope's Make falls back to the raw PNP id
-		ips:     []string{"192.168.1.50"},
-		direct:  2, // the spike: a primary plus a scaled overlay
-		hotplug: nil,
+		active:     map[string]bool{},
+		restarting: map[string]bool{},
+		gpu:        GPUInfo{Vendor: "amd", Name: "Navi 48", Driver: "amdgpu", Card: "/dev/dri/card1", Supported: true, cardName: "card1"},
+		gsKey:      "VOS VaporOS", // gamescope's Make falls back to the raw PNP id
+		ips:        []string{"192.168.1.50"},
+		direct:     2, // the spike: a primary plus a scaled overlay
+		hotplug:    nil,
 	}
 	h.conns = []drm.SysConnector{
 		{Card: "card1", Name: "DP-1", Type: "DP", Status: "connected", Dir: env.edidDir},

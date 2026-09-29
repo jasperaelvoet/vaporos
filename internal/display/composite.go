@@ -127,9 +127,10 @@ func (m *Manager) compositeWatchedLocked() bool {
 // both writes are idempotent, and the checks are one DRM plane query and
 // one xprop. It returns why it acted ("" when it did not).
 func (m *Manager) checkComposite(ctx context.Context) string {
+	virtual := m.virtual()
 	m.mu.Lock()
 	watched := m.compositeWatchedLocked()
-	card, virtual := m.gpu.Card, m.cfg.Display.VirtualConnector
+	card := m.gpu.Card
 	if !watched {
 		m.composite.mode = edid.Mode{}
 	}

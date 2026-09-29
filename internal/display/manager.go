@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +39,14 @@ type sessionInfo struct {
 	Mode   string // chosen "WxH@R"
 	HDR    bool
 	Since  time.Time
+	// freeSince is when Sunshine was first seen running no app during
+	// this session (zero while it runs one); see dropStaleSession.
+	freeSince time.Time
 }
+
+// staleSessionAfter is how long Sunshine must run no app before a session
+// whose undo never came is ended.
+const staleSessionAfter = 30 * time.Second
 
 // Manager is vosd's display policy (docs/CONTRACTS.md "Display policy"):
 //   - no supported GPU: never gamescope; the welcome screen whenever a
@@ -89,6 +97,11 @@ type Manager struct {
 	gsHDR bool
 	// kick wakes the Run loop to reconcile and refresh welcome.json.
 	kick chan struct{}
+	// startOnce starts what lives as long as vosd, not as long as one Run
+	// (the daemon restarts Run after a panic): the session socket, the
+	// composite watchdog and the hotplug watcher, whose channel is hot.
+	startOnce sync.Once
+	hot       <-chan struct{}
 
 	mu           sync.Mutex // guards everything below
 	code         string
@@ -206,18 +219,18 @@ func (m *Manager) poke() {
 // Run applies the display policy until ctx ends: hotplug, welcome vs
 // gamescope, welcome.json, and the session socket. It leaves units as they
 // are on exit, so restarting vosd never interrupts a stream.
+//
+// The daemon calls Run again (with the same ctx) after a panic. The
+// session socket, the composite watchdog and the hotplug watcher are
+// started by the first Run only, so a restart neither runs a second copy
+// of them nor cuts short a session request in flight.
 func (m *Manager) Run(ctx context.Context) {
 	m.init(ctx)
-	sock := config.SessionSock()
-	go func() {
-		if err := session.Serve(ctx, sock, m); err != nil {
-			log.Printf("display: session socket: %v", err)
-		}
-	}()
-	go m.watchComposite(ctx)
+	// After init: should init panic, the next Run starts these.
+	m.startOnce.Do(func() { m.start(ctx) })
+	hot := m.hot
 	evs, unsubscribe := m.hub.Subscribe()
 	defer unsubscribe()
-	hot := m.h.Hotplug(ctx)
 
 	scan := time.NewTicker(m.scanEvery)
 	defer scan.Stop()
@@ -243,6 +256,7 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-refresh.C:
 			m.refreshWelcome()
 		case <-verify.C:
+			m.dropStaleSession(ctx)
 			m.reconcile(ctx, true)
 		case <-m.kick:
 			m.reconcile(ctx, false)
@@ -262,6 +276,23 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// start runs once per vosd, from the first Run that gets past init.
+func (m *Manager) start(ctx context.Context) {
+	// Adopt the HDR flag of a gamescope that outlived the previous vosd.
+	if m.op.LockCtx(ctx) == nil {
+		m.gsHDR = readGamescopeEnv().HDR
+		m.op.Unlock()
+	}
+	sock := config.SessionSock()
+	go func() {
+		if err := session.Serve(ctx, sock, m); err != nil {
+			log.Printf("display: session socket: %v", err)
+		}
+	}()
+	go m.watchComposite(ctx)
+	m.hot = m.h.Hotplug(ctx)
+}
+
 // init learns the hardware and adopts whatever is already running.
 func (m *Manager) init(ctx context.Context) {
 	gpu := m.h.GPU()
@@ -269,9 +300,6 @@ func (m *Manager) init(ctx context.Context) {
 	m.gpu = gpu
 	m.mu.Unlock()
 	m.resolveVirtual()
-	if b, err := os.ReadFile(GamescopeEnvPath()); err == nil {
-		m.gsHDR = parseGamescopeEnv(b).HDR
-	}
 	virtual := m.virtual()
 	if gpu.Card != "" && virtual != "" {
 		// Open the DRM observer now, before we start any display client.
@@ -297,11 +325,23 @@ func (m *Manager) init(ctx context.Context) {
 		gpu.Name, gpu.Driver, gpu.Supported, virtual, state)
 }
 
+// displayConfig returns a copy of config.json's display settings. The
+// shared config has its own lock; m.mu may be held when calling this, but
+// no config callback ever takes m.mu.
+func (m *Manager) displayConfig() config.DisplayConfig {
+	var d config.DisplayConfig
+	m.cfg.View(func(c *config.Config) {
+		d = c.Display
+		d.ExtraModes = slices.Clone(c.Display.ExtraModes)
+	})
+	return d
+}
+
 // virtual returns the configured virtual connector.
 func (m *Manager) virtual() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.cfg.Display.VirtualConnector
+	var v string
+	m.cfg.View(func(c *config.Config) { v = c.Display.VirtualConnector })
+	return v
 }
 
 // resolveVirtual fills config.display.virtual_connector on an installed
@@ -313,12 +353,15 @@ func (m *Manager) resolveVirtual() {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cfg.Display.VirtualConnector != "" {
+	if m.virtual() != "" {
 		return
 	}
 	if c := forcedConnector(config.KernelArgs()); c != "" {
-		m.cfg.Display.VirtualConnector = c
-		if err := m.cfg.Save(); err != nil {
+		if err := m.cfg.Mutate(func(cfg *config.Config) {
+			if cfg.Display.VirtualConnector == "" {
+				cfg.Display.VirtualConnector = c
+			}
+		}); err != nil {
 			log.Printf("display: saving config: %v", err)
 		}
 		return
@@ -331,18 +374,23 @@ func (m *Manager) resolveVirtual() {
 		log.Printf("display: no free DP or HDMI connector for the virtual display")
 		return
 	}
-	if err := m.setVirtualLocked(c); err != nil {
+	if err := m.setVirtualLocked(c, nil); err != nil {
 		log.Printf("display: setting up virtual connector %s: %v", c, err)
 	}
 }
 
-// setVirtualLocked switches the virtual connector: config, machine kernel
-// cmdline and both slots' boot entries. It takes effect after a reboot.
-func (m *Manager) setVirtualLocked(c string) error {
+// setVirtualLocked switches the virtual connector: config (together with
+// whatever also changes in it), machine kernel cmdline and both slots'
+// boot entries. It takes effect after a reboot.
+func (m *Manager) setVirtualLocked(c string, also func(*config.Config)) error {
 	old := readMachineCmdline()
 	mc := MachineCmdlineFor(c)
-	m.cfg.Display.VirtualConnector = c
-	if err := m.cfg.Save(); err != nil {
+	if err := m.cfg.Mutate(func(cfg *config.Config) {
+		cfg.Display.VirtualConnector = c
+		if also != nil {
+			also(cfg)
+		}
+	}); err != nil {
 		return err
 	}
 	m.rebootNeeded = true
@@ -385,18 +433,52 @@ func (m *Manager) rescan() bool {
 }
 
 func (m *Manager) onScan(ctx context.Context) {
-	if m.rescan() {
+	gpuChanged := m.reprobeGPU()
+	if m.rescan() || gpuChanged {
 		m.hub.Publish("display.changed", struct{}{})
 		log.Printf("display: connectors changed")
 	}
 	m.reconcile(ctx, false)
+	if gpuChanged {
+		m.refreshWelcome()
+	}
+}
+
+// reprobeGPU looks for the GPU again while none is supported, and reports
+// whether what it found changed. amdgpu is not in the initramfs: udev
+// loads it after switch_root, and its probe (firmware, display core) can
+// finish seconds after vosd first looked. onScan runs on every DRM uevent,
+// the card's arrival included, and every scanEvery.
+func (m *Manager) reprobeGPU() bool {
+	m.mu.Lock()
+	cur := m.gpu
+	m.mu.Unlock()
+	if cur.Supported {
+		return false
+	}
+	g := m.h.GPU()
+	if g == cur {
+		return false
+	}
+	m.mu.Lock()
+	m.gpu = g
+	m.mu.Unlock()
+	log.Printf("display: gpu is now %q (%s, supported=%v)", g.Name, g.Driver, g.Supported)
+	if g.Supported {
+		m.resolveVirtual()
+		if v := m.virtual(); g.Card != "" && v != "" {
+			m.h.Scanout(g.Card, v) // open the DRM observer, as init does
+		}
+	}
+	return true
 }
 
 // physicalConnectedLocked reports whether a monitor is attached: any
 // connected connector other than the virtual one.
 func (m *Manager) physicalConnectedLocked() bool {
+	virtual := m.virtual()
 	for _, c := range m.conns {
-		if c.Connected() && c.Name != m.cfg.Display.VirtualConnector && c.Type != "Writeback" {
+		if c.Connected() && c.Name != virtual && c.Type != "Writeback" {
 			return true
 		}
 	}
@@ -412,7 +494,7 @@ func (m *Manager) canGameLocked() bool {
 }
 
 func (m *Manager) virtualPresentLocked() bool {
-	v := m.cfg.Display.VirtualConnector
+	v := m.virtual()
 	for _, c := range m.conns {
 		if c.Name == v && v != "" {
 			return c.Connected()
@@ -531,8 +613,12 @@ func (m *Manager) ensureStarted(ctx context.Context, unit string, user bool) boo
 	return true
 }
 
+// ensureStopped stops a unit unless it is really down. A unit that is
+// merely not active may be waiting out RestartSec (gamescope after Steam
+// exited, say) and would come back to fight the other unit for DRM
+// master; a stop cancels that pending restart.
 func (m *Manager) ensureStopped(ctx context.Context, unit string, user bool) {
-	if !m.h.UnitActive(ctx, unit, user) {
+	if m.h.UnitStopped(ctx, unit, user) {
 		return
 	}
 	if err := m.h.StopUnit(ctx, unit, user); err != nil {
@@ -547,6 +633,8 @@ func (m *Manager) welcomeState() welcome.State {
 	if ii, err := config.LoadImageInfo(); err == nil && ii.Version != "" {
 		version = ii.Version
 	}
+	var https bool
+	m.cfg.View(func(c *config.Config) { https = c.Web.HTTPS })
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	in := welcomeInputs{
@@ -555,7 +643,7 @@ func (m *Manager) welcomeState() welcome.State {
 		ips:            ips,
 		code:           m.code,
 		version:        version,
-		https:          m.cfg.Web.HTTPS,
+		https:          https,
 		port:           config.HTTPPort,
 		gpuSupported:   m.gpu.Supported,
 		gpuName:        m.gpu.Name,
@@ -579,11 +667,60 @@ func (m *Manager) refreshWelcome() {
 	if same {
 		return
 	}
-	if err := config.WriteJSONAtomic(config.WelcomeStatePath(), st, 0o644); err != nil {
+	// Root-only: it holds the setup code, the one secret guarding an
+	// unclaimed machine, and `vos welcome` (its only reader) runs as root.
+	if err := config.WriteJSONAtomic(config.WelcomeStatePath(), st, 0o600); err != nil {
 		log.Printf("display: welcome.json: %v", err)
 		return
 	}
 	m.mu.Lock()
 	m.lastWelcome = &st
 	m.mu.Unlock()
+}
+
+// dropStaleSession ends a session whose undo (`vos session end`) never
+// came: Sunshine crashed or was killed mid-stream and came back without
+// an app, so nothing will ever send it. Until then the session would keep
+// gamescope on a monitor machine and keep the machine from idling off.
+// Only a clear "no app" from Sunshine for staleSessionAfter counts: an
+// unreachable Sunshine proves nothing, and while a Begin runs Sunshine
+// reports no app on purpose (it runs prep-cmds before the app).
+func (m *Manager) dropStaleSession(ctx context.Context) {
+	// Held across the probe (which gives Sunshine 2 s), so no Begin runs
+	// while Sunshine's answer is taken.
+	if !m.op.TryLock() {
+		return // a Begin or End is running; look again next time
+	}
+	defer m.op.Unlock()
+	m.mu.Lock()
+	s := m.session
+	m.mu.Unlock()
+	if s == nil {
+		return
+	}
+	busy, ok := m.h.SunshineApp(ctx)
+	now := m.now()
+	m.mu.Lock()
+	if m.session != s { // a Begin or End that gave up waiting for op
+		m.mu.Unlock()
+		return
+	}
+	if !ok || busy {
+		s.freeSince = time.Time{}
+		m.mu.Unlock()
+		return
+	}
+	if s.freeSince.IsZero() {
+		s.freeSince = now
+	}
+	if now.Sub(s.freeSince) < staleSessionAfter {
+		m.mu.Unlock()
+		return
+	}
+	m.session = nil
+	m.holdUntil = now.Add(m.returnDelay)
+	m.mu.Unlock()
+	log.Printf("display: Sunshine has run no app for %s; ending %s's session (its undo never came)", staleSessionAfter, s.Client)
+	m.hub.Publish("session.end", struct{}{})
+	m.poke()
 }

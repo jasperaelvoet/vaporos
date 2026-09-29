@@ -22,6 +22,10 @@ import (
 // tests substitute a fake.
 type host interface {
 	UnitActive(ctx context.Context, unit string, user bool) bool
+	// UnitStopped reports whether a unit is really down (inactive or
+	// failed). Not active is not enough: a unit waiting out RestartSec is
+	// "activating" and comes back by itself unless it is stopped.
+	UnitStopped(ctx context.Context, unit string, user bool) bool
 	StartUnit(ctx context.Context, unit string, user bool) error
 	StopUnit(ctx context.Context, unit string, user bool) error
 	RestartUnit(ctx context.Context, unit string, user bool) error
@@ -42,10 +46,17 @@ type host interface {
 	// Xprop runs xprop against gamescope's X server and returns its output.
 	Xprop(ctx context.Context, args ...string) (string, error)
 	Busy(ctx context.Context) (bool, string)
+	// GameRunning reports whether a Steam game runs as the gaming user.
+	GameRunning() bool
+	// SunshineApp asks Sunshine whether it runs an app; ok is false when
+	// Sunshine gave no clear answer.
+	SunshineApp(ctx context.Context) (busy, ok bool)
 	LocalIPs() []string
 	Hotplug(ctx context.Context) <-chan struct{}
-	// OwnByGamer hands a file or directory to the gaming user.
-	OwnByGamer(path string) error
+	// GamerIDs is the owner of what vosd writes into the gaming user's
+	// home and runtime dir: the gaming user, or -1, -1 (leave the owner
+	// alone) when vosd does not run as root.
+	GamerIDs() (uid, gid int)
 }
 
 // realHost is the production host.
@@ -66,6 +77,16 @@ func (h *realHost) UnitActive(ctx context.Context, unit string, user bool) bool 
 	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
 	defer cancel()
 	return sysd.IsActive(ctx, unit, user)
+}
+
+func (h *realHost) UnitStopped(ctx context.Context, unit string, user bool) bool {
+	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
+	defer cancel()
+	switch sysd.ActiveState(ctx, unit, user) {
+	case "inactive", "failed", "":
+		return true
+	}
+	return false // active, reloading, activating (auto-restart too), deactivating
 }
 
 func (h *realHost) systemctl(ctx context.Context, user bool, args ...string) error {
@@ -197,6 +218,10 @@ func (h *realHost) Xprop(ctx context.Context, args ...string) (string, error) {
 
 func (h *realHost) Busy(ctx context.Context) (bool, string) { return gamerBusy(ctx) }
 
+func (h *realHost) GameRunning() bool { return steamGameRunning(ProcDir, config.GamerUID) }
+
+func (h *realHost) SunshineApp(ctx context.Context) (bool, bool) { return sunshineState(ctx) }
+
 func (h *realHost) LocalIPs() []string { return sysd.LocalIPs() }
 
 func (h *realHost) Hotplug(ctx context.Context) <-chan struct{} {
@@ -224,10 +249,9 @@ func (h *realHost) gamerIDs() (int, int) {
 	return h.uid, h.gid
 }
 
-func (h *realHost) OwnByGamer(path string) error {
+func (h *realHost) GamerIDs() (int, int) {
 	if os.Geteuid() != 0 {
-		return nil // development: we already own everything we write
+		return -1, -1 // development: we already own everything we write
 	}
-	uid, gid := h.gamerIDs()
-	return os.Lchown(path, uid, gid)
+	return h.gamerIDs()
 }
