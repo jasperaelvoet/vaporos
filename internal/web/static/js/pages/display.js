@@ -32,11 +32,9 @@ function planesLabel(n) {
 }
 
 // freeConnectors lists the outputs the virtual screen may move to (GET
-// /display "available_connectors", names or {name}); null when this
-// VaporOS does not report them.
+// /display "available_connectors"); null when they are not reported.
 function freeConnectors() {
-  if (!Array.isArray(d.available_connectors)) return null;
-  return d.available_connectors.map((c) => (typeof c === 'string' ? c : c && c.name)).filter(Boolean);
+  return Array.isArray(d.available_connectors) ? d.available_connectors : null;
 }
 
 function updateConnectorNote() {

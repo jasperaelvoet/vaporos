@@ -23,7 +23,9 @@ import (
 // signed out (password "vaporvapor"); VOS_WEB_STREAMING=1 starts mid-stream;
 // VOS_WEB_SETUP=1 starts without an admin password (first-run setup);
 // VOS_WEB_PAIRING=1 starts with two devices waiting to pair;
-// VOS_WEB_HEADLESS=1 waives the installer's setup code (no monitor).
+// VOS_WEB_HEADLESS=1 waives the installer's setup code (no monitor);
+// VOS_WEB_HELD=1 starts after a rollback from the newest version (held);
+// VOS_WEB_TRIAL=1 makes a stage stop because the running version is on trial.
 func TestDevServer(t *testing.T) {
 	addr := os.Getenv("VOS_WEB_DEV")
 	if addr == "" {
@@ -51,6 +53,12 @@ func TestDevServer(t *testing.T) {
 		fake.headless = true
 		srv.SetSetupWaiver(func() bool { return true })
 	}
+	if os.Getenv("VOS_WEB_HELD") == "1" {
+		fake.update["held"] = map[string]any{"version": "20260929.143000", "rollback_index": 1790699400}
+		fake.update["other_slot"] = map[string]any{"version": "20260929.143000", "bootable": false}
+		fake.update["available"] = nil
+	}
+	fake.onTrial = os.Getenv("VOS_WEB_TRIAL") == "1"
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", fake)
 	mux.Handle("/", srv.Handler())
@@ -75,13 +83,14 @@ type fakeAPI struct {
 	session    map[string]any
 	pairings   []map[string]string // devices waiting for a PIN
 	headless   bool                // the installer waives its setup code
+	onTrial    bool                // stages stop with the server's on-trial refusal
 	clients    []map[string]string
 	update     map[string]any
 	display    map[string]any
 	power      map[string]any
 	ssh        map[string]any
 	settings   map[string]any
-	libraries  map[string]bool
+	libraries  map[string]string // adopted uuid -> Steam: "registered", "pending" or ""
 	install    map[string]any
 }
 
@@ -98,7 +107,8 @@ func newFakeAPI(installer bool) *fakeAPI {
 			"booted": "20260929.101500", "staged": nil, "failed": []string{"20260921.083000"},
 			"available":  map[string]any{"version": "20260929.143000", "size": 1_420_000_000, "checked": time.Now().Add(-40 * time.Minute).Format(time.RFC3339)},
 			"last_error": "", "config": map[string]any{"source": "oci://ghcr.io/jasperaelvoet/vaporos", "channel": "main", "auto": "stage"},
-			"other_slot": map[string]any{"version": "20260927.190000"},
+			"booted_slot": "a", "other_slot": map[string]any{"version": "20260927.190000", "bootable": true},
+			"held": nil, "busy": false, "progress": nil,
 		},
 		display: map[string]any{
 			"profile": "amd", "virtual_connector": "DP-1",
@@ -121,7 +131,7 @@ func newFakeAPI(installer bool) *fakeAPI {
 		},
 		ssh:       map[string]any{"enabled": false, "keys": []string{}},
 		settings:  map[string]any{"encoder": "vulkan", "bitrate_kbps_max": 150000, "gamepad": "xone", "audio_sink": ""},
-		libraries: map[string]bool{"5e1d-aa01": true},
+		libraries: map[string]string{"5e1d-aa01": "registered", "3c4d-5e6f": ""},
 		install:   map[string]any{"state": "idle", "step": "", "percent": 0, "message": "", "error": ""},
 	}
 	f.routes()
@@ -330,28 +340,59 @@ func (f *fakeAPI) routes() {
 			{"path": "/dev/nvme0n1p4", "model": "Samsung SSD 990 PRO 1TB", "size": 960_000_000_000, "uuid": "sys-0001", "label": "vos_data", "fstype": "ext4", "mounted_at": "/state", "is_system": true, "free": 612_000_000_000},
 			{"path": "/dev/sda1", "model": "Samsung SSD 870 EVO 1TB", "size": 1_000_000_000_000, "uuid": "5e1d-aa01", "label": "SATA1TB", "fstype": "ext4", "steam_library": true, "library_dir": "."},
 			{"path": "/dev/sdb1", "model": "WDC WD20EZAZ", "size": 2_000_000_000_000, "uuid": "77b2-c9d0", "label": "Games2", "fstype": "btrfs", "steam_library": true, "library_dir": "SteamLibrary"},
-			{"path": "/dev/sdc1", "model": "Crucial X9", "size": 500_000_000_000, "uuid": "E0A1-33F2", "label": "WINDATA", "fstype": "ntfs"},
+			{"path": "/dev/sdc1", "model": "Crucial X9", "size": 500_000_000_000, "uuid": "E0A1-33F2", "label": "WINDATA", "fstype": "ntfs", "steam_library": false},
+			{"path": "/dev/sdd1", "model": "SanDisk Extreme", "size": 256_000_000_000, "uuid": "6A1B-2C3D", "label": "CAMERA", "fstype": "exfat", "steam_library": false},
 		}
+		attached := map[string]bool{}
 		for _, d := range disks {
-			if f.libraries[d["uuid"].(string)] {
-				d["adopted"], d["mounted_at"], d["free"] = true, "/var/mnt/"+d["label"].(string), 420_000_000_000
+			uuid := d["uuid"].(string)
+			attached[uuid] = true
+			st, adopted := f.libraries[uuid]
+			d["registered"] = adopted && st == "registered"
+			if !adopted {
+				continue
+			}
+			d["adopted"], d["mounted_at"], d["free"] = true, "/var/mnt/"+d["label"].(string), 420_000_000_000
+			d["registration_pending"] = st == "pending"
+			if d["steam_library"] != true {
+				d["steam_library"], d["library_dir"] = true, "SteamLibrary" // made on adoption
+			}
+		}
+		for uuid, st := range f.libraries {
+			if !attached[uuid] {
+				disks = append(disks, map[string]any{"uuid": uuid, "label": "OldSSD", "fstype": "ext4", "is_system": false, "steam_library": false,
+					"adopted": true, "missing": true, "registered": st == "registered", "registration_pending": st == "pending"})
 			}
 		}
 		return map[string]any{"disks": disks}
 	})
 	f.handle("POST /storage/libraries", true, func(w http.ResponseWriter, r *http.Request) any {
 		uuid := fmt.Sprint(body(r)["uuid"])
-		f.libraries[uuid] = true
-		label := map[string]string{"5e1d-aa01": "SATA1TB", "77b2-c9d0": "Games2", "E0A1-33F2": "WINDATA"}[uuid]
-		mp, lib := "/var/mnt/"+label, "/var/mnt/"+label
+		label, ok := map[string]string{"5e1d-aa01": "SATA1TB", "77b2-c9d0": "Games2", "E0A1-33F2": "WINDATA"}[uuid]
+		if !ok {
+			api.Error(w, http.StatusBadRequest, "exfat filesystems cannot hold a Steam library (use ext4, btrfs, xfs, f2fs or NTFS)")
+			return nil
+		}
+		// Games2 waits for Steam to stop, like a disk adopted mid-stream.
+		st, hadGames := "registered", uuid != "E0A1-33F2"
 		if uuid == "77b2-c9d0" {
+			st = "pending"
+		}
+		f.libraries[uuid] = st
+		mp, lib := "/var/mnt/"+label, "/var/mnt/"+label
+		if uuid != "5e1d-aa01" {
 			lib += "/SteamLibrary"
 		}
-		hint := "In Steam, open Settings > Storage > Add Drive and choose " + lib + "."
-		if uuid != "E0A1-33F2" {
-			hint = "This disk already holds a Steam library. In Steam, open Settings > Storage > Add Drive and choose " + lib + "; its installed games reappear without downloading."
+		games := ""
+		if hadGames {
+			games = " Its installed games appear in Steam without downloading."
 		}
-		return map[string]string{"mountpoint": mp, "library": lib, "hint": hint}
+		hint := lib + " is one of Steam's game libraries." + games
+		if st == "pending" {
+			hint = "VaporOS adds " + lib + " to Steam's game libraries the next time Steam is not running (at the latest after a restart)." + games +
+				" To use it right away, open Steam > Settings > Storage > Add Drive and choose " + lib + "."
+		}
+		return map[string]any{"mountpoint": mp, "library": lib, "registered": st == "registered", "registration_pending": st == "pending", "hint": hint}
 	})
 	f.handle("DELETE /storage/libraries/{uuid}", true, func(w http.ResponseWriter, r *http.Request) any {
 		delete(f.libraries, r.PathValue("uuid"))
@@ -450,8 +491,19 @@ func (f *fakeAPI) serveEvents(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeAPI) fakeStage() {
 	f.mu.Lock()
-	v := f.update["available"].(map[string]any)["version"]
+	var v any
+	if a, ok := f.update["available"].(map[string]any); ok {
+		v = a["version"]
+	}
 	f.mu.Unlock()
+	if f.onTrial {
+		// Refused for now: the server reports it only as this event, and
+		// last_error stays as it was.
+		time.Sleep(400 * time.Millisecond)
+		f.hub.Publish("update.progress", map[string]any{"phase": "error", "version": v,
+			"error": "the running version is still on trial; try again once it has fully started (20260929.101500, 2 tries left)"})
+		return
+	}
 	const total = 1_420_000_000
 	for p := 0; p <= 100; p += 4 {
 		phase := "download"
