@@ -22,13 +22,17 @@
   },
   "devDependencies": {
     "@next/env": "16.3.7",
-    "@tailwindcss/postcss": "^4",
+    "@playwright/cli": "0.1.22",
+    "@tailwindcss/postcss": "4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "axe-core": "4.13.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.7",
-    "tailwindcss": "^4",
+    "lighthouse": "13.5.0",
+    "playwright-core": "1.63.0",
+    "tailwindcss": "4.3.3",
     "typescript": "^5"
   }
 }
