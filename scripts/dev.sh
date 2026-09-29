@@ -10,9 +10,16 @@
 #   console   open the VM's display in a native Screen Sharing window
 #   log       follow the VM's serial console
 #   reset     wipe the dev VM and install it from scratch
-#   test      reinstall the dev VM from scratch and check the result
+#   test      reinstall the dev VM from scratch and check it end to end: web
+#             install, API, hardening, update, rollback, health fallback
 #   status | down | destroy
 #   send TXT | expect REGEX [TIMEOUT]    drive the serial console by hand
+#
+# The install never types on the VM: the live ISO prints its address and setup
+# code on the serial console (VOS-READY, docs/CONTRACTS.md), and the install
+# goes through the web installer's API with that code, as a phone would. Dev
+# images are debug builds, so the installed system has a root shell on its
+# serial console; updates and checks use that.
 #
 # Nothing needs configuring. To override the defaults below, put them in a
 # (gitignored) .dev.env at the repo root. CONSOLE=0 never opens a window.
@@ -32,15 +39,23 @@ DISK_STORAGE=${DISK_STORAGE:-local-lvm}
 BRIDGE=${BRIDGE:-vmbr0}
 MEM=${MEM:-2048}
 CORES=${CORES:-4}
-DISK_SIZE=${DISK_SIZE:-32}
+DISK_SIZE=${DISK_SIZE:-48}
 SERVE_DIR=${SERVE_DIR:-/var/lib/vz/vos-dev}
 SERVE_PORT=${SERVE_PORT:-8000}
 CONSOLE=${CONSOLE:-1}
-# The dev user the automatic install creates.
-DEV_USER=vapor
-DEV_PASS=vapor
+TIMEZONE=${TIMEZONE:-Europe/Brussels}
+# The web admin password the automatic install sets.
+ADMIN_PASS=${ADMIN_PASS:-vapor}
 
 ISO_NAME=vaporos-dev.iso
+# What `vos update --from http://…/` fetches, in upload order: the manifest
+# goes last, so the VM never sees a new manifest beside an old root.erofs.
+UPDATE_FILES=(root.erofs vmlinuz initramfs.img manifest.json.sig manifest.json)
+
+# Set by `test`: stricter install checks, and screendumps into out/screens/.
+TESTING=0
+# Set by vm_install from the serial announcements.
+VM_IP="" SETUP_CODE="" VM_VERSION=""
 
 # Everything that depends on which VM we are driving.
 use_vm() {
@@ -65,14 +80,20 @@ fail() {
     die "$*"
 }
 
+# Just enough JSON for vosd's flat replies (no jq on either end).
+# json_str KEY: the first string value of KEY on stdin.
+json_str() { grep -o "\"$1\" *: *\"[^\"]*\"" | head -n1 | sed 's/.*: *"//; s/"$//' || true; }
+# json_lit KEY: the first number/true/false/null value of KEY on stdin.
+json_lit() { grep -o "\"$1\" *: *[-a-z0-9.]*" | head -n1 | sed 's/.*: *//' || true; }
+
 # ------------------------------------------------------------- preflight ----
 
 preflight_pve() {
     ssh -o BatchMode=yes -o ConnectTimeout=5 -o LogLevel=ERROR \
         "$PVE_USER@$PVE_HOST" true 2>/dev/null ||
         die "cannot ssh to $PVE_USER@$PVE_HOST without a password. Run once:  ssh-copy-id $PVE_USER@$PVE_HOST"
-    pve "command -v qm >/dev/null && command -v python3 >/dev/null" ||
-        die "$PVE_HOST is not a Proxmox host with python3"
+    pve "command -v qm >/dev/null && command -v python3 >/dev/null && command -v curl >/dev/null" ||
+        die "$PVE_HOST is not a Proxmox host with python3 and curl"
 }
 
 preflight_docker() {
@@ -86,16 +107,20 @@ preflight_docker() {
 # ----------------------------------------------------------------- build ----
 
 # Everything the image is made from; a change to any of it means a rebuild.
+# Go test files never end up in the image.
 inputs_hash() {
-    local files
-    files=$(find rootfs build packages.txt -type f ! -name .DS_Store | sort)
+    local files p paths=()
+    for p in rootfs build packages.txt go.mod go.sum cmd internal keys; do
+        [[ -e $p ]] && paths+=("$p")
+    done
+    files=$(find "${paths[@]}" -type f ! -name .DS_Store ! -name '*_test.go' | sort)
     { tr '\n' '\0' <<<"$files" | xargs -0 stat -f '%p %N'
       tr '\n' '\0' <<<"$files" | xargs -0 shasum -a 256; } | shasum -a 256 | cut -c1-16
 }
 
-have_build() { [[ -f out/manifest.env && -f out/root.erofs && -n $(ls out/*.iso 2>/dev/null) ]]; }
+have_build() { [[ -f out/manifest.json && -f out/root.erofs && -n $(ls out/*.iso 2>/dev/null) ]]; }
 
-build_version() { sed -n 's/^VOS_VERSION=//p' out/manifest.env; }
+build_version() { json_str version <out/manifest.json; }
 
 build_if_needed() {
     local want
@@ -109,6 +134,14 @@ build_if_needed() {
     rm -f out/.inputs
     ./scripts/build.sh
     echo "$want" >out/.inputs
+}
+
+# A second, newer build of the same tree, so `test` has something to update
+# to. The version is the build time, passed explicitly so it always differs.
+rebuild() {
+    rm -f out/.inputs
+    VERSION=$(date -u +%Y%m%d.%H%M%S) ./scripts/build.sh
+    inputs_hash >out/.inputs
 }
 
 local_iso() {
@@ -138,25 +171,39 @@ upload_iso() {
     push "$iso" "$ISO_DIR/$ISO_NAME"
 }
 
-# Put the update payload on the Proxmox host and serve it, so the VM can
-# always reach it no matter which network or firewall this machine is on.
+# Serve SERVE_DIR over HTTP from the Proxmox host, so the VM can always reach
+# it no matter which network or firewall this machine is on.
+ensure_http() {
+    pve "mkdir -p $SERVE_DIR && { systemctl is-active --quiet vos-dev-http ||
+         systemd-run --quiet --collect --unit vos-dev-http -p WorkingDirectory=$SERVE_DIR \
+             python3 -m http.server --bind $PVE_HOST $SERVE_PORT; }"
+}
+
+# Put the update payload next to the VM, for `vos update --from http://…/`.
 stage_update() {
-    say "Staging $(build_version) for update"
-    pve "mkdir -p $SERVE_DIR"
     local f
-    for f in root.erofs vmlinuz initramfs.img manifest.env; do
+    [[ -f out/manifest.json.sig ]] ||
+        die "out/manifest.json.sig is missing: the build did not sign its manifest (the dev key lives on the builder)"
+    say "Staging $(build_version) for update"
+    ensure_http
+    # Older builds served manifest.env; a stale manifest must never be served.
+    pve "rm -f $SERVE_DIR/manifest.env $SERVE_DIR/manifest.json $SERVE_DIR/manifest.json.sig"
+    for f in "${UPDATE_FILES[@]}"; do
         push "out/$f" "$SERVE_DIR/$f"
     done
-    pve "systemctl is-active --quiet vos-dev-http ||
-         systemd-run --quiet --collect --unit vos-dev-http -p WorkingDirectory=$SERVE_DIR \
-             python3 -m http.server --bind $PVE_HOST $SERVE_PORT"
 }
 
 # ---------------------------------------------------------------- serial ----
 
+# serial.py drives the console; ppm2png.py converts screendumps. Both run on
+# the Proxmox host.
+copy_helpers() {
+    scp -q scripts/serial.py tests/ppm2png.py "$PVE_USER@$PVE_HOST:$REMOTE_DIR/"
+}
+
 start_broker() {
     pve "systemctl stop vos-serial-$VMID 2>/dev/null; rm -rf $REMOTE_DIR; mkdir -p $REMOTE_DIR"
-    scp -q scripts/serial.py "$PVE_USER@$PVE_HOST:$REMOTE_DIR/serial.py"
+    copy_helpers
     pve "systemd-run --quiet --collect --unit vos-serial-$VMID \
             python3 $REMOTE_DIR/serial.py broker /var/run/qemu-server/$VMID.serial0 $LOG $FIFO"
 }
@@ -164,7 +211,7 @@ start_broker() {
 ensure_broker() {
     if pve "systemctl is-active --quiet vos-serial-$VMID"; then
         # The running broker keeps its code; the helpers must match this checkout.
-        scp -q scripts/serial.py "$PVE_USER@$PVE_HOST:$REMOTE_DIR/serial.py"
+        copy_helpers
     else
         start_broker
     fi
@@ -178,28 +225,52 @@ send_()   { pve "python3 $REMOTE_DIR/serial.py send $FIFO $(printf %q "$1")"; }
 rc_is_zero() { [[ $(match_ "$1=([0-9]+)" "$2") == 0 ]]; }
 mark_()   { pve "python3 $REMOTE_DIR/serial.py mark $LOG"; }
 
-# Get to a shell prompt on the serial console, logging in if needed. Prints
-# "shell" (installed system, logged in) or "live" (the ISO's root shell).
+# Get the root shell on the serial console (debug images log root in on
+# ttyS0). Prints "os" (installed system) or "live" (the ISO). A VM that is
+# still booting drops what is typed before its shell is up, so keep asking;
+# Ctrl-C first clears any half-typed line.
 serial_shell() {
-    local timeout=${1:-20} m tok=$RANDOM
+    local timeout=${1:-20} tok=$RANDOM deadline m
+    deadline=$((SECONDS + timeout))
     mark_
-    send_ ""
-    m=$(match_ "($VM_HOSTNAME login:|$DEV_USER@$VM_HOSTNAME|root@vapor-live)" "$timeout" 2>/dev/null) || return 1
-    case $m in
-        root@vapor-live) echo live; return ;;
-        *login:)
-            send_ "$DEV_USER";  expect_ 'Password:' 30 2>/dev/null || return 1
-            send_ "$DEV_PASS";  expect_ "$DEV_USER@$VM_HOSTNAME" 60 2>/dev/null || return 1 ;;
-    esac
-    # The quotes keep the typed-in command from matching its own output.
-    send_ "echo VOS\"\"-PING-$tok"
-    expect_ "VOS-PING-$tok" 20 2>/dev/null || return 1
-    echo shell
+    while ((SECONDS < deadline)); do
+        send_ $'\003'
+        # The quotes keep the typed-in command from matching its own output.
+        send_ "echo VOS\"\"-PING-$tok-\$(grep -qw vos.mode=live /proc/cmdline && echo live || echo os)"
+        if m=$(match_ "VOS-PING-$tok-(live|os)" 5 2>/dev/null); then
+            echo "$m"
+            return 0
+        fi
+    done
+    return 1
 }
 
+# The version of the running image, from the serial shell.
 vm_version() {
-    send_ 'echo VOS""-VER=$(. /etc/os-release; echo $IMAGE_VERSION)'
-    match_ 'VOS-VER=([0-9.]+)' 20 2>/dev/null
+    mark_
+    send_ "grep -o '\"version\": *\"[^\"]*\"' /usr/lib/vos/image.json"
+    match_ '"version": *"([0-9]+\.[0-9]+)"' 20 2>/dev/null
+}
+
+# Save what the VM's monitor shows to out/screens/NN-NAME.png (best effort):
+# the record that the display only ever shows the logo, black or the welcome
+# screen, and never a terminal.
+screendump() {
+    local name=$1 ppm=/tmp/vos-$VMID.ppm png=/tmp/vos-$VMID.png dest n
+    mkdir -p out/screens
+    n=$(find out/screens -type f | wc -l | tr -d ' ')
+    dest=out/screens/$(printf '%02d' $((n + 1)))-$name
+    if ! pve "rm -f $ppm $png; echo 'screendump $ppm' | qm monitor $VMID >/dev/null 2>&1
+              for i in 1 2 3 4 5 6 7 8 9 10; do [ -s $ppm ] && break; sleep 0.5; done; [ -s $ppm ]"; then
+        warn "screendump '$name' failed"
+        return 0
+    fi
+    if pve "python3 $REMOTE_DIR/ppm2png.py $ppm $png"; then
+        scp -q "$PVE_USER@$PVE_HOST:$png" "$dest.png" && ok "screen saved: $dest.png"
+    else
+        scp -q "$PVE_USER@$PVE_HOST:$ppm" "$dest.ppm" && ok "screen saved: $dest.ppm"
+    fi
+    return 0
 }
 
 # ------------------------------------------------------------------- vm -----
@@ -223,9 +294,43 @@ vm_destroy() {
          fi; rm -rf $REMOTE_DIR"
 }
 
-# Create the VM from the ISO, install to its disk and boot the installed
-# system to a login prompt. Entirely over the serial console.
+# installer_api METHOD PATH [JSON]: call the live ISO's installer API from the
+# Proxmox host, which shares the VM's network, with the setup code. Prints the
+# response body; fails, showing vosd's error, on an HTTP error.
+installer_api() {
+    local method=$1 path=$2 body=${3:-}
+    pve "curl -sS --fail-with-body -m 30 -X $method http://$VM_IP/api/v1$path \
+            -H $(printf %q "X-VOS-Setup: $SETUP_CODE") -H 'Content-Type: application/json' \
+            ${body:+-d $(printf %q "$body")}"
+}
+
+# Follow the install over the API until it is done, showing each step once.
+wait_install() {
+    local deadline=$((SECONDS + 1200)) st state step last="" pct
+    while ((SECONDS < deadline)); do
+        if st=$(installer_api GET /install/status 2>/dev/null); then
+            state=$(json_str state <<<"$st")
+            step=$(json_str step <<<"$st")
+            pct=$(json_lit percent <<<"$st")
+            if [[ -n $step && $step != "$last" ]]; then
+                printf '    %3s%%  %s\n' "${pct:-?}" "$step"
+                last=$step
+            fi
+            case $state in
+                done) return 0 ;;
+                failed) fail "install failed: $(json_str error <<<"$st")" ;;
+            esac
+        fi
+        sleep 3
+    done
+    fail "the install did not finish within 20 minutes"
+}
+
+# Create the VM from the ISO, install it through the web installer's API and
+# boot the installed system until vosd announces it. Sets VM_VERSION.
 vm_install() {
+    local m code body want
+    want=$(build_version)
     assert_ours
     upload_iso
     if vm_exists; then
@@ -252,25 +357,85 @@ vm_install() {
     start_broker
 
     say "Booting the live ISO"
-    expect_ 'root@vapor-live' 180 || fail "live ISO never reached a shell"
-    say "Installing"
-    send_ "vos install --disk /dev/sda --hostname $VM_HOSTNAME --user $DEV_USER --password $DEV_PASS --yes; echo VOS-INSTALL-RC=\$?"
-    rc_is_zero VOS-INSTALL-RC 600 || fail "install failed"
+    m=$(match_ 'VOS-READY mode=installer .*ip=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) code=(\S+)' 300) ||
+        fail "the live ISO never announced its installer (VOS-READY mode=installer)"
+    read -r VM_IP SETUP_CODE <<<"$m"
+    ok "installer is up at http://$VM_IP (setup code $SETUP_CODE)"
+
+    if ((TESTING)); then
+        screendump installer
+        if [[ $SETUP_CODE != - ]]; then
+            code=$(pve "curl -s -o /dev/null -w '%{http_code}' -m 15 \
+                        -H 'X-VOS-Setup: not-the-code' http://$VM_IP/api/v1/install/probe") || true
+            [[ $code == 403 ]] || fail "the installer accepted a wrong setup code (HTTP $code, expected 403)"
+            ok "a wrong setup code is refused (403)"
+        fi
+    fi
+
+    say "Installing through the web installer"
+    body=$(printf '{"disk":"/dev/sda","mode":"erase","hostname":"%s","password":"%s","timezone":"%s","libraries":[],"source":""}' \
+        "$VM_HOSTNAME" "$ADMIN_PASS" "$TIMEZONE")
+    installer_api POST /install "$body" >/dev/null || fail "the installer refused the install"
+    wait_install
+    if ! expect_ 'VOS-INSTALL state=done' 30; then
+        ((TESTING)) && fail "the install finished but vosd never printed 'VOS-INSTALL state=done'"
+        warn "no 'VOS-INSTALL state=done' on the serial console"
+    fi
 
     say "Rebooting into the installed system"
     pve "qm set $VMID --ide2 none,media=cdrom >/dev/null"
-    send_ "systemctl reboot"
-    expect_ "$VM_HOSTNAME login:" 240 || fail "installed system never reached a login prompt"
+    mark_
+    if ! installer_api POST /install/reboot >/dev/null; then
+        warn "POST /install/reboot failed; resetting the VM instead"
+        pve "qm reset $VMID"
+    fi
+    VM_VERSION=$(match_ 'VOS-READY mode=os version=(\S+)' 300) ||
+        fail "the installed system never came up (VOS-READY mode=os)"
+    [[ $VM_VERSION == "$want" ]] || fail "the installed system runs $VM_VERSION, expected $want"
 }
 
-# Write the staged build to the idle slot and reboot into it.
+# Reboot the VM from its serial shell and wait for vosd to announce the
+# installed system again. Prints the version that came up.
+vm_reboot() {
+    mark_
+    send_ "systemctl reboot"
+    match_ 'VOS-READY mode=os version=(\S+)' 300
+}
+
+# Write the staged build to the idle slot with `vos update [FLAGS]`, reboot
+# into it and check that it is the version that came up.
 vm_update() {
-    say "Updating the VM to $(build_version)"
-    send_ "echo $DEV_PASS | sudo -S -p '' vos update --from http://$PVE_HOST:$SERVE_PORT; echo VOS-UPD-RC=\$?"
-    rc_is_zero VOS-UPD-RC 600 || fail "vos update failed"
-    say "Rebooting into $(build_version)"
-    send_ "echo $DEV_PASS | sudo -S -p '' systemctl reboot"
-    expect_ "$VM_HOSTNAME login:" 240 || fail "updated system never reached a login prompt"
+    local want have
+    want=$(build_version)
+    say "Updating the VM to $want"
+    send_ "vos update $* --from http://$PVE_HOST:$SERVE_PORT/; echo VOS-UPD-RC=\$?"
+    rc_is_zero VOS-UPD-RC 900 || fail "vos update failed"
+    say "Rebooting into $want"
+    have=$(vm_reboot) || fail "the updated system never came up"
+    [[ $have == "$want" ]] || fail "VM booted $have, expected $want (did it fall back to the old slot?)"
+}
+
+# Run one group of tests/vm-checks.sh in the VM, over the serial shell, and
+# show every result. Any failed check fails the run.
+vm_checks() {
+    local start rc tok=$RANDOM status name detail n=0 url=http://$PVE_HOST:$SERVE_PORT/vm-checks.sh
+    ensure_http
+    scp -q tests/vm-checks.sh "$PVE_USER@$PVE_HOST:$SERVE_DIR/vm-checks.sh"
+    serial_shell 60 >/dev/null || fail "no root shell on the serial console"
+    start=$(pve "stat -c %s $LOG")
+    # One line: whatever is typed goes to the shell exactly as written.
+    send_ "curl -fsS -m 30 -o /tmp/vm-checks.sh $url && bash /tmp/vm-checks.sh$(printf ' %q' "$@"); echo VOS-CHECKS-RC-$tok=\$?"
+    rc=$(match_ "VOS-CHECKS-RC-$tok=([0-9]+)" 600) || fail "the checks did not finish"
+    while read -r _ status name detail; do
+        n=$((n + 1))
+        case $status in
+            ok) ok "$name: $detail" ;;
+            warn) warn "$name: $detail" ;;
+            *) printf '\e[1;31m==> %s:\e[0m %s\n' "$name" "$detail" ;;
+        esac
+    done < <(pve "tail -c +$((start + 1)) $LOG" | tr -d '\r' | grep -ao 'VOS-CHECK [a-zA-Z]* .*' || true)
+    ((n > 0)) || fail "vm-checks.sh did not run (exit $rc); can the VM reach http://$PVE_HOST:$SERVE_PORT/?"
+    [[ $rc == 0 ]] || die "checks failed ($1)"
 }
 
 # ---------------------------------------------------------------- console ---
@@ -311,15 +476,13 @@ cmd_dev() {
     if ! vm_exists; then
         say "No dev VM yet"
         vm_install; fresh=1; wait=60
+    elif ! vm_running; then
+        say "Starting VM $VMID"
+        pve "qm start $VMID"
+        start_broker
+        wait=240
     else
-        if ! vm_running; then
-            say "Starting VM $VMID"
-            pve "qm start $VMID"
-            start_broker
-            wait=240
-        else
-            ensure_broker
-        fi
+        ensure_broker
     fi
 
     # A VM just started needs time to boot; one that is up answers at once.
@@ -337,10 +500,10 @@ cmd_dev() {
     have=$(vm_version) || fail "could not read the VM's version"
     if [[ $have != "$want" ]]; then
         stage_update
-        vm_update
-        serial_shell 60 >/dev/null || fail "could not log in after the update"
-        have=$(vm_version) || fail "could not read the VM's version"
-        [[ $have == "$want" ]] || fail "VM booted $have, expected $want (did it fall back to the old slot?)"
+        # --force: the dev VM runs whatever out/ holds, even an older build or
+        # one that failed before. Signature and checksums are still checked.
+        vm_update --force
+        have=$want
     fi
     ok "VM $VMID runs VaporOS $have  (make shell / make console)"
 
@@ -353,8 +516,7 @@ cmd_reset() {
     preflight_pve
     build_if_needed
     vm_install
-    serial_shell 60 >/dev/null || fail "no shell after a fresh install"
-    ok "VM $VMID runs VaporOS $(vm_version)"
+    ok "VM $VMID runs VaporOS $VM_VERSION"
     [[ $CONSOLE == 0 ]] || cmd_console
 }
 
@@ -368,44 +530,70 @@ cmd_shell() {
     ssh -t -o LogLevel=ERROR "$PVE_USER@$PVE_HOST" "qm terminal $VMID -iface serial0" || true
 }
 
+# Install build 1 through the web installer, check it, update to a fresh
+# build 2, roll back to 1, then stage 2 again with its health check rigged to
+# fail and watch systemd-boot's boot counting bring 1 back. Only ever one VM:
+# the test reinstalls the dev VM and leaves it running.
 cmd_test() {
-    local user=$DEV_USER pass=$DEV_PASS
+    local v1 v2 have entry boots=0
+    TESTING=1
     preflight_pve
     build_if_needed
-    # Only ever one VM: the test reinstalls the dev VM and leaves it running.
+    v1=$(build_version)
+    rm -rf out/screens
+
     vm_install
-    ok "live ISO booted and installed"
+    ok "installed $v1 through the web installer; it announced itself on serial"
+    screendump os-ready
 
-    serial_shell 60 >/dev/null || fail "could not log in"
-    ok "installed system booted, logged in as $user"
+    say "Checking the installed system"
+    vm_checks system --slot a --version "$v1" --password "$ADMIN_PASS"
+    screendump os-idle
 
-    say "Checking the running system"
-    send_ "echo $pass | sudo -S true 2>/dev/null; echo; findmnt -no FSTYPE,OPTIONS / | cut -c1-40; echo CHECK-ROOT=\$(findmnt -no FSTYPE /)"
-    expect_ 'CHECK-ROOT=erofs' 30 || fail "/ is not the erofs image"
-    ok "/ is the read-only erofs image"
-    send_ "sudo touch /usr/bin/x 2>/dev/null; echo CHECK-RO=\$?"
-    expect_ 'CHECK-RO=1' 30 || fail "/usr was writable"
-    ok "/usr refuses writes"
-    send_ "echo CHECK-ETC=\$(findmnt -no FSTYPE /etc) CHECK-VAR=\$(findmnt -no SOURCE /var | head -1)"
-    expect_ 'CHECK-ETC=overlay CHECK-VAR=/dev/sda4' 30 || fail "/etc or /var not wired to the data partition"
-    ok "/etc overlay and /var on the data partition"
-    send_ "systemctl is-system-running --wait; echo CHECK-STATE=\$(systemctl is-system-running)"
-    expect_ 'CHECK-STATE=(running|degraded)' 120 || true
-    send_ "systemctl --failed --no-legend | cat; echo CHECK-FAILED=\$(systemctl --failed --no-legend | wc -l)"
-    expect_ 'CHECK-FAILED=0' 30 || warn "some units failed (see: make log)"
-    send_ "sudo vos status"
-    expect_ 'slot a:.*running' 30 || fail "vos status did not report slot a running"
-    ok "vos status reports slot a"
+    say "Building a second image to update to"
+    rebuild
+    v2=$(build_version)
+    [[ $v2 != "$v1" ]] || fail "the second build has the same version as the first ($v1)"
+    stage_update
+    # No --force: the normal acceptance rules (signature, newer, not failed) apply.
+    vm_update
+    vm_checks booted --slot b --version "$v2" --blessed
+    ok "updated $v1 -> $v2 in slot b, and the new entry was blessed"
 
-    send_ "echo CHECK-KERNEL=\$(uname -r)"
-    expect_ 'CHECK-KERNEL=[^ ]*cachyos' 30 || fail "not running the CachyOS kernel"
-    ok "running the CachyOS kernel"
-    send_ "echo CHECK-CACHY=\$(systemctl is-active ananicy-cpp systemd-oomd | tr '\n' ,)\$(swapon --noheadings --show=NAME)"
-    expect_ 'CHECK-CACHY=active,active,/dev/zram0' 30 || fail "ananicy-cpp, systemd-oomd or zram swap is not running"
-    ok "ananicy-cpp, systemd-oomd and zram swap are running"
+    say "Rolling back"
+    send_ "vos rollback; echo VOS-RB-RC=\$?"
+    rc_is_zero VOS-RB-RC 60 || fail "vos rollback failed"
+    have=$(vm_reboot) || fail "the VM did not come back after the rollback"
+    [[ $have == "$v1" ]] || fail "after the rollback the VM booted $have, expected $v1"
+    vm_checks booted --slot a --version "$v1"
+    ok "rolled back to $v1 in slot a"
+
+    say "Staging $v2 again, with a health check that always fails"
+    # --force because whether a rolled-back version may be staged again
+    # without it is not what this part tests.
+    send_ "vos update --force --from http://$PVE_HOST:$SERVE_PORT/; echo VOS-UPD-RC=\$?"
+    rc_is_zero VOS-UPD-RC 900 || fail "vos update (staging $v2 again) failed"
+    entry=/efi/loader/entries/vos-$v2+3.conf
+    send_ "ls /efi/loader >/dev/null; sed -i '/^options/s/\$/ vos.health.fail=1/' $entry && grep -q vos.health.fail=1 $entry; echo VOS-HF-RC=\$?"
+    rc_is_zero VOS-HF-RC 30 || fail "could not add vos.health.fail=1 to vos-$v2+3.conf"
+
+    mark_
+    send_ "systemctl reboot"
+    while :; do
+        have=$(match_ 'VOS-READY mode=os version=(\S+)' 600) ||
+            fail "nothing came up while $v2 was failing its health check"
+        [[ $have == "$v1" ]] && break
+        [[ $have == "$v2" ]] || fail "unexpected version $have came up"
+        boots=$((boots + 1))
+        ((boots <= 3)) || fail "$v2 came up more than 3 times; boot counting did not give up on it"
+        say "Boot $boots: $v2 is up, fails its health check and reboots"
+    done
+    ok "$v2 failed its health check and systemd-boot fell back to $v1"
+    vm_checks fallback --slot a --version "$v1" --failed "$v2"
+    screendump final
 
     echo
-    ok "End-to-end test passed. VM $VMID runs VaporOS $(vm_version)"
+    ok "End-to-end test passed. VM $VMID runs VaporOS $v1 ($v2 is marked failed; 'make' installs it with --force)"
 }
 
 cmd_status() {
