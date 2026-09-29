@@ -556,6 +556,34 @@ func TestRestartHandler(t *testing.T) {
 	}
 }
 
+func TestEndStreamHandler(t *testing.T) {
+	h := newHarness(t)
+	closed := func() int {
+		h.f.mu.Lock()
+		defer h.f.mu.Unlock()
+		return h.f.closed
+	}
+	if w, _ := call(t, h.s.handleEndStream, "POST", ""); w.Code != http.StatusConflict || closed() != 0 {
+		t.Errorf("nothing streaming: %d, closed %d", w.Code, closed())
+	}
+	h.f.setBusy(true)
+	if w, _ := call(t, h.s.handleEndStream, "POST", ""); w.Code != http.StatusOK || closed() != 1 {
+		t.Errorf("end stream: %d, closed %d", w.Code, closed())
+	}
+	h.f.pass = "changed"
+	if w, _ := call(t, h.s.handleEndStream, "POST", ""); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("rejected credentials: %d", w.Code)
+	}
+	h.s.client = NewClient("https://127.0.0.1:1", "u", "p", certPath())
+	if w, _ := call(t, h.s.handleEndStream, "POST", ""); w.Code != http.StatusBadGateway {
+		t.Errorf("Sunshine down: %d", w.Code)
+	}
+	h.s.client = nil
+	if w, _ := call(t, h.s.handleEndStream, "POST", ""); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("before setup: %d", w.Code)
+	}
+}
+
 func TestRunDoesNothingLive(t *testing.T) {
 	h := newHarness(t)
 	os.WriteFile(config.ProcCmdline, []byte("vos.mode=live\n"), 0o644)

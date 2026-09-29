@@ -3,6 +3,7 @@ package sunshine
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ func (s *Service) Routes(srv *api.Server) {
 	srv.Handle("PUT", "/sunshine/settings", api.Authed, s.handlePutSettings)
 	srv.Handle("GET", "/sunshine/logs", api.Authed, s.handleLogs)
 	srv.Handle("POST", "/sunshine/restart", api.Authed, s.handleRestart)
+	srv.Handle("POST", "/sunshine/end-stream", api.Authed, s.handleEndStream)
 }
 
 // apiError answers for a failed Sunshine API call.
@@ -326,5 +328,25 @@ func (s *Service) handleRestart(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusInternalServerError, "cannot restart Sunshine: %v", err)
 		return
 	}
+	api.OK(w)
+}
+
+// handleEndStream closes the running app, which ends every client's
+// stream; Sunshine then runs the prep-cmd undo, so session.end follows. A
+// game the app launched keeps running (Sunshine's apps only start it).
+func (s *Service) handleEndStream(w http.ResponseWriter, r *http.Request) {
+	if !s.streaming(r.Context()) {
+		api.Error(w, http.StatusConflict, "nothing is streaming")
+		return
+	}
+	cl := s.requireAPI(w)
+	if cl == nil {
+		return
+	}
+	if err := cl.CloseApp(r.Context()); err != nil {
+		s.apiError(w, err)
+		return
+	}
+	log.Printf("sunshine: stream ended from the web UI")
 	api.OK(w)
 }
