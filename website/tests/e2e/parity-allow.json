@@ -1,4 +1,81 @@
 {
-  "about": "Astro-site lines that a deliberate fact fix (spec-website.md §7.2, re-checked against the code) replaced on purpose. check-parity.mjs reports them instead of failing. Each entry: the Astro line, exactly as rendered, and why it changed.",
-  "lines": []
+  "about": "Astro-site lines that a deliberate fact fix (spec-website.md §7.2, re-checked against the code on 2026-09-29) replaced on purpose. check-parity.mjs reports them instead of failing. Each entry: the Astro line as check-parity normalises it, and why it changed.",
+  "lines": [
+    {
+      "line": "Install, pair, update and power off in your browser at vapor.local. The PC never shows a terminal.",
+      "why": "C-01: the install happens at vaporos-setup.local, the rest at vapor.local (rootfs initcpio hook; internal/api/middleware.go)"
+    },
+    {
+      "line": "The CachyOS kernel and x86-64-v3 packages, with its zram, scheduler and I/O tuning built in.",
+      "why": "C-02: precision: cachyos-settings brings zram swap, I/O scheduler rules and ananicy-cpp process priorities (packages.txt)"
+    },
+    {
+      "line": "Already have games on another drive? Pick it during setup, or later under Storage, and keep playing. Nothing on it is changed.",
+      "why": "C-03: VaporOS now adds adopted libraries to Steam's library list, including the installer's (internal/storage/storage.go handleAdopt, steamreg.go; commit 82a9c46)"
+    },
+    {
+      "line": "VaporOS powers off when nobody plays, but never while streaming, downloading or updating. Moonlight wakes it over Wake-on-LAN.",
+      "why": "C-04/C-26/C-33: idle power-off is off by default and a new install turns it on only when a wired network adapter can wake the PC (internal/config/config.go Defaults; internal/install/target.go writeConfig); busy also covers a running game"
+    },
+    {
+      "line": "The VaporOS PC runs Steam in gamescope on a virtual display. Sunshine captures and encodes it and sends it over your home network to Moonlight on a TV, phone or laptop. A monitor on the PC, if there is one, shows only the welcome screen with the setup address.",
+      "why": "C-08: precision: the welcome screen shows its address and a QR code (internal/display/status.go buildWelcome)"
+    },
+    {
+      "line": "After the install, a monitor is optional. If one is connected, it shows only the welcome screen: the address and a QR code.",
+      "why": "C-09/C-12/C-17/C-19/C-28: the installer waives the setup code while no monitor is connected, so a monitor is optional even to install (internal/daemon/daemon.go SetSetupWaiver; internal/daemon/monitor.go headless)"
+    },
+    {
+      "line": "Updates and one-tap rollback.",
+      "why": "C-06: a rollback is a confirm, then a restart prompt, not one tap (internal/web/static/legacy/js/pages/updates.js)"
+    },
+    {
+      "line": "Only while you install. The installer's setup code appears on the PC's screen, so connect a monitor or TV for the install.",
+      "why": "C-09/C-12/C-17/C-19/C-28: the installer waives the setup code while no monitor is connected, so a monitor is optional even to install (internal/daemon/daemon.go SetSetupWaiver; internal/daemon/monitor.go headless)"
+    },
+    {
+      "line": "Intel Haswell, AMD Zen, or newer.",
+      "why": "C-10: precision: x86-64-v3 needs AVX2, which some Pentium and Celeron chips lack (GOAMD64=v3, docs/CONTRACTS.md)"
+    },
+    {
+      "line": "A USB stick and a screen, to install",
+      "why": "C-09/C-12/C-17/C-19/C-28: the installer waives the setup code while no monitor is connected, so a monitor is optional even to install (internal/daemon/daemon.go SetSetupWaiver; internal/daemon/monitor.go headless)"
+    },
+    {
+      "line": "Everything on the stick is erased when you write the ISO. A monitor or TV shows the setup code during the install; you don't need it afterwards.",
+      "why": "C-09/C-12/C-17/C-19/C-28: the installer waives the setup code while no monitor is connected, so a monitor is optional even to install (internal/daemon/daemon.go SetSetupWaiver; internal/daemon/monitor.go headless)"
+    },
+    {
+      "line": "A few minutes of your time, most of it spent waiting. You need the PC, a USB stick, a monitor or TV for the install, and a phone or computer on the same network.",
+      "why": "C-09/C-12/C-17/C-19/C-28: the installer waives the setup code while no monitor is connected, so a monitor is optional even to install (internal/daemon/daemon.go SetSetupWaiver; internal/daemon/monitor.go headless)"
+    },
+    {
+      "line": "The drive you install on is erased. Back up anything on it first. Other drives are left alone.",
+      "why": "C-18: precision: a repair keeps an existing VaporOS drive (internal/web/templates/legacy/pages/setup.html)"
+    },
+    {
+      "line": "Plug in a network cable, and connect a monitor or TV for the install: it shows the address and the setup code the installer asks for. You can unplug it afterwards.",
+      "why": "C-09/C-12/C-17/C-19/C-28: the installer waives the setup code while no monitor is connected, so a monitor is optional even to install (internal/daemon/daemon.go SetSetupWaiver; internal/daemon/monitor.go headless); with no monitor anyone on the network can open the installer (internal/api/api.go)"
+    },
+    {
+      "line": "Pick the drive to install on. The USB stick you started from isn't listed. If the drive already has VaporOS, you can repair it: games, settings and paired devices stay.",
+      "why": "C-14: a repair also keeps the PC's name and time zone (legacy setup.html repair-keeps; install.js submitInstall)"
+    },
+    {
+      "line": "If.local names don't work on your network, use the IP address from the welcome screen instead.",
+      "why": "C-22: adds the router's list of devices, as the installer's own page says (legacy setup.html)"
+    },
+    {
+      "line": "Moonlight shows a 4-digit PIN. On the VaporOS page, open Pair a device, type the PIN and a name for the device, and press Pair.",
+      "why": "C-23: the device's name is filled in from Sunshine's pending request, and the welcome screen says when a device wants to pair (internal/sunshine/handlers.go; internal/display/status.go)"
+    },
+    {
+      "line": "When nobody plays for 15 minutes, VaporOS powers off, but never while it's streaming, downloading or updating. Change the time or turn it off under Power, or use Stay awake for a long download.",
+      "why": "C-04/C-26/C-33: idle power-off is off by default and a new install turns it on only when a wired network adapter can wake the PC (internal/config/config.go Defaults; internal/install/target.go writeConfig); busy also covers a running game"
+    },
+    {
+      "line": "By default it powers off after 15 minutes of nobody playing, but never while it's streaming, downloading or updating. You can change the time or turn this off under Power, or keep it awake for an hour or four. Moonlight wakes a paired PC over Wake-on-LAN, which needs a wired connection.",
+      "why": "C-04/C-26/C-33: idle power-off is off by default and a new install turns it on only when a wired network adapter can wake the PC (internal/config/config.go Defaults; internal/install/target.go writeConfig); busy also covers a running game"
+    }
+  ]
 }
