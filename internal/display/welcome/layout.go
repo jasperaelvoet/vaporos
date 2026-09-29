@@ -136,10 +136,10 @@ func (l *layout) placeQR(x, y, size float64) {
 }
 
 // addText lays out one line at reference (x, baseline y) in f at px
-// reference pixels, shrunk until it fits maxW reference units, and returns
-// its index in l.Texts.
+// reference pixels, fitted to maxW reference units (fit), and returns its
+// index in l.Texts.
 func (l *layout) addText(r role, text string, f *opentype.Font, px float64, c color.RGBA, x, y, maxW float64) int {
-	size := fitSize(f, text, l.Len(px), l.Len(maxW))
+	text, size := fit(f, text, l.Len(px), l.Len(maxW))
 	return l.place(textItem{Role: r, Text: text, Font: f, Px: size, Color: c, Dot: image.Pt(l.X(x), l.Y(y))})
 }
 

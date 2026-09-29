@@ -129,7 +129,12 @@ func (draftLook) arrange(l *layout, st State) {
 		if !strings.HasPrefix(v, "VaporOS") {
 			v = "VaporOS " + v
 		}
-		l.addText(roleVersion, v, fontRegular, draftType.Version, p.Ink2, margin, l.RefH-64, textMax)
+		// Portrait screens get it higher, inside title-safe.
+		y := l.RefH - 64
+		if l.Portrait {
+			y = l.RefH - 120
+		}
+		l.addText(roleVersion, v, fontRegular, draftType.Version, p.Ink2, margin, y, textMax)
 	}
 }
 

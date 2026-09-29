@@ -3,6 +3,7 @@ package welcome
 import (
 	"image"
 	"image/color"
+	"strings"
 	"sync"
 
 	"golang.org/x/image/font"
@@ -84,7 +85,8 @@ func advance(f *opentype.Font, px int, text string) int {
 	return font.MeasureString(face(f, px), text).Ceil()
 }
 
-// fitSize shrinks px until text fits in maxW pixels.
+// fitSize shrinks px until text fits in maxW pixels, down to a floor of
+// 8 px.
 func fitSize(f *opentype.Font, text string, px, maxW int) int {
 	for px > 8 {
 		w := advance(f, px, text)
@@ -98,6 +100,24 @@ func fitSize(f *opentype.Font, text string, px, maxW int) int {
 		px--
 	}
 	return px
+}
+
+// fit shrinks text to fit maxW pixels (fitSize); a line too long even at
+// the floor is cut short with an ellipsis, so it never runs into the QR
+// card or off a small panel.
+func fit(f *opentype.Font, text string, px, maxW int) (string, int) {
+	px = fitSize(f, text, px, maxW)
+	if advance(f, px, text) <= maxW {
+		return text, px
+	}
+	r := []rune(strings.TrimSpace(text))
+	for len(r) > 0 && advance(f, px, strings.TrimSpace(string(r))+"…") > maxW {
+		r = r[:len(r)-1]
+	}
+	if len(r) == 0 {
+		return "", px
+	}
+	return strings.TrimSpace(string(r)) + "…", px
 }
 
 // drawText draws t onto img, with kerning.
