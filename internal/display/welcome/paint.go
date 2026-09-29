@@ -45,7 +45,8 @@ func rgb(v uint32) color.RGBA {
 	return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xff}
 }
 
-// Render draws the welcome screen for st at w×h pixels.
+// Render draws the welcome screen for st at w×h pixels. It shares font
+// faces between calls, so one goroutine renders at a time.
 func Render(st State, w, h int) *image.RGBA {
 	return paint(computeLayout(st, w, h), true)
 }

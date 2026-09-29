@@ -1,0 +1,1 @@
+{"mode":"os","hostname":"vapor","url":"http://vapor.local","ip_url":"http://192.168.1.50","qr":"http://192.168.1.50/","code":"","title":"VaporOS","status":"No supported graphics card","detail":"NVIDIA GeForce RTX 4070 Ti SUPER Founders Edition is not supported yet; VaporOS streams with an AMD Radeon graphics card","version":"20260929.172712","tone":"fault"}
