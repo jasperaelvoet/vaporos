@@ -55,7 +55,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/auth.json` | vosd, installer | `{"user":"admin","hash":"$argon2id$…"}`, mode 0600 |
 | `/var/lib/vos/sessions.json` | vosd | web sessions `{sha256(token): {csrf, expires}}`, mode 0600 |
 | `/var/lib/vos/update-state.json` | vosd, `vos update` | see "Update state" |
-| `/var/lib/vos/clients.json` | vosd | learned Moonlight client modes `{name: {w,h,fps,hdr,last_seen}}` |
+| `/var/lib/vos/clients.json` | vosd | learned Moonlight client modes `{name: {w,h,fps,hdr,last_seen}}`; entries go when DELETE `/display/modes/{mode}` removes their mode |
 | `/var/lib/vos/sunshine-api.json` | vosd | `{"user","password"}` for Sunshine's local API, mode 0600 |
 | `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (boot disk, virtual connector + EDID) |
 | `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running |
@@ -281,8 +281,9 @@ systemd-boot counting does the rest.
 | GET `/sunshine/logs` | Authed | `text/plain`, last 2000 lines |
 | POST `/sunshine/restart` | Authed | → `{}` |
 | POST `/sunshine/end-stream` | Authed | → `{}`: closes the running Sunshine app (`POST /api/apps/close`), which ends every client's stream. Sunshine then runs the prep-cmd undo, so `session.end` follows. A Steam game the app started keeps running. 409 when nothing streams; 502/503 as the other Sunshine calls |
-| GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"available_connectors":["DP-2"],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none","planes":N}` (`physical`: connected and not the virtual connector; `available_connectors`: disconnected DP/HDMI ports of a supported GPU other than the current one, what the UI offers as `virtual_connector`; `planes`: fb-backed planes on the virtual connector's CRTC, 1 while gamescope composites) |
+| GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"available_connectors":["DP-2"],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"added":["WxH@R"],"devices":[{"name","mode":"WxH@R","hdr":bool,"last_seen"}],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none","planes":N}` (`physical`: connected and not the virtual connector; `available_connectors`: disconnected DP/HDMI ports of a supported GPU other than the current one, what the UI offers as `virtual_connector`; `planes`: fb-backed planes on the virtual connector's CRTC, 1 while gamescope composites; `added`: valid `display.extra_modes` beyond the built-in list; `devices`: clients.json, newest first; `learned` stays the union of `added` and the valid client modes beyond the built-in list) |
 | POST `/display/modes` | Authed | `{"mode":"WxH@R"}` → `{"reboot_needed":true}` |
+| DELETE `/display/modes/{mode}` | Authed | → `{"reboot_needed":bool}`: removes `WxH@R` from `display.extra_modes` and every clients.json entry that asked for it, then rewrites the learned EDID (applies after a reboot). A device that asks for the mode again teaches it again. 400 for a malformed mode; 404 when neither list holds it |
 | PUT `/display/settings` | Authed | `{"hdr":bool,"virtual_connector"?}` → `{}`; a new `virtual_connector` must be a DP/HDMI connector of the GPU |
 | GET `/storage` | Authed | `{"disks":[{"path","model","size","uuid","label","fstype","mounted_at"?,"is_system":bool,"steam_library":bool,"library_dir"?,"adopted":bool,"missing"?:bool,"free"?,"registered":bool,"registration_pending"?:bool}]}` (`library_dir`: `.` or `SteamLibrary`; `missing`: adopted but not attached; `registered`: adopted, and Steam's library list has a library on it; `registration_pending`: queued in steam-libraries.json) |
 | POST `/storage/libraries` | Authed | `{"uuid"}` → `{"mountpoint","library","registered":bool,"registration_pending":bool,"hint"}` (config + mount now + add `library` to Steam's list now, or once Steam is not running). Only ext2/3/4, btrfs, xfs, f2fs and NTFS (ntfs3), never exFAT/FAT (`storage.LibraryFS`, shared with the installer and generator); else 400. A disk with no library gets a new vapor-owned `SteamLibrary/` |
@@ -320,8 +321,13 @@ so a Sunshine that crashed mid-stream does not hold gamescope or keep the PC awa
 ```json
 {"mode":"os|installer","hostname":"vapor","url":"http://vapor.local","ip_url":"http://192.168.1.50",
  "qr":"http://192.168.1.50/","code":"ABCD-EFGH","title":"VaporOS","status":"Ready to stream",
- "detail":"Open this address on your phone or computer","version":"…"}
+ "detail":"Open this address on your phone or computer","version":"…",
+ "tone":"ready","attention":"pair","progress":42}
 ```
+`qr` is `<base>/setup?code=<code>` while a setup code exists, else `<base>/pair` while a Moonlight device waits for its PIN, else `<base>/`; `<base>` is `ip_url`, or `url` when there is no address yet.
+
+`tone` is the state word of `design/tokens.json` that the screen is coloured by: `ready`, `streaming`, `updating`, `restart-needed`, `asleep`, `fault` or `installing`; empty (omitted) is neutral, and a reader treats an unknown word as neutral. vosd sets it in the same place as `status`: `installing` for the installer, the setup code, a running or finished install; `fault` for no supported GPU, no network and a failed install; `restart-needed` while the virtual display waits for a restart; `streaming` during a session; `updating` while an update downloads or writes; `ready` otherwise, a staged update included. With no network, `tone` stays neutral for the first 15 s after vosd starts. `tone` is `asleep`, and `status` says so, while an idle shutdown is at most 2 minutes away (`power.idle` `shutdown_in` ≤ 120). `attention` is `pair` while a device waits for its PIN (the tone is unchanged). `progress` is the percent (0–100) of a running install or update, 100 once an install is done; omitted when 0. `status` and `detail` stay the words; `tone`, `attention` and `progress` only decide how the screen looks.
+
 The virtual EDID's PNP id is `VOS` (not assigned in hwdata's pnp.ids, so gamescope falls back to the raw id) and its monitor name `VaporOS`, so gamescope's `modes.cfg` key is `VOS VaporOS`; vosd still reads the real key from `gamescopectl` at runtime instead of assuming it. vosd keeps gamescope compositing (the `composite_force` convar and the `GAMESCOPE_COMPOSITE_FORCE` root property, which Steam can reset) and re-asserts it every 5 s during sessions, because stock Sunshine's KMS capture loses the picture when gamescope scans a game out on its own plane.
 
 `vos welcome` redraws whenever the file changes (poll 1 s). It lights every
