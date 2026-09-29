@@ -1,0 +1,5 @@
+{
+  "description": "Sunshine has logged nothing yet.",
+  "patch": {"sunshine-logs": []},
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

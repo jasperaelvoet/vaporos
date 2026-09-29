@@ -1,0 +1,6 @@
+{
+  "description": "The install stops with a write error.",
+  "mode": "installer",
+  "sim": {"install_fail": "writing /dev/nvme0n1p2: input/output error"},
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}

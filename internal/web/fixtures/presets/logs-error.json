@@ -1,0 +1,5 @@
+{
+  "description": "No Sunshine log can be read.",
+  "errors": {"GET /sunshine/logs": [502, "no Sunshine log available: journalctl: exit status 1"]},
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

@@ -1,0 +1,6 @@
+{
+  "description": "The live ISO without a monitor: the setup code is waived.",
+  "mode": "installer",
+  "headless": true,
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}

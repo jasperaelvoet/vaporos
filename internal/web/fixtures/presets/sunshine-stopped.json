@@ -1,0 +1,15 @@
+{
+  "description": "The stream server is stopped; Restart streaming starts it again.",
+  "patch": {"sunshine": {"running": false}},
+  "errors": {
+    "GET /sunshine/clients": [
+      502,
+      "Sunshine is not answering: Get \"https://127.0.0.1:47990/api/clients/list\": dial tcp 127.0.0.1:47990: connect: connection refused"
+    ],
+    "POST /sunshine/pair": [
+      502,
+      "Sunshine is not answering: Get \"https://127.0.0.1:47990/api/clients/list\": dial tcp 127.0.0.1:47990: connect: connection refused"
+    ]
+  },
+  "expect": {"hero": "fault-stopped", "restart": [], "cards": []}
+}

@@ -1,0 +1,7 @@
+{
+  "description": "A resolution was added: the virtual screen offers it after a restart.",
+  "patch": {
+    "display": {"reboot_needed": true, "added": ["3000x2000@120"], "learned": ["3000x2000@120", "2360x1640@120"]}
+  },
+  "expect": {"hero": "restart-needed", "restart": ["display"], "cards": []}
+}

@@ -1,0 +1,23 @@
+{
+  "description": "The graphics card is not supported, so there is no virtual screen.",
+  "patch": {
+    "system": {
+      "gpu": {
+        "vendor": "nvidia",
+        "name": "NVIDIA GeForce RTX 4070",
+        "driver": "nvidia",
+        "card": "/dev/dri/card1",
+        "supported": false
+      }
+    },
+    "display": {
+      "profile": "none",
+      "available_connectors": [],
+      "modes": [],
+      "current": null,
+      "planes": 0,
+      "state": "none"
+    }
+  },
+  "expect": {"hero": "fault-no-gpu", "restart": [], "cards": []}
+}

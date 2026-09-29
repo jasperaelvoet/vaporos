@@ -1,0 +1,11 @@
+{
+  "description": "The image on the stick cannot be read, so the size check falls back to the floor.",
+  "mode": "installer",
+  "patch": {
+    "install-probe": {
+      "version": null,
+      "source_error": "manifest.json.sig: the signature does not verify with any trusted key"
+    }
+  },
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}

@@ -1,0 +1,31 @@
+{
+  "description": "One disk to install on, besides the USB stick.",
+  "mode": "installer",
+  "patch": {
+    "install-probe": {
+      "disks": [
+        {
+          "path": "/dev/nvme0n1",
+          "model": "Samsung SSD 990 PRO 1TB",
+          "size": 1000204886016,
+          "transport": "nvme",
+          "removable": false,
+          "is_live": false,
+          "has_vaporos": false,
+          "steam_libraries": []
+        },
+        {
+          "path": "/dev/sdb",
+          "model": "SanDisk Ultra Fit",
+          "size": 32000000000,
+          "transport": "usb",
+          "removable": true,
+          "is_live": true,
+          "has_vaporos": false,
+          "steam_libraries": []
+        }
+      ]
+    }
+  },
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Sunshine runs but its API does not answer: GET /sunshine degrades after 3 s (it never answers 502), the other calls answer 502.",
+  "errors": {
+    "GET /sunshine/clients": [
+      502,
+      "Sunshine is not answering: Get \"https://127.0.0.1:47990/api/clients/list\": context deadline exceeded"
+    ],
+    "POST /sunshine/pair": [
+      502,
+      "Sunshine is not answering: Get \"https://127.0.0.1:47990/api/clients/list\": context deadline exceeded"
+    ]
+  },
+  "latency": {"GET /sunshine": 3000},
+  "expect": {"hero": "ready", "restart": [], "cards": []}
+}

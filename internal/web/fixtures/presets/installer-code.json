@@ -1,0 +1,5 @@
+{
+  "description": "The live ISO with a monitor: the wizard needs the setup code ABCD-EFGH.",
+  "mode": "installer",
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}

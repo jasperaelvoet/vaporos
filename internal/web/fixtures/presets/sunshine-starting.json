@@ -1,0 +1,9 @@
+{
+  "description": "Sunshine is still getting its credentials: its API answers 503.",
+  "errors": {
+    "GET /sunshine": [503, "Sunshine is still being set up; try again in a few seconds"],
+    "GET /sunshine/clients": [503, "Sunshine is still being set up; try again in a few seconds"],
+    "POST /sunshine/pair": [503, "Sunshine is still being set up; try again in a few seconds"]
+  },
+  "expect": {"hero": "starting", "restart": [], "cards": []}
+}

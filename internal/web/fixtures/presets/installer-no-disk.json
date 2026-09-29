@@ -1,0 +1,31 @@
+{
+  "description": "Nothing big enough to install on.",
+  "mode": "installer",
+  "patch": {
+    "install-probe": {
+      "disks": [
+        {
+          "path": "/dev/sdb",
+          "model": "SanDisk Ultra Fit",
+          "size": 32000000000,
+          "transport": "usb",
+          "removable": true,
+          "is_live": true,
+          "has_vaporos": false,
+          "steam_libraries": []
+        },
+        {
+          "path": "/dev/sdc",
+          "model": "Kingston DataTraveler",
+          "size": 16000000000,
+          "transport": "usb",
+          "removable": true,
+          "is_live": false,
+          "has_vaporos": false,
+          "steam_libraries": []
+        }
+      ]
+    }
+  },
+  "expect": {"hero": null, "redirect": "/setup", "restart": [], "cards": []}
+}
