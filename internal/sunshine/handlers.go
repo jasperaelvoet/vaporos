@@ -76,6 +76,9 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 		st.Pairings = cached
 	}
 	st.PendingPairing = len(st.Pairings) > 0
+	if version == "" {
+		version = s.installedVersion() // Sunshine is down or not ours to ask yet
+	}
 	st.Version = version
 	if st.Streaming && session != nil {
 		sess := *session

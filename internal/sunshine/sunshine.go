@@ -1,7 +1,8 @@
 // Package sunshine configures and talks to Sunshine: renders
 // ~vapor/.config/sunshine/{sunshine.conf,apps.json}, manages the local API
-// credentials, proxies pairing/clients/logs for the web UI, and watches for
-// the KMS plane-loss freeze during sessions. See docs/CONTRACTS.md.
+// credentials, proxies pairing/clients/logs for the web UI, and watches
+// sessions for the KMS plane-loss freeze and for apps left running after
+// their client disconnected. See docs/CONTRACTS.md.
 package sunshine
 
 import (
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"text/template"
 	"time"
@@ -70,6 +72,12 @@ type Service struct {
 	nextRestartTry time.Time
 	cooldownUntil  time.Time
 	followFailed   bool
+	clients        clientTrack // from the followed journal; unknown when not following
+	busySince      time.Time   // when Run first saw the current app running
+	nextAbandonTry time.Time
+
+	pkgVersionOnce sync.Once
+	pkgVersion     string
 
 	watch planeWatch // Run's goroutine only
 
@@ -79,6 +87,7 @@ type Service struct {
 	infoURL       string
 	infoHTTP      *http.Client
 	sysDRM        string
+	pacmanDB      string
 	now           func() time.Time
 	publish       func(topic string, data any)
 	subscribe     func() (<-chan events.Event, func())
@@ -102,6 +111,7 @@ func NewService(cfg *config.Config) *Service {
 			Transport: &http.Transport{Proxy: nil, MaxIdleConns: 1, IdleConnTimeout: 30 * time.Second},
 		},
 		sysDRM:        "/sys/class/drm",
+		pacmanDB:      filepath.Join(config.LibDir, "pacman-db"),
 		now:           time.Now,
 		publish:       events.Publish,
 		subscribe:     events.Default.Subscribe,
@@ -114,7 +124,9 @@ func NewService(cfg *config.Config) *Service {
 	}
 }
 
-// Run renders config, ensures credentials, and runs the watchdog.
+// Run renders config, ensures credentials, and watches sessions: while an
+// app runs it follows Sunshine's journal for the plane-loss watchdog and
+// the client count, and closes an app its client abandoned.
 func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return // the user units do not run on the live ISO
@@ -126,12 +138,14 @@ func (s *Service) Run(ctx context.Context) {
 	tick := time.NewTicker(s.pollEvery)
 	defer tick.Stop()
 	var lines <-chan string
+	var followStart time.Time
 	stopFollow := context.CancelFunc(func() {})
 	following := false
 	stop := func() {
 		stopFollow()
 		stopFollow, lines, following = func() {}, nil, false
 		s.watch.reset()
+		s.resetClients()
 	}
 	defer func() { stop() }()
 
@@ -150,15 +164,19 @@ func (s *Service) Run(ctx context.Context) {
 				stop() // journalctl went away; the next poll starts a new one
 				continue
 			}
-			if s.watch.observe(line, s.now()) {
+			at, live := lineAt(line, followStart, s.now())
+			s.observeClients(line, at, live)
+			if live && s.watch.observe(line, s.now()) {
 				stop()
 				s.recoverFrozenStream(ctx)
 			}
 		case <-tick.C:
 			busy := s.poll(ctx)
+			s.noteBusy(busy)
 			switch {
 			case busy && !following && !s.now().Before(s.cooldown()):
 				fctx, cancel := context.WithCancel(ctx)
+				start := s.now()
 				ch, err := s.follow(fctx)
 				if err != nil {
 					cancel()
@@ -166,20 +184,37 @@ func (s *Service) Run(ctx context.Context) {
 					continue
 				}
 				s.noteFollowError(nil)
-				lines, stopFollow, following = ch, cancel, true
+				lines, stopFollow, following, followStart = ch, cancel, true, start
 			case !busy && following:
 				stop()
+			}
+			if busy {
+				s.closeIfAbandoned(ctx)
 			}
 		}
 	}
 }
 
-// Busy reports an active stream (serverinfo SUNSHINE_SERVER_BUSY).
+// Busy reports a Moonlight stream that should keep the machine awake: an
+// app is running (serverinfo SUNSHINE_SERVER_BUSY) and a client is
+// connected, or may still come back to it (abandonAfter after the last one
+// left). An app nobody streams any more does not count, so the idle timer
+// runs even if closing it fails.
 func (s *Service) Busy() (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if s.streaming(ctx) {
+	if !s.streaming(ctx) {
+		return false, ""
+	}
+	now := s.now()
+	s.mu.Lock()
+	left, idle := s.unattendedLocked(now)
+	s.mu.Unlock()
+	switch {
+	case !idle:
 		return true, "Moonlight stream"
+	case left < abandonAfter:
+		return true, "Moonlight stream (waiting for the client to reconnect)"
 	}
 	return false, ""
 }
@@ -487,7 +522,7 @@ func (s *Service) noteFollowError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil && !s.followFailed {
-		log.Printf("sunshine: cannot follow the Sunshine journal (freeze watchdog off): %v", err)
+		log.Printf("sunshine: cannot follow the Sunshine journal (freeze watchdog and abandoned-stream check off): %v", err)
 	}
 	s.followFailed = err != nil
 }
