@@ -788,3 +788,189 @@ func sortedJoin(s string) string {
 	sort.Strings(parts)
 	return strings.Join(parts, "|")
 }
+
+// templateClassActions finds {{…}} actions inside class="…" attributes of a
+// template that print a value, and so build a class name Tailwind can't
+// see. {{if}}, {{else}}, {{end}} and comments only choose between literals.
+func templateClassActions(src string) []int {
+	action := regexp.MustCompile(`\{\{-?\s*(.*?)\s*-?\}\}`)
+	var lines []int
+	for _, m := range classAttr.FindAllStringSubmatchIndex(src, -1) {
+		for _, a := range action.FindAllStringSubmatch(src[m[2]:m[3]], -1) {
+			word, _, _ := strings.Cut(a[1], " ")
+			if word != "if" && word != "else" && word != "end" && !strings.HasPrefix(a[1], "/*") {
+				lines = append(lines, lineOf(src, m[0]))
+			}
+		}
+	}
+	return lines
+}
+
+// R-C1…R-C4: Tailwind reads text, not code, so a class name must be written
+// out in full. State belongs in data-* and aria-* attributes; a finite set of
+// names goes in a lookup object of full literals marked /* classes */.
+func TestNoDynamicClassNames(t *testing.T) {
+	forEachCheckedSet(t, true, func(t *testing.T, set uiSet) {
+		for name, src := range setScripts(t, set) {
+			for _, u := range jsClassUses(src) {
+				if u.dynamic != "" {
+					t.Errorf("static/%s:%d builds a class name with %s: use a data-* attribute or a lookup object of full names (ARCH §2.5)", name, u.line, u.dynamic)
+				}
+			}
+		}
+		for name, src := range setTemplates(t, set) {
+			for _, line := range templateClassActions(src) {
+				t.Errorf("%s:%d prints a value into a class attribute: write each class out in full inside {{if}} (ARCH §2.5)", name, line)
+			}
+		}
+	})
+}
+
+// bannedClass matches, in a template, a script or a hand-written style, a
+// class that themes by other means than token swaps (R-C7) or paints text in
+// a state colour, which only has to reach 3:1 against the canvas (CRIT 47):
+// text in a state's colour uses its ink, text-(--state-ink).
+var bannedClass = regexp.MustCompile(`(?:^|[\s"'` + "`" + `:])(dark:[\w\[(!-]|text-state-[\w-]+|text-\((?:color:)?--state(?:-soft)?\))|\[#[0-9a-fA-F]|\[color:`)
+
+// bannedClasses reports each banned class as "<line>: <the whole class>".
+func bannedClasses(src string) []string {
+	const edge = " \t\"'`"
+	var out []string
+	for i, line := range strings.Split(src, "\n") {
+		for _, m := range bannedClass.FindAllStringIndex(line, -1) {
+			from, to := m[0], m[1]
+			for from < to && strings.ContainsRune(edge, rune(line[from])) {
+				from++
+			}
+			for from > 0 && !strings.ContainsRune(edge, rune(line[from-1])) {
+				from--
+			}
+			for to < len(line) && !strings.ContainsRune(edge, rune(line[to])) {
+				to++
+			}
+			out = append(out, fmt.Sprintf("%d: %s", i+1, line[from:to]))
+		}
+	}
+	return out
+}
+
+// R-C7 and CRIT 47: no dark: variant, no arbitrary colour, no state colour
+// as text.
+func TestClassRules(t *testing.T) {
+	forEachCheckedSet(t, true, func(t *testing.T, set uiSet) {
+		files := setTemplates(t, set)
+		for name, src := range setScripts(t, set) {
+			files["static/"+name] = jsBlank(src, true)
+		}
+		styles, _ := filepath.Glob(filepath.Join("styles", "*.css"))
+		for _, p := range styles {
+			if filepath.Base(p) == "tokens.css" || filepath.Base(p) == "fonts-fallback.css" {
+				continue // generated
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[filepath.ToSlash(p)] = cssBlank(string(b))
+		}
+		for name, src := range files {
+			for _, hit := range bannedClasses(src) {
+				t.Errorf("%s:%s: themes are token swaps and state text uses its ink (ARCH §2.5 R-C7, CRIT 47)", name, hit)
+			}
+		}
+	})
+}
+
+// jsFloor bans what the browser floor lacks: Safari/iOS 15.4, Chrome 111,
+// Firefox 115 (MASTER-PLAN §1.3). A top-level await is matched at the start
+// of a line, where top-level statements sit.
+var jsFloor = []struct {
+	re   *regexp.Regexp
+	what string
+}{
+	{regexp.MustCompile(`(?m)^(?:export\s+)?(?:(?:const|let|var)\s+[^=\n]+=\s*)?await\b`), "top-level await (Safari 15)"},
+	{regexp.MustCompile(`(?m)^for\s+await\b`), "top-level for await (Safari 15)"},
+	{regexp.MustCompile(`(?m)^\s*(?:import|export)\b[^\n]*\b(?:with|assert)\s*\{`), "import attributes (Safari 17.2)"},
+	{regexp.MustCompile(`\bPromise\.(?:withResolvers|try)\b`), "Promise.withResolvers/try (Safari 17.4)"},
+	{regexp.MustCompile(`\b(?:Object|Map)\.groupBy\b`), "Object.groupBy (Safari 17.4)"},
+	{regexp.MustCompile(`\.(?:toSorted|toSpliced|toReversed)\(`), "change-array-by-copy (Safari 16)"},
+	{regexp.MustCompile(`\bArray\.fromAsync\b`), "Array.fromAsync (Safari 16.4)"},
+	{regexp.MustCompile(`\.(?:union|intersection|difference|symmetricDifference|isSubsetOf|isSupersetOf|isDisjointFrom)\(`), "Set methods (Safari 17)"},
+	{regexp.MustCompile(`\.(?:keys|values|entries)\(\)\.(?:map|filter|take|drop|flatMap|reduce|toArray|some|every|find|forEach)\(`), "iterator helpers (Safari 18.4)"},
+	{regexp.MustCompile(`\bimport\.meta\.resolve\b`), "import.meta.resolve (Safari 16.4)"},
+	{regexp.MustCompile(`\.(?:isWellFormed|toWellFormed)\(`), "well-formed strings (Safari 16.4)"},
+	{regexp.MustCompile(`\b(?:RegExp\.escape|Intl\.DurationFormat)\b|\.(?:toBase64|fromBase64)\(`), "a 2024-2025 built-in"},
+}
+
+func jsFloorHits(src string) []string {
+	code := jsBlank(src, false)
+	var out []string
+	for _, f := range jsFloor {
+		for _, m := range f.re.FindAllStringIndex(code, -1) {
+			out = append(out, fmt.Sprintf("%d: %s", lineOf(code, m[0]), f.what))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestJSFloor keeps the scripts inside the browser floor. It also covers the
+// live demo's scripts in demo/, which run in the website's iframe.
+func TestJSFloor(t *testing.T) {
+	forEachCheckedSet(t, false, func(t *testing.T, set uiSet) {
+		for name, src := range setScripts(t, set) {
+			for _, hit := range jsFloorHits(src) {
+				t.Errorf("static/%s:%s is above the browser floor", name, hit)
+			}
+		}
+	})
+	t.Run("demo", func(t *testing.T) {
+		demo, _ := filepath.Glob(filepath.Join("demo", "*.js"))
+		if len(demo) == 0 {
+			t.Skip("no demo/*.js yet")
+		}
+		for _, p := range demo {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, hit := range jsFloorHits(string(b)) {
+				t.Errorf("%s:%s is above the browser floor", filepath.ToSlash(p), hit)
+			}
+		}
+	})
+}
+
+// The template, class-rule and floor scanners on small inputs.
+func TestClassRuleScanners(t *testing.T) {
+	tpl := "<p class=\"tab{{if .On}} is-on{{else}} is-off{{end}}\">\n<p class=\"badge-{{.Tone}}\">\n<p class=\"{{/* note */}}x\">"
+	if got := fmt.Sprint(templateClassActions(tpl)); got != "[2]" {
+		t.Errorf("template class actions on lines %s, want [2]", got)
+	}
+	src := strings.Join([]string{
+		`h('p', { class: 'dark:bg-canvas' });`,
+		`const theme = { dark: 'x', light: 'y' };`,
+		`<p class="text-state-ready">`,
+		`<p class="text-(--state-ink) bg-(--state-soft)">`,
+		`<p class="hover:text-(--state)">`,
+		`<p class="bg-[#ff0000]">`,
+		`@apply [color:red];`,
+	}, "\n")
+	if got, want := strings.Join(bannedClasses(src), "|"), "1: dark:bg-canvas|3: text-state-ready|5: hover:text-(--state)|6: bg-[#ff0000]|7: [color:red];"; got != want {
+		t.Errorf("banned classes = %s\nwant %s", got, want)
+	}
+	js := strings.Join([]string{
+		`const cfg = await load();`,
+		`async function f() {`,
+		`  await load();`,
+		`  const s = 'x.toSorted(y)'; // a.toSorted(`,
+		`  return list.toSorted().at(-1) ?? new Set(a).union(b);`,
+		`}`,
+		`import data from './d.json' with { type: 'json' };`,
+		`for (const v of m.values().map(f)) {}`,
+	}, "\n")
+	want := "1: top-level await (Safari 15)|5: Set methods (Safari 17)|5: change-array-by-copy (Safari 16)|7: import attributes (Safari 17.2)|8: iterator helpers (Safari 18.4)"
+	if got := strings.Join(jsFloorHits(js), "|"); got != want {
+		t.Errorf("floor hits = %s\nwant %s", got, want)
+	}
+}
