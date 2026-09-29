@@ -12,6 +12,10 @@
 # Environment:
 #   ACCEL=kvm|tcg   default: kvm when /dev/kvm is usable. TCG needs QEMU >= 7.2
 #                   (x86-64-v3 instructions) and is very slow.
+#   SIGNED=1|0      whether the ISO's manifest is signed (default 1). The
+#                   installer only installs a signed image, so with SIGNED=0
+#                   (an unsigned CI build) the test ends once it has checked
+#                   that the installer refuses the image.
 #   SCALE=N         multiplies every timeout (default 1 with KVM, 8 with TCG)
 #   PORT=8080       host port forwarded to the VM's port 80
 #   OVMF_CODE, OVMF_VARS   firmware images, found automatically
@@ -27,6 +31,8 @@ ISO=${1:?usage: $0 ISO VERSION [WORKDIR]}
 VERSION=${2:?usage: $0 ISO VERSION [WORKDIR]}
 WORK=${3:-${TMPDIR:-/tmp}/vaporos-vm-smoke}
 PORT=${PORT:-8080}
+SIGNED=${SIGNED:-1}
+[[ $SIGNED == [01] ]] || { echo "SIGNED must be 1 or 0, not '$SIGNED'" >&2; exit 2; }
 DISK=/dev/vda # virtio-blk, the first disk
 HOSTNAME_=vapor-ci
 PASSWORD=vapor-ci-$RANDOM$RANDOM
@@ -221,15 +227,36 @@ c=$(http GET /install/probe -H "X-VOS-Setup: $code")
 [[ $c == 200 ]] || die "GET /install/probe -> $c $(cat "$WORK/body")"
 grep -q "\"$DISK\"" "$WORK/body" || die "the installer does not offer $DISK: $(cat "$WORK/body")"
 
-# 2. Install through the API, as the web wizard does.
+# 2. Install through the API, as the web wizard does. The job runs in the
+#    background: 202 Accepted.
 body=$(printf '{"disk":"%s","mode":"erase","hostname":"%s","password":"%s","timezone":"UTC","libraries":[],"source":""}' \
     "$DISK" "$HOSTNAME_" "$PASSWORD")
 c=$(http POST /install -H "X-VOS-Setup: $code" -H 'Content-Type: application/json' -d "$body")
-[[ $c == 200 ]] || die "POST /install -> $c $(cat "$WORK/body")"
+[[ $c == 202 || $c == 200 ]] || die "POST /install -> $c $(cat "$WORK/body")"
 log "install started (job $(json job))"
 state=$(wait_serial 'VOS-INSTALL state=(\S+)' 1800)
-http GET /install/status -H "X-VOS-Setup: $code" >/dev/null
-[[ $state == done ]] || die "install $state: $(cat "$WORK/body")"
+# The serial line goes out just before the job's status changes.
+for _ in 1 2 3 4 5; do
+    http GET /install/status -H "X-VOS-Setup: $code" >/dev/null
+    [[ $(json state) == running ]] || break
+    sleep 1
+done
+
+if [[ $SIGNED == 0 ]]; then
+    # An unsigned image is refused before anything is written.
+    [[ $state == failed ]] || die "the installer accepted an unsigned image (install $state)"
+    err=$(json error)
+    grep -qiE 'signature|signed' <<<"$err" || die "the install failed, but not over the missing signature: $err"
+    log "the installer refuses the unsigned image: $err"
+    screendump 2-refused
+    log "PASS: the unsigned ISO boots its installer, which refuses to install it"
+    if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+        printf '### VM smoke test (%s)\nUnsigned ISO: booted the `%s` installer, which refused to install the unsigned image, as it must. %ss.\n' \
+            "$ACCEL" "$VERSION" $((SECONDS - T0)) >>"$GITHUB_STEP_SUMMARY"
+    fi
+    exit 0
+fi
+[[ $state == "done" ]] || die "install $state: $(cat "$WORK/body")"
 log "install done"
 
 # 3. Reboot through the API; -no-reboot turns that into QEMU exiting.
