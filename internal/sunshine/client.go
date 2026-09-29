@@ -251,7 +251,8 @@ func (c *Client) Unpair(ctx context.Context, uuid string) (bool, error) {
 	return out.Status, nil
 }
 
-// Version returns the running Sunshine's version (from GET /api/config).
+// Version returns the running Sunshine's version (from GET /api/config;
+// never `sunshine --version`, see pkgversion.go).
 func (c *Client) Version(ctx context.Context) (string, error) {
 	var out struct {
 		Version string `json:"version"`

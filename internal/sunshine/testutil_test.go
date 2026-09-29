@@ -252,6 +252,7 @@ func newHarness(t *testing.T) *harness {
 	s.apiBase = apiSrv.URL
 	s.infoURL = infoSrv.URL + "/serverinfo"
 	s.sysDRM = t.TempDir()
+	s.pacmanDB = t.TempDir()
 	s.publish = rec.publish
 	s.userSystemctl = rec.ctl
 	s.asGamer = rec.gamer

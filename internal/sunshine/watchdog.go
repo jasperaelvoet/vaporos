@@ -75,12 +75,20 @@ func (p *planeWatch) observe(line string, now time.Time) bool {
 
 func (p *planeWatch) reset() { p.hits = nil }
 
-// followJournal streams the vos-sunshine user unit's new log lines until
-// ctx ends. vosd is root, which reads the gaming user's journal directly;
-// matching on the unit and uid picks exactly Sunshine's output (journalctl
-// --user-unit would match root's uid instead).
+// followJournal streams the vos-sunshine user unit's log lines until ctx
+// ends: the last historyLines of this boot first, then new ones. vosd is
+// root, which reads the gaming user's journal directly; matching on the
+// unit and uid picks exactly Sunshine's output (journalctl --user-unit
+// would match root's uid instead).
+//
+// The history lets the client count include clients that connected before
+// vosd started following (it follows only once an app runs, and vosd may
+// have restarted mid-stream). short-unix output puts the journal timestamp
+// in front of each line, which tells the replayed history (lineAt) apart
+// from new lines; the markers are matched anywhere in a line.
 func followJournal(ctx context.Context) (<-chan string, error) {
-	cmd := exec.CommandContext(ctx, "journalctl", "--follow", "--lines=0", "--output=cat", "--no-pager",
+	cmd := exec.CommandContext(ctx, "journalctl", "--follow", "--boot", "--quiet", "--no-pager",
+		"--lines="+strconv.Itoa(historyLines), "--output=short-unix",
 		"_SYSTEMD_USER_UNIT="+unitName, "_UID="+strconv.Itoa(config.GamerUID))
 	out, err := cmd.StdoutPipe()
 	if err != nil {
