@@ -51,7 +51,7 @@ func TestGetDisplay(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
-	var d displayInfo
+	var d Info
 	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestGetDisplay(t *testing.T) {
 	h.mu.Lock()
 	h.scanOK = false
 	h.mu.Unlock()
-	if d := m.info(); d.Planes != 0 || d.Current != nil {
+	if d := m.Info(); d.Planes != 0 || d.Current != nil {
 		t.Errorf("idle info = planes %d current %v", d.Planes, d.Current)
 	}
 }
@@ -115,7 +115,7 @@ func TestDisplayConnectors(t *testing.T) {
 		drm.SysConnector{Card: "card1", Name: "eDP-1", Type: "eDP", Status: "disconnected"},
 		drm.SysConnector{Card: "card1", Name: "DP-3", Type: "DP", Status: "unknown"})
 	m.init(context.Background())
-	d := m.info()
+	d := m.Info()
 	phys := map[string]bool{}
 	for _, c := range d.Connectors {
 		phys[c.Name] = c.Physical
@@ -140,7 +140,7 @@ func TestDisplayConnectors(t *testing.T) {
 	m.mu.Lock()
 	m.gpu.Supported = false
 	m.mu.Unlock()
-	if d := m.info(); len(d.AvailableConnectors) != 0 || d.AvailableConnectors == nil {
+	if d := m.Info(); len(d.AvailableConnectors) != 0 || d.AvailableConnectors == nil {
 		t.Errorf("available without GPU = %#v", d.AvailableConnectors)
 	}
 }
@@ -189,7 +189,7 @@ func TestAddMode(t *testing.T) {
 func TestGetDisplayAddedAndDevices(t *testing.T) {
 	m, _, _, _ := newTestManager(t, false)
 	m.init(context.Background())
-	if d := m.info(); d.Added == nil || d.Devices == nil || len(d.Added)+len(d.Devices) != 0 {
+	if d := m.Info(); d.Added == nil || d.Devices == nil || len(d.Added)+len(d.Devices) != 0 {
 		t.Errorf("fresh added %#v devices %#v", d.Added, d.Devices)
 	}
 	m.cfg.Mutate(func(c *config.Config) {
@@ -200,7 +200,7 @@ func TestGetDisplayAddedAndDevices(t *testing.T) {
 		"Pixel":{"w":2400,"h":1080,"fps":120,"hdr":false,"last_seen":"2026-09-29T12:00:00Z"},
 		"TV":{"w":3840,"h":2160,"fps":60,"hdr":true,"last_seen":"2026-09-27T12:00:00Z"}}`)
 	w, _ := call(t, m.handleGet, http.MethodGet, "")
-	var d displayInfo
+	var d Info
 	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
 		t.Fatal(err)
 	}

@@ -79,8 +79,8 @@ func TestPolicyNoMonitorRunsGamescope(t *testing.T) {
 	if err != nil || string(env) != "# Written by vosd; read by vos-gamescope.service.\nVOS_OUTPUT=DP-1\nVOS_GS_EXTRA=\n" {
 		t.Errorf("gamescope.env = %q, %v", env, err)
 	}
-	if m.info().State != StateGaming {
-		t.Errorf("state = %s", m.info().State)
+	if m.Info().State != StateGaming {
+		t.Errorf("state = %s", m.Info().State)
 	}
 	// Composition is forced on the fresh gamescope (asynchronously).
 	waitFor(t, func() bool { return slices.Contains(h.callLog(), "gamescopectl composite_force 1") })
@@ -123,7 +123,7 @@ func TestPolicyNoGPU(t *testing.T) {
 	if h.isActive(WelcomeUnit, false) || h.isActive(GamescopeUnit, true) {
 		t.Fatalf("no GPU, no monitor: %v", h.callLog())
 	}
-	if d := m.info(); d.Profile != "none" || d.State != StateNone || len(d.Modes) != 0 {
+	if d := m.Info(); d.Profile != "none" || d.State != StateNone || len(d.Modes) != 0 {
 		t.Errorf("info = %+v", d)
 	}
 }
@@ -184,7 +184,7 @@ func TestSessionWithMonitor(t *testing.T) {
 	if s := m.CurrentSession(); s == nil || s.Client != "MacBook" || s.App != "Steam" || !s.Since.Equal(clk.now()) {
 		t.Errorf("CurrentSession = %+v", s)
 	}
-	if d := m.info(); d.State != StateStreaming || d.Current == nil || *d.Current != "2560x1600@60" {
+	if d := m.Info(); d.State != StateStreaming || d.Current == nil || *d.Current != "2560x1600@60" {
 		t.Errorf("info during stream = %+v", d)
 	}
 	st := m.welcomeState()
@@ -220,7 +220,7 @@ func TestSessionWithMonitor(t *testing.T) {
 	if on, prop := h.compositeState(); !on || prop != "1" {
 		t.Errorf("composite after restart = %v, property %q", on, prop)
 	}
-	if d := m.info(); d.Planes != 1 {
+	if d := m.Info(); d.Planes != 1 {
 		t.Errorf("planes = %d", d.Planes)
 	}
 
@@ -291,7 +291,7 @@ func TestSessionLearnsMode(t *testing.T) {
 	if !m.rebootNeededNow() {
 		t.Error("reboot_needed not set after learning a mode")
 	}
-	if d := m.info(); !slices.Contains(d.Learned, "2400x1080@120") || !d.RebootNeeded {
+	if d := m.Info(); !slices.Contains(d.Learned, "2400x1080@120") || !d.RebootNeeded {
 		t.Errorf("info = %+v", d)
 	}
 	// Once the kernel runs with that EDID, nothing is pending.
@@ -675,7 +675,7 @@ func TestLateGPU(t *testing.T) {
 	if !h.isActive(GamescopeUnit, true) {
 		t.Fatalf("late GPU not picked up: %v", h.callLog())
 	}
-	if d := m.info(); d.Profile != "amd" {
+	if d := m.Info(); d.Profile != "amd" {
 		t.Errorf("profile = %q", d.Profile)
 	}
 	if st := m.welcomeState(); st.Status != "Ready to stream" || st.Tone != brand.Ready {
@@ -684,7 +684,7 @@ func TestLateGPU(t *testing.T) {
 	// Once supported, the GPU is not probed again.
 	h.gpu = GPUInfo{}
 	m.onScan(ctx)
-	if d := m.info(); d.Profile != "amd" {
+	if d := m.Info(); d.Profile != "amd" {
 		t.Error("a supported GPU was re-probed")
 	}
 }

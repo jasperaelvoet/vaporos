@@ -30,8 +30,8 @@ type connectorInfo struct {
 	Physical bool `json:"physical"`
 }
 
-// displayInfo is GET /display (docs/CONTRACTS.md).
-type displayInfo struct {
+// Info is GET /display (docs/CONTRACTS.md).
+type Info struct {
 	Profile          string          `json:"profile"`
 	VirtualConnector string          `json:"virtual_connector"`
 	Connectors       []connectorInfo `json:"connectors"`
@@ -54,7 +54,9 @@ type displayInfo struct {
 	State        string       `json:"state"`
 }
 
-func (m *Manager) info() displayInfo {
+// Info builds GET /display, which GET /status shares. It reads sysfs,
+// config and clients.json and asks DRM about the virtual connector only.
+func (m *Manager) Info() Info {
 	dc := m.displayConfig()
 	virtual, hdr := dc.VirtualConnector, dc.HDR
 	m.mu.Lock()
@@ -67,7 +69,7 @@ func (m *Manager) info() displayInfo {
 	m.mu.Unlock()
 	clients, _ := LoadClients(config.ClientsPath())
 
-	d := displayInfo{
+	d := Info{
 		Profile:             "none",
 		VirtualConnector:    virtual,
 		Connectors:          []connectorInfo{},
@@ -149,7 +151,7 @@ func sortModes(modes []edid.Mode) {
 }
 
 func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
-	api.WriteJSON(w, http.StatusOK, m.info())
+	api.WriteJSON(w, http.StatusOK, m.Info())
 }
 
 // handleAddMode adds a mode to config.display.extra_modes and the learned

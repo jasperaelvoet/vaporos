@@ -339,8 +339,8 @@ func (s *Service) doStage(ctx context.Context, opts Options) error {
 	return err
 }
 
-// updateView is GET /update: the update-state plus configuration and slots.
-type updateView struct {
+// View is GET /update: the update-state plus configuration and slots.
+type View struct {
 	State
 	Config     config.UpdateConfig `json:"config"`
 	BootedSlot string              `json:"booted_slot"`
@@ -351,12 +351,19 @@ type updateView struct {
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
+	api.WriteJSON(w, http.StatusOK, s.View())
+}
+
+// View builds GET /update, which GET /status shares: it reads the state
+// file and the ESP and probes the update lock for probePatience, nothing
+// slower.
+func (s *Service) View() View {
 	st, err := LoadState()
 	if err != nil {
 		log.Printf("update state: %v", err)
 	}
 	st.Booted = bootedImage().Version
-	v := updateView{State: *st, Config: s.effectiveConfig(), BootedSlot: config.BootedSlot()}
+	v := View{State: *st, Config: s.effectiveConfig(), BootedSlot: config.BootedSlot()}
 	if v.BootedSlot != "" && boot.EnsureESP(config.ESP) == nil {
 		v.OtherSlot, _ = slotStatus(config.OtherSlot(v.BootedSlot), v.BootedSlot)
 		v.NextBoot, _ = nextBoot(v.BootedSlot)
@@ -368,7 +375,7 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 		v.Progress = &p
 	}
 	s.mu.Unlock()
-	api.WriteJSON(w, http.StatusOK, v)
+	return v
 }
 
 // effectiveConfig is config.update with the defaults filled in.
