@@ -1,12 +1,15 @@
 package welcome
 
 import (
+	"encoding/json"
 	"image"
 	"image/color"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/jasperaelvoet/vaporos/internal/brand"
 	"rsc.io/qr"
 )
 
@@ -144,6 +147,38 @@ func TestStateFile(t *testing.T) {
 	os.Remove(path)
 	if got, changed := stateChanged(path, st, true); changed || got != st {
 		t.Error("a vanished file must keep the current screen")
+	}
+
+	// tone, attention and progress round-trip, and each alone is a change.
+	full := State{Status: "Downloading update 20261003.0915", Tone: brand.Updating, Attention: AttentionPair, Progress: 42}
+	b, _ := json.Marshal(full)
+	os.WriteFile(path, b, 0o644)
+	got, changed := stateChanged(path, st, true)
+	if !changed || got != full {
+		t.Errorf("round trip = %+v %v", got, changed)
+	}
+	for _, next := range []State{
+		{Status: full.Status, Tone: brand.Fault, Attention: full.Attention, Progress: full.Progress},
+		{Status: full.Status, Tone: full.Tone, Progress: full.Progress},
+		{Status: full.Status, Tone: full.Tone, Attention: full.Attention, Progress: 43},
+	} {
+		b, _ := json.Marshal(next)
+		os.WriteFile(path, b, 0o644)
+		if got, changed := stateChanged(path, full, true); !changed || got != next {
+			t.Errorf("%+v after %+v: changed=%v", next, full, changed)
+		}
+	}
+	// Unset, they are left out, so a welcome.json without them is unchanged;
+	// a tone outside the vocabulary still loads (and renders neutral).
+	if b, _ := json.Marshal(State{Status: "Ready to stream"}); strings.Contains(string(b), "tone") || strings.Contains(string(b), "attention") || strings.Contains(string(b), "progress") {
+		t.Errorf("unset fields written: %s", b)
+	}
+	os.WriteFile(path, []byte(`{"status":"x","tone":"bogus"}`), 0o644)
+	if got, err := Load(path); err != nil || got.Tone != "bogus" {
+		t.Errorf("unknown tone: %+v %v", got, err)
+	}
+	if Placeholder.Tone != brand.Neutral || Placeholder.Progress != 0 || Placeholder.Attention != "" {
+		t.Errorf("placeholder = %+v, want neutral", Placeholder)
 	}
 }
 

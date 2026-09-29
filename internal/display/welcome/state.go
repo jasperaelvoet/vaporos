@@ -9,6 +9,8 @@ package welcome
 import (
 	"encoding/json"
 	"os"
+
+	"github.com/jasperaelvoet/vaporos/internal/brand"
 )
 
 // State is the content of /run/vos/welcome.json.
@@ -23,10 +25,26 @@ type State struct {
 	Status   string `json:"status"`
 	Detail   string `json:"detail"`
 	Version  string `json:"version"`
+
+	// Tone is the state word of design/tokens.json that the screen is
+	// coloured by: ready, streaming, updating, restart-needed, asleep, fault
+	// or installing. "" is neutral (starting, or not known yet), and a word
+	// outside the vocabulary renders as neutral too. The words above carry
+	// the meaning; the tone only decides how the screen looks.
+	Tone brand.State `json:"tone,omitempty"`
+	// Attention is "pair" while a device waits for its PIN.
+	Attention string `json:"attention,omitempty"`
+	// Progress is the percent of a running install or update, 0 to 100.
+	// 0 draws no bar.
+	Progress int `json:"progress,omitempty"`
 }
 
-// Placeholder is shown until vosd has written the state file.
-var Placeholder = State{Title: "VaporOS", Status: "Starting…"}
+// AttentionPair is the Attention value while a device waits for its PIN.
+const AttentionPair = "pair"
+
+// Placeholder is shown until vosd has written the state file. Its tone is
+// neutral.
+var Placeholder = State{Title: "VaporOS", Status: brand.TVLabels.Starting}
 
 // Load reads a state file.
 func Load(path string) (State, error) {
