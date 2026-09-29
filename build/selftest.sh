@@ -115,6 +115,38 @@ echo 'bm90IGEgc2lnbmF0dXJl' >"$tmp/garbage.sig"
 expect fail "signature: fails for garbage" \
     verify_ed25519 "$tmp/key.pub" "$tmp/manifest.json" "$tmp/garbage.sig"
 
+# --------------------------------------------------------- effective_sysctl --
+root=$tmp/sysctl-root
+sysrq() { effective_sysctl "$root" kernel.sysrq >"$tmp/out" || echo "exit $?" >"$tmp/out"; }
+sysrq_is() { result "$([[ $(<"$tmp/out") == "$2" ]] && echo 1 || echo 0)" "$1 (got '$(<"$tmp/out")')"; }
+
+sysrq; sysrq_is "sysctl: no sysctl.d at all" ""
+mkdir -p "$root/usr/lib/sysctl.d"
+printf 'kernel.sysrq = 16\n' >"$root/usr/lib/sysctl.d/50-default.conf"
+sysrq; sysrq_is "sysctl: no /etc/sysctl.d" 16
+mkdir -p "$root/etc/sysctl.d"
+rm "$root/usr/lib/sysctl.d/50-default.conf"
+sysrq; sysrq_is "sysctl: nothing sets it" ""
+printf 'kernel.sysrq = 16\n' >"$root/usr/lib/sysctl.d/50-default.conf"
+printf '# CachyOS\nkernel.sysrq = 1\nvm.swappiness = 100\n' >"$root/usr/lib/sysctl.d/70-cachyos-settings.conf"
+sysrq; sysrq_is "sysctl: the last file in name order wins" 1
+printf 'kernel.sysrq = 0\n' >"$root/usr/lib/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: 99-vos.conf sorts last" 0
+printf 'kernel/sysrq=1\n' >"$root/usr/lib/sysctl.d/99-zz.conf"
+sysrq; sysrq_is "sysctl: a later file with a / key still counts" 1
+rm "$root/usr/lib/sysctl.d/99-zz.conf"
+printf -- '-kernel.sysrq = 438\n' >"$root/etc/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: /etc replaces the same-named /usr/lib file" 438
+rm "$root/etc/sysctl.d/99-vos.conf"
+ln -s /dev/null "$root/etc/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: a link to /dev/null in /etc masks it" 1
+rm "$root/etc/sysctl.d/99-vos.conf"
+printf 'kernel.sysrq_other = 5\nkernel.sysrq = 0   \n' >"$root/usr/lib/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: other keys and trailing blanks" 0
+printf 'kernel.sysrq = 1' >"$root/usr/lib/sysctl.d/80-no-newline.conf"
+printf 'kernel.sysrq = 0' >"$root/usr/lib/sysctl.d/99-vos.conf"
+sysrq; sysrq_is "sysctl: files without a final newline" 0
+
 # ---------------------------------------------------------------- firewall --
 render() { # render CONFIG_JSON -> the ruleset vos-firewall would load
     printf '%s\n' "$1" >"$tmp/config.json"

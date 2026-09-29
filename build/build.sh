@@ -295,10 +295,14 @@ systemctl --quiet --root="$ROOT" --global enable \
 
 # ---- never a terminal: no gettys anywhere, no first-boot questions, no
 # debug shell. (logind.conf.d/vos.conf stops autovt from spawning any.)
+# And no reboot from a keyboard: every keyboard feeds the kernel's console
+# keyboard, Sunshine's virtual one included, so Ctrl+Alt+Del from a Moonlight
+# client would otherwise reboot the box mid-stream. (system.conf.d/vos.conf
+# turns off the 7-presses burst reboot; sysctl.d/99-vos.conf turns off SysRq.)
 sysdir=$ROOT/etc/systemd/system
 rm -rf "$sysdir/getty.target.wants"
 masked=(getty@.service autovt@.service console-getty.service
-        systemd-firstboot.service debug-shell.service)
+        systemd-firstboot.service debug-shell.service ctrl-alt-del.target)
 if [[ $VOS_DEBUG == 1 ]]; then
     # Debug images: a root shell on the serial console, for the dev loop and
     # for debugging. tty1 stays untouched.
@@ -418,7 +422,7 @@ loop_nodes() {
 }
 
 check_image() {
-    local img=$1 m=$CHECK caps edid_head unit bin
+    local img=$1 m=$CHECK caps edid_head unit bin sysrq key
     local -a problems=() gettys=()
     loop_nodes
     mkdir -p "$m"
@@ -457,8 +461,18 @@ check_image() {
     [[ -f $m/etc/.updated ]] || problem "/etc/.updated is missing"
 
     # Gettys: none in release images; only the serial one in debug images.
-    for unit in getty@.service autovt@.service console-getty.service systemd-firstboot.service; do
+    for unit in getty@.service autovt@.service console-getty.service systemd-firstboot.service \
+                debug-shell.service ctrl-alt-del.target; do
         [[ $(readlink "$m/etc/systemd/system/$unit") == /dev/null ]] || problem "$unit is not masked"
+    done
+    # No keypress, local or from a Moonlight client, reboots the box.
+    grep -qx 'CtrlAltDelBurstAction=none' "$m/usr/lib/systemd/system.conf.d/vos.conf" 2>/dev/null ||
+        problem "system.conf.d/vos.conf does not set CtrlAltDelBurstAction=none"
+    sysrq=$(effective_sysctl "$m" kernel.sysrq)
+    [[ $sysrq == 0 ]] || problem "kernel.sysrq is '${sysrq:-unset}' after all sysctl.d files, expected 0"
+    for key in HandleRebootKey HandleSuspendKey HandleHibernateKey; do
+        grep -qx "$key=ignore" "$m/usr/lib/systemd/logind.conf.d/vos.conf" 2>/dev/null ||
+            problem "logind.conf.d/vos.conf does not set $key=ignore"
     done
     mapfile -t gettys < <(find "$m/etc/systemd/system" "$m/usr/lib/systemd/system" \
         -path '*/getty.target.wants/*' -printf '%f\n' | sort)
