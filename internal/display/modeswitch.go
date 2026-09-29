@@ -175,7 +175,7 @@ func onOff(b bool) string {
 
 func (m *Manager) publishBegin(s *sessionInfo) {
 	m.mu.Lock()
-	data := map[string]any{"client": s.Client, "mode": s.Mode, "hdr": s.HDR}
+	data := s.public()
 	m.mu.Unlock()
 	m.hub.Publish("session.begin", data)
 	m.publishWelcomeLater()

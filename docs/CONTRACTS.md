@@ -247,7 +247,7 @@ systemd-boot counting does the rest.
 | `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped) |
 | `update.state` | the update-state |
 | `install.progress` | `{step,percent,message,state}` |
-| `session.begin` | `{client,mode,hdr}` |
+| `session.begin` | `{client,app?,mode,hdr,since}` (`app`: Sunshine's app, `Steam` or a game's name, omitted when Sunshine names none; `since`: when it was launched, RFC 3339 UTC; a resume keeps both) |
 | `session.end` | `{}` |
 | `pairing.pending` | `{name?}` |
 | `pairing.state` | `{pairings:[{id,name,address}]}`: who waits for a PIN (as in GET `/sunshine` `pairings`), sent after vosd's first poll of Sunshine and whenever the list changes. An empty list ends any pairing prompt; Sunshine not answering counts as an empty list |

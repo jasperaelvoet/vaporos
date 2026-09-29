@@ -177,8 +177,12 @@ func TestSessionWithMonitor(t *testing.T) {
 	if !strings.Contains(string(cfg), "VOS VaporOS:2560x1600@60\n") {
 		t.Errorf("modes.cfg = %q", cfg)
 	}
-	if got := drain(evs, "session.begin"); got == nil || !strings.Contains(string(got.Data), `"mode":"2560x1600@60"`) {
-		t.Errorf("session.begin event = %+v", got)
+	want := `{"client":"MacBook","app":"Steam","mode":"2560x1600@60","hdr":false,"since":"2026-09-29T12:00:00Z"}`
+	if got := drain(evs, "session.begin"); got == nil || string(got.Data) != want {
+		t.Errorf("session.begin event = %+v, want %s", got, want)
+	}
+	if s := m.CurrentSession(); s == nil || s.Client != "MacBook" || s.App != "Steam" || !s.Since.Equal(clk.now()) {
+		t.Errorf("CurrentSession = %+v", s)
 	}
 	if d := m.info(); d.State != StateStreaming || d.Current == nil || *d.Current != "2560x1600@60" {
 		t.Errorf("info during stream = %+v", d)
@@ -225,6 +229,9 @@ func TestSessionWithMonitor(t *testing.T) {
 	m.End(ctx)
 	if drain(evs, "session.end") == nil {
 		t.Error("no session.end event")
+	}
+	if s := m.CurrentSession(); s != nil {
+		t.Errorf("CurrentSession after end = %+v", s)
 	}
 	// With a monitor and no session, nobody streams: the composite
 	// watchdog leaves gamescope alone.
