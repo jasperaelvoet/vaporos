@@ -544,9 +544,7 @@ func (in *installer) inspectTarget(ctx context.Context) error {
 	}
 	upper := filepath.Join(in.rootDir, "state", "etc", "upper")
 	if in.opts.Hostname == "" {
-		if h := config.ReadLine(filepath.Join(upper, "hostname")); checkHostname(h) == nil {
-			in.opts.Hostname = h
-		}
+		in.opts.Hostname = keptHostname(filepath.Join(in.rootDir, "state"))
 	}
 	if in.opts.Timezone == "" {
 		if link, err := os.Readlink(filepath.Join(upper, "localtime")); err == nil {
@@ -559,6 +557,17 @@ func (in *installer) inspectTarget(ctx context.Context) error {
 	}
 	in.hadConfig = config.ReadJSON(filepath.Join(in.rootDir, config.ConfigPath()), config.Defaults()) == nil
 	return nil
+}
+
+// keptHostname is the name of the install whose vos_data is mounted at
+// state: its /etc/hostname, from the /etc overlay's upper layer, where the
+// installer and PUT /system/hostname write it. "" when there is none or it
+// is not a valid name.
+func keptHostname(state string) string {
+	if h := config.ReadLine(filepath.Join(state, "etc", "upper", "hostname")); checkHostname(h) == nil {
+		return h
+	}
+	return ""
 }
 
 // configurePower turns idle shutdown on in a new config.json when a wired

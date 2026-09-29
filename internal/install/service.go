@@ -61,9 +61,10 @@ type Service struct {
 
 	// scanMu serialises disk scans and library detection (both mount
 	// filesystems) with the start of an install.
-	scanMu   sync.Mutex
-	libCache map[string][]SteamLibrary
-	lastScan []storage.Disk // the last disk scan, reused while an install runs
+	scanMu    sync.Mutex
+	libCache  map[string][]SteamLibrary
+	hostnames map[string]string // installedHostname's answers, per vos_data
+	lastScan  []storage.Disk    // the last disk scan, reused while an install runs
 }
 
 // NewService creates the installer service. The live system's machine
@@ -76,6 +77,7 @@ func NewService(cfg *config.Config) *Service {
 		publish:     events.Publish,
 		status:      Status{State: StateIdle},
 		libCache:    map[string][]SteamLibrary{},
+		hostnames:   map[string]string{},
 	}
 	s.install = func(ctx context.Context, opts Options, p Progress) error {
 		return runInstall(ctx, s.env, opts, p)
@@ -183,6 +185,11 @@ func (s *Service) runJob(opts Options) {
 		st.State, st.Step, st.Percent, st.Error = StateDone, StepDone, 100, ""
 		log.Printf("install: %s", st.Message)
 	}
+	// A repair may have renamed the machine. Probes mount nothing until
+	// the state changes, so the next one reads the name again.
+	s.scanMu.Lock()
+	clear(s.hostnames)
+	s.scanMu.Unlock()
 	// The harness line goes out before the state changes: whoever sees
 	// done or failed (the UI, then a reboot) sees a finished job.
 	serialLine(fmt.Sprintf("VOS-INSTALL state=%s message=%s", st.State, oneLine(st.Message)))

@@ -83,8 +83,9 @@ type ProbeDisk struct {
 	Size           int64          `json:"size"`
 	Transport      string         `json:"transport"`
 	Removable      bool           `json:"removable"`
-	IsLive         bool           `json:"is_live"`     // holds the installer; the UI hides it
-	HasVaporOS     bool           `json:"has_vaporos"` // repair is possible
+	IsLive         bool           `json:"is_live"`            // holds the installer; the UI hides it
+	HasVaporOS     bool           `json:"has_vaporos"`        // repair is possible
+	Hostname       string         `json:"hostname,omitempty"` // that install's name, which a repair keeps
 	SteamLibraries []SteamLibrary `json:"steam_libraries"`
 }
 
@@ -222,6 +223,9 @@ func (s *Service) probeDisks(ctx context.Context) []ProbeDisk {
 		if !d.IsLive {
 			d.SteamLibraries = s.steamLibraries(ctx, g, mountAllowed)
 		}
+		if d.HasVaporOS && !d.IsLive {
+			d.Hostname = s.installedHostname(g, mountAllowed)
+		}
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
@@ -273,13 +277,21 @@ func (s *Service) steamLibraries(ctx context.Context, g *diskGroup, mountAllowed
 	return out
 }
 
-// scanUnmounted mounts a filesystem read-only in a private directory,
-// looks for Steam libraries and unmounts it. Journal replay is disabled
-// where the filesystem allows, so probing never writes to a disk.
+// scanUnmounted looks for Steam libraries on a filesystem that is not
+// mounted.
 func (s *Service) scanUnmounted(d storage.Disk) ([]string, bool) {
-	dir := filepath.Join(config.RunDir, "probe", unsafeLabelRE.ReplaceAllString(d.UUID, "_"))
+	var libs []string
+	ok := s.probeMount(d, func(dir string) { libs = findSteamLibraries(dir) })
+	return libs, ok
+}
+
+// probeMount mounts a filesystem read-only in a private directory, runs
+// read on it and unmounts it. Journal replay is disabled where the
+// filesystem allows, so probing never writes to a disk.
+func (s *Service) probeMount(d storage.Disk, read func(dir string)) bool {
+	dir := filepath.Join(config.RunDir, "probe", unsafeLabelRE.ReplaceAllString(orElse(d.UUID, filepath.Base(d.Path)), "_"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, false
+		return false
 	}
 	defer os.Remove(dir)
 	dev := d.Path
@@ -293,13 +305,67 @@ func (s *Service) scanUnmounted(d storage.Disk) ([]string, bool) {
 	defer cancel()
 	if _, err := s.env.run.Run(ctx, "mount", "-t", fstype, "-o", opts, dev, dir); err != nil {
 		s.env.logf("install: probing %s: %v", dev, err)
-		return nil, false
+		return false
 	}
-	libs := findSteamLibraries(dir)
+	read(dir)
 	if _, err := s.env.run.Run(context.Background(), "umount", dir); err != nil {
 		s.env.run.Run(context.Background(), "umount", "-l", dir)
 	}
-	return libs, true
+	return true
+}
+
+// installedHostname is the name the VaporOS install on g answers to, and
+// the one a repair keeps (keptHostname). Answers are cached per filesystem
+// until an install ends, since reading one means mounting vos_data. Caller
+// holds s.scanMu.
+func (s *Service) installedHostname(g *diskGroup, mountAllowed bool) string {
+	data, ok := dataPartition(g)
+	if !ok {
+		return ""
+	}
+	key := orElse(data.UUID, data.Path)
+	if h, ok := s.hostnames[key]; ok {
+		return h
+	}
+	h := ""
+	switch {
+	case data.MountedAt != "":
+		h = keptHostname(data.MountedAt)
+	case mountAllowed:
+		if !s.probeMount(data, func(dir string) { h = keptHostname(dir) }) {
+			return ""
+		}
+	default:
+		return ""
+	}
+	s.hostnames[key] = h
+	return h
+}
+
+// dataPartition finds a disk's vos_data partition the way a repair does
+// (vosLayout: the first partition named vos_data), with what lsblk knows
+// about it. vos_data is always ext4 (see partition).
+func dataPartition(g *diskGroup) (storage.Disk, bool) {
+	name := ""
+	for _, p := range partitions(g.name) {
+		if p.Label == "vos_data" {
+			name = p.Name
+			break
+		}
+	}
+	for _, p := range g.parts {
+		if base := filepath.Base(p.Path); base == name || name == "" && p.Label == "vos_data" {
+			if p.FSType == "" {
+				p.FSType = "ext4"
+			}
+			p.Path = devName(base)
+			return p, true
+		}
+	}
+	if name == "" {
+		return storage.Disk{}, false
+	}
+	return storage.Disk{Path: devName(name), FSType: "ext4"}, true
 }
 
 func probeMountOptions(fstype string) (string, string) {

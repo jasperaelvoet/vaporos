@@ -66,6 +66,9 @@ func TestGuessTimezone(t *testing.T) {
 	}
 }
 
+// installedName is the hostname probeMachine's VaporOS disk (nvme0n1) has.
+var installedName = "den"
+
 func probeMachine(t *testing.T) (*fakeSys, *fakeRunner, *Service) {
 	f := newFakeSys(t)
 	f.addDisk("nvme0n1", "259:0", "nvme", 500*gib, "")
@@ -95,15 +98,23 @@ func probeMachine(t *testing.T) (*fakeSys, *fakeRunner, *Service) {
 		{Path: "/dev/loop0", UUID: "erofs-uuid", FSType: "erofs"},
 	}
 	r := f.runner()
-	// Mounting the NTFS disk shows a Windows Steam library.
+	// Mounting the NTFS disk shows a Windows Steam library, and mounting
+	// vos_data the installed system's name in the /etc overlay.
 	r.hook = func(name string, args []string) (string, error, bool) {
 		if name == "mount" && strings.Contains(strings.Join(args, " "), "/probe/") {
 			dir := args[len(args)-1]
-			os.MkdirAll(filepath.Join(dir, "SteamLibrary"), 0o755)
-			os.WriteFile(filepath.Join(dir, "SteamLibrary/libraryfolder.vdf"), nil, 0o644)
+			if args[len(args)-2] == "/dev/nvme0n1p4" {
+				os.MkdirAll(filepath.Join(dir, "etc/upper"), 0o755)
+				os.WriteFile(filepath.Join(dir, "etc/upper/hostname"), []byte(installedName+"\n"), 0o644)
+			} else {
+				os.MkdirAll(filepath.Join(dir, "SteamLibrary"), 0o755)
+				os.WriteFile(filepath.Join(dir, "SteamLibrary/libraryfolder.vdf"), nil, 0o644)
+			}
 		}
 		if name == "umount" {
-			os.RemoveAll(filepath.Join(args[len(args)-1], "SteamLibrary"))
+			dir := args[len(args)-1]
+			os.RemoveAll(filepath.Join(dir, "SteamLibrary"))
+			os.RemoveAll(filepath.Join(dir, "etc"))
 		}
 		return "", nil, false
 	}
@@ -128,11 +139,11 @@ func TestProbe(t *testing.T) {
 		}
 	}
 	nv := by["/dev/nvme0n1"]
-	if !nv.HasVaporOS || nv.IsLive || nv.Transport != "nvme" || len(nv.SteamLibraries) != 0 {
+	if !nv.HasVaporOS || nv.IsLive || nv.Transport != "nvme" || len(nv.SteamLibraries) != 0 || nv.Hostname != "den" {
 		t.Errorf("nvme0n1 = %+v", nv)
 	}
 	sda := by["/dev/sda"]
-	if sda.HasVaporOS || sda.Model != "SATA1TB" || len(sda.SteamLibraries) != 1 ||
+	if sda.HasVaporOS || sda.Hostname != "" || sda.Model != "SATA1TB" || len(sda.SteamLibraries) != 1 ||
 		sda.SteamLibraries[0] != (SteamLibrary{UUID: "87dbdc4a", Label: "SATA1TB", Path: "/"}) {
 		t.Errorf("sda = %+v", sda)
 	}
@@ -148,23 +159,121 @@ func TestProbe(t *testing.T) {
 		t.Errorf("probe = %+v", res)
 	}
 
-	// The unmounted NTFS partition was mounted read-only with ntfs3 and
-	// unmounted again; the live disk and the VaporOS data were not touched.
+	// VaporOS's data was mounted read-only without journal replay for its
+	// hostname, and the unmounted NTFS partition with ntfs3 for libraries;
+	// both were unmounted again. The live disk was not touched.
 	assertSubsequence(t, r.relCalls(), []string{
+		"mount -t ext4 -o ro,nosuid,nodev,noexec,noload /dev/nvme0n1p4 @/run/vos/probe/data-uuid",
+		"umount @/run/vos/probe/data-uuid",
 		"mount -t ntfs3 -o ro,nosuid,nodev,noexec /dev/sdc2 @/run/vos/probe/01D9ABCDEF",
 		"umount @/run/vos/probe/01D9ABCDEF",
 	})
-	if len(r.callList()) != 2 || len(r.mounted) != 0 {
+	if len(r.callList()) != 4 || len(r.mounted) != 0 {
 		t.Errorf("probe ran %v, mounted %v", r.callList(), r.mounted)
 	}
-	if exists(f.path("run/vos/probe/01D9ABCDEF")) {
-		t.Error("probe mount point left behind")
+	for _, dir := range []string{"01D9ABCDEF", "data-uuid"} {
+		if exists(f.path("run/vos/probe/" + dir)) {
+			t.Errorf("probe mount point %s left behind", dir)
+		}
 	}
 
 	// Results are cached: a second probe mounts nothing.
-	s.probe(context.Background(), "", "")
-	if len(r.callList()) != 2 {
-		t.Errorf("second probe ran %v", r.callList())
+	res = s.probe(context.Background(), "", "")
+	if len(r.callList()) != 4 || res.Disks[0].Hostname != "den" {
+		t.Errorf("second probe ran %v, disks %+v", r.callList(), res.Disks)
+	}
+}
+
+// ProbeDisk.hostname is what a repair keeps: the name in the /etc
+// overlay's upper layer on vos_data (inspectTarget). It is read again once
+// an install ends, since a repair may have renamed the machine.
+func TestProbeHostname(t *testing.T) {
+	hostnameOf := func(res ProbeResult) string {
+		for _, d := range res.Disks {
+			if d.Path == "/dev/nvme0n1" {
+				return d.Hostname
+			}
+		}
+		t.Fatal("no /dev/nvme0n1")
+		return ""
+	}
+	defer func(name string) { installedName = name }(installedName)
+
+	f, r, s := probeMachine(t)
+	// Nothing mounts during an install, and nothing was read before it.
+	s.status.State = StateRunning
+	if h := hostnameOf(s.probe(context.Background(), "", "")); h != "" || r.called("mount") {
+		t.Errorf("while installing: hostname %q, calls %v", h, r.callList())
+	}
+	s.status.State = StateIdle
+	if h := hostnameOf(s.probe(context.Background(), "", "")); h != "den" {
+		t.Errorf("hostname = %q", h)
+	}
+
+	// A finished install (here a repair to "attic") drops what was read.
+	installedName = "attic"
+	s.install = func(context.Context, Options, Progress) error { return nil }
+	if code, out := do(t, s.handleInstall, "POST", `{"disk":"nvme0n1","mode":"repair","hostname":"attic"}`); code != http.StatusAccepted {
+		t.Fatal(code, out)
+	}
+	waitState(t, s, StateDone)
+	if h := hostnameOf(s.probe(context.Background(), "", "")); h != "attic" {
+		t.Errorf("after the install: hostname = %q", h)
+	}
+
+	// Names the installer would refuse, and older installs without one,
+	// are left out of the answer.
+	for _, name := range []string{"localhost", "../etc", ""} {
+		installedName = name
+		clear(s.hostnames)
+		if h := hostnameOf(s.probe(context.Background(), "", "")); h != "" {
+			t.Errorf("upper hostname %q: probe says %q", name, h)
+		}
+	}
+	installedName = "den"
+
+	// A failed mount is not remembered: the next probe tries again.
+	clear(s.hostnames)
+	fail := true
+	hook := r.hook
+	r.hook = func(name string, args []string) (string, error, bool) {
+		if fail && name == "mount" && args[len(args)-2] == "/dev/nvme0n1p4" {
+			return "", errors.New("mount: wrong fs type"), true
+		}
+		return hook(name, args)
+	}
+	if h := hostnameOf(s.probe(context.Background(), "", "")); h != "" {
+		t.Errorf("failed mount: hostname %q", h)
+	}
+	fail = false
+	if h := hostnameOf(s.probe(context.Background(), "", "")); h != "den" {
+		t.Errorf("after a failed mount: hostname %q", h)
+	}
+
+	// vos_data that is mounted already is read where it is.
+	clear(s.hostnames)
+	mounted := t.TempDir()
+	os.MkdirAll(filepath.Join(mounted, "etc/upper"), 0o755)
+	os.WriteFile(filepath.Join(mounted, "etc/upper/hostname"), []byte("study\n"), 0o644)
+	for i := range f.scan {
+		if f.scan[i].Label == "vos_data" {
+			f.scan[i].MountedAt = mounted
+		}
+	}
+	calls := len(r.callList())
+	if h := hostnameOf(s.probe(context.Background(), "", "")); h != "study" || len(r.callList()) != calls {
+		t.Errorf("mounted vos_data: hostname %q, calls %v", h, r.callList()[calls:])
+	}
+
+	// The JSON carries it only when known.
+	_, out := getProbe(t, s, "")
+	var disks []map[string]json.RawMessage
+	json.Unmarshal(out["disks"], &disks)
+	for _, d := range disks {
+		_, has := d["hostname"]
+		if want := jsonString(d["path"]) == "/dev/nvme0n1"; has != want || want && jsonString(d["hostname"]) != "study" {
+			t.Errorf("%s: hostname %s", d["path"], d["hostname"])
+		}
 	}
 }
 
