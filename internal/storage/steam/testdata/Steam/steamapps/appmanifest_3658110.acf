@@ -1,0 +1,38 @@
+"AppState"
+{
+	"appid"		"3658110"
+	"Universe"		"1"
+	"name"		"Proton 10.0"
+	"StateFlags"		"4"
+	"installdir"		"Proton 10.0"
+	"LastUpdated"		"1790513522"
+	"LastPlayed"		"0"
+	"SizeOnDisk"		"1404180272"
+	"StagingSize"		"0"
+	"buildid"		"24408217"
+	"LastOwner"		"0"
+	"DownloadType"		"1"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"375995056"
+	"BytesDownloaded"		"375995056"
+	"BytesToStage"		"1404180272"
+	"BytesStaged"		"1404180272"
+	"TargetBuildID"		"24408217"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"3658111"
+		{
+			"manifest"		"3074044630551272436"
+			"size"		"1404180272"
+		}
+	}
+	"UserConfig"
+	{
+	}
+	"MountedConfig"
+	{
+	}
+}

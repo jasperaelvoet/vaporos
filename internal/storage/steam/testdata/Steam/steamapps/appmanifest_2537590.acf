@@ -1,0 +1,48 @@
+"AppState"
+{
+	"appid"		"2537590"
+	"Universe"		"1"
+	"name"		"Microsoft Flight Simulator 2024"
+	"StateFlags"		"4"
+	"installdir"		"MSFS2024"
+	"LastUpdated"		"1790550087"
+	"LastPlayed"		"1790585612"
+	"SizeOnDisk"		"9722649954"
+	"StagingSize"		"0"
+	"buildid"		"24927588"
+	"LastOwner"		"0"
+	"DownloadType"		"3"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"67131600"
+	"BytesDownloaded"		"67131600"
+	"BytesToStage"		"68967662"
+	"BytesStaged"		"68967662"
+	"TargetBuildID"		"0"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"2537591"
+		{
+			"manifest"		"4036856429109772592"
+			"size"		"9722649954"
+		}
+	}
+	"InstallScripts"
+	{
+		"2537591"		"InstallUtils\\InstallScript.vdf"
+	}
+	"SharedDepots"
+	{
+		"228989"		"228980"
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+	"MountedConfig"
+	{
+		"language"		"english"
+	}
+}

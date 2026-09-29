@@ -1,0 +1,27 @@
+# Sunshine configuration for VaporOS.
+#
+# vosd renders this file from /usr/share/vos/sunshine.conf.tmpl (Go
+# text/template) each time it starts or a streaming setting changes, and
+# restarts Sunshine when the result differs. Edits made here are lost:
+# change encoder, bitrate, audio and gamepad in the web UI instead.
+
+# Capture the virtual display straight from KMS; encode on the same GPU.
+capture = kms
+encoder = {{.Encoder}}
+adapter_name = {{.AdapterName}}
+{{- if .OutputName}}
+output_name = {{.OutputName}}
+{{- end}}
+max_bitrate = {{.MaxBitrate}}
+{{- if .AudioSink}}
+audio_sink = {{.AudioSink}}
+{{- end}}
+gamepad = {{.Gamepad}}
+
+# Sunshine's own web UI answers this machine only; vosd manages it.
+origin_web_ui_allowed = pc
+upnp = disabled
+system_tray = disabled
+
+# The virtual display follows each Moonlight client's mode.
+global_prep_cmd = {{.PrepCmd}}

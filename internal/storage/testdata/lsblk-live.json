@@ -1,0 +1,18 @@
+{
+   "blockdevices": [
+      {"name":"loop0","path":"/dev/loop0","pkname":null,"type":"loop","size":1610612736,"model":null,"tran":null,"rm":false,"uuid":"2026-09-29-12-34-56-00","label":null,"fstype":"erofs","mountpoints":["/run/vos/lower"],"partlabel":null,"fsavail":0},
+      {"name":"sda","path":"/dev/sda","pkname":null,"type":"disk","size":32015679488,"model":"Cruzer Blade","tran":"usb","rm":true,"uuid":"2026-09-29-12-34-56-00","label":"VOS_LIVE","fstype":"iso9660","mountpoints":["/run/vos/medium"],"partlabel":null,"fsavail":0,
+         "children": [
+            {"name":"sda1","path":"/dev/sda1","pkname":"sda","type":"part","size":1700000000,"model":null,"tran":null,"rm":true,"uuid":"2026-09-29-12-34-56-00","label":"VOS_LIVE","fstype":"iso9660","mountpoints":[null],"partlabel":null,"fsavail":null},
+            {"name":"sda2","path":"/dev/sda2","pkname":"sda","type":"part","size":15728640,"model":null,"tran":null,"rm":true,"uuid":"5A1B-2C3D","label":"VOS_EFI","fstype":"vfat","mountpoints":[null],"partlabel":null,"fsavail":null}
+         ]
+      },
+      {"name":"nvme0n1","path":"/dev/nvme0n1","pkname":null,"type":"disk","size":1000204886016,"model":"WDS100T1X0E-00AFY0","tran":"nvme","rm":false,"uuid":null,"label":null,"fstype":null,"mountpoints":[null],"partlabel":null,"fsavail":null,
+         "children": [
+            {"name":"nvme0n1p1","path":"/dev/nvme0n1p1","pkname":"nvme0n1","type":"part","size":1073741824,"model":null,"tran":"nvme","rm":false,"uuid":"4760-BB01","label":null,"fstype":"vfat","mountpoints":[null],"partlabel":null,"fsavail":null},
+            {"name":"nvme0n1p2","path":"/dev/nvme0n1p2","pkname":"nvme0n1","type":"part","size":999129350144,"model":null,"tran":"nvme","rm":false,"uuid":"146c482e-c30e-4195-937a-a66b6f6d0784","label":null,"fstype":"ext4","mountpoints":[null],"partlabel":null,"fsavail":null}
+         ]
+      },
+      {"name":"sr0","path":"/dev/sr0","pkname":null,"type":"rom","size":1073741312,"model":"QEMU DVD-ROM","tran":"ata","rm":true,"uuid":null,"label":null,"fstype":null,"mountpoints":[null],"partlabel":null,"fsavail":null}
+   ]
+}

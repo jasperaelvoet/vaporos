@@ -1,0 +1,126 @@
+"AppState"
+{
+	"appid"		"491540"
+	"Universe"		"1"
+	"name"		"The Bus"
+	"StateFlags"		"4"
+	"installdir"		"The Bus"
+	"LastUpdated"		"1790546470"
+	"LastPlayed"		"1790619921"
+	"SizeOnDisk"		"64950937643"
+	"StagingSize"		"0"
+	"buildid"		"24981026"
+	"LastOwner"		"0"
+	"DownloadType"		"3"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"525164528"
+	"BytesDownloaded"		"525164528"
+	"BytesToStage"		"571024154"
+	"BytesStaged"		"571024154"
+	"TargetBuildID"		"0"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"491541"
+		{
+			"manifest"		"5160774850993936733"
+			"size"		"56997205204"
+		}
+		"491542"
+		{
+			"manifest"		"3599393296524611291"
+			"size"		"243166520"
+		}
+		"897493"
+		{
+			"manifest"		"1099903074590598360"
+			"size"		"168549658"
+		}
+		"897494"
+		{
+			"manifest"		"3725264354591688735"
+			"size"		"0"
+		}
+		"897495"
+		{
+			"manifest"		"5501507913094284178"
+			"size"		"0"
+		}
+		"897496"
+		{
+			"manifest"		"7856527596074613875"
+			"size"		"0"
+		}
+		"897498"
+		{
+			"manifest"		"7575597901754286870"
+			"size"		"304842521"
+		}
+		"897499"
+		{
+			"manifest"		"3424333586108645378"
+			"size"		"0"
+		}
+		"898611"
+		{
+			"manifest"		"2874276900602961734"
+			"size"		"100703348"
+		}
+		"898612"
+		{
+			"manifest"		"6856078903255251146"
+			"size"		"0"
+		}
+		"898621"
+		{
+			"manifest"		"5079404577296001792"
+			"size"		"153764728"
+		}
+		"898622"
+		{
+			"manifest"		"1231484820983016185"
+			"size"		"0"
+		}
+		"898623"
+		{
+			"manifest"		"2005502871026558840"
+			"size"		"0"
+		}
+		"898624"
+		{
+			"manifest"		"2265013552689358100"
+			"size"		"0"
+		}
+		"898626"
+		{
+			"manifest"		"8119239068154372879"
+			"size"		"0"
+		}
+		"898629"
+		{
+			"manifest"		"6472860076473827589"
+			"size"		"261899787"
+		}
+		"3544250"
+		{
+			"manifest"		"612415942197373708"
+			"size"		"6720805877"
+			"dlcappid"		"3544250"
+		}
+	}
+	"SharedDepots"
+	{
+		"228989"		"228980"
+		"228990"		"228980"
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+	"MountedConfig"
+	{
+		"language"		"english"
+	}
+}

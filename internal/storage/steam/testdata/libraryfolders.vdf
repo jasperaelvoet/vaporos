@@ -1,0 +1,52 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"/home/jasper/.local/share/Steam"
+		"label"		""
+		"contentid"		"0"
+		"totalsize"		"0"
+		"update_clean_bytes_tally"		"182906434686"
+		"time_last_update_verified"		"1790591045"
+		"apps"
+		{
+			"228980"		"187482440"
+			"949230"		"90276049826"
+			"1091500"		"91231172278"
+			"1174180"		"128281316135"
+			"1493710"		"1536847620"
+			"1628350"		"803970096"
+			"2537590"		"9722649954"
+			"3658110"		"1404180272"
+			"4183110"		"672162947"
+			"4628710"		"1445063149"
+		}
+	}
+	"1"
+	{
+		"path"		"/mnt/SATA500GB"
+		"label"		""
+		"contentid"		"0"
+		"totalsize"		"471415693312"
+		"update_clean_bytes_tally"		"2148641792"
+		"time_last_update_verified"		"1790551646"
+		"apps"
+		{
+			"4678800"		"179918906106"
+		}
+	}
+	"2"
+	{
+		"path"		"/mnt/SATA1TB"
+		"label"		""
+		"contentid"		"0"
+		"totalsize"		"983349346304"
+		"update_clean_bytes_tally"		"64950937643"
+		"time_last_update_verified"		"1790546470"
+		"apps"
+		{
+			"491540"		"64950937643"
+			"2483190"		"169909874385"
+		}
+	}
+}

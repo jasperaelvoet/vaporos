@@ -1,0 +1,73 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda", "path": "/dev/sda", "pkname": null, "type": "disk", "size": 480103981056,
+         "model": "CT480BX500SSD1", "tran": "sata", "rm": false, "uuid": null, "label": null,
+         "fstype": null, "mountpoints": [null], "partlabel": null, "fsavail": null,
+         "children": [
+            {
+               "name": "sda1", "path": "/dev/sda1", "pkname": "sda", "type": "part", "size": 480101007360,
+               "model": null, "tran": null, "rm": false, "uuid": "87dbdc4a-1e76-4f22-9ac6-6f98263ca530", "label": "SATA500GB",
+               "fstype": "ext4", "mountpoints": [null], "partlabel": null, "fsavail": null
+            }
+         ]
+      },{
+         "name": "sdb", "path": "/dev/sdb", "pkname": null, "type": "disk", "size": 1000204886016,
+         "model": "CT1000BX500SSD1", "tran": "sata", "rm": false, "uuid": null, "label": null,
+         "fstype": null, "mountpoints": [null], "partlabel": null, "fsavail": null,
+         "children": [
+            {
+               "name": "sdb1", "path": "/dev/sdb1", "pkname": "sdb", "type": "part", "size": 1000202241024,
+               "model": null, "tran": null, "rm": false, "uuid": "1de127b9-77c4-4ca1-ae49-15f137071861", "label": "SATA1TB",
+               "fstype": "ext4", "mountpoints": ["/var/mnt/SATA1TB"], "partlabel": null, "fsavail": 637702316032
+            }
+         ]
+      },{
+         "name": "sdc", "path": "/dev/sdc", "pkname": null, "type": "disk", "size": 2000398934016,
+         "model": "WDC WD20EZRZ-00Z5HB0  ", "tran": "usb", "rm": true, "uuid": null, "label": null,
+         "fstype": null, "mountpoints": [null], "partlabel": null, "fsavail": null,
+         "children": [
+            {
+               "name": "sdc1", "path": "/dev/sdc1", "pkname": "sdc", "type": "part", "size": 16777216,
+               "model": null, "tran": null, "rm": true, "uuid": null, "label": null,
+               "fstype": null, "mountpoints": [null], "partlabel": "Microsoft reserved partition", "fsavail": null
+            },{
+               "name": "sdc2", "path": "/dev/sdc2", "pkname": "sdc", "type": "part", "size": 2000381091840,
+               "model": null, "tran": null, "rm": true, "uuid": "5C3A4F9E3A4F75A8", "label": "Games & Stuff",
+               "fstype": "ntfs", "mountpoints": [null], "partlabel": "Basic data partition", "fsavail": null
+            },{
+               "name": "sdc3", "path": "/dev/sdc3", "pkname": "sdc", "type": "part", "size": 1048576,
+               "model": null, "tran": null, "rm": true, "uuid": "ABCD-1234", "label": "PHOTOS",
+               "fstype": "exfat", "mountpoints": [null], "partlabel": null, "fsavail": null
+            }
+         ]
+      },{
+         "name": "zram0", "path": "/dev/zram0", "pkname": null, "type": "disk", "size": 67318996992,
+         "model": null, "tran": null, "rm": false, "uuid": "bc41d07b-a16c-4d93-80eb-c7c09f40e07f", "label": "zram0",
+         "fstype": "swap", "mountpoints": ["[SWAP]"], "partlabel": null, "fsavail": null
+      },{
+         "name": "nvme0n1", "path": "/dev/nvme0n1", "pkname": null, "type": "disk", "size": 1000204886016,
+         "model": "WDS100T1X0E-00AFY0", "tran": "nvme", "rm": false, "uuid": null, "label": null,
+         "fstype": null, "mountpoints": [null], "partlabel": null, "fsavail": null,
+         "children": [
+            {
+               "name": "nvme0n1p1", "path": "/dev/nvme0n1p1", "pkname": "nvme0n1", "type": "part", "size": 536870912,
+               "model": null, "tran": "nvme", "rm": false, "uuid": "4760-BB01", "label": "VOS_ESP",
+               "fstype": "vfat", "mountpoints": ["/efi"], "partlabel": "vos_esp", "fsavail": 400000000
+            },{
+               "name": "nvme0n1p2", "path": "/dev/nvme0n1p2", "pkname": "nvme0n1", "type": "part", "size": 8589934592,
+               "model": null, "tran": "nvme", "rm": false, "uuid": "1111", "label": null,
+               "fstype": "erofs", "mountpoints": ["/"], "partlabel": "vos_a", "fsavail": 0
+            },{
+               "name": "nvme0n1p3", "path": "/dev/nvme0n1p3", "pkname": "nvme0n1", "type": "part", "size": 8589934592,
+               "model": null, "tran": "nvme", "rm": false, "uuid": null, "label": null,
+               "fstype": null, "mountpoints": [null], "partlabel": "vos_b", "fsavail": null
+            },{
+               "name": "nvme0n1p4", "path": "/dev/nvme0n1p4", "pkname": "nvme0n1", "type": "part", "size": 982488219648,
+               "model": null, "tran": "nvme", "rm": false, "uuid": "146c482e-c30e-4195-937a-a66b6f6d0784", "label": "vos_data",
+               "fstype": "ext4", "mountpoints": ["/var", "/state"], "partlabel": "vos_data", "fsavail": 538807877632
+            }
+         ]
+      }
+   ]
+}
