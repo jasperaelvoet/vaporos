@@ -129,6 +129,81 @@ func TestUnknownPathIsNotAPage(t *testing.T) {
 	}
 }
 
+// recordingFS remembers every name opened through it. It implements only
+// Open, so ReadFile, ReadDir, Glob, Stat and WalkDir all come through here.
+type recordingFS struct {
+	fsys   fs.FS
+	opened []string
+}
+
+func (r *recordingFS) Open(name string) (fs.File, error) {
+	r.opened = append(r.opened, name)
+	return r.fsys.Open(name)
+}
+
+// ownsTemplate reports whether name (a path in the embed) is one of the
+// set's templates: its layout, pages or partials.
+func (s uiSet) ownsTemplate(name string) bool {
+	for _, dir := range []string{path.Join(s.Templates, "pages"), path.Dir(s.Partials)} {
+		if name == dir || strings.HasPrefix(name, dir+"/") {
+			return true
+		}
+	}
+	return name == path.Join(s.Templates, "layout.html")
+}
+
+// A half-built new UI must never stop vosd from starting: Register reads the
+// active set and the shared files only. Every other set is replaced here by
+// files that would fail to parse or load, and none of them may be opened.
+func TestRegisterReadsOnlyActiveSet(t *testing.T) {
+	files := fstest.MapFS{}
+	err := fs.WalkDir(content, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := content.ReadFile(p)
+		files[p] = &fstest.MapFile{Data: b}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := func(s string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(s)} }
+	for _, set := range uiSets {
+		if set.Name == activeSet.Name {
+			continue
+		}
+		files[path.Join(set.Templates, "layout.html")] = broken(`{{define "layout"}}{{.Nope`)
+		files[path.Join(set.Templates, "pages", "broken.html")] = broken(`{{template "missing"}}`)
+		files[path.Join(path.Dir(set.Partials), "broken.html")] = broken(`{{define`)
+		files[path.Join("static", set.Static, "app.css")] = broken(`@import url(//example.com/x.css);`)
+		files[path.Join("static", set.Static, "js/pages/broken.js.map")] = broken(`{}`) // no content type: newAssetStore would fail
+	}
+	rec := &recordingFS{fsys: files}
+	srv := api.New(api.Options{})
+	register(srv, activeSet, rec) // panics if it parsed any of the above
+
+	sawLayout := false
+	for _, name := range rec.opened {
+		sawLayout = sawLayout || name == path.Join(activeSet.Templates, "layout.html")
+		for _, set := range uiSets {
+			if set.Name == activeSet.Name {
+				continue
+			}
+			static, isStatic := strings.CutPrefix(name, "static/")
+			if set.ownsTemplate(name) || (isStatic && set.ownsStatic(static)) {
+				t.Errorf("Register opened %s, which belongs to the inactive set %q", name, set.Name)
+			}
+		}
+	}
+	if !sawLayout {
+		t.Errorf("Register never opened the active layout; opened %v", rec.opened)
+	}
+	if rec := get(srv.Handler(), activeSet.Pages[0].Path); rec.Code != http.StatusOK {
+		t.Errorf("GET %s = %d", activeSet.Pages[0].Path, rec.Code)
+	}
+}
+
 func TestInstallerMode(t *testing.T) { forEachSet(t, testInstallerMode) }
 
 func testInstallerMode(t *testing.T, set uiSet) {
