@@ -163,11 +163,16 @@ func TestSessionWithMonitor(t *testing.T) {
 	if iStop < 0 || iStart < 0 || iStop > iStart {
 		t.Errorf("welcome must stop before gamescope starts: %v", calls)
 	}
-	if !slices.Contains(calls, "gamescopectl composite_force 1") {
+	// Both halves of composite_force: the convar and the X root property.
+	if !slices.Contains(calls, "gamescopectl composite_force 1") ||
+		!slices.Contains(calls, "xprop -root -f GAMESCOPE_COMPOSITE_FORCE 32c -set GAMESCOPE_COMPOSITE_FORCE 1") {
 		t.Errorf("composition not forced: %v", calls)
 	}
+	if on, prop := h.compositeState(); !on || prop != "1" {
+		t.Errorf("composite = %v, property %q", on, prop)
+	}
 	cfg, _ := os.ReadFile(ModesCfgPath())
-	if !strings.Contains(string(cfg), "Best Buy VaporOS:2560x1600@60\n") {
+	if !strings.Contains(string(cfg), "VOS VaporOS:2560x1600@60\n") {
 		t.Errorf("modes.cfg = %q", cfg)
 	}
 	if got := drain(evs, "session.begin"); got == nil || !strings.Contains(string(got.Data), `"mode":"2560x1600@60"`) {
@@ -205,12 +210,25 @@ func TestSessionWithMonitor(t *testing.T) {
 	if !strings.Contains(string(env), "VOS_GS_EXTRA=--hdr-enabled") {
 		t.Errorf("env = %q", env)
 	}
+	// The restarted gamescope forgot composite_force; Begin set it again.
+	if on, prop := h.compositeState(); !on || prop != "1" {
+		t.Errorf("composite after restart = %v, property %q", on, prop)
+	}
+	if d := m.info(); d.Planes != 1 {
+		t.Errorf("planes = %d", d.Planes)
+	}
 
 	// Session ends: gamescope stays for the grace period, then the welcome
 	// screen returns unless a game or download keeps it.
 	m.End(ctx)
 	if drain(evs, "session.end") == nil {
 		t.Error("no session.end event")
+	}
+	// With a monitor and no session, nobody streams: the composite
+	// watchdog leaves gamescope alone.
+	h.steamWrites("0")
+	if why := m.checkComposite(ctx); why != "" {
+		t.Errorf("watchdog acted after the session: %s", why)
 	}
 	m.reconcile(ctx, false)
 	if !h.isActive(GamescopeUnit, true) {
@@ -286,11 +304,13 @@ func TestSessionKeyRecheck(t *testing.T) {
 	ctx := context.Background()
 	m.init(ctx)
 	m.reconcile(ctx, false)
-	// gamescope names the display differently than pnp.ids suggests (an
-	// older hwdata, say): the first modes.cfg write misses, the recheck
-	// asks gamescopectl and writes the right key.
-	h.gsKey = "VPR VaporOS"
-	h.gsReport = "VPR VaporOS"
+	// gamescope names the display differently than pnp.ids suggests (here
+	// our pnp.ids names VOS, but gamescope was built without hwdata and
+	// falls back to the raw id): the first modes.cfg write misses, the
+	// recheck asks gamescopectl and writes the right key.
+	resetPNPCache()
+	mustWrite(t, PNPIDsPath, "VOS\tSome Vendor\n")
+	h.gsKey = "VOS VaporOS"
 	h.mu.Lock()
 	h.active[unitKey(GamescopeUnit, true)] = false
 	h.mu.Unlock()
@@ -299,7 +319,7 @@ func TestSessionKeyRecheck(t *testing.T) {
 		t.Fatalf("Begin = %+v %v", resp, h.callLog())
 	}
 	cfg, _ := os.ReadFile(ModesCfgPath())
-	if !strings.Contains(string(cfg), "VPR VaporOS:1280x800@90") {
+	if !strings.Contains(string(cfg), "Some Vendor VaporOS:1280x800@90") || !strings.Contains(string(cfg), "VOS VaporOS:1280x800@90") {
 		t.Errorf("modes.cfg = %q", cfg)
 	}
 }

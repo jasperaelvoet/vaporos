@@ -14,7 +14,7 @@ import (
 // what VaporOS generates) and the HDR capabilities.
 type Info struct {
 	Version     string // "1.4"
-	PNP         string // three-letter manufacturer id, e.g. "VPR"
+	PNP         string // three-letter manufacturer id, e.g. "VOS"
 	Product     uint16
 	Serial      uint32
 	Name        string // display product name descriptor

@@ -39,6 +39,8 @@ func TestGetDisplay(t *testing.T) {
 	ctx := context.Background()
 	m.init(ctx)
 	m.reconcile(ctx, false)
+	// The fresh gamescope gets composite_force asynchronously.
+	waitFor(t, func() bool { on, _ := h.compositeState(); return on })
 	h.modes = []edid.Mode{{W: 1920, H: 1080, Refresh: 60}, {W: 3840, H: 2160, Refresh: 60}, {W: 1920, H: 1080, Refresh: 120}}
 	w, _ := call(t, m.handleGet, http.MethodGet, "")
 	if w.Code != 200 {
@@ -70,11 +72,28 @@ func TestGetDisplay(t *testing.T) {
 	if d.Learned == nil || d.Connectors == nil {
 		t.Error("lists must be [] not null")
 	}
+	if d.Planes != 1 {
+		t.Errorf("planes while compositing = %d", d.Planes)
+	}
 	raw := w.Body.String()
-	for _, k := range []string{`"profile"`, `"virtual_connector"`, `"connectors"`, `"modes"`, `"current"`, `"hdr"`, `"learned"`, `"reboot_needed"`, `"state"`} {
+	for _, k := range []string{`"profile"`, `"virtual_connector"`, `"connectors"`, `"modes"`, `"current"`, `"planes"`, `"hdr"`, `"learned"`, `"reboot_needed"`, `"state"`} {
 		if !strings.Contains(raw, k) {
 			t.Errorf("response lacks %s: %s", k, raw)
 		}
+	}
+	// Steam turned composition off: the game scans out on two planes.
+	h.steamWrites("0")
+	_, out := call(t, m.handleGet, http.MethodGet, "")
+	if out["planes"] != float64(2) {
+		t.Errorf("planes after Steam's write = %v", out["planes"])
+	}
+	// No gamescope: nothing scanned out.
+	h.setActive(GamescopeUnit, true, false)
+	h.mu.Lock()
+	h.scanOK = false
+	h.mu.Unlock()
+	if d := m.info(); d.Planes != 0 || d.Current != nil {
+		t.Errorf("idle info = planes %d current %v", d.Planes, d.Current)
 	}
 }
 

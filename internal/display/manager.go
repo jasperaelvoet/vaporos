@@ -67,12 +67,23 @@ type Manager struct {
 	verifyEvery  time.Duration // re-check that units match the state
 	startBackoff time.Duration // don't retry a failed unit start sooner
 	composeWait  time.Duration // how long gamescopectl gets to come up
-	now          func() time.Time
+	// beginBudget bounds a whole Begin. Sunshine runs `vos session begin`
+	// as a prep-cmd and Moonlight's launch waits for it, so Begin answers
+	// well inside the hook's 90 s ceiling (session.Timeout) whatever
+	// systemd or gamescope do. The mode wait gets at most modeTimeout of it.
+	beginBudget time.Duration
+	// composeReserve is kept back from the budget for forcing composition
+	// after the mode wait.
+	composeReserve time.Duration
+	// compositeEvery is how often the composite watchdog looks.
+	compositeEvery time.Duration
+	now            func() time.Time
 
 	// op serialises everything that starts or stops units: sessions,
 	// reconciliation and settings. Begin holds it while it waits for the
-	// mode, so the policy loop only ever TryLocks it.
-	op sync.Mutex
+	// mode, so the policy loop only ever TryLocks it, and Begin itself
+	// gives up waiting for it when its budget runs out.
+	op opLock
 	// gsHDR is the HDR flag the running gamescope was started with
 	// (guarded by op: only Begin and apply start gamescope).
 	gsHDR bool
@@ -92,7 +103,35 @@ type Manager struct {
 	lastWelcome  *welcome.State
 	lastStart    map[string]time.Time
 	lastBusy     string
+	composite    compositeWatch
 }
+
+// opLock is a mutex whose Lock can give up when a context ends.
+type opLock chan struct{}
+
+func newOpLock() opLock { return make(opLock, 1) }
+
+// LockCtx takes the lock, or returns ctx's error once ctx ends first.
+func (l opLock) LockCtx(ctx context.Context) error {
+	select {
+	case l <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TryLock takes the lock if it is free.
+func (l opLock) TryLock() bool {
+	select {
+	case l <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l opLock) Unlock() { <-l }
 
 // NewManager creates the display manager for vosd.
 func NewManager(cfg *config.Config) *Manager {
@@ -121,10 +160,18 @@ func newManager(cfg *config.Config, h host, hub *events.Hub) *Manager {
 		verifyEvery:  15 * time.Second,
 		startBackoff: 10 * time.Second,
 		composeWait:  20 * time.Second,
-		now:          time.Now,
-		state:        StateNone,
-		lastStart:    map[string]time.Time{},
-		kick:         make(chan struct{}, 1),
+		// The spike: gamescope lights the CRTC ~1 s after its start, and
+		// Sunshine is ready ~3 s after. 75 s leaves the full 60 s mode wait
+		// plus time for units and composition, and still answers the hook
+		// (and Moonlight) well before its 90 s ceiling.
+		beginBudget:    75 * time.Second,
+		composeReserve: 5 * time.Second,
+		compositeEvery: 5 * time.Second,
+		now:            time.Now,
+		op:             newOpLock(),
+		state:          StateNone,
+		lastStart:      map[string]time.Time{},
+		kick:           make(chan struct{}, 1),
 	}
 	m.rescan()
 	return m
@@ -161,11 +208,13 @@ func (m *Manager) poke() {
 // are on exit, so restarting vosd never interrupts a stream.
 func (m *Manager) Run(ctx context.Context) {
 	m.init(ctx)
+	sock := config.SessionSock()
 	go func() {
-		if err := session.Serve(ctx, config.SessionSock(), m); err != nil {
+		if err := session.Serve(ctx, sock, m); err != nil {
 			log.Printf("display: session socket: %v", err)
 		}
 	}()
+	go m.watchComposite(ctx)
 	evs, unsubscribe := m.hub.Subscribe()
 	defer unsubscribe()
 	hot := m.h.Hotplug(ctx)
@@ -437,7 +486,11 @@ func (m *Manager) apply(ctx context.Context, state string) {
 		if m.ensureStarted(ctx, GamescopeUnit, true) {
 			// A fresh gamescope scans out directly; composite everything into
 			// one plane so Sunshine's KMS capture always finds the picture.
-			go m.forceComposite(ctx)
+			go func() {
+				if err := m.forceComposite(ctx); err != nil {
+					log.Printf("display: forcing composition: %v", err)
+				}
+			}()
 		}
 	default:
 		m.ensureStopped(ctx, GamescopeUnit, true)

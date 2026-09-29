@@ -20,7 +20,9 @@ import (
 // fakeHost stands in for systemd, sysfs/DRM and gamescope. Its gamescope
 // behaves like the real one where it matters: when started, restarted or
 // nudged it looks its display up in modes.cfg by "<Make> <Model>" and
-// scans that mode out.
+// scans that mode out; its composite_force convar follows both
+// `gamescopectl composite_force` and the GAMESCOPE_COMPOSITE_FORCE root
+// property, and without it the game scans out on direct planes.
 type fakeHost struct {
 	mu       sync.Mutex
 	active   map[string]bool // "unit" or "unit@user"
@@ -35,10 +37,17 @@ type fakeHost struct {
 	gsReport string // key gamescopectl reports ("" = same as gsKey)
 	gsHDR    bool   // HDR flag the fake gamescope runs with
 	ignoreMC bool   // gamescope ignores modes.cfg (to test timeouts)
-	busy     string
-	ips      []string
-	startErr error
-	hotplug  chan struct{}
+	// composite is gamescope's composite_force convar; props are the X root
+	// window properties of its Xwayland (both reset when gamescope starts).
+	composite bool
+	props     map[string]string
+	direct    int           // planes scanned out without composition (0: 1)
+	xErr      error         // xprop fails (no X server)
+	ctlDelay  time.Duration // gamescopectl takes this long
+	busy      string
+	ips       []string
+	startErr  error
+	hotplug   chan struct{}
 }
 
 func unitKey(unit string, user bool) string {
@@ -79,6 +88,7 @@ func (f *fakeHost) StopUnit(ctx context.Context, unit string, user bool) error {
 	f.active[unitKey(unit, user)] = false
 	if unit == GamescopeUnit {
 		f.scanOK = false
+		f.composite, f.props = false, nil
 	}
 	return nil
 }
@@ -94,11 +104,13 @@ func (f *fakeHost) RestartUnit(ctx context.Context, unit string, user bool) erro
 	return nil
 }
 
-// gamescopeStartedLocked reads the env file and modes.cfg like gamescope.
+// gamescopeStartedLocked reads the env file and modes.cfg like gamescope;
+// the convar starts off and the fresh Xwayland has no properties.
 func (f *fakeHost) gamescopeStartedLocked() {
 	if b, err := os.ReadFile(GamescopeEnvPath()); err == nil {
 		f.gsHDR = parseGamescopeEnv(b).HDR
 	}
+	f.composite, f.props = false, nil
 	f.applySavedModeLocked()
 }
 
@@ -136,12 +148,38 @@ func (f *fakeHost) Scanout(card, name string) (edid.Mode, bool, error) {
 	return f.scan, f.scanOK, f.scanErr
 }
 
+// Planes is what the virtual connector's CRTC scans out: nothing without
+// gamescope, one plane while it composites, f.direct planes otherwise.
+func (f *fakeHost) Planes(card, name string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.scanErr != nil:
+		return 0, f.scanErr
+	case !f.scanOK:
+		return 0, nil
+	case f.composite:
+		return 1, nil
+	}
+	return max(f.direct, 1), nil
+}
+
 func (f *fakeHost) Gamescopectl(ctx context.Context, args ...string) (string, error) {
+	f.mu.Lock()
+	delay := f.ctlDelay
+	f.mu.Unlock()
+	if delay > 0 && !sleepCtx(ctx, delay) {
+		return "", ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("gamescopectl %s", strings.Join(args, " "))
 	if !f.active[unitKey(GamescopeUnit, true)] {
 		return "", errors.New("Failed to open GAMESCOPE_WAYLAND_DISPLAY.")
+	}
+	if len(args) == 2 && args[0] == "composite_force" {
+		f.composite = args[1] != "0"
+		return "", nil // gamescopectl never echoes a convar
 	}
 	if len(args) == 0 {
 		key := f.gsReport
@@ -157,11 +195,53 @@ func (f *fakeHost) Gamescopectl(ctx context.Context, args ...string) (string, er
 	return "", nil
 }
 
-func (f *fakeHost) Xprop(ctx context.Context, args ...string) error {
+// Xprop understands `-root -f NAME FMT -set NAME VALUE` and `-root NAME`.
+// Setting GAMESCOPE_COMPOSITE_FORCE sets the convar, as gamescope's
+// PropertyNotify handler does.
+func (f *fakeHost) Xprop(ctx context.Context, args ...string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("xprop %s", strings.Join(args, " "))
-	return nil
+	if f.xErr != nil {
+		return "", f.xErr
+	}
+	if !f.active[unitKey(GamescopeUnit, true)] {
+		return "", errors.New("xprop:  unable to open display ':0'")
+	}
+	switch {
+	case len(args) == 7 && args[0] == "-root" && args[4] == "-set":
+		f.setPropLocked(args[5], args[6])
+		return "", nil
+	case len(args) == 2 && args[0] == "-root":
+		if v, ok := f.props[args[1]]; ok {
+			return fmt.Sprintf("%s(CARDINAL) = %s", args[1], v), nil
+		}
+		return args[1] + ":  not found.", nil
+	}
+	return "", fmt.Errorf("fake xprop: unexpected %v", args)
+}
+
+func (f *fakeHost) setPropLocked(name, value string) {
+	if f.props == nil {
+		f.props = map[string]string{}
+	}
+	f.props[name] = value
+	if name == compositeForceProp {
+		f.composite = value != "0"
+	}
+}
+
+// steamWrites is Steam writing the composite property on its own.
+func (f *fakeHost) steamWrites(value string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setPropLocked(compositeForceProp, value)
+}
+
+func (f *fakeHost) compositeState() (bool, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.composite, f.props[compositeForceProp]
 }
 
 func (f *fakeHost) Busy(ctx context.Context) (bool, string) {
@@ -261,6 +341,7 @@ func setupPaths(t *testing.T) *testEnv {
 
 	mustWrite(t, config.HostnamePath, "vapor\n")
 	mustWrite(t, config.ProcCmdline, "quiet vos.slot=a video=DP-1:e drm.edid_firmware=DP-1:edid/vaporos.bin\n")
+	// Lines from hwdata's pnp.ids: VPR is taken (Best Buy), VOS is not listed.
 	mustWrite(t, PNPIDsPath, "DEL\tDell Inc.\nVPR\tBest Buy\n")
 	if err := os.MkdirAll(UserRuntimeDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -301,8 +382,9 @@ func newTestManager(t *testing.T, monitor bool) (*Manager, *fakeHost, *clock, *e
 	h := &fakeHost{
 		active:  map[string]bool{},
 		gpu:     GPUInfo{Vendor: "amd", Name: "Navi 48", Driver: "amdgpu", Card: "/dev/dri/card1", Supported: true, cardName: "card1"},
-		gsKey:   "Best Buy VaporOS",
+		gsKey:   "VOS VaporOS", // gamescope's Make falls back to the raw PNP id
 		ips:     []string{"192.168.1.50"},
+		direct:  2, // the spike: a primary plus a scaled overlay
 		hotplug: nil,
 	}
 	h.conns = []drm.SysConnector{

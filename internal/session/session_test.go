@@ -152,6 +152,77 @@ func TestShutdownCancelsRequests(t *testing.T) {
 	<-done
 }
 
+// deadlineHandler records the deadline its Begin was given.
+type deadlineHandler struct {
+	got chan time.Duration
+}
+
+func (d *deadlineHandler) Begin(ctx context.Context, req Request) Response {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		d.got <- -1
+	} else {
+		d.got <- time.Until(dl)
+	}
+	return Response{OK: true}
+}
+
+func (d *deadlineHandler) End(ctx context.Context) {}
+
+// TestHandlerBudget: vosd gives the handler less than the hook's ceiling,
+// so its answer arrives before `vos session` gives up.
+func TestHandlerBudget(t *testing.T) {
+	if HandlerTimeout >= Timeout || HandlerTimeout < 75*time.Second {
+		t.Fatalf("HandlerTimeout %s vs Timeout %s", HandlerTimeout, Timeout)
+	}
+	h := &deadlineHandler{got: make(chan time.Duration, 1)}
+	path, cancel, _ := serve(t, h)
+	defer cancel()
+	if _, err := Call(context.Background(), path, Request{Op: "begin"}); err != nil {
+		t.Fatal(err)
+	}
+	if left := <-h.got; left <= HandlerTimeout-5*time.Second || left > HandlerTimeout {
+		t.Errorf("handler deadline in %s, want about %s", left, HandlerTimeout)
+	}
+}
+
+// stubbornHandler ignores its context until released.
+type stubbornHandler struct{ release chan struct{} }
+
+func (s *stubbornHandler) Begin(ctx context.Context, req Request) Response {
+	<-s.release
+	return Response{OK: true, Message: "late"}
+}
+
+func (s *stubbornHandler) End(ctx context.Context) { <-s.release }
+
+// TestHandlerOverrun: a handler that outlives its budget does not hold the
+// answer back; `vos session` hears "continuing anyway" in time.
+func TestHandlerOverrun(t *testing.T) {
+	h := &stubbornHandler{release: make(chan struct{})}
+	defer close(h.release)
+	for _, op := range []string{"begin", "end"} {
+		server, client := net.Pipe()
+		go serveConnWithin(context.Background(), server, h, 50*time.Millisecond, 20*time.Millisecond)
+		start := time.Now()
+		client.SetDeadline(time.Now().Add(2 * time.Second))
+		if err := writeLine(client, Request{Op: op}); err != nil {
+			t.Fatal(err)
+		}
+		line, err := readLine(client)
+		client.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		if !strings.Contains(string(line), op+" did not finish in time") || strings.Contains(string(line), `"ok":true`) {
+			t.Errorf("%s: reply %s", op, line)
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("%s: answered after %s", op, d)
+		}
+	}
+}
+
 func TestCallTimeout(t *testing.T) {
 	h := &fakeHandler{block: make(chan struct{})}
 	path, cancel, _ := serve(t, h)

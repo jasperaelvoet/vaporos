@@ -29,19 +29,38 @@ import (
 // closest mode the EDID offers, makes gamescope run with the client's HDR
 // setting, switches the mode, waits until the connector really scans it
 // out and forces composition. Sunshine waits for this (prep-cmd) before it
-// starts capturing.
+// starts capturing, and Moonlight waits for Sunshine, so Begin answers
+// within m.beginBudget whatever happens; what is left undone by then the
+// policy loop and the composite watchdog finish.
 func (m *Manager) Begin(ctx context.Context, req session.Request) session.Response {
-	m.op.Lock()
-	defer m.op.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, m.beginBudget)
+	defer cancel()
 
 	client := strings.TrimSpace(req.Client)
 	if client == "" {
 		client = "Moonlight"
 	}
 	asked := clientMode(req)
+	sess := &sessionInfo{Client: client, App: req.App, Mode: asked.String()}
+
+	if err := m.op.LockCtx(ctx); err != nil {
+		// Something else has been switching units for the whole budget (a
+		// unit that will not stop?). Record the session anyway, so the
+		// policy moves to gamescope as soon as it can, and let the stream
+		// start as is rather than keep Moonlight waiting.
+		m.mu.Lock()
+		sess.Since = m.now()
+		m.session = sess
+		m.holdUntil = time.Time{}
+		m.mu.Unlock()
+		log.Printf("display: session begin: %s wants %s, but the display stayed busy: %v", client, asked, err)
+		m.publishBegin(sess)
+		return session.Response{OK: false, Mode: asked.String(), Message: "display busy; streaming as is"}
+	}
+	defer m.op.Unlock()
 
 	m.mu.Lock()
-	sess := &sessionInfo{Client: client, App: req.App, Mode: asked.String(), Since: m.now()}
+	sess.Since = m.now()
 	m.session = sess
 	m.holdUntil = time.Time{}
 	canGame := m.canGameLocked()
@@ -106,11 +125,16 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	}
 
 	ok, msg := m.waitForMode(ctx, gpu.Card, virtual, mode, keys)
+	// The modeset (or the fresh gamescope) is done: force composition, both
+	// the convar and the X property, which Steam may have reset.
 	if cerr := m.forceComposite(ctx); cerr != nil {
-		log.Printf("display: composite_force: %v", cerr)
+		log.Printf("display: forcing composition: %v", cerr)
 		if msg == "" {
 			msg = "could not force composition: " + cerr.Error()
 		}
+	}
+	if ok {
+		m.noteCompositeMode(mode)
 	}
 	m.publishBegin(sess)
 	if ok {
@@ -139,8 +163,13 @@ func (m *Manager) publishWelcomeLater() { m.poke() }
 // End is `vos session end`: the client left. On a machine with a monitor
 // the welcome screen returns after the idle grace period.
 func (m *Manager) End(ctx context.Context) {
-	m.op.Lock()
-	defer m.op.Unlock()
+	// op orders End after a Begin that is still switching; should that
+	// outlast the request, the session ends all the same.
+	if err := m.op.LockCtx(ctx); err == nil {
+		defer m.op.Unlock()
+	} else {
+		log.Printf("display: session end while the display is busy: %v", err)
+	}
 	m.mu.Lock()
 	was := m.session
 	m.session = nil
@@ -429,35 +458,27 @@ func (m *Manager) nudge(ctx context.Context) {
 	if _, err := m.h.Gamescopectl(ctx, "backend_set_dirty"); err == nil {
 		return
 	}
-	if err := m.h.Xprop(ctx, "-root", "-f", "GAMESCOPE_DISPLAY_MODE_NUDGE", "32c", "-set", "GAMESCOPE_DISPLAY_MODE_NUDGE", "1"); err != nil {
+	if _, err := m.h.Xprop(ctx, "-root", "-f", "GAMESCOPE_DISPLAY_MODE_NUDGE", "32c", "-set", "GAMESCOPE_DISPLAY_MODE_NUDGE", "1"); err != nil {
 		log.Printf("display: could not nudge gamescope: %v", err)
 	}
 }
 
-// forceComposite makes gamescope composite every frame into one plane, so
-// Sunshine's KMS capture never loses the picture to direct scanout.
-func (m *Manager) forceComposite(ctx context.Context) error {
-	deadline := m.now().Add(m.composeWait)
-	for {
-		_, err := m.h.Gamescopectl(ctx, "composite_force", "1")
-		if err == nil {
-			return nil
-		}
-		if m.now().After(deadline) || ctx.Err() != nil {
-			break
-		}
-		if !sleepCtx(ctx, 500*time.Millisecond) {
-			break
-		}
+// modeWait is how long Begin may wait for the mode: m.modeTimeout, cut
+// short so that composeReserve of ctx's time is left afterwards.
+func (m *Manager) modeWait(ctx context.Context) time.Duration {
+	wait := m.modeTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		wait = max(min(wait, time.Until(dl)-m.composeReserve), 0)
 	}
-	return m.h.Xprop(ctx, "-root", "-f", "GAMESCOPE_COMPOSITE_FORCE", "32c", "-set", "GAMESCOPE_COMPOSITE_FORCE", "1")
+	return wait
 }
 
 // waitForMode polls the virtual connector's CRTC (read-only DRM) until it
-// scans out want with a framebuffer for m.settle, or m.modeTimeout passes.
+// scans out want with a framebuffer for m.settle, or modeWait passes.
 func (m *Manager) waitForMode(ctx context.Context, card, virtual string, want edid.Mode, keys []string) (bool, string) {
 	start := m.now()
-	deadline := start.Add(m.modeTimeout)
+	wait := m.modeWait(ctx)
+	deadline := start.Add(wait)
 	var stable time.Time
 	rechecked := false
 	var last edid.Mode
@@ -500,7 +521,7 @@ func (m *Manager) waitForMode(ctx context.Context, card, virtual string, want ed
 			}
 		}
 		if now.After(deadline) {
-			return false, fmt.Sprintf("%s still shows %s instead of %s after %s", virtual, last, want, m.modeTimeout)
+			return false, fmt.Sprintf("%s still shows %s instead of %s after %s", virtual, last, want, wait.Round(time.Millisecond))
 		}
 		if !sleepCtx(ctx, m.poll) {
 			return false, ctx.Err().Error()
