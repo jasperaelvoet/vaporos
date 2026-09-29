@@ -22,11 +22,26 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/api"
 )
 
-func newHandler(t *testing.T, installer bool, code string) (*api.Server, http.Handler) {
+// forEachSet runs fn once per UI set, as a subtest named after the set. A set
+// without pages (the new UI before its first page lands) is skipped.
+func forEachSet(t *testing.T, fn func(t *testing.T, set uiSet)) {
+	t.Helper()
+	for _, set := range uiSets {
+		t.Run(set.Name, func(t *testing.T) {
+			if len(set.Pages) == 0 {
+				t.Skipf("UI set %q has no pages yet", set.Name)
+			}
+			fn(t, set)
+		})
+	}
+}
+
+// newHandler serves set the way Register serves the active one.
+func newHandler(t *testing.T, set uiSet, installer bool, code string) (*api.Server, http.Handler) {
 	t.Helper()
 	srv := api.New(api.Options{Installer: installer})
 	srv.SetSetupCode(code)
-	Register(srv)
+	register(srv, set, content)
 	return srv, srv.Handler()
 }
 
@@ -44,61 +59,69 @@ func get(h http.Handler, target string, headers ...string) *httptest.ResponseRec
 	return rec
 }
 
-func testUI(t *testing.T) *ui {
+func testUI(t *testing.T, set uiSet) *ui {
 	t.Helper()
-	u, err := newUI(api.New(api.Options{}), activeSet, content)
+	u, err := newUI(api.New(api.Options{}), set, content)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return u
 }
 
+// Each page is its own subtest, named <page>/<set>, so
+// -run 'TestPagesRender/devices' checks one page in whichever set has it.
 func TestPagesRender(t *testing.T) {
-	_, h := newHandler(t, false, "")
-	u := testUI(t)
-	for _, p := range activeSet.Pages {
-		t.Run(p.Name, func(t *testing.T) {
-			rec := get(h, p.Path)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("GET %s = %d", p.Path, rec.Code)
-			}
-			if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
-				t.Errorf("Content-Type = %q", ct)
-			}
-			if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
-				t.Errorf("Cache-Control = %q", cc)
-			}
-			body := rec.Body.String()
-			for _, want := range []string{
-				"<title>" + html.EscapeString(p.Title) + " · VaporOS</title>",
-				`data-page="` + p.Name + `"`,
-				`<script type="module" src="` + u.assets.prefix() + `/legacy/js/pages/` + p.Script + `.js"></script>`,
-				`href="` + u.assets.prefix() + `/legacy/app.css"`,
-				`href="` + u.assets.prefix() + `/icon.svg"`,
-				`<symbol id="i-home"`,
-			} {
-				if !strings.Contains(body, want) {
-					t.Errorf("page does not contain %q", want)
+	for _, set := range uiSets {
+		if len(set.Pages) == 0 {
+			t.Run(set.Name, func(t *testing.T) { t.Skipf("UI set %q has no pages yet", set.Name) })
+			continue
+		}
+		_, h := newHandler(t, set, false, "")
+		u := testUI(t, set)
+		for _, p := range set.Pages {
+			t.Run(p.Name+"/"+set.Name, func(t *testing.T) {
+				rec := get(h, p.Path)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET %s = %d", p.Path, rec.Code)
 				}
-			}
-			if p.Bare == strings.Contains(body, `id="nav"`) {
-				t.Errorf("bare=%v but navigation presence disagrees", p.Bare)
-			}
-			if p.Nav && !regexp.MustCompile(`<a href="`+regexp.QuoteMeta(p.Path)+`" aria-current="page">`).MatchString(body) {
-				t.Errorf("navigation does not mark %s as current", p.Path)
-			}
-			// The page's script and stylesheet must actually be served.
-			for _, ref := range []string{"/legacy/js/pages/" + p.Script + ".js", "/legacy/app.css", "/legacy/js/lib.js", "/icon.svg"} {
-				if rec := get(h, u.assets.prefix()+ref); rec.Code != http.StatusOK {
-					t.Errorf("GET %s = %d", ref, rec.Code)
+				if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+					t.Errorf("Content-Type = %q", ct)
 				}
-			}
-		})
+				if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+					t.Errorf("Cache-Control = %q", cc)
+				}
+				body := rec.Body.String()
+				for _, want := range []string{
+					"<title>" + html.EscapeString(p.Title) + " · VaporOS</title>",
+					`data-page="` + p.Name + `"`,
+					`<script type="module" src="` + u.static() + `/js/pages/` + p.Script + `.js"></script>`,
+					`href="` + u.static() + `/app.css"`,
+					`href="` + u.assets.prefix() + `/icon.svg"`,
+					`<symbol id="i-home"`,
+				} {
+					if !strings.Contains(body, want) {
+						t.Errorf("page does not contain %q", want)
+					}
+				}
+				if p.Bare == strings.Contains(body, `id="nav"`) {
+					t.Errorf("bare=%v but navigation presence disagrees", p.Bare)
+				}
+				if p.Nav && !regexp.MustCompile(`<a href="`+regexp.QuoteMeta(p.Path)+`" aria-current="page">`).MatchString(body) {
+					t.Errorf("navigation does not mark %s as current", p.Path)
+				}
+				// Every asset the page names must actually be served.
+				for _, m := range regexp.MustCompile(`(?:src|href)="(/static/[^"]+)"`).FindAllStringSubmatch(body, -1) {
+					if rec := get(h, m[1]); rec.Code != http.StatusOK {
+						t.Errorf("GET %s = %d", m[1], rec.Code)
+					}
+				}
+			})
+		}
 	}
 }
 
 func TestUnknownPathIsNotAPage(t *testing.T) {
-	_, h := newHandler(t, false, "")
+	_, h := newHandler(t, activeSet, false, "")
 	for _, p := range []string{"/nope", "/index.html", "/pair/extra"} {
 		if rec := get(h, p); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", p, rec.Code)
@@ -106,8 +129,10 @@ func TestUnknownPathIsNotAPage(t *testing.T) {
 	}
 }
 
-func TestInstallerMode(t *testing.T) {
-	_, h := newHandler(t, true, "ABCD-EFGH")
+func TestInstallerMode(t *testing.T) { forEachSet(t, testInstallerMode) }
+
+func testInstallerMode(t *testing.T, set uiSet) {
+	_, h := newHandler(t, set, true, "ABCD-EFGH")
 
 	for target, want := range map[string]string{
 		"/":                    "/setup",
@@ -128,8 +153,8 @@ func TestInstallerMode(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`id="wizard"`,
-		`/js/pages/install.js"`,
-		`<title>Install VaporOS · VaporOS</title>`,
+		`/js/pages/` + set.Installer.Script + `.js"`,
+		`<title>` + set.Installer.Title + ` · VaporOS</title>`,
 		`value="ABCD-EFGH"`,
 		`<option value="Europe/Brussels">Brussels</option>`,
 		`<option value="America/Argentina/Buenos_Aires">Buenos Aires</option>`,
@@ -149,8 +174,10 @@ func TestInstallerMode(t *testing.T) {
 	}
 }
 
-func TestFirstRunSetup(t *testing.T) {
-	_, h := newHandler(t, false, "ABCD-EFGH")
+func TestFirstRunSetup(t *testing.T) { forEachSet(t, testFirstRunSetup) }
+
+func testFirstRunSetup(t *testing.T, set uiSet) {
+	_, h := newHandler(t, set, false, "ABCD-EFGH")
 	body := get(h, "/setup?code=WXYZ-2345").Body.String()
 	for _, want := range []string{`id="first-run"`, `/js/pages/setup.js"`, `id="setup-code"`, `value="WXYZ-2345"`} {
 		if !strings.Contains(body, want) {
@@ -171,7 +198,7 @@ func TestFirstRunSetup(t *testing.T) {
 	}
 
 	// Without a setup code the field is not shown at all.
-	_, h = newHandler(t, false, "")
+	_, h = newHandler(t, set, false, "")
 	if body := get(h, "/setup").Body.String(); strings.Contains(body, `id="setup-code"`) {
 		t.Error("setup code field shown although no code is needed")
 	}
@@ -181,8 +208,12 @@ func TestFirstRunSetup(t *testing.T) {
 // it likes. The code is dropped before it is checked, so wrong ones cannot
 // lock the browser out, and it never reaches the form or the page script.
 func TestSetupCodeFromAnotherSiteIsDropped(t *testing.T) {
+	forEachSet(t, testSetupCodeFromAnotherSiteIsDropped)
+}
+
+func testSetupCodeFromAnotherSiteIsDropped(t *testing.T, set uiSet) {
 	for _, installer := range []bool{true, false} {
-		srv, h := newHandler(t, installer, "ABCD-EFGH")
+		srv, h := newHandler(t, set, installer, "ABCD-EFGH")
 		srv.Handle("GET", "/probe", api.Setup, func(w http.ResponseWriter, r *http.Request) { api.OK(w) })
 		foreign := [][]string{
 			{"Sec-Fetch-Site", "cross-site", "Sec-Fetch-Dest", "image"},
@@ -217,11 +248,13 @@ func TestSetupCodeFromAnotherSiteIsDropped(t *testing.T) {
 }
 
 func TestFirstRunIgnoresTheCodeWaiver(t *testing.T) {
-	srv, h := newHandler(t, false, "ABCD-EFGH")
-	srv.SetSetupWaiver(func() bool { return true }) // ignored outside installer mode
-	if body := get(h, "/setup").Body.String(); !strings.Contains(body, `id="setup-code"`) {
-		t.Error("first-run setup must always ask for the code")
-	}
+	forEachSet(t, func(t *testing.T, set uiSet) {
+		srv, h := newHandler(t, set, false, "ABCD-EFGH")
+		srv.SetSetupWaiver(func() bool { return true }) // ignored outside installer mode
+		if body := get(h, "/setup").Body.String(); !strings.Contains(body, `id="setup-code"`) {
+			t.Error("first-run setup must always ask for the code")
+		}
+	})
 }
 
 type fakeCookieSetter struct{ got string }
@@ -243,15 +276,19 @@ func TestTrySetSetupCookie(t *testing.T) {
 }
 
 func TestStaticContentTypesAndCaching(t *testing.T) {
-	_, h := newHandler(t, false, "")
-	u := testUI(t)
+	forEachSet(t, testStaticContentTypesAndCaching)
+}
+
+func testStaticContentTypesAndCaching(t *testing.T, set uiSet) {
+	_, h := newHandler(t, set, false, "")
+	u := testUI(t, set)
 	for name, ctype := range map[string]string{
-		"legacy/app.css":             "text/css; charset=utf-8",
-		"legacy/js/lib.js":           "text/javascript; charset=utf-8",
-		"legacy/js/pages/install.js": "text/javascript; charset=utf-8",
-		"icon.svg":                   "image/svg+xml",
-		"icon-192.png":               "image/png",
-		"manifest.webmanifest":       "application/manifest+json",
+		path.Join(set.Static, "app.css"):                              "text/css; charset=utf-8",
+		path.Join(set.Static, "js/pages", set.Pages[0].Script+".js"):  "text/javascript; charset=utf-8",
+		path.Join(set.Static, "js/pages", set.Installer.Script+".js"): "text/javascript; charset=utf-8",
+		"icon.svg":             "image/svg+xml",
+		"icon-192.png":         "image/png",
+		"manifest.webmanifest": "application/manifest+json",
 	} {
 		rec := get(h, u.assets.prefix()+"/"+name)
 		if rec.Code != http.StatusOK {
@@ -279,7 +316,7 @@ func TestStaticContentTypesAndCaching(t *testing.T) {
 
 	// A page from before an update asks for its old version: it gets the
 	// current file, but must revalidate.
-	rec := get(h, "/static/0123456789ab/legacy/app.css")
+	rec := get(h, path.Join("/static/0123456789ab", set.Static, "app.css"))
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
 		t.Errorf("stale version: %d %q", rec.Code, rec.Header().Get("Cache-Control"))
 	}
@@ -290,10 +327,13 @@ func TestStaticContentTypesAndCaching(t *testing.T) {
 	}
 }
 
-func TestStaticGzip(t *testing.T) {
-	_, h := newHandler(t, false, "")
-	u := testUI(t)
-	url := u.assets.prefix() + "/legacy/app.css"
+func TestStaticGzip(t *testing.T) { forEachSet(t, testStaticGzip) }
+
+func testStaticGzip(t *testing.T, set uiSet) {
+	_, h := newHandler(t, set, false, "")
+	u := testUI(t, set)
+	css := path.Join(set.Static, "app.css")
+	url := u.assets.prefix() + "/" + css
 	rec := get(h, url, "Accept-Encoding", "br, gzip")
 	if rec.Header().Get("Content-Encoding") != "gzip" || !strings.Contains(rec.Header().Get("Vary"), "Accept-Encoding") {
 		t.Fatalf("no gzip: %v", rec.Header())
@@ -303,11 +343,11 @@ func TestStaticGzip(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain, _ := io.ReadAll(zr)
-	if !bytes.Equal(plain, u.assets.files["legacy/app.css"].body) {
+	if !bytes.Equal(plain, u.assets.files[css].body) {
 		t.Error("gzip body does not decompress to app.css")
 	}
 	gzTag := rec.Header().Get("ETag")
-	if gzTag == u.assets.files["legacy/app.css"].etag {
+	if gzTag == u.assets.files[css].etag {
 		t.Error("gzip variant shares the identity ETag")
 	}
 	if rec := get(h, url, "Accept-Encoding", "gzip;q=0"); rec.Header().Get("Content-Encoding") != "" {
@@ -338,22 +378,34 @@ func TestStaticWOFF2(t *testing.T) {
 	}
 }
 
-func TestStaticNotFound(t *testing.T) {
-	_, h := newHandler(t, false, "")
-	u := testUI(t)
+func TestStaticNotFound(t *testing.T) { forEachSet(t, testStaticNotFound) }
+
+func testStaticNotFound(t *testing.T, set uiSet) {
+	_, h := newHandler(t, set, false, "")
+	u := testUI(t, set)
 	for _, p := range []string{
 		"/static/",
 		"/static/app.css", // no version segment
 		u.assets.prefix() + "/",
-		u.assets.prefix() + "/js",
-		u.assets.prefix() + "/js/",
+		u.static() + "/js",
+		u.static() + "/js/",
 		u.assets.prefix() + "/nope.css",
+		u.assets.prefix() + "/" + path.Join(set.Templates, "layout.html"),
 		u.assets.prefix() + "/templates/layout.html",
 	} {
 		if rec := get(h, p); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", p, rec.Code)
 		}
 	}
+	// Another set's files are not served.
+	walkStatic(t, func(name string, b []byte) {
+		if set.servesStatic(name) {
+			return
+		}
+		if rec := get(h, u.assets.prefix()+"/"+name); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s from set %s = %d, want 404", name, set.Name, rec.Code)
+		}
+	})
 	// Names that are not clean paths never reach the file table.
 	for _, name := range []string{"../web.go", "js/../app.css", "/app.css", "js//lib.js", ""} {
 		rec := httptest.NewRecorder()
@@ -386,7 +438,7 @@ func TestAcceptsGzip(t *testing.T) {
 // The appliance is mostly used from a phone, often over Wi-Fi: keep the
 // whole UI small.
 func TestAssetBudget(t *testing.T) {
-	u := testUI(t)
+	u := testUI(t, activeSet)
 	var total, wire int
 	for _, a := range u.assets.files {
 		total += len(a.body)
@@ -402,13 +454,13 @@ func TestAssetBudget(t *testing.T) {
 	}
 }
 
-// renderAll returns every page's HTML in both modes, keyed by script name.
-func renderAll(t *testing.T) map[string]string {
+// renderAll returns every page of set as HTML in both modes, keyed by script name.
+func renderAll(t *testing.T, set uiSet) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, installer := range []bool{false, true} {
-		_, h := newHandler(t, installer, "ABCD-EFGH")
-		for _, p := range activeSet.Pages {
+		_, h := newHandler(t, set, installer, "ABCD-EFGH")
+		for _, p := range set.Pages {
 			if installer && p.Name != "setup" {
 				continue
 			}
@@ -418,7 +470,7 @@ func renderAll(t *testing.T) map[string]string {
 			}
 			script := p.Script
 			if installer {
-				script = activeSet.Installer.Script
+				script = set.Installer.Script
 			}
 			out[script] = rec.Body.String()
 		}
@@ -428,10 +480,12 @@ func renderAll(t *testing.T) map[string]string {
 
 // The API's CSP (default-src 'self') blocks inline script, inline event
 // handlers and style attributes; any of them would silently break a page.
-func TestCSPCompliance(t *testing.T) {
+func TestCSPCompliance(t *testing.T) { forEachSet(t, testCSPCompliance) }
+
+func testCSPCompliance(t *testing.T, set uiSet) {
 	inlineScript := regexp.MustCompile(`<script(?:\s[^>]*)?>`)
 	forbiddenAttr := regexp.MustCompile(`\s(style|on[a-z]+)\s*=`)
-	for script, body := range renderAll(t) {
+	for script, body := range renderAll(t, set) {
 		for _, tag := range inlineScript.FindAllString(body, -1) {
 			if !strings.Contains(tag, " src=") {
 				t.Errorf("%s: inline script %s", script, tag)
@@ -449,7 +503,7 @@ func TestCSPCompliance(t *testing.T) {
 		}
 	}
 	bad := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|setAttribute\(\s*['"]style|cssText|'unsafe-inline'`)
-	walkStatic(t, func(name string, b []byte) {
+	walkSet(t, set, func(name string, b []byte) {
 		switch path.Ext(name) {
 		case ".js":
 			if m := bad.Find(b); m != nil {
@@ -463,6 +517,7 @@ func TestCSPCompliance(t *testing.T) {
 	})
 }
 
+// walkStatic calls fn for every embedded static file, whichever set owns it.
 func walkStatic(t *testing.T, fn func(name string, b []byte)) {
 	t.Helper()
 	err := fs.WalkDir(content, "static", func(p string, d fs.DirEntry, err error) error {
@@ -481,11 +536,23 @@ func walkStatic(t *testing.T, fn func(name string, b []byte)) {
 	}
 }
 
+// walkSet calls fn for every static file set serves: its own and the shared ones.
+func walkSet(t *testing.T, set uiSet, fn func(name string, b []byte)) {
+	t.Helper()
+	walkStatic(t, func(name string, b []byte) {
+		if set.servesStatic(name) {
+			fn(name, b)
+		}
+	})
+}
+
 // The scripts find their elements by id and their icons by name; a typo in
 // either only shows up in a browser, so check them against the markup.
-func TestScriptsMatchMarkup(t *testing.T) {
-	u := testUI(t)
-	html := renderAll(t)
+func TestScriptsMatchMarkup(t *testing.T) { forEachSet(t, testScriptsMatchMarkup) }
+
+func testScriptsMatchMarkup(t *testing.T, set uiSet) {
+	u := testUI(t, set)
+	html := renderAll(t, set)
 	idAttr := regexp.MustCompile(`\sid="([^"]+)"`)
 	byID := regexp.MustCompile(`byId\(\s*'([^']+)'\s*\)`)
 	iconRef := regexp.MustCompile(`icon\(\s*'([^']+)'`)
@@ -502,7 +569,8 @@ func TestScriptsMatchMarkup(t *testing.T) {
 		}
 	}
 
-	walkStatic(t, func(name string, b []byte) {
+	lib, pages := path.Join(set.Static, "js/lib.js"), path.Join(set.Static, "js/pages")+"/"
+	walkSet(t, set, func(name string, b []byte) {
 		if path.Ext(name) != ".js" {
 			return
 		}
@@ -519,7 +587,7 @@ func TestScriptsMatchMarkup(t *testing.T) {
 			}
 		}
 		refs := byID.FindAllStringSubmatch(src, -1)
-		if name == "legacy/js/lib.js" {
+		if name == lib {
 			// The shared runtime null-checks what it looks up, but every id
 			// it names must exist on at least one page.
 			for _, m := range refs {
@@ -533,7 +601,7 @@ func TestScriptsMatchMarkup(t *testing.T) {
 			}
 			return
 		}
-		if !strings.HasPrefix(name, "legacy/js/pages/") {
+		if !strings.HasPrefix(name, pages) {
 			return
 		}
 		page := strings.TrimSuffix(path.Base(name), ".js")
@@ -547,23 +615,6 @@ func TestScriptsMatchMarkup(t *testing.T) {
 			}
 		}
 	})
-}
-
-// The inline logo in the page header and icon.svg are the same drawing.
-func TestLogoMatchesIcon(t *testing.T) {
-	d := regexp.MustCompile(`<path d="([^"]+)"`)
-	layout, _ := content.ReadFile("templates/legacy/layout.html")
-	icon, _ := content.ReadFile("static/icon.svg")
-	logo := layout[bytes.Index(layout, []byte(`{{define "logo"}}`)):]
-	a, b := d.FindAllSubmatch(logo, -1), d.FindAllSubmatch(icon, -1)
-	if len(a) == 0 || len(a) != len(b) {
-		t.Fatalf("logo has %d paths, icon.svg %d", len(a), len(b))
-	}
-	for i := range a {
-		if !bytes.Equal(a[i][1], b[i][1]) {
-			t.Errorf("path %d differs: %s vs %s", i, a[i][1], b[i][1])
-		}
-	}
 }
 
 func TestIconsRender(t *testing.T) {
