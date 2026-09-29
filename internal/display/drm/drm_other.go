@@ -20,6 +20,7 @@ func (c *Card) CRTC(id uint32) (*CRTC, error)                       { return nil
 func (c *Card) PlaneIDs() ([]uint32, error)                         { return nil, ErrUnsupported }
 func (c *Card) Plane(id uint32) (*Plane, error)                     { return nil, ErrUnsupported }
 func (c *Card) RmFB(id uint32) error                                { return ErrUnsupported }
+func (c *Card) DirtyFB(fb uint32) error                             { return ErrUnsupported }
 
 func (c *Card) SetCRTC(crtc, fb uint32, connectors []uint32, mode *ModeInfo) error {
 	return ErrUnsupported

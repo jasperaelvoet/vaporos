@@ -84,6 +84,7 @@ func TestIoctlNumbers(t *testing.T) {
 		"MODE_GETPLANERESOURCES": {ioctlModeGetPlaneRes, 0xc01064b5},
 		"MODE_GETPLANE":          {ioctlModeGetPlane, 0xc02064b6},
 		"MODE_ADDFB2":            {ioctlModeAddFB2, 0xc06864b8},
+		"MODE_DIRTYFB":           {ioctlModeDirtyFB, 0xc01864b1},
 	} {
 		if c.got != c.want {
 			t.Errorf("DRM_IOCTL_%s = %#x, want %#x", name, c.got, c.want)

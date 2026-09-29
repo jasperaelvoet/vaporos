@@ -264,6 +264,19 @@ func (c *Card) RmFB(id uint32) error {
 	return nil
 }
 
+// DirtyFB tells the driver the whole framebuffer changed. Drivers that scan
+// out of a shadow copy (bochs, virtio-gpu, udl, most simple KMS drivers)
+// only show CPU writes after this; drivers that scan out the dumb buffer
+// directly (amdgpu, i915) do not implement it and return ENOSYS, which
+// callers can ignore.
+func (c *Card) DirtyFB(fb uint32) error {
+	cmd := modeFBDirtyCmd{FBID: fb}
+	if err := c.ioctl(ioctlModeDirtyFB, unsafe.Pointer(&cmd)); err != nil {
+		return fmt.Errorf("drm: dirtyfb %d: %w", fb, err)
+	}
+	return nil
+}
+
 // Framebuffer is a CPU-mapped XRGB8888 dumb buffer registered as a KMS fb.
 type Framebuffer struct {
 	card          *Card

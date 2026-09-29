@@ -23,6 +23,7 @@ type fakeKMS struct {
 	live      map[uint32]*fakeBuf // fb id → buffer
 	setcrtc   []string
 	scanout   map[uint32]uint32 // crtc → fb
+	dirty     []uint32          // fbs flushed with DirtyFB
 }
 
 type fakeBuf struct {
@@ -91,7 +92,11 @@ func (k *fakeKMS) SetMaster() error {
 	return nil
 }
 func (k *fakeKMS) DropMaster() error { k.master = false; return nil }
-func (k *fakeKMS) Close() error      { k.closed = true; return nil }
+func (k *fakeKMS) DirtyFB(fb uint32) error {
+	k.dirty = append(k.dirty, fb)
+	return nil
+}
+func (k *fakeKMS) Close() error { k.closed = true; return nil }
 func (k *fakeKMS) Resources() (*drm.Resources, error) {
 	var ids []uint32
 	for id := range k.conns {
@@ -219,6 +224,11 @@ func TestRunnerLightsConnectors(t *testing.T) {
 		if b.w == 1920 && slices.Equal(before, b.mem) {
 			t.Error("redraw did not change the picture")
 		}
+	}
+	// Every redrawn buffer is flushed, or shadow-plane drivers (bochs,
+	// virtio-gpu) never show the new picture.
+	if len(k.dirty) != len(k.live) {
+		t.Errorf("redraw flushed %v, want all %d buffers", k.dirty, len(k.live))
 	}
 
 	// Monitor unplugged: its CRTC goes off and its buffer is freed.

@@ -186,6 +186,16 @@ type modeFBCmd struct {
 	Handle uint32
 }
 
+// modeFBDirtyCmd is struct drm_mode_fb_dirty_cmd (24 bytes). With no clips
+// it marks the whole framebuffer dirty.
+type modeFBDirtyCmd struct {
+	FBID     uint32
+	Flags    uint32
+	Color    uint32
+	NumClips uint32
+	ClipsPtr uint64
+}
+
 // modeFBCmd2 is struct drm_mode_fb_cmd2 (104 bytes).
 type modeFBCmd2 struct {
 	FBID        uint32
@@ -263,6 +273,7 @@ var (
 	ioctlModeGetPlaneRes  = iowr(0xB5, unsafe.Sizeof(modeGetPlaneRes{}))
 	ioctlModeGetPlane     = iowr(0xB6, unsafe.Sizeof(modeGetPlane{}))
 	ioctlModeAddFB2       = iowr(0xB8, unsafe.Sizeof(modeFBCmd2{}))
+	ioctlModeDirtyFB      = iowr(0xB1, unsafe.Sizeof(modeFBDirtyCmd{}))
 )
 
 // connectorTypeNames follows drm_connector_enum_list in the kernel, which is

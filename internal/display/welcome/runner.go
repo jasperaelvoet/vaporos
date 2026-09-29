@@ -28,6 +28,7 @@ type kmsDevice interface {
 	Connector(id uint32, probe bool) (*drm.Connector, error)
 	Encoder(id uint32) (*drm.Encoder, error)
 	SetCRTC(crtc, fb uint32, connectors []uint32, mode *drm.ModeInfo) error
+	DirtyFB(fb uint32) error
 	NewBuffer(w, h int) (scanoutBuffer, error)
 }
 
@@ -310,8 +311,7 @@ func (r *runner) light(cs *cardState, o *output) error {
 }
 
 // redraw paints the current state into every lit framebuffer, rendering
-// each distinct size once. Dumb buffers are scanned out straight from
-// memory, so writing them updates the screen.
+// each distinct size once, then flushes each one to the screen.
 func (r *runner) redraw() {
 	cache := map[image.Point]*image.RGBA{}
 	for _, cs := range r.cards {
@@ -326,7 +326,23 @@ func (r *runner) redraw() {
 				cache[image.Pt(w, h)] = img
 			}
 			copyXRGB(o.buf.Mem(), o.buf.RowPitch(), w, h, img)
+			r.flush(cs, o)
 		}
+	}
+}
+
+// flush makes CPU writes to o's buffer visible. Drivers that scan out the
+// dumb buffer itself need nothing, but shadow-plane drivers (bochs and
+// virtio-gpu in a VM, and many simple KMS drivers) only copy damaged areas,
+// so mark the whole buffer dirty; if the driver has no dirty hook either,
+// set the CRTC to the same buffer again, which is a full update everywhere.
+func (r *runner) flush(cs *cardState, o *output) {
+	if err := cs.dev.DirtyFB(o.buf.FBID()); err == nil {
+		return
+	}
+	mode := o.mode
+	if err := cs.dev.SetCRTC(o.crtc, o.buf.FBID(), []uint32{o.conn}, &mode); err != nil {
+		r.opts.logf("vos welcome: refresh crtc %d: %v", o.crtc, err)
 	}
 }
 
