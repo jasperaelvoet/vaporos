@@ -108,10 +108,21 @@ Other commands:
 - Web UI: no external assets or CDNs (the CSP is `default-src 'self'`). Vanilla JS only.
 - Commit messages: one plain, imperative sentence that says what changed and why.
 
+## Skills
+
+`.claude/skills/` holds vetted Agent Skills for the website and the web UI. Sources, pinned commits, licences
+and the security review are in `.claude/skills/SOURCES.md`.
+- `frontend-design` leads art direction. `build-awwwards-quality-sites` sets the bar for motion and WebGL on the
+  website. The `gsap-*` skills cover GSAP, the website's only animation library (pin the exact `gsap` version).
+- `fixing-accessibility` and `fixing-metadata` are the review checklists.
+- `playwright-cli` runs headless only: never `--headed`, `show`, `attach` or `--extension`.
+- The web UI's CSP rules out most website tooling (no inline scripts, no CDNs, no WebAssembly). Check a skill's
+  advice against the Style rules above before using it in `internal/web`.
+
 ## CI
 
 - `.github/workflows/build.yml` runs on every push, PR and manual dispatch, except changes that touch only
-  `website/**`, `**.md` or `pages.yml`. It has four jobs:
+  `website/**`, `**.md`, `.claude/**` or `pages.yml`. It has four jobs:
   - `go`: gofmt, vet, `test -race` and the static `vos` binary;
   - `image`: `build/build.sh` in the builder container, which produces the OS files and the ISO (the ISO must stay under 1.95 GiB);
   - `vm-test`: `tests/qemu-smoke.sh` installs the ISO through the web installer in QEMU and boots it;
