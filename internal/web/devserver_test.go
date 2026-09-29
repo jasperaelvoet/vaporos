@@ -70,6 +70,8 @@ func TestDevServer(t *testing.T) {
 
 // fakeAPI is a small, stateful stand-in for vosd that follows the request
 // and response shapes in docs/CONTRACTS.md.
+// Each API resource's routes and starting state are in its own file,
+// devserver_<resource>_test.go.
 type fakeAPI struct {
 	mu         sync.Mutex
 	mux        *http.ServeMux
@@ -98,11 +100,6 @@ func newFakeAPI(installer bool) *fakeAPI {
 	f := &fakeAPI{
 		mux: http.NewServeMux(), hub: events.NewHub(), installer: installer,
 		booted: time.Now().Add(-26 * time.Hour), hostname: "vapor",
-		clients: []map[string]string{
-			{"uuid": "0f3c", "name": "Jasper's iPhone"},
-			{"uuid": "7a91", "name": "Living room Apple TV"},
-			{"uuid": "c2d8", "name": "MacBook Pro"},
-		},
 		update: map[string]any{
 			"booted": "20260929.101500", "staged": nil, "failed": []string{"20260921.083000"},
 			"available":  map[string]any{"version": "20260929.143000", "size": 1_420_000_000, "checked": time.Now().Add(-40 * time.Minute).Format(time.RFC3339)},
@@ -110,30 +107,16 @@ func newFakeAPI(installer bool) *fakeAPI {
 			"booted_slot": "a", "other_slot": map[string]any{"version": "20260927.190000", "bootable": true},
 			"held": nil, "busy": false, "progress": nil,
 		},
-		display: map[string]any{
-			"profile": "amd", "virtual_connector": "DP-1",
-			"connectors": []map[string]any{
-				{"name": "DP-1", "status": "connected", "physical": false},
-				{"name": "DP-2", "status": "disconnected", "physical": false},
-				{"name": "DP-3", "status": "disconnected", "physical": false},
-				{"name": "HDMI-A-1", "status": "connected", "physical": true},
-			},
-			"available_connectors": []string{"DP-2", "DP-3"},
-			"planes":               1,
-			"modes": []string{"1280x720@60", "1280x720@120", "1920x1080@60", "1920x1080@120", "1920x1080@144",
-				"2560x1440@60", "2560x1440@120", "2560x1600@60", "2560x1600@120", "3440x1440@100", "3840x2160@30", "3840x2160@60",
-				"2796x1290@60", "2796x1290@120"},
-			"current": "2560x1600@120", "hdr": true, "learned": []string{"2360x1640@120"}, "reboot_needed": false, "state": "welcome",
-		},
 		power: map[string]any{
 			"idle_shutdown": true, "idle_minutes": 15, "keep_awake_until": nil,
 			"wol": []map[string]any{{"iface": "enp6s0", "mac": "9c:6b:00:12:34:56", "enabled": true}}, "busy": nil,
 		},
 		ssh:       map[string]any{"enabled": false, "keys": []string{}},
-		settings:  map[string]any{"encoder": "vulkan", "bitrate_kbps_max": 150000, "gamepad": "xone", "audio_sink": ""},
 		libraries: map[string]string{"5e1d-aa01": "registered", "3c4d-5e6f": ""},
 		install:   map[string]any{"state": "idle", "step": "", "percent": 0, "message": "", "error": ""},
 	}
+	f.seedSunshine()
+	f.seedDisplay()
 	f.routes()
 	go f.ticker()
 	return f
@@ -255,85 +238,8 @@ func (f *fakeAPI) routes() {
 		return ok
 	})
 
-	f.handle("GET /sunshine", true, func(w http.ResponseWriter, r *http.Request) any {
-		var s any
-		if f.session != nil {
-			s = f.session
-		}
-		return map[string]any{"running": true, "version": "2026.928.143000", "streaming": f.session != nil, "session": s,
-			"pending_pairing": len(f.pairings) > 0, "pairings": append([]map[string]string{}, f.pairings...)}
-	})
-	f.handle("POST /sunshine/pair", true, func(w http.ResponseWriter, r *http.Request) any {
-		b := body(r)
-		id, _ := b["pairing_id"].(string)
-		switch {
-		case id == "" && len(f.pairings) > 1:
-			api.Error(w, http.StatusConflict, "%d devices are waiting to pair; choose which one this PIN is for", len(f.pairings))
-			return nil
-		case b["pin"] != "1234":
-			api.Error(w, http.StatusBadRequest, "sunshine rejected the PIN")
-			return nil
-		}
-		for i, p := range f.pairings {
-			if id == "" || p["id"] == id {
-				f.pairings = append(f.pairings[:i:i], f.pairings[i+1:]...)
-				break
-			}
-		}
-		f.clients = append(f.clients, map[string]string{"uuid": fmt.Sprint(time.Now().UnixNano()), "name": fmt.Sprint(b["name"])})
-		return ok
-	})
-	f.handle("GET /sunshine/clients", true, func(w http.ResponseWriter, r *http.Request) any {
-		return map[string]any{"clients": f.clients}
-	})
-	f.handle("DELETE /sunshine/clients/{uuid}", true, func(w http.ResponseWriter, r *http.Request) any {
-		out := f.clients[:0]
-		for _, c := range f.clients {
-			if c["uuid"] != r.PathValue("uuid") {
-				out = append(out, c)
-			}
-		}
-		f.clients = out
-		return ok
-	})
-	f.handle("GET /sunshine/settings", true, func(w http.ResponseWriter, r *http.Request) any { return f.settings })
-	f.handle("PUT /sunshine/settings", true, func(w http.ResponseWriter, r *http.Request) any { f.settings = body(r); return ok })
-	f.handle("GET /sunshine/logs", true, func(w http.ResponseWriter, r *http.Request) any {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		for i := 0; i < 40; i++ {
-			fmt.Fprintf(w, "[2026-09-29 14:%02d:07.123]: Info: CLIENT CONNECTED\n[2026-09-29 14:%02d:07.456]: Info: Found display [DP-1]\n", i, i)
-		}
-		return nil
-	})
-	f.handle("POST /sunshine/restart", true, func(w http.ResponseWriter, r *http.Request) any { return ok })
-
-	f.handle("GET /display", true, func(w http.ResponseWriter, r *http.Request) any {
-		if f.session != nil {
-			f.display["state"], f.display["current"] = "streaming", f.session["mode"]
-		}
-		return f.display
-	})
-	f.handle("POST /display/modes", true, func(w http.ResponseWriter, r *http.Request) any {
-		f.display["learned"] = append(f.display["learned"].([]string), fmt.Sprint(body(r)["mode"]))
-		f.display["reboot_needed"] = true
-		return map[string]bool{"reboot_needed": true}
-	})
-	f.handle("PUT /display/settings", true, func(w http.ResponseWriter, r *http.Request) any {
-		b := body(r)
-		f.display["hdr"] = b["hdr"]
-		if c, ok := b["virtual_connector"].(string); ok {
-			old := f.display["virtual_connector"].(string)
-			f.display["virtual_connector"], f.display["reboot_needed"] = c, true
-			var free []string
-			for _, n := range append(f.display["available_connectors"].([]string), old) {
-				if n != c {
-					free = append(free, n)
-				}
-			}
-			f.display["available_connectors"] = free
-		}
-		return ok
-	})
+	f.sunshineRoutes()
+	f.displayRoutes()
 
 	f.handle("GET /storage", true, func(w http.ResponseWriter, r *http.Request) any {
 		disks := []map[string]any{
