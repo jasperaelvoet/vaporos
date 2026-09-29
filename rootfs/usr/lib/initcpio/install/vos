@@ -19,6 +19,8 @@ build() {
     add_binary losetup
     add_binary mount
     add_binary umount
+    # Checks (and if need be repairs) vos_data before it is mounted.
+    add_binary e2fsck
 
     add_runscript
 }
@@ -27,6 +29,7 @@ help() {
     cat <<HELPEOF
 Mounts the VaporOS root: a read-only erofs image with /etc overlaid and
 /var bind-mounted from the data partition (installed), or the same image
-from the ISO under a tmpfs overlay (live, vos.mode=live).
+from the ISO under a tmpfs overlay (live, vos.mode=live). Never opens a
+shell: failures reboot.
 HELPEOF
 }

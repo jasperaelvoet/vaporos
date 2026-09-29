@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- The VaporOS web UI, so it shows up in browsers and apps that browse
+     _http._tcp. The host itself answers as <hostname>.local. -->
+<service-group>
+  <name replace-wildcards="yes">VaporOS on %h</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>80</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>

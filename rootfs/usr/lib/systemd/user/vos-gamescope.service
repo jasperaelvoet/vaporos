@@ -1,0 +1,31 @@
+[Unit]
+Description=gamescope and Steam on the virtual display
+Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
+# Controlled by vosd (systemctl --user -M vapor@), which starts it when a GPU
+# is present and either no monitor is attached or a stream begins. Never in
+# the live installer.
+ConditionKernelCommandLine=!vos.mode=live
+Wants=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# gamescope reaches the GPU through seatd; there is no logind seat session.
+Environment=LIBSEAT_BACKEND=seatd
+# vosd follows each Moonlight client's resolution by writing the mode here
+# and nudging gamescope (backend_set_dirty), without a restart.
+Environment=GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg
+Environment=GAMESCOPE_PATCHED_EDID_FILE=%h/.config/gamescope/edid.bin
+# Written by vosd before every start: VOS_OUTPUT is the virtual connector
+# (DP-1, ...), VOS_GS_EXTRA extra flags such as --hdr-enabled. Unset, they
+# are empty and gamescope picks the first connected output.
+Environment=VOS_OUTPUT= VOS_GS_EXTRA=
+EnvironmentFile=-%t/vos/gamescope.env
+ExecStartPre=/usr/bin/mkdir -p %h/.config/gamescope
+# No -W/-H/-r: the output mode comes from the mode save file and the EDID.
+ExecStart=/usr/bin/gamescope --backend drm --prefer-output ${VOS_OUTPUT} --xwayland-count 2 --force-grab-cursor -e $VOS_GS_EXTRA -- /usr/bin/steam -gamepadui -steamos3
+Restart=always
+RestartSec=3
+# Steam exits in its own time; do not let it hold up the welcome screen.
+TimeoutStopSec=15

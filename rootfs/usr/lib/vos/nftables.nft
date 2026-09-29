@@ -1,0 +1,64 @@
+#!/usr/bin/nft -f
+# VaporOS firewall. vos-firewall.service loads this through
+# /usr/lib/vos/vos-firewall, which appends to the "optional" chain the rules
+# that /var/lib/vos/config.json switches on (SSH, HTTPS, public web access).
+# The whole load is one nft transaction: there is never a moment with half a
+# ruleset.
+
+# Replace any previous version of the table (declare first, so the delete
+# never fails on a first load).
+table inet vos
+delete table inet vos
+
+table inet vos {
+    # Where the web UI may be reached from. Mirrors vosd's own source-address
+    # check: private, link-local and unique-local (loopback is accepted anyway).
+    set lan4 {
+        type ipv4_addr
+        flags interval
+        elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
+    }
+    set lan6 {
+        type ipv6_addr
+        flags interval
+        elements = { fc00::/7, fe80::/10 }
+    }
+
+    # Filled by vos-firewall from config.json; empty means closed.
+    chain optional {
+    }
+
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+        # ICMPv6 carries neighbour discovery; without it IPv6 does not work.
+        meta l4proto { icmp, icmpv6 } accept
+
+        # mDNS: avahi announces vapor.local and Sunshine's _nvstream._tcp.
+        udp dport 5353 accept
+        # DHCP, and DHCPv6 replies (these come from a link-local server
+        # address to the client port, which connection tracking cannot tie
+        # to the multicast solicit that asked for them).
+        udp dport { 67, 68 } accept
+        ip6 saddr fe80::/10 udp dport 546 accept
+
+        # The web UI, from the local network only.
+        ip saddr @lan4 tcp dport 80 accept
+        ip6 saddr @lan6 tcp dport 80 accept
+
+        # Sunshine: 47984 HTTPS (pairing), 47989 HTTP, 48010 RTSP, and
+        # 47998-48000 video, control and audio. Its admin UI and API on 47990
+        # are deliberately absent: vosd talks to them over loopback only.
+        tcp dport { 47984, 47989, 48010 } accept
+        udp dport 47998-48000 accept
+
+        jump optional
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}

@@ -1,0 +1,22 @@
+[Unit]
+Description=VaporOS firewall
+Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
+# Loaded before any interface is configured, so no port is ever reachable
+# unfiltered.
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+After=local-fs.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# nft -f /usr/lib/vos/nftables.nft, plus the ports config.json switches on
+# (SSH, HTTPS, public web). vosd applies a change to those settings with
+# `systemctl reload vos-firewall.service`.
+ExecStart=/usr/lib/vos/vos-firewall
+ExecReload=/usr/lib/vos/vos-firewall
+
+[Install]
+WantedBy=multi-user.target

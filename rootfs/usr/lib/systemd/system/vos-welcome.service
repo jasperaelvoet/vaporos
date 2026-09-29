@@ -1,0 +1,17 @@
+[Unit]
+Description=VaporOS welcome screen
+Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
+# Started and stopped by vosd's display policy only, so there is no [Install]
+# section. While it runs it is DRM master (the URL and QR code on every
+# connected monitor, a splash on the virtual connector) and holds tty1 in
+# graphics mode; gamescope can take the display only once it has stopped.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vos welcome
+Restart=on-failure
+RestartSec=2
+# It drops DRM master and exits on SIGTERM. Never let a hang delay gamescope
+# when a stream is starting.
+TimeoutStopSec=5

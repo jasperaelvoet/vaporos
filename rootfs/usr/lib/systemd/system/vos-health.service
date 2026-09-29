@@ -1,0 +1,23 @@
+[Unit]
+Description=VaporOS boot health check
+Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
+# boot-complete.target is only part of a boot that systemd-boot is counting
+# (systemd-bless-boot pulls it in): the first boots of a freshly written
+# update. If this check fails, the entry is never blessed and the machine
+# reboots; after three failed tries systemd-boot falls back to the previous
+# slot, and vosd records the version as failed.
+ConditionKernelCommandLine=!vos.mode=live
+Wants=vosd.service
+After=vosd.service systemd-logind.service network.target
+Before=boot-complete.target
+FailureAction=reboot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/vos health
+# vos health gives vosd up to 60 s to answer; leave room for the other checks.
+TimeoutStartSec=180
+
+[Install]
+RequiredBy=boot-complete.target
