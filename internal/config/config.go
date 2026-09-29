@@ -11,7 +11,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 )
 
 // Set by cmd/vos from -ldflags.
@@ -126,8 +128,47 @@ func Load() (*Config, error) {
 	return c, err
 }
 
-// Save writes config.json atomically.
+// mu guards every *Config shared inside vosd. Services read fields through
+// Snapshot or View and change them only through Mutate, so two services
+// never race on the struct or save each other's half-made changes.
+var mu sync.RWMutex
+
+// Mutate applies f under the config lock, then saves the whole config.
+// f must not call Save, Mutate, View or Snapshot.
+func (c *Config) Mutate(f func(*Config)) error {
+	mu.Lock()
+	defer mu.Unlock()
+	f(c)
+	return c.saveLocked()
+}
+
+// View runs f with the config read-locked. f must not change it.
+func (c *Config) View(f func(*Config)) {
+	mu.RLock()
+	defer mu.RUnlock()
+	f(c)
+}
+
+// Snapshot returns a deep copy that is safe to read without the lock.
+func (c *Config) Snapshot() Config {
+	mu.RLock()
+	defer mu.RUnlock()
+	cp := *c
+	cp.Display.ExtraModes = slices.Clone(c.Display.ExtraModes)
+	cp.Storage.Libraries = slices.Clone(c.Storage.Libraries)
+	cp.SSH.Keys = slices.Clone(c.SSH.Keys)
+	return cp
+}
+
+// Save writes config.json atomically. Prefer Mutate, which also takes the lock
+// for the change itself.
 func (c *Config) Save() error {
+	mu.Lock()
+	defer mu.Unlock()
+	return c.saveLocked()
+}
+
+func (c *Config) saveLocked() error {
 	c.Schema = 1
 	return WriteJSONAtomic(ConfigPath(), c, 0o644)
 }
