@@ -12,7 +12,7 @@ import (
 // configWatch answers "is web.allow_public set?" from config.json on disk.
 // The file is stat'ed at most once a second and parsed only when it
 // changed, so the check is cheap enough to run per request. Services save
-// the shared config through config.Save, so their edits land here too.
+// the shared config through config.Mutate, so their edits land here too.
 type configWatch struct {
 	mu      sync.Mutex
 	now     func() time.Time

@@ -95,6 +95,23 @@ func (a *announcer) emit(line string) {
 	}
 }
 
+// setupCoder is the part of api.Server the announcer reads.
+type setupCoder interface {
+	SetupCode() string
+	SetupWaived() bool
+}
+
+// announcedCode is the code= field of VOS-READY: "" (printed "-") while
+// no code is needed, including while the installer waives it for a PC
+// with no monitor. The announcer re-reads it every interval, so plugging a
+// monitor in shows up on the serial line within seconds.
+func announcedCode(s setupCoder) string {
+	if s.SetupWaived() {
+		return ""
+	}
+	return s.SetupCode()
+}
+
 // readyLine formats the harness line; empty fields are "-" and no field
 // may contain whitespace, which would break the harness's parsing.
 func readyLine(mode, version, ip, code string) string {

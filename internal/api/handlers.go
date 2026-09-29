@@ -62,28 +62,67 @@ type passwordRequest struct {
 	Password string `json:"password"`
 }
 
+// pwResult is the outcome of checkPassword.
+type pwResult int
+
+const (
+	pwRefused pwResult = iota // not checked; the error response is written
+	pwWrong
+	pwRight
+)
+
+// checkPassword verifies password against the admin password under the
+// login limit, which /auth/login and /auth/password share: a client gets
+// one check at a time and none while locked out, and only
+// maxPasswordChecks may wait for a hash across all clients. A wrong
+// password counts toward the client's lockout and a right one clears it.
+func (s *Server) checkPassword(w http.ResponseWriter, r *http.Request, password string) pwResult {
+	key := limitKey(r)
+	retry, ok := s.loginLimit.begin(key)
+	if !ok {
+		tooMany(w, retry)
+		return pwRefused
+	}
+	defer s.loginLimit.end(key)
+	select {
+	case s.pwChecks <- struct{}{}:
+		defer func() { <-s.pwChecks }()
+	default:
+		w.Header().Set("Retry-After", "2")
+		Error(w, http.StatusServiceUnavailable, "VaporOS is busy checking other sign-ins; try again in a moment")
+		return pwRefused
+	}
+	ok, err := s.verifyAdmin(r.Context(), password)
+	switch {
+	case errors.Is(err, auth.ErrNoAdmin):
+		Error(w, http.StatusConflict, "no admin password is set yet; finish setup first")
+		return pwRefused
+	case err != nil:
+		// The client went away while waiting for a hash slot; its password
+		// was never checked, so there is nothing to count.
+		Error(w, http.StatusServiceUnavailable, "the password was not checked: %v", err)
+		return pwRefused
+	case !ok:
+		s.loginLimit.fail(key)
+		return pwWrong
+	}
+	s.loginLimit.reset(key)
+	return pwRight
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req passwordRequest
 	if err := ReadJSON(r, &req); err != nil {
 		Error(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	key := limitKey(r)
-	if retry, ok := s.loginLimit.check(key); !ok {
-		tooMany(w, retry)
+	switch s.checkPassword(w, r, req.Password) {
+	case pwRefused:
 		return
-	}
-	ok, err := auth.VerifyAdmin(req.Password)
-	if errors.Is(err, auth.ErrNoAdmin) {
-		Error(w, http.StatusConflict, "no admin password is set yet; finish setup first")
-		return
-	}
-	if !ok {
-		s.loginLimit.fail(key)
+	case pwWrong:
 		Error(w, http.StatusUnauthorized, "wrong password")
 		return
 	}
-	s.loginLimit.reset(key)
 	// A session cookie the browser arrived with (possibly planted) does not
 	// survive a login.
 	if info, ok := s.session(nil, r); ok {
@@ -158,22 +197,13 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// A stolen session must not become a way to guess the password, so the
 	// current-password check shares the login limit.
-	key := limitKey(r)
-	if retry, ok := s.loginLimit.check(key); !ok {
-		tooMany(w, retry)
+	switch s.checkPassword(w, r, req.Current) {
+	case pwRefused:
 		return
-	}
-	ok, err := auth.VerifyAdmin(req.Current)
-	if err != nil {
-		Error(w, http.StatusConflict, "%v", err)
-		return
-	}
-	if !ok {
-		s.loginLimit.fail(key)
+	case pwWrong:
 		Error(w, http.StatusForbidden, "the current password is wrong")
 		return
 	}
-	s.loginLimit.reset(key)
 	if err := auth.ValidatePassword(req.New); err != nil {
 		Error(w, http.StatusBadRequest, "%v", err)
 		return

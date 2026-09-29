@@ -26,7 +26,12 @@ type limitState struct {
 	fails int
 	last  time.Time // most recent failure
 	until time.Time // locked out until
+	busy  bool      // an attempt admitted by begin is still being checked
 }
+
+// busyRetry is the Retry-After for a client whose previous attempt is still
+// being checked.
+const busyRetry = time.Second
 
 // maxTracked bounds the table; stale entries are pruned past it.
 const maxTracked = 4096
@@ -58,6 +63,48 @@ func (l *limiter) check(key string) (time.Duration, bool) {
 	return 0, true
 }
 
+// begin is check plus a reservation, for attempts that take long to verify
+// (an argon2 password check). It refuses while key is locked out, and while
+// another attempt by key is still being checked: with check-then-fail, a
+// burst of parallel guesses would all pass check before the first failure
+// is recorded, and the lockout would not slow guessing at all. An admitted
+// caller records the outcome with fail or reset and then calls end.
+func (l *limiter) begin(key string) (time.Duration, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	st := l.m[key]
+	if st == nil || l.stale(st, now) {
+		l.pruneLocked(now)
+		st = &limitState{}
+		l.m[key] = st
+	}
+	if now.Before(st.until) {
+		return st.until.Sub(now), false
+	}
+	if st.busy {
+		return busyRetry, false
+	}
+	st.busy = true
+	return 0, true
+}
+
+// end releases the reservation begin made for key. It runs after fail or
+// reset, so the next attempt sees the recorded outcome; an attempt that was
+// never checked (the client went away) records nothing.
+func (l *limiter) end(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st := l.m[key]
+	if st == nil {
+		return // reset after a success
+	}
+	st.busy = false
+	if st.fails == 0 {
+		delete(l.m, key)
+	}
+}
+
 // fail records a failed attempt by key.
 func (l *limiter) fail(key string) {
 	l.mu.Lock()
@@ -79,13 +126,7 @@ func (l *limiter) fail(key string) {
 		}
 		st.until = now.Add(d)
 	}
-	if len(l.m) > maxTracked {
-		for k, s := range l.m {
-			if l.stale(s, now) {
-				delete(l.m, k)
-			}
-		}
-	}
+	l.pruneLocked(now)
 }
 
 // reset forgets key's failures after a success.
@@ -95,8 +136,21 @@ func (l *limiter) reset(key string) {
 	l.mu.Unlock()
 }
 
+func (l *limiter) pruneLocked(now time.Time) {
+	if len(l.m) < maxTracked {
+		return
+	}
+	for k, s := range l.m {
+		if l.stale(s, now) {
+			delete(l.m, k)
+		}
+	}
+}
+
+// stale entries are neither locked out nor recent, and carry no attempt in
+// progress; they can be forgotten.
 func (l *limiter) stale(st *limitState, now time.Time) bool {
-	return !now.Before(st.until) && now.Sub(st.last) > l.forget
+	return !st.busy && !now.Before(st.until) && now.Sub(st.last) > l.forget
 }
 
 // limitKey identifies a client for rate limiting: its IPv4 address, or its

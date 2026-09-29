@@ -76,11 +76,21 @@ export function groupModes(modes) {
 }
 
 // safeNext keeps a ?next= redirect on this origin: a path, never "//host"
-// or "/\host", which browsers treat as another origin.
+// or "/\host", which browsers treat as another origin. Control characters
+// are refused outright: URL parsers drop tabs and newlines, so "/\t/evil"
+// would become "//evil". What is left is resolved the way the browser will
+// and must stay on the same (placeholder) origin.
 export function safeNext(next) {
-  if (typeof next !== 'string' || !/^\/(?![/\\])/.test(next)) return '/';
-  if (/^\/(login|setup)(?:[/?#]|$)/.test(next)) return '/';
-  return next;
+  if (typeof next !== 'string' || /[\u0000-\u001f\u007f]/.test(next) || !/^\/(?![/\\])/.test(next)) return '/';
+  const base = 'http://vaporos.invalid';
+  let u;
+  try {
+    u = new URL(next, base);
+  } catch {
+    return '/';
+  }
+  if (u.origin !== base || /^\/(login|setup)(?:\/|$)/.test(u.pathname)) return '/';
+  return u.pathname + u.search + u.hash;
 }
 
 // normalizeCode tidies a typed setup code: upper case, no spaces, and the

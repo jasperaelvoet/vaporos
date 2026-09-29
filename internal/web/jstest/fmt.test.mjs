@@ -63,6 +63,17 @@ test('safeNext only allows paths on this origin', () => {
   assert.equal(safeNext('/setup'), '/');
   assert.equal(safeNext('/loginx'), '/loginx');
   assert.equal(safeNext(null), '/');
+  // URL parsers strip tab, CR and LF, so these would become "//evil.example".
+  assert.equal(safeNext('/\t/evil.example'), '/');
+  assert.equal(safeNext('/\n/evil.example'), '/');
+  assert.equal(safeNext('/\r\\evil.example'), '/');
+  assert.equal(safeNext('/\u0000/evil.example'), '/');
+  assert.equal(safeNext('/l\togin'), '/');
+  // Paths that only look odd stay on this origin.
+  assert.equal(safeNext('/./login'), '/');
+  assert.equal(safeNext('/storage/../setup'), '/');
+  assert.equal(safeNext('/%2F%2Fevil.example'), '/%2F%2Fevil.example');
+  assert.equal(safeNext('/updates?x=1'), '/updates?x=1');
 });
 
 test('normalizeCode tidies typed setup codes', () => {

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
@@ -64,6 +65,7 @@ type Server struct {
 	routes      []route
 	code        string // setup code, "" when none is needed
 	onCode      func(code string)
+	codeWaiver  func() bool
 	allowPublic func() bool
 	onActivity  func()
 	setupMu     sync.Mutex // serialises POST /auth/setup
@@ -74,25 +76,37 @@ type Server struct {
 	loginLimit *limiter
 	setupLimit *limiter
 	hosts      hostCache
+	// pwChecks bounds password checks waiting or running at once, across
+	// all clients (see passwordCheck).
+	pwChecks chan struct{}
 
 	// Seams for tests.
-	now       func() time.Time
-	localIPs  func() []string
-	hub       *events.Hub
-	heartbeat time.Duration
+	now         func() time.Time
+	localIPs    func() []string
+	hub         *events.Hub
+	heartbeat   time.Duration
+	verifyAdmin func(ctx context.Context, password string) (bool, error)
 }
+
+// maxPasswordChecks is how many password checks may wait for or hold one
+// of auth's two argon2 slots at once. The per-client limit allows each
+// client only one; this bounds the total when many addresses guess at once,
+// so vosd answers "busy" instead of queueing hashing work without end.
+const maxPasswordChecks = 8
 
 func New(opts Options) *Server {
 	if opts.Addr == "" {
 		opts.Addr = ":80"
 	}
 	s := &Server{
-		opts:      opts,
-		mux:       http.NewServeMux(),
-		now:       time.Now,
-		localIPs:  sysd.LocalIPs,
-		hub:       events.Default,
-		heartbeat: 15 * time.Second,
+		opts:        opts,
+		mux:         http.NewServeMux(),
+		pwChecks:    make(chan struct{}, maxPasswordChecks),
+		now:         time.Now,
+		localIPs:    sysd.LocalIPs,
+		hub:         events.Default,
+		heartbeat:   15 * time.Second,
+		verifyAdmin: auth.VerifyAdminContext,
 	}
 	now := func() time.Time { return s.now() }
 	s.sessions = newSessionStore(config.SessionsPath(), now)
@@ -148,6 +162,31 @@ func (s *Server) OnSetupCodeChange(f func(code string)) {
 	s.mu.Lock()
 	s.onCode = f
 	s.mu.Unlock()
+}
+
+// SetSetupWaiver installs the installer's setup-code waiver: while f
+// reports true, Setup routes need no code (vosd waives it while no monitor
+// is attached, since nobody could read the code). It is asked on every
+// Setup request and event-stream heartbeat, so it must be cheap, and a
+// change applies at once. Outside installer mode it is ignored: first-run
+// setup on an installed system always needs the code. The source-IP and
+// Host checks apply as always.
+func (s *Server) SetSetupWaiver(f func() bool) {
+	s.mu.Lock()
+	s.codeWaiver = f
+	s.mu.Unlock()
+}
+
+// SetupWaived reports whether Setup routes currently need no code (see
+// SetSetupWaiver).
+func (s *Server) SetupWaived() bool {
+	if !s.opts.Installer {
+		return false
+	}
+	s.mu.RLock()
+	f := s.codeWaiver
+	s.mu.RUnlock()
+	return f != nil && f()
 }
 
 // SetAllowPublic installs the web.allow_public lookup. It runs on every

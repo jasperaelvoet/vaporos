@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"golang.org/x/crypto/argon2"
@@ -185,5 +188,55 @@ func TestDamagedAuthFileIsNoAdmin(t *testing.T) {
 		if HasAdmin() {
 			t.Errorf("HasAdmin true for %q", body)
 		}
+	}
+}
+
+func TestVerifyLeavesTheQueueWhenTheClientGoesAway(t *testing.T) {
+	cheap(t)
+	stateDir(t)
+	if err := SetAdminPassword("", "s3cret-pass"); err != nil {
+		t.Fatal(err)
+	}
+	// Occupy every hash slot, as a burst of other logins would.
+	for range cap(hashSlots) {
+		hashSlots <- struct{}{}
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			for range cap(hashSlots) {
+				<-hashSlots
+			}
+		}
+	}
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := VerifyAdminContext(ctx, "s3cret-pass")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("returned %v while every slot was taken", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled check kept waiting for a hash slot")
+	}
+	release()
+	if ok, err := VerifyAdminContext(context.Background(), "s3cret-pass"); !ok || err != nil {
+		t.Fatalf("after the queue drained: %v, %v", ok, err)
+	}
+	// An already-cancelled check never hashes, even with a free slot.
+	if _, err := VerifyAdminContext(ctx, "s3cret-pass"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context: err = %v", err)
 	}
 }

@@ -53,7 +53,12 @@ const (
 // checkSetup looks for a setup code in the X-VOS-Setup header, else in the
 // vos_setup cookie. Wrong codes count toward the per-client limit however
 // they arrive; otherwise the cookie would be an unmetered guessing channel.
+// While the code is waived (SetSetupWaiver) every request passes, whatever
+// code it carries, and nothing is checked or counted.
 func (s *Server) checkSetup(r *http.Request) (res setupResult, retry time.Duration, fromCookie bool) {
+	if s.SetupWaived() {
+		return setupOK, 0, false
+	}
 	given := r.Header.Get(setupHeader)
 	if given == "" {
 		if c, err := r.Cookie(setupCookie); err == nil && c.Value != "" {
@@ -79,14 +84,33 @@ func (s *Server) checkSetup(r *http.Request) (res setupResult, retry time.Durati
 	return setupWrong, 0, fromCookie
 }
 
+// FirstPartyNavigation reports whether r is a top-level navigation that no
+// other site started: a typed URL or a scanned QR code (Sec-Fetch-Site
+// "none"), one of our own pages ("same-origin"), or a client that sends no
+// Fetch Metadata at all (curl, old browsers). Only such a request may bring
+// a setup code in its URL. Otherwise any web page could make a browser on
+// the LAN send guesses (<img src="http://vaporos-setup.local/setup?code=…">,
+// or a popup it keeps re-navigating) and lock that browser out of setup.
+func FirstPartyNavigation(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "none", "same-origin":
+	default:
+		return false
+	}
+	d := r.Header.Get("Sec-Fetch-Dest")
+	return d == "" || d == "document"
+}
+
 // SetSetupCookie checks code (from GET /setup?code=…, typically the QR
 // code) and, if it is the current setup code, sets the vos_setup cookie that
 // unlocks Setup routes for this browser. It returns false for a wrong or
 // missing code, when no setup is pending, or while the client is locked out
-// for guessing; a wrong code counts toward that lockout.
+// for guessing; a wrong code counts toward that lockout. A code another
+// site put in the URL (see FirstPartyNavigation) is ignored: neither
+// checked nor counted, so a forged header buys no free guess either.
 func (s *Server) SetSetupCookie(w http.ResponseWriter, r *http.Request, code string) bool {
 	cur := s.SetupCode()
-	if cur == "" || code == "" {
+	if cur == "" || code == "" || !FirstPartyNavigation(r) {
 		return false
 	}
 	key := limitKey(r)
@@ -124,6 +148,9 @@ func (s *Server) HasSetupAccess(r *http.Request) bool {
 func (s *Server) stillAllowed(r *http.Request) bool {
 	if info, ok := sessionFromContext(r.Context()); ok {
 		return s.sessions.valid(info.key)
+	}
+	if s.SetupWaived() {
+		return true
 	}
 	code := s.SetupCode()
 	if code == "" {

@@ -45,6 +45,12 @@ func Main(args []string) int {
 		Ready:     func(a net.Addr) { listening <- a },
 	})
 	srv.SetSetupCode(setupCode(live))
+	if live {
+		// A PC with no monitor could never show the code, so the installer
+		// waives it until one is plugged in (the api ignores this outside
+		// installer mode).
+		srv.SetSetupWaiver(headless)
+	}
 	// web.allow_public is read from config.json as requests arrive, so a
 	// hand edit applies without restarting vosd.
 	srv.SetAllowPublic(newConfigWatch().allowPublic)
@@ -56,7 +62,7 @@ func Main(args []string) int {
 	sys := system.NewService(cfg)
 	sys.Routes(srv)
 
-	ann := newAnnouncer(live, version, srv.SetupCode)
+	ann := newAnnouncer(live, version, func() string { return announcedCode(srv) })
 	srv.OnSetupCodeChange(func(code string) {
 		// First-run setup finished: the welcome screen, the serial line
 		// and the next vosd start all stop offering the code.

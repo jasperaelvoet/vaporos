@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -33,9 +34,8 @@ type SSHState struct {
 }
 
 func (s *Service) handleGetSSH(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	st := SSHState{Enabled: s.cfg.SSH.Enabled, Keys: append([]string{}, s.cfg.SSH.Keys...)}
-	s.mu.Unlock()
+	ssh := s.cfg.Snapshot().SSH
+	st := SSHState{Enabled: ssh.Enabled, Keys: append([]string{}, ssh.Keys...)}
 	api.WriteJSON(w, http.StatusOK, st)
 }
 
@@ -72,10 +72,16 @@ func (s *Service) SetSSH(ctx context.Context, want SSHState) (SSHState, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old := s.cfg.SSH
-	s.cfg.SSH = config.SSHConfig{Enabled: want.Enabled, Keys: want.Keys}
-	if err := s.cfg.Save(); err != nil {
-		s.cfg.SSH = old
+	var old config.SSHConfig
+	err := s.cfg.Mutate(func(c *config.Config) {
+		old = c.SSH
+		c.SSH = config.SSHConfig{Enabled: want.Enabled, Keys: slices.Clone(want.Keys)}
+	})
+	if err != nil {
+		// The file on disk still has the old settings (it is replaced
+		// atomically); put them back in memory too, whether or not this
+		// second save gets through.
+		_ = s.cfg.Mutate(func(c *config.Config) { c.SSH = old })
 		return SSHState{}, fmt.Errorf("saving config: %w", err)
 	}
 	if want.Enabled {

@@ -435,6 +435,155 @@ func TestLimiterBackoff(t *testing.T) {
 	}
 }
 
+// A burst of parallel guesses must not all be checked before the first
+// failure is recorded: the lockout applies to every guess.
+func TestLoginBurstIsLimited(t *testing.T) {
+	env(t)
+	writeAdmin(t, "correct-pass")
+	s, _ := newServer(t, Options{})
+	const n = 30
+	codes := make(chan int, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- do(t, s, req{method: "POST", path: "/api/v1/auth/login", body: `{"password":"wrong"}`}).Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	count := map[int]int{}
+	for c := range codes {
+		count[c]++
+	}
+	if count[401] < 1 || count[401] > 5 || count[401]+count[429] != n {
+		t.Fatalf("burst of %d wrong passwords: %v, want at most 5 checked (401) and the rest refused (429)", n, count)
+	}
+}
+
+// blockingVerify replaces the password check with one that waits until
+// released, so tests can hold a check in flight.
+type blockingVerify struct {
+	entered chan string
+	release chan struct{}
+}
+
+func newBlockingVerify(s *Server) *blockingVerify {
+	b := &blockingVerify{entered: make(chan string, 64), release: make(chan struct{})}
+	s.verifyAdmin = func(ctx context.Context, pw string) (bool, error) {
+		b.entered <- pw
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		return pw == "correct-pass", nil
+	}
+	return b
+}
+
+func TestLoginOneCheckAtATimePerClient(t *testing.T) {
+	env(t)
+	writeAdmin(t, "correct-pass")
+	s, _ := newServer(t, Options{})
+	b := newBlockingVerify(s)
+	login := func(pw string) *httptest.ResponseRecorder {
+		return do(t, s, req{method: "POST", path: "/api/v1/auth/login", body: `{"password":"` + pw + `"}`})
+	}
+	first := make(chan int, 1)
+	go func() { first <- login("wrong").Code }()
+	<-b.entered
+	// The right password, sent while a guess is still being checked, is
+	// refused rather than checked in parallel.
+	rec := login("correct-pass")
+	if rec.Code != 429 || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("second attempt while one is in flight: %d %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	// Other clients are not held up.
+	other := make(chan int, 1)
+	go func() {
+		other <- do(t, s, req{method: "POST", path: "/api/v1/auth/login", remote: "192.168.1.11:1", body: `{"password":"correct-pass"}`}).Code
+	}()
+	<-b.entered
+	close(b.release)
+	if c := <-first; c != 401 {
+		t.Fatalf("first attempt: %d", c)
+	}
+	if c := <-other; c != 200 {
+		t.Fatalf("other client: %d", c)
+	}
+	if rec := login("correct-pass"); rec.Code != 200 {
+		t.Fatalf("after the check finished: %d", rec.Code)
+	}
+}
+
+func TestLoginAbandonedCheckIsNotCounted(t *testing.T) {
+	env(t)
+	writeAdmin(t, "correct-pass")
+	s, _ := newServer(t, Options{})
+	s.verifyAdmin = func(ctx context.Context, pw string) (bool, error) { return false, context.Canceled }
+	for range 10 {
+		if rec := do(t, s, req{method: "POST", path: "/api/v1/auth/login", body: `{"password":"wrong"}`}); rec.Code != 503 {
+			t.Fatalf("abandoned check: %d", rec.Code)
+		}
+	}
+	s.verifyAdmin = auth.VerifyAdminContext
+	if rec := do(t, s, req{method: "POST", path: "/api/v1/auth/login", body: `{"password":"correct-pass"}`}); rec.Code != 200 {
+		t.Fatalf("checks that never ran locked the client out: %d", rec.Code)
+	}
+}
+
+func TestPasswordChecksAreBoundedAcrossClients(t *testing.T) {
+	env(t)
+	writeAdmin(t, "correct-pass")
+	s, _ := newServer(t, Options{})
+	b := newBlockingVerify(s)
+	var wg sync.WaitGroup
+	for i := range maxPasswordChecks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			do(t, s, req{method: "POST", path: "/api/v1/auth/login", remote: fmt.Sprintf("192.168.2.%d:1", i+1), body: `{"password":"wrong"}`})
+		}()
+	}
+	for range maxPasswordChecks {
+		<-b.entered
+	}
+	rec := do(t, s, req{method: "POST", path: "/api/v1/auth/login", remote: "192.168.3.1:1", body: `{"password":"correct-pass"}`})
+	if rec.Code != 503 || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("check beyond the cap: %d %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	close(b.release)
+	wg.Wait()
+	if rec := do(t, s, req{method: "POST", path: "/api/v1/auth/login", remote: "192.168.3.1:1", body: `{"password":"correct-pass"}`}); rec.Code != 200 {
+		t.Fatalf("after the burst: %d", rec.Code)
+	}
+}
+
+func TestLimiterKeepsReservationsWhenPruning(t *testing.T) {
+	clk := &clock{t: time.Unix(1e9, 0)}
+	l := newLimiter(clk.Now)
+	if _, ok := l.begin("k"); !ok {
+		t.Fatal("first begin refused")
+	}
+	clk.Advance(2 * time.Hour) // stale by age, but still in flight
+	for i := range maxTracked + 10 {
+		l.fail(fmt.Sprint("other-", i))
+	}
+	if d, ok := l.begin("k"); ok || d != busyRetry {
+		t.Fatalf("a pruned reservation let a second attempt in: %v %v", d, ok)
+	}
+	l.end("k")
+	if _, ok := l.begin("k"); !ok {
+		t.Fatal("begin refused after end")
+	}
+	l.end("k")
+	if _, ok := l.m["k"]; ok {
+		t.Fatal("an attempt that recorded nothing left an entry behind")
+	}
+}
+
 func TestLimitKeyGroupsIPv6Prefix(t *testing.T) {
 	r1 := httptest.NewRequest("GET", "/", nil)
 	r1.RemoteAddr = "[fd00:1:2:3:aaaa::1]:5"
@@ -619,6 +768,108 @@ func TestSetupAccess(t *testing.T) {
 	s.SetSetupCode("")
 	if rec := do(t, s, req{path: "/api/v1/wizard", cookies: []*http.Cookie{sc}}); rec.Code != 403 {
 		t.Fatalf("after setup ended: %d", rec.Code)
+	}
+}
+
+// Another site can make a browser load /setup?code=… (an <img>, a popup it
+// re-navigates). Such codes are ignored, so they can neither lock the
+// browser out nor serve as free guesses.
+func TestSetupCodeFromOtherSitesIsIgnored(t *testing.T) {
+	env(t)
+	s, _ := newServer(t, Options{Installer: true})
+	s.SetSetupCode("ABCD-EF12")
+	s.Handle("GET", "/wizard", Setup, func(w http.ResponseWriter, r *http.Request) { OK(w) })
+	s.HandleRaw("GET /setup", Public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.SetSetupCookie(w, r, r.URL.Query().Get("code")) {
+			fmt.Fprint(w, "ok")
+			return
+		}
+		http.Error(w, "bad code", 403)
+	}))
+	victim := "192.168.1.40:1"
+	foreign := []map[string]string{
+		{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image"},
+		{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "document"},
+		{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Dest": "document"},
+		{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "image"},
+	}
+	for i := 0; i < 10; i++ {
+		rec := do(t, s, req{path: "/setup?code=WRONG" + fmt.Sprint(i), remote: victim, hdr: foreign[i%len(foreign)]})
+		if cookie(rec, setupCookie) != nil {
+			t.Fatal("a foreign request got a setup cookie")
+		}
+	}
+	// The right code from another site is not honoured either: the
+	// response must not tell a forged request whether its guess was right.
+	for _, hdr := range foreign {
+		if rec := do(t, s, req{path: "/setup?code=ABCD-EF12", remote: victim, hdr: hdr}); cookie(rec, setupCookie) != nil {
+			t.Fatalf("right code with %v set the cookie", hdr)
+		}
+	}
+	if rec := do(t, s, req{path: "/api/v1/wizard", remote: victim, hdr: map[string]string{"X-VOS-Setup": "ABCD-EF12"}}); rec.Code != 200 {
+		t.Fatalf("the victim was locked out by foreign requests: %d", rec.Code)
+	}
+	// A scanned QR code or typed URL, and a client without Fetch Metadata.
+	for _, hdr := range []map[string]string{{"Sec-Fetch-Site": "none", "Sec-Fetch-Dest": "document"}, {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "document"}, nil} {
+		if rec := do(t, s, req{path: "/setup?code=abcd-ef12", remote: victim, hdr: hdr}); rec.Code != 200 || cookie(rec, setupCookie) == nil {
+			t.Fatalf("navigation %v: %d, cookie %v", hdr, rec.Code, cookie(rec, setupCookie))
+		}
+	}
+}
+
+func TestSetupWaiver(t *testing.T) {
+	env(t)
+	s, _ := newServer(t, Options{Installer: true})
+	s.SetSetupCode("ABCD-EF12")
+	s.Handle("GET", "/wizard", Setup, func(w http.ResponseWriter, r *http.Request) { OK(w) })
+	var headless atomic.Bool
+	s.SetSetupWaiver(headless.Load)
+	bare := func() *http.Request {
+		r := httptest.NewRequest("GET", "/api/v1/events", nil)
+		r.RemoteAddr = lanClient
+		return r
+	}
+
+	if rec := do(t, s, req{path: "/api/v1/wizard"}); rec.Code != 403 || s.SetupWaived() {
+		t.Fatalf("monitor attached, no code: %d", rec.Code)
+	}
+	headless.Store(true)
+	if !s.SetupWaived() || !s.stillAllowed(bare()) || !s.HasSetupAccess(bare()) {
+		t.Fatal("no monitor: the code is not waived")
+	}
+	if rec := do(t, s, req{path: "/api/v1/wizard"}); rec.Code != 200 {
+		t.Fatalf("no monitor, no code: %d", rec.Code)
+	}
+	// The harness sends "X-VOS-Setup: -" when VOS-READY says code=-; any
+	// code passes and none is counted.
+	for range 10 {
+		if rec := do(t, s, req{path: "/api/v1/wizard", hdr: map[string]string{"X-VOS-Setup": "-"}}); rec.Code != 200 {
+			t.Fatalf("no monitor, placeholder code: %d", rec.Code)
+		}
+	}
+	// The source-IP rule still holds.
+	if rec := do(t, s, req{path: "/api/v1/wizard", remote: "8.8.8.8:1"}); rec.Code != 403 {
+		t.Fatalf("public address while waived: %d", rec.Code)
+	}
+	// A monitor plugged in re-arms the code at once, streams included.
+	headless.Store(false)
+	if rec := do(t, s, req{path: "/api/v1/wizard"}); rec.Code != 403 {
+		t.Fatalf("monitor plugged in, no code: %d", rec.Code)
+	}
+	if s.stillAllowed(bare()) {
+		t.Fatal("a stream admitted by the waiver outlived it")
+	}
+	if rec := do(t, s, req{path: "/api/v1/wizard", hdr: map[string]string{"X-VOS-Setup": "ABCD-EF12"}}); rec.Code != 200 {
+		t.Fatalf("right code after the waiver (guesses must not have counted): %d", rec.Code)
+	}
+
+	// First-run setup on an installed system never waives the code.
+	installed, _ := newServer(t, Options{})
+	installed.SetSetupCode("ABCD-EF12")
+	installed.Handle("GET", "/wizard", Setup, func(w http.ResponseWriter, r *http.Request) { OK(w) })
+	installed.SetSetupWaiver(func() bool { return true })
+	if rec := do(t, installed, req{path: "/api/v1/wizard"}); rec.Code != 403 || installed.SetupWaived() {
+		t.Fatalf("OS mode honoured the waiver: %d", rec.Code)
 	}
 }
 
