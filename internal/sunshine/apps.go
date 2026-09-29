@@ -16,16 +16,23 @@ type appsFile struct {
 }
 
 type appEntry struct {
-	Name      string `json:"name"`
-	Cmd       string `json:"cmd,omitempty"`
-	ImagePath string `json:"image-path,omitempty"`
+	Name      string   `json:"name"`
+	Detached  []string `json:"detached,omitempty"`
+	ImagePath string   `json:"image-path,omitempty"`
 }
+
+// launchCmd asks the Steam client running in gamescope to start a game.
+// No app has a "cmd": Sunshine would run it as the app's own process, and
+// a `steam steam://…` started while Steam is not up yet (gamescope is only
+// started by the prep command) would bring up a second Steam outside
+// gamescope. `vos session launch` hands the URL to the Steam in the
+// session instead, and as a "detached" command Sunshine starts it and
+// lets it go; the app then runs until it is quit, like "Steam".
+const launchCmd = "/usr/bin/vos session launch steam://rungameid/%d"
 
 // renderApps builds apps.json: "Steam" first, which streams the Steam UI
 // that gamescope already shows, then one entry per installed game that
-// asks the running Steam to launch it. `steam steam://…` hands the URL to
-// the running client and exits at once; Sunshine's auto-detach (on by
-// default) treats that as a launched, detached app.
+// asks the Steam in gamescope to launch it (launchCmd).
 //
 // Sunshine derives each app's id from its name (and image), so names are
 // kept unique; that also keeps ids, and Moonlight's shortcuts, stable
@@ -44,8 +51,8 @@ func renderApps(games []steam.App) []byte {
 		}
 		used[strings.ToLower(name)] = true
 		f.Apps = append(f.Apps, appEntry{
-			Name: escapeEnv(name),
-			Cmd:  fmt.Sprintf("steam steam://rungameid/%d", g.ID),
+			Name:     escapeEnv(name),
+			Detached: []string{fmt.Sprintf(launchCmd, g.ID)},
 		})
 	}
 	b, _ := json.MarshalIndent(f, "", "  ")

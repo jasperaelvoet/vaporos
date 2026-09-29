@@ -11,7 +11,9 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
@@ -66,6 +68,123 @@ func TestPrepareFirstBoot(t *testing.T) {
 	h.s.prepare(context.Background())
 	if len(h.rec.calls()) != 0 || len(h.rec.asGamer) != 0 {
 		t.Errorf("unchanged start did work: %q %q", h.rec.calls(), h.rec.asGamer)
+	}
+}
+
+// Every boot after the first: the files are unchanged, and the unit, which
+// nothing enables, is not running. vosd must start it anyway.
+func TestPrepareStartsSunshineOnAnUnchangedBoot(t *testing.T) {
+	h := newHarness(t)
+	h.s.prepare(context.Background())
+	writeState(t, "vosd")
+
+	// The next boot: a new vosd over the same files.
+	rec := &recorder{}
+	s := NewService(h.s.cfg)
+	s.apiBase, s.infoURL, s.sysDRM, s.pacmanDB = h.s.apiBase, h.s.infoURL, h.s.sysDRM, h.s.pacmanDB
+	s.publish, s.userSystemctl, s.asGamer = rec.publish, rec.ctl, rec.gamer
+	s.gpuSupported, s.games, s.follow, s.journalTail = h.s.gpuSupported, h.s.games, h.s.follow, h.s.journalTail
+	s.unitActive = func(context.Context) bool { return false }
+	s.prepare(context.Background())
+	if calls := rec.calls(); !reflect.DeepEqual(calls, []string{"start " + unitName}) || len(rec.asGamer) != 0 {
+		t.Errorf("unchanged boot: systemctl %q, asGamer %q", calls, rec.asGamer)
+	}
+}
+
+// Sunshine that is down for good (a start that failed because the gaming
+// user's manager was not up yet, someone stopping it) is started again.
+func TestMaintainStartsSunshineWhenItIsDown(t *testing.T) {
+	h := newHarness(t)
+	writeCreds(t, h.f.user, h.f.pass)
+	writeState(t, h.f.user)
+	clock := &fakeClock{t: time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)}
+	h.s.now = clock.now
+	h.s.prepare(context.Background()) // new files: one restart
+	h.rec.systemctl = nil
+
+	var active atomic.Bool
+	h.s.unitActive = func(context.Context) bool { return active.Load() }
+	h.rec.failCtl = errors.New("Failed to connect to bus: No such file or directory")
+	h.s.poll(context.Background())
+	if calls := h.rec.calls(); !reflect.DeepEqual(calls, []string{"start " + unitName}) {
+		t.Fatalf("down: systemctl %q", calls)
+	}
+	h.s.poll(context.Background())
+	if len(h.rec.calls()) != 1 {
+		t.Errorf("retried at once: %q", h.rec.calls())
+	}
+	clock.add(startCheck)
+	h.rec.failCtl = nil
+	h.s.poll(context.Background())
+	if len(h.rec.calls()) != 2 {
+		t.Errorf("not retried after %v: %q", startCheck, h.rec.calls())
+	}
+	active.Store(true)
+	clock.add(startCheck)
+	h.s.poll(context.Background())
+	if len(h.rec.calls()) != 2 {
+		t.Errorf("started a running Sunshine: %q", h.rec.calls())
+	}
+	active.Store(false) // stopped for good
+	clock.add(startCheck)
+	h.s.poll(context.Background())
+	if calls := h.rec.calls(); len(calls) != 3 || calls[2] != "start "+unitName {
+		t.Errorf("stopped Sunshine not started again: %q", calls)
+	}
+}
+
+// A restart that failed because the gaming user's manager was not up yet
+// is settled by the next start check, well before its own retry is due.
+func TestFailedRestartSettledByStart(t *testing.T) {
+	h := newHarness(t)
+	writeCreds(t, h.f.user, h.f.pass)
+	writeState(t, h.f.user)
+	clock := &fakeClock{t: time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)}
+	h.s.now = clock.now
+	h.s.unitActive = func(context.Context) bool { return false }
+	h.rec.failCtl = errors.New("Failed to connect to bus")
+	h.s.apiBase = "https://127.0.0.1:1" // Sunshine is down: no API fallback either
+	h.s.prepare(context.Background())
+	if !h.s.pendingRestart {
+		t.Fatalf("failed restart not pending: %q", h.rec.calls())
+	}
+	h.rec.failCtl = nil
+	h.rec.systemctl = nil
+	clock.add(startCheck)
+	h.s.poll(context.Background())
+	if calls := h.rec.calls(); !reflect.DeepEqual(calls, []string{"start " + unitName}) || h.s.pendingRestart {
+		t.Errorf("systemctl %q, pending %v", calls, h.s.pendingRestart)
+	}
+}
+
+// Without a supported GPU Sunshine is not started (it could only fail and
+// restart in a loop); once one shows up, it is.
+func TestNoSupportedGPUNoSunshine(t *testing.T) {
+	h := newHarness(t)
+	writeCreds(t, h.f.user, h.f.pass)
+	writeState(t, h.f.user)
+	clock := &fakeClock{t: time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)}
+	h.s.now = clock.now
+	var gpu atomic.Bool
+	h.s.gpuSupported = gpu.Load
+	h.s.unitActive = func(context.Context) bool { return false }
+	h.s.prepare(context.Background())
+	h.s.poll(context.Background())
+	if len(h.rec.calls()) != 0 {
+		t.Errorf("Sunshine started without a GPU: %q", h.rec.calls())
+	}
+	if _, err := os.Stat(confPath()); err != nil {
+		t.Errorf("sunshine.conf not written: %v", err)
+	}
+	gpu.Store(true) // amdgpu finished loading
+	h.s.poll(context.Background())
+	if len(h.rec.calls()) != 0 {
+		t.Errorf("GPU probed again before %v: %q", gpuReprobe, h.rec.calls())
+	}
+	clock.add(gpuReprobe)
+	h.s.poll(context.Background())
+	if calls := h.rec.calls(); len(calls) != 1 || (calls[0] != "start "+unitName && calls[0] != "restart "+unitName) {
+		t.Errorf("GPU found: systemctl %q", calls)
 	}
 }
 
@@ -133,7 +252,7 @@ func TestMaintainPicksUpNewGamesAndConnector(t *testing.T) {
 	h.s.prepare(context.Background())
 	h.rec.systemctl = nil
 
-	h.s.cfg.Display.VirtualConnector = "HDMI-A-1"
+	h.s.cfg.Mutate(func(c *config.Config) { c.Display.VirtualConnector = "HDMI-A-1" })
 	h.s.nextConf = h.s.now() // due
 	h.s.poll(context.Background())
 	data, _ := os.ReadFile(confPath())

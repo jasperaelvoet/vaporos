@@ -23,5 +23,7 @@ origin_web_ui_allowed = pc
 upnp = disabled
 system_tray = disabled
 
-# The virtual display follows each Moonlight client's mode.
+# The virtual display takes the mode of the Moonlight client that launches
+# an app. Sunshine runs these commands on launch only, not on resume, so a
+# resumed stream keeps the mode it was launched with.
 global_prep_cmd = {{.PrepCmd}}

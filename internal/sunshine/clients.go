@@ -144,6 +144,7 @@ func lineAt(line string, start, now time.Time) (time.Time, bool) {
 func (s *Service) observeClients(line string, at time.Time, live bool) {
 	s.mu.Lock()
 	wasIdle := s.clients.idle()
+	lastLeft, lastBegin := s.clients.since, s.sessionAt
 	ev := s.clients.observe(line, at)
 	isIdle := s.clients.idle()
 	s.mu.Unlock()
@@ -155,7 +156,25 @@ func (s *Service) observeClients(line string, at time.Time, live bool) {
 		log.Printf("sunshine: the Moonlight client disconnected; the app stays open for %d minutes for it to reconnect", abandonMinutes)
 	case ev == clientConnected && wasIdle:
 		log.Printf("sunshine: a Moonlight client connected")
+		if lastBegin.Before(lastLeft) {
+			s.noteResume()
+		}
 	}
+}
+
+// noteResume explains a resumed stream. Sunshine runs the prep command
+// (`vos session begin`, which sets the virtual display's mode) when an app
+// is launched, never on a resume, and nothing it logs tells vosd the mode
+// the resuming client wants. So the display keeps the mode, refresh rate
+// and HDR of the launch, which is wrong when another device (or the same
+// one with other settings) takes over.
+func (s *Service) noteResume() {
+	log.Printf("sunshine: a Moonlight client resumed the running app; the display keeps the mode it was launched with")
+	s.publish("system.message", map[string]string{
+		"level": "info",
+		"text": "A Moonlight device resumed the stream that was already running, so the screen keeps the resolution, refresh rate and HDR " +
+			"it was started with. If this device wants other settings, choose Quit in Moonlight and start it again.",
+	})
 }
 
 func (s *Service) resetClients() {
