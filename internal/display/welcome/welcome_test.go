@@ -1,0 +1,171 @@
+package welcome
+
+import (
+	"image"
+	"image/color"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"rsc.io/qr"
+)
+
+var sample = State{
+	Mode: "installer", Hostname: "vapor",
+	URL: "http://vapor.local", IPURL: "http://192.168.1.50",
+	QR: "http://192.168.1.50/setup?code=ABCD-EFGH", Code: "ABCD-EFGH",
+	Title: "VaporOS", Status: "Ready to install",
+	Detail:  "Open this address on a phone or computer to install VaporOS",
+	Version: "20260929.123456",
+}
+
+func luma(c color.RGBA) int { return (299*int(c.R) + 587*int(c.G) + 114*int(c.B)) / 1000 }
+
+// The QR on screen must be exactly rsc.io/qr's code for the state's URL,
+// module for module, so any phone camera decodes the right address.
+func TestQRMatchesEncoder(t *testing.T) {
+	want, err := qr.Encode(sample.QR, qr.M)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sz := range []image.Point{{1920, 1080}, {1280, 800}, {1080, 1920}, {3840, 2160}, {1024, 768}} {
+		l := computeLayout(sample, sz.X, sz.Y)
+		img := draw1(l)
+		if l.QR == nil || l.QR.Size != want.Size || l.Module < 3 {
+			t.Fatalf("%v: layout QR %+v module %d", sz, l.QR, l.Module)
+		}
+		if !l.QRCard.In(img.Bounds()) {
+			t.Errorf("%v: QR card %v off screen", sz, l.QRCard)
+		}
+		for y := -4; y < want.Size+4; y++ { // include the quiet zone
+			for x := -4; x < want.Size+4; x++ {
+				c := img.RGBAAt(l.QRAt.X+x*l.Module+l.Module/2, l.QRAt.Y+y*l.Module+l.Module/2)
+				dark := luma(c) < 64
+				light := luma(c) > 192
+				if want.Black(x, y) != dark || want.Black(x, y) == light {
+					t.Fatalf("%v: module (%d,%d) is %v, want black=%v", sz, x, y, c, want.Black(x, y))
+				}
+			}
+		}
+	}
+}
+
+// Every text line must actually be drawn inside the screen and not on
+// top of the QR code.
+func TestTextDrawn(t *testing.T) {
+	for _, sz := range []image.Point{{1920, 1080}, {1080, 1920}, {1280, 720}} {
+		l := computeLayout(sample, sz.X, sz.Y)
+		img := draw1(l)
+		if len(l.Texts) < 9 { // Vapor, OS, status, detail, url, ip, label, code, caption, version
+			t.Fatalf("%v: only %d text items", sz, len(l.Texts))
+		}
+		for _, it := range l.Texts {
+			if it.Rect.Empty() || !it.Rect.In(img.Bounds()) {
+				t.Errorf("%v: %q at %v outside %v", sz, it.Text, it.Rect, img.Bounds())
+				continue
+			}
+			if it.Rect.Overlaps(l.QRCard) {
+				t.Errorf("%v: %q overlaps the QR card", sz, it.Text)
+			}
+			// The text colour must show up inside its box.
+			hits := 0
+			for y := it.Rect.Min.Y; y < it.Rect.Max.Y; y++ {
+				for x := it.Rect.Min.X; x < it.Rect.Max.X; x++ {
+					c := img.RGBAAt(x, y)
+					if abs(int(c.R)-int(it.Color.R))+abs(int(c.G)-int(it.Color.G))+abs(int(c.B)-int(it.Color.B)) < 40 {
+						hits++
+					}
+				}
+			}
+			if hits < it.Rect.Dx()*it.Rect.Dy()/20 {
+				t.Errorf("%v: %q: only %d text pixels in %v", sz, it.Text, hits, it.Rect)
+			}
+		}
+	}
+}
+
+func TestLongTextFits(t *testing.T) {
+	st := sample
+	st.URL = "http://a-very-long-hostname-for-a-gaming-pc-in-the-living-room.local"
+	st.Detail = "Some very long detail line that would never fit into the left column of the welcome screen at its normal size"
+	l := computeLayout(st, 1920, 1080)
+	for _, it := range l.Texts {
+		if it.Rect.Min.Y < l.QRCard.Max.Y && it.Rect.Max.X > l.QRCard.Min.X {
+			t.Errorf("%q runs into the QR card: %v", it.Text, it.Rect)
+		}
+	}
+}
+
+func TestNoQR(t *testing.T) {
+	st := sample
+	st.QR, st.Code = "", ""
+	l := computeLayout(st, 1920, 1080)
+	if l.QR != nil || !l.QRCard.Empty() || !l.Panel.Empty() {
+		t.Errorf("layout = %+v", l)
+	}
+	img := Render(Placeholder, 640, 480)
+	if img.Bounds().Dx() != 640 {
+		t.Error("placeholder render failed")
+	}
+}
+
+func TestCopyXRGB(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	img.SetRGBA(0, 0, color.RGBA{0x11, 0x22, 0x33, 0xff})
+	img.SetRGBA(2, 1, color.RGBA{0xaa, 0xbb, 0xcc, 0xff})
+	pitch := 16 // wider than 3*4, like real dumb buffers
+	dst := make([]byte, pitch*2)
+	copyXRGB(dst, pitch, 3, 2, img)
+	if dst[0] != 0x33 || dst[1] != 0x22 || dst[2] != 0x11 || dst[3] != 0xff {
+		t.Errorf("pixel (0,0) = % x", dst[0:4])
+	}
+	if p := dst[pitch+8 : pitch+12]; p[0] != 0xcc || p[1] != 0xbb || p[2] != 0xaa {
+		t.Errorf("pixel (2,1) = % x", p)
+	}
+	if dst[12] != 0 || dst[pitch+12] != 0 {
+		t.Error("wrote into pitch padding")
+	}
+	copyXRGB(make([]byte, 10), 16, 3, 2, img) // short buffer: no panic
+}
+
+func TestStateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "welcome.json")
+	if st, changed := stateChanged(path, State{}, false); !changed || st != Placeholder {
+		t.Errorf("missing file = %+v %v", st, changed)
+	}
+	os.WriteFile(path, []byte(`{"status":"Ready to stream","url":"http://vapor.local"}`), 0o644)
+	st, changed := stateChanged(path, Placeholder, true)
+	if !changed || st.Status != "Ready to stream" {
+		t.Errorf("load = %+v %v", st, changed)
+	}
+	if _, changed := stateChanged(path, st, true); changed {
+		t.Error("unchanged file reported as changed")
+	}
+	os.Remove(path)
+	if got, changed := stateChanged(path, st, true); changed || got != st {
+		t.Error("a vanished file must keep the current screen")
+	}
+}
+
+func TestMainPNG(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "welcome.json")
+	os.WriteFile(state, []byte(`{"status":"Ready to stream"}`), 0o644)
+	out := filepath.Join(dir, "w.png")
+	if code := Main([]string{"--png", out, "--size", "800x600"}, state, nil); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {
+		t.Fatal("no PNG written")
+	}
+	if code := Main([]string{"--png", out, "--size", "big"}, state, nil); code != 2 {
+		t.Errorf("bad size: exit %d", code)
+	}
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
