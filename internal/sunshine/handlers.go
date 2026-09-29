@@ -45,17 +45,13 @@ func (s *Service) requireAPI(w http.ResponseWriter) *Client {
 }
 
 type statusResponse struct {
-	Running        bool         `json:"running"`
-	Version        string       `json:"version"`
-	Streaming      bool         `json:"streaming"`
-	Session        *sessionInfo `json:"session"`
-	PendingPairing bool         `json:"pending_pairing"`
-	Pairings       []Pairing    `json:"pairings"` // who is waiting, for choosing one in POST /sunshine/pair
+	Summary
+	Session *sessionInfo `json:"session"`
 }
 
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	st := statusResponse{Running: s.unitActive(ctx), Streaming: s.streaming(ctx), Pairings: []Pairing{}}
+	st := statusResponse{Summary: Summary{Running: s.unitActive(ctx), Streaming: s.streaming(ctx), Pairings: []Pairing{}}}
 	s.mu.Lock()
 	cached, version, session := s.pairings, s.version, s.session
 	s.mu.Unlock()

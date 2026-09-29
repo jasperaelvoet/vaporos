@@ -359,6 +359,41 @@ func TestStatusHandler(t *testing.T) {
 	}
 }
 
+func TestSunshineSummaryIsCached(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	writeDesc(t, h.s.pacmanDB, "sunshine-2026.927.1-1", "sunshine", "2026.927.1-1")
+	if sum := h.s.Summary(ctx); !sum.Running || sum.Streaming || sum.PendingPairing || len(sum.Pairings) != 0 || sum.Version != "2026.927.1" {
+		t.Errorf("before the first poll = %+v", sum)
+	}
+	if n := len(h.f.seen()); n != 0 {
+		t.Errorf("Summary asked Sunshine %d times before a poll", n)
+	}
+
+	deck := Pairing{ID: strings.Repeat("7f", 16), Name: "Steam Deck", Address: "192.168.1.31"}
+	h.f.pairings = []Pairing{deck}
+	h.f.setBusy(true)
+	h.s.noteBusy(h.s.poll(ctx)) // one pass of Run's loop
+	asked := len(h.f.seen())
+	h.f.setBusy(false) // after the pass: Summary still reports it
+	sum := h.s.Summary(ctx)
+	if !sum.Streaming || !sum.PendingPairing || !reflect.DeepEqual(sum.Pairings, []Pairing{deck}) || sum.Version != "2026.928.101500" {
+		t.Errorf("after a poll = %+v", sum)
+	}
+	if n := len(h.f.seen()) - asked; n != 0 {
+		t.Errorf("Summary asked Sunshine %d times", n)
+	}
+	b, _ := json.Marshal(sum)
+	if strings.Contains(string(b), `"session"`) {
+		t.Errorf("Summary has a session: %s", b)
+	}
+
+	h.s.unitActive = func(context.Context) bool { return false }
+	if sum := h.s.Summary(ctx); sum.Running {
+		t.Errorf("stopped unit = %+v", sum)
+	}
+}
+
 func TestPairHandler(t *testing.T) {
 	h := newHarness(t)
 	id := strings.Repeat("ab", 16)
