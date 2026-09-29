@@ -1,0 +1,23 @@
+{
+  "about": "Shared vectors for the TV-to-phone handshake mark. Go (internal/brand HandshakeFor) is the only implementation: the control center renders it server-side and the TV draws it next to the code. The mark comes from the hostname only, never from the setup code.",
+  "algorithm": [
+    "key = the hostname, trimmed, lower-cased, without a trailing \".\" and without a trailing \".local\"",
+    "hash = FNV-1a 32 of the key's UTF-8 bytes",
+    "cells = hash & 0x7fff; if fewer than 4 or more than 11 of those 15 bits are set, cells ^= 0x2aaa",
+    "bit r*3+c of cells turns on row r, column c (r 0..4, c 0..2), mirrored onto column 4-c",
+    "on = (hash >> 15 & 0x1f) mod len(handshake.on); ground = (hash >> 20 & 0x1f) mod len(handshake.ground), the lists in design/tokens.json"
+  ],
+  "cases": [
+    { "hostname": "vapor", "key": "vapor", "fnv1a32": "2c9656e5", "rows": ["#.#.#", "..#..", "##.##", "##.##", "#.#.#"], "on": 2, "ground": 0, "onHex": "#f7d13d", "groundHex": "#000004" },
+    { "hostname": "Vapor.local.", "key": "vapor", "fnv1a32": "2c9656e5", "rows": ["#.#.#", "..#..", "##.##", "##.##", "#.#.#"], "on": 2, "ground": 0, "onHex": "#f7d13d", "groundHex": "#000004" },
+    { "hostname": "  VAPOR  ", "key": "vapor", "fnv1a32": "2c9656e5", "rows": ["#.#.#", "..#..", "##.##", "##.##", "#.#.#"], "on": 2, "ground": 0, "onHex": "#f7d13d", "groundHex": "#000004" },
+    { "hostname": "vaporos-setup", "key": "vaporos-setup", "fnv1a32": "2497f1cb", "rows": ["##.##", "#...#", "#####", ".....", "#####"], "on": 0, "ground": 0, "onHex": "#ed6925", "groundHex": "#000004" },
+    { "hostname": "living-room", "key": "living-room", "fnv1a32": "b7af2b88", "rows": [".....", "#...#", ".###.", "#.#.#", ".#.#."], "on": 0, "ground": 2, "onHex": "#ed6925", "groundHex": "#4a0c6b" },
+    { "hostname": "gaming-pc", "key": "gaming-pc", "fnv1a32": "5549aee2", "rows": [".#.#.", "..#..", "##.##", "#####", ".#.#."], "on": 4, "ground": 2, "onHex": "#c58bd3", "groundHex": "#4a0c6b" },
+    { "hostname": "den", "key": "den", "fnv1a32": "cd598b24", "rows": ["..#..", "..#..", "..#..", "#.#.#", "....."], "on": 4, "ground": 0, "onHex": "#c58bd3", "groundHex": "#000004" },
+    { "hostname": "", "key": "", "fnv1a32": "811c9dc5", "rows": ["#.#.#", ".....", "#####", ".###.", "#...#"], "on": 0, "ground": 2, "onHex": "#ed6925", "groundHex": "#4a0c6b" },
+    { "hostname": "pc-71", "key": "pc-71", "fnv1a32": "db05f5ff", "rows": ["#.#.#", ".#.#.", "#.#.#", "#####", "#.#.#"], "on": 1, "ground": 1, "onHex": "#fb9b06", "groundHex": "#1b0c41", "note": "13 of 15 bits set: balanced with 0x2aaa" },
+    { "hostname": "pc-78", "key": "pc-78", "fnv1a32": "e2060104", "rows": [".###.", "#.#.#", ".###.", "#.#.#", ".#.#."], "on": 2, "ground": 0, "onHex": "#f7d13d", "groundHex": "#000004", "note": "2 of 15 bits set: balanced with 0x2aaa" },
+    { "hostname": "pc-146", "key": "pc-146", "fnv1a32": "b7390608", "rows": [".#.#.", "..#..", ".#.#.", ".###.", ".#.#."], "on": 3, "ground": 1, "onHex": "#fcffa4", "groundHex": "#1b0c41", "note": "3 of 15 bits set: balanced with 0x2aaa" }
+  ]
+}
