@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io/fs"
 	"os"
 	"path"
@@ -485,7 +486,244 @@ func jsClassUses(src string) []jsClassUse {
 	return out
 }
 
-// The JavaScript scanners behind the class rules, on inputs small enough to read.
+// cssBlank returns css with comments and the contents of strings blanked,
+// keeping offsets.
+func cssBlank(css string) string {
+	b := []byte(css)
+	for i := 0; i < len(b); i++ {
+		switch {
+		case b[i] == '/' && i+1 < len(b) && b[i+1] == '*':
+			end := len(b)
+			if k := strings.Index(css[i+2:], "*/"); k >= 0 {
+				end = i + 2 + k + 2
+			}
+			for k := i; k < end; k++ {
+				if b[k] != '\n' {
+					b[k] = ' '
+				}
+			}
+			i = end - 1
+		case b[i] == '"' || b[i] == '\'':
+			q, j := b[i], i+1
+			for j < len(b) && b[j] != q && b[j] != '\n' {
+				if b[j] == '\\' {
+					b[j] = ' '
+					j++
+				}
+				if j < len(b) {
+					b[j] = ' '
+				}
+				j++
+			}
+			i = j
+		}
+	}
+	return string(b)
+}
+
+// cssRule is the text before one '{': a selector or an at-rule, and the
+// top-level at-rule or selector it sits in ("" when it is top-level).
+type cssRule struct{ prelude, outer string }
+
+func cssRules(css string) []cssRule {
+	b := cssBlank(css)
+	var stack []string
+	var out []cssRule
+	start := 0
+	for i := 0; i < len(b); i++ {
+		switch b[i] {
+		case '{':
+			p := strings.TrimSpace(b[start:i])
+			outer := ""
+			if len(stack) > 0 {
+				outer = stack[0]
+			}
+			out = append(out, cssRule{p, outer})
+			stack = append(stack, p)
+			start = i + 1
+		case '}':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			start = i + 1
+		case ';':
+			start = i + 1
+		}
+	}
+	return out
+}
+
+var cssClassToken = regexp.MustCompile(`\.((?:\\[0-9a-fA-F]{1,6}[ \t\r\n\f]?|\\[^\r\n\f0-9a-fA-F]|[A-Za-z0-9_-]|[^\x00-\x7F])+)`)
+
+// cssUnescape decodes CSS escapes: \31 0 is "1" then "0", \: is ":".
+func cssUnescape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(s) && j < i+7 && strings.IndexByte("0123456789abcdefABCDEF", s[j]) >= 0 {
+			j++
+		}
+		if j == i+1 {
+			b.WriteByte(s[i+1])
+			i += 2
+			continue
+		}
+		var r rune
+		for _, h := range s[i+1 : j] {
+			r = r*16 + rune(strings.IndexRune("0123456789abcdef", h|0x20))
+		}
+		b.WriteRune(r)
+		if j < len(s) && strings.IndexByte(" \t\r\n\f", s[j]) >= 0 {
+			j++
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// cssClasses returns the class names that the selectors of css define,
+// counting only rules whose top-level block has the prelude outer, or every
+// rule when outer is "*".
+func cssClasses(css, outer string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range cssRules(css) {
+		if strings.HasPrefix(r.prelude, "@") || (outer != "*" && r.outer != outer) {
+			continue
+		}
+		for _, m := range cssClassToken.FindAllStringSubmatch(r.prelude, -1) {
+			out[cssUnescape(m[1])] = true
+		}
+	}
+	return out
+}
+
+// ---- the set's sources
+
+// setTemplates returns the set's template sources by embed path: its
+// layout, pages and partials.
+func setTemplates(t *testing.T, set uiSet) map[string]string {
+	t.Helper()
+	names := []string{path.Join(set.Templates, "layout.html")}
+	pages, _ := fs.Glob(content, path.Join(set.Templates, "pages", "*.html"))
+	partials, _ := fs.Glob(content, set.Partials)
+	out := map[string]string{}
+	for _, name := range append(append(names, pages...), partials...) {
+		b, err := content.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[name] = string(b)
+	}
+	return out
+}
+
+// setScripts returns the set's own JavaScript by path under static/.
+func setScripts(t *testing.T, set uiSet) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	walkStatic(t, func(name string, b []byte) {
+		if path.Ext(name) == ".js" && set.ownsStatic(name) {
+			out[name] = string(b)
+		}
+	})
+	return out
+}
+
+var classAttr = regexp.MustCompile(`\sclass="([^"]*)"`)
+
+// usedClasses maps every class the set's pages, templates and scripts use to
+// one place that uses it.
+func usedClasses(t *testing.T, set uiSet) map[string]string {
+	t.Helper()
+	used := map[string]string{}
+	add := func(classes, where string) {
+		for _, c := range strings.Fields(classes) {
+			if _, ok := used[c]; !ok {
+				used[c] = where
+			}
+		}
+	}
+	for script, body := range renderAll(t, set) {
+		for _, m := range classAttr.FindAllStringSubmatch(body, -1) {
+			add(html.UnescapeString(m[1]), "the rendered "+script+" page")
+		}
+	}
+	actions := regexp.MustCompile(`\{\{.*?\}\}`)
+	for name, src := range setTemplates(t, set) {
+		for _, m := range classAttr.FindAllStringSubmatchIndex(src, -1) {
+			add(html.UnescapeString(actions.ReplaceAllString(src[m[2]:m[3]], " ")), fmt.Sprintf("%s:%d", name, lineOf(src, m[0])))
+		}
+	}
+	for name, src := range setScripts(t, set) {
+		for _, u := range jsClassUses(src) {
+			add(strings.Join(u.lits, " "), fmt.Sprintf("static/%s:%d", name, u.line))
+		}
+	}
+	return used
+}
+
+// setCSS is the set's built stylesheet.
+func setCSS(t *testing.T, set uiSet) string {
+	t.Helper()
+	b, err := content.ReadFile(path.Join("static", set.Static, "app.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// unstyled lists classes that may appear without a rule. Keep it empty: a
+// class without a rule is a typo or a stale stylesheet.
+var unstyled = map[string]bool{}
+
+// R-C1, R-C7, R-C9: every class the markup, a script or Go assigns has a rule
+// in the built stylesheet. This catches a class added without rebuilding,
+// a typo, and a stock palette name (the tokens reset the palette, so
+// bg-red-500 generates nothing).
+func TestClassesAreStyled(t *testing.T) {
+	forEachCheckedSet(t, true, func(t *testing.T, set uiSet) {
+		defined := cssClasses(setCSS(t, set), "*")
+		used := usedClasses(t, set)
+		names := make([]string, 0, len(used))
+		for c := range used {
+			names = append(names, c)
+		}
+		sort.Strings(names)
+		for _, c := range names {
+			if !defined[c] && !unstyled[c] {
+				t.Errorf("class %q (%s) has no rule in static/%s: run npm --prefix tools/web run css, or fix the name",
+					c, used[c], path.Join(set.Static, "app.css"))
+			}
+		}
+	})
+}
+
+// R-C6: no component class may share its name with a Tailwind utility. The
+// utilities layer comes later in the cascade, so the utility would win:
+// today's list-item row would become display:list-item.
+func TestNoUtilityCollisions(t *testing.T) {
+	forEachCheckedSet(t, true, func(t *testing.T, set uiSet) {
+		css := setCSS(t, set)
+		utilities := cssClasses(css, "@layer utilities")
+		var both []string
+		for c := range cssClasses(css, "@layer components") {
+			if utilities[c] {
+				both = append(both, c)
+			}
+		}
+		sort.Strings(both)
+		for _, c := range both {
+			t.Errorf("%q is both a component class and a Tailwind utility; rename the component (ARCH §2.5 R-C6)", c)
+		}
+	})
+}
+
+// The scanners behind the class rules, on inputs small enough to read.
 func TestClassScanners(t *testing.T) {
 	js := strings.Join([]string{
 		`// class: 'in-a-comment'`,
@@ -522,6 +760,27 @@ func TestClassScanners(t *testing.T) {
 		t.Error("jsBlank changed the length")
 	}
 
+	css := `/*! .comment */@layer theme{:root{--x:1}}@layer components{.btn{color:red}.btn:hover{content:".dot"}.\31 0x{}}` +
+		`@layer utilities{.p-4{padding:1rem}.rail\:grid{@media (width>=56.25rem){display:grid}}.btn{}` +
+		`.group-hover\:x:is(:where(.group):hover *){}}.plain{background:url(fonts/ui.woff2)}`
+	if got := keys(cssClasses(css, "*")); got != "10x btn group group-hover:x p-4 plain rail:grid" {
+		t.Errorf("defined classes = %s", got)
+	}
+	if got := keys(cssClasses(css, "@layer components")); got != "10x btn" {
+		t.Errorf("component classes = %s", got)
+	}
+	if got := keys(cssClasses(css, "@layer utilities")); got != "btn group group-hover:x p-4 rail:grid" {
+		t.Errorf("utility classes = %s", got)
+	}
+}
+
+func keys(m map[string]bool) string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return strings.Join(out, " ")
 }
 
 func sortedJoin(s string) string {
