@@ -111,7 +111,7 @@ func Defaults() *Config {
 	return &Config{
 		Schema:  1,
 		Update:  UpdateConfig{Source: DefaultUpdateSrc, Channel: ch, Auto: "stage"},
-		Power:   PowerConfig{IdleShutdown: true, IdleMinutes: 15},
+		Power:   PowerConfig{IdleShutdown: false, IdleMinutes: 15}, // the installer turns it on when Wake-on-LAN can wake the PC again
 		Display: DisplayConfig{HDR: true},
 		Storage: StorageConfig{Libraries: []Library{}},
 		SSH:     SSHConfig{Keys: []string{}},

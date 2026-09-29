@@ -81,14 +81,14 @@ Tests override these through the package variables in `internal/config`.
 {
   "schema": 1,
   "update":  {"source": "oci://ghcr.io/jasperaelvoet/vaporos", "channel": "main", "auto": "stage"},
-  "power":   {"idle_shutdown": true, "idle_minutes": 15},
+  "power":   {"idle_shutdown": false, "idle_minutes": 15},
   "display": {"virtual_connector": "DP-1", "hdr": true, "extra_modes": ["2796x1290@120"]},
   "storage": {"libraries": [{"uuid": "…", "label": "SATA1TB", "mountpoint": "/var/mnt/SATA1TB", "fstype": "ext4"}]},
   "ssh":     {"enabled": false, "keys": []},
   "web":     {"https": false, "allow_public": false}
 }
 ```
-A missing file or field means the default. `update.channel` defaults to
+A missing file or field means the default. `power.idle_shutdown` defaults to false; the installer sets it to true when a wired NIC supports Wake-on-LAN (magic packet), so a PC is never switched off with no way to wake it remotely. Services change the shared config only through `config.Mutate` and read it through `Snapshot`/`View`. `update.channel` defaults to
 `image.json.channel`. `auto` is `"stage"` (download and stage; applies on
 next boot) or `"off"`.
 
