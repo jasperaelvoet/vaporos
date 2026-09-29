@@ -101,10 +101,12 @@ func TestLongTextFits(t *testing.T) {
 	st := sample
 	st.URL = "http://a-very-long-hostname-for-a-gaming-pc-in-the-living-room.local"
 	st.Detail = "Some very long detail line that would never fit into the left column of the welcome screen at its normal size"
-	l := computeLayout(st, 1920, 1080)
-	for _, it := range l.Texts {
-		if it.Rect.Min.Y < l.QRCard.Max.Y && it.Rect.Max.X > l.QRCard.Min.X {
-			t.Errorf("%q runs into the QR card: %v", it.Text, it.Rect)
+	for _, sz := range layoutSizes {
+		l := computeLayout(st, sz.X, sz.Y)
+		for _, it := range l.Texts {
+			if it.Rect.Overlaps(l.QRCard) || !it.Rect.In(l.Safe.Intersect(l.Content)) {
+				t.Errorf("%s: %q runs into the QR card %v or off the screen: %v", sizeName(sz), it.Text, l.QRCard, it.Rect)
+			}
 		}
 	}
 }
