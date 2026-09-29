@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/drm"
@@ -279,14 +280,39 @@ func shortVendor(v string) string {
 	return v
 }
 
+// pciNames caches lookupPCI: pci.ids is in the read-only image, and the
+// display manager probes again every few seconds while no GPU is supported.
+var pciNames sync.Map // pciKey -> [3]string
+
+type pciKey struct {
+	path           string
+	vendor, device uint16
+	sub            [2]uint16
+}
+
 // lookupPCI scans pci.ids: "vvvv  Vendor", "\tdddd  Device",
 // "\t\tssss ssss  Subsystem".
 func lookupPCI(vendor, device uint16, sub [2]uint16) (vname, dname, sname string) {
+	k := pciKey{PCIIDsPath, vendor, device, sub}
+	if v, ok := pciNames.Load(k); ok {
+		n := v.([3]string)
+		return n[0], n[1], n[2]
+	}
+	vname, dname, sname, ok := scanPCIIDs(vendor, device, sub)
+	if ok {
+		pciNames.Store(k, [3]string{vname, dname, sname})
+	}
+	return vname, dname, sname
+}
+
+// scanPCIIDs does lookupPCI's work; ok is false when pci.ids is missing.
+func scanPCIIDs(vendor, device uint16, sub [2]uint16) (vname, dname, sname string, ok bool) {
 	f, err := os.Open(PCIIDsPath)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	ok = true
 	vkey := fmt.Sprintf("%04x", vendor)
 	dkey := fmt.Sprintf("%04x", device)
 	skey := fmt.Sprintf("%04x %04x", sub[0], sub[1])

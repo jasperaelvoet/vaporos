@@ -11,20 +11,32 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
 // Where the activity probes look (variables for tests).
 var (
 	ProcDir = "/proc"
 	// SunshineServerInfo answers <state>SUNSHINE_SERVER_BUSY</state> while
-	// a client streams; it is local and unauthenticated.
+	// Sunshine runs an app; it is local and unauthenticated.
 	SunshineServerInfo = "http://127.0.0.1:47989/serverinfo"
 )
 
-func steamRoot() string { return filepath.Join(config.GamerHome, ".local", "share", "Steam") }
+// Everything below reads, as root, files that Steam and every game (the
+// gaming user) control. Such reads never follow a symlink the user
+// planted, never block on a FIFO and never read without a bound.
+const (
+	// steamRootRel is the Steam root, relative to the gaming user's home.
+	steamRootRel = ".local/share/Steam"
+	// maxVDF bounds libraryfolders.vdf (as internal/storage/steam does).
+	maxVDF = 4 << 20
+	// maxEnviron bounds how much of one process's environment is scanned.
+	maxEnviron = 8 << 20
+)
 
 // gamerBusy reports why gamescope should keep running on a machine with a
 // monitor even though nobody streams: a Steam game is running, Steam is
@@ -34,7 +46,7 @@ func gamerBusy(ctx context.Context) (bool, string) {
 	if steamGameRunning(ProcDir, config.GamerUID) {
 		return true, "a Steam game is running"
 	}
-	if steamDownloading(steamRoot(), time.Now()) {
+	if steamDownloading(config.GamerHome, time.Now()) {
 		return true, "Steam is downloading"
 	}
 	if sunshineStreaming(ctx) {
@@ -60,17 +72,39 @@ func steamGameRunning(procDir string, uid int) bool {
 		if procUID(filepath.Join(dir, "status")) != uid {
 			continue
 		}
-		env, err := os.ReadFile(filepath.Join(dir, "environ"))
-		if err != nil {
-			continue
-		}
-		for _, kv := range bytes.Split(env, []byte{0}) {
-			if steamAppID.Match(kv) {
-				return true
-			}
+		if environHas(filepath.Join(dir, "environ"), steamAppID.Match) {
+			return true
 		}
 	}
 	return false
+}
+
+// environHas scans a NUL-separated environment (/proc/<pid>/environ) for a
+// variable match accepts. It streams: a game can make its environment
+// megabytes long, so at most maxEnviron bytes are read, and a variable
+// longer than the read buffer is skipped (no SteamAppId is that long).
+func environHas(path string, match func([]byte) bool) bool {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	br := bufio.NewReaderSize(io.LimitReader(f, maxEnviron), 4096)
+	long := false
+	for {
+		kv, err := br.ReadSlice(0)
+		if err == bufio.ErrBufferFull {
+			long = true
+			continue
+		}
+		if !long && len(kv) > 0 && match(bytes.TrimSuffix(kv, []byte{0})) {
+			return true
+		}
+		long = false
+		if err != nil {
+			return false
+		}
+	}
 }
 
 // procUID returns the real uid from /proc/<pid>/status, or -1.
@@ -97,9 +131,9 @@ func procUID(path string) int {
 
 // steamDownloading reports whether any Steam library has a file in its
 // downloading/ or temp/ directory modified in the last 30 seconds.
-func steamDownloading(root string, now time.Time) bool {
+func steamDownloading(home string, now time.Time) bool {
 	cutoff := now.Add(-30 * time.Second)
-	for _, lib := range steamLibraries(root) {
+	for _, lib := range steamLibraries(home) {
 		for _, sub := range []string{"downloading", "temp"} {
 			if recentFile(filepath.Join(lib, "steamapps", sub), cutoff) {
 				return true
@@ -111,11 +145,12 @@ func steamDownloading(root string, now time.Time) bool {
 
 var vdfPath = regexp.MustCompile(`"path"\s+"([^"]+)"`)
 
-// steamLibraries lists the Steam root plus every library in
+// steamLibraries lists the Steam root in home plus every library in its
 // libraryfolders.vdf.
-func steamLibraries(root string) []string {
+func steamLibraries(home string) []string {
+	root := filepath.Join(home, steamRootRel)
 	libs := []string{root}
-	b, err := os.ReadFile(filepath.Join(root, "steamapps", "libraryfolders.vdf"))
+	b, err := gamerfs.ReadFile(home, steamRootRel+"/steamapps/libraryfolders.vdf", maxVDF)
 	if err != nil {
 		return libs
 	}
@@ -128,7 +163,8 @@ func steamLibraries(root string) []string {
 	return libs
 }
 
-// recentFile walks dir (bounded) for a regular file newer than cutoff.
+// recentFile walks dir (bounded) for a regular file newer than cutoff. It
+// only lists directories and stats entries; it opens no file.
 func recentFile(dir string, cutoff time.Time) bool {
 	found := false
 	visited := 0
@@ -150,20 +186,36 @@ func recentFile(dir string, cutoff time.Time) bool {
 	return found
 }
 
-// sunshineStreaming asks Sunshine's local serverinfo whether a client is
-// connected.
+// sunshineStreaming asks Sunshine's local serverinfo whether it runs an
+// app (a client streams, or one left it running).
 func sunshineStreaming(ctx context.Context) bool {
+	busy, _ := sunshineState(ctx)
+	return busy
+}
+
+// sunshineState reads Sunshine's serverinfo state: busy when it runs an
+// app. ok is false unless Sunshine answered with a state at all.
+func sunshineState(ctx context.Context) (busy, ok bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, SunshineServerInfo, nil)
 	if err != nil {
-		return false
+		return false, false
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	return bytes.Contains(b, []byte("<state>SUNSHINE_SERVER_BUSY</state>"))
+	switch {
+	case bytes.Contains(b, []byte("<state>SUNSHINE_SERVER_BUSY</state>")):
+		return true, true
+	case bytes.Contains(b, []byte("<state>SUNSHINE_SERVER_FREE</state>")):
+		return false, true
+	}
+	return false, false
 }

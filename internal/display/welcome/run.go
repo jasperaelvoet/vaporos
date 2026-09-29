@@ -16,7 +16,7 @@ import (
 // Options configure Run.
 type Options struct {
 	StatePath string // /run/vos/welcome.json
-	TTY       string // VT put into KD_GRAPHICS while running ("" = none)
+	TTY       string // VT claimed while running, see claimVT ("" = none)
 	// VirtualConnector returns the configured virtual connector ("DP-1"),
 	// re-read on every rescan; nil or "" means none.
 	VirtualConnector func() string

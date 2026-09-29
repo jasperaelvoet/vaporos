@@ -1,6 +1,8 @@
 // Package session is the Sunshine prep-cmd protocol: `vos session
 // begin|end` (run by Sunshine as the gaming user) talks to vosd over
 // /run/vos/session.sock. See docs/CONTRACTS.md "Session protocol".
+// `vos session launch <steam-url>` (launch.go) starts a game in
+// gamescope's Steam for Sunshine's detached app commands.
 //
 // The protocol is one newline-terminated JSON request and one
 // newline-terminated JSON response per connection. The hook must never
@@ -278,17 +280,24 @@ func RequestFromEnv(getenv func(string) string) Request {
 	}
 }
 
-// CLI implements `vos session begin|end`. It always exits 0: a hook
-// failure must never keep Moonlight from streaming.
+// CLI implements `vos session begin|end` and `vos session launch
+// <steam-url>`. It always exits 0: a hook failure must never keep
+// Moonlight from streaming.
 func CLI(args []string) int {
+	if len(args) == 2 && args[0] == "launch" {
+		newLauncher(os.Stderr).run(context.Background(), args[1])
+		return 0
+	}
 	run(args, os.Getenv, os.Stderr, config.SessionSock(), Timeout)
 	return 0
 }
 
+const usage = "usage: vos session begin|end|launch <steam-url>"
+
 func run(args []string, getenv func(string) string, stderr io.Writer, sock string, timeout time.Duration) {
 	logger := log.New(stderr, "vos session: ", 0)
 	if len(args) != 1 || (args[0] != "begin" && args[0] != "end") {
-		logger.Print("usage: vos session begin|end")
+		logger.Print(usage)
 		return
 	}
 	req := Request{Op: args[0]}

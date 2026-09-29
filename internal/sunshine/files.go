@@ -2,16 +2,15 @@ package sunshine
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
 // Sunshine keeps everything in its appdata directory, ~/.config/sunshine
@@ -26,134 +25,98 @@ func templatePath() string   { return filepath.Join(config.ShareDir, "sunshine.c
 func runningAsRoot() bool    { return os.Geteuid() == 0 }
 func gamerOwner() (int, int) { return config.GamerUID, config.GamerUID }
 
-// vosd runs as root but writes into the gaming user's home, where Steam
-// and every game run as that user. So nothing here follows a symlink the
-// user could have planted: a directory component that is a symlink is an
-// error, and files are replaced by rename (which replaces a link, never
-// its target) or adjusted through an O_NOFOLLOW descriptor.
+// maxFileSize caps what vosd reads from Sunshine's files, which the
+// gaming user can grow at will.
+const maxFileSize = 16 << 20
 
-// ensureGamerDir creates dir and any missing parents below the gaming
-// user's home, owned by that user. Directories that already exist keep
-// their owner and mode.
-func ensureGamerDir(dir string) error {
+// vosd runs as root but reads and writes in the gaming user's home, where
+// Steam and every game run as that user and can plant symlinks or swap a
+// directory for one at any moment. So every path there goes through
+// gamerfs, which resolves it beneath the home without following a symlink
+// and never looks a checked directory up by name again.
+
+// gamerRel returns path relative to the gaming user's home.
+func gamerRel(path string) (string, error) {
 	home := filepath.Clean(config.GamerHome)
-	rel, err := filepath.Rel(home, filepath.Clean(dir))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%s is outside %s", dir, home)
+	rel, err := filepath.Rel(home, filepath.Clean(path))
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("%s is not below %s", path, home)
 	}
-	cur := home
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		if part == "." || part == "" {
-			continue
-		}
-		cur = filepath.Join(cur, part)
-		fi, err := os.Lstat(cur)
-		switch {
-		case err == nil && fi.IsDir():
-			continue
-		case err == nil:
-			return fmt.Errorf("%s is not a directory", cur)
-		case !errors.Is(err, fs.ErrNotExist):
-			return err
-		}
-		if err := os.Mkdir(cur, 0o700); err != nil {
-			return err
-		}
-		if runningAsRoot() {
-			uid, gid := gamerOwner()
-			if err := os.Lchown(cur, uid, gid); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return rel, nil
 }
 
-// readRegular reads path if it is a regular file (not through a symlink).
+// readRegular reads a regular file of at most maxFileSize bytes without
+// following a symlink. A path in the gaming user's home is resolved
+// beneath the home, so no component of it may be a symlink; any other path
+// (the image's pacman database) is trusted up to its directory.
 func readRegular(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
+	if rel, err := gamerRel(path); err == nil {
+		return gamerfs.ReadFile(config.GamerHome, rel, maxFileSize)
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	return io.ReadAll(io.LimitReader(f, 16<<20))
+	return gamerfs.ReadFile(filepath.Dir(path), filepath.Base(path), maxFileSize)
 }
 
-// writeGamerFile replaces path with data, owned by the gaming user with
-// mode perm, and reports whether the content changed. An identical file is
-// not rewritten (Sunshine is only restarted for real changes), but its
-// mode and owner are still corrected.
-//
-// The temporary file gets its final owner and mode before the rename, so
-// Sunshine never sees a half-written or root-owned file.
+// writeGamerFile replaces path, below the gaming user's home, with data,
+// owned by that user with mode perm, and reports whether the content
+// changed. An identical file is not rewritten (Sunshine is only restarted
+// for real changes), but its mode and owner are still corrected. Missing
+// directories are created 0700 and owned by the user; existing ones keep
+// their owner and mode. The new file gets its owner and mode before it is
+// renamed into place, so Sunshine never sees a half-written or root-owned
+// file.
 func writeGamerFile(path string, data []byte, perm os.FileMode) (bool, error) {
-	dir := filepath.Dir(path)
-	if err := ensureGamerDir(dir); err != nil {
-		return false, err
-	}
-	if old, err := readRegular(path); err == nil && bytes.Equal(old, data) {
-		return false, fixOwnership(path, perm)
-	}
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".vos-*")
+	rel, err := gamerRel(path)
 	if err != nil {
 		return false, err
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Chmod(perm)
+	uid, gid := -1, -1
+	if runningAsRoot() {
+		uid, gid = gamerOwner()
 	}
-	if err == nil && runningAsRoot() {
-		uid, gid := gamerOwner()
-		err = f.Chown(uid, gid)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	if same, err := keepIfSame(rel, data, perm, uid, gid); same || err != nil {
 		return false, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := gamerfs.WriteFile(config.GamerHome, rel, data, perm, uid, gid); err != nil {
 		return false, err
-	}
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
 	}
 	return true, nil
 }
 
-func fixOwnership(path string, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// keepIfSame reports whether rel already is a regular file holding exactly
+// data, and then gives it mode perm and owner uid:gid (-1: unchanged)
+// through the descriptor that was compared. A file with more than one link
+// counts as different: renaming a new file over it leaves the other name
+// alone, where chown or chmod would change a file outside this tree.
+// Anything that cannot be opened safely also counts as different, and the
+// caller's rewrite reports the error.
+func keepIfSame(rel string, data []byte, perm os.FileMode, uid, gid int) (bool, error) {
+	f, err := gamerfs.Open(config.GamerHome, rel)
 	if err != nil {
-		return err
+		return false, nil
 	}
 	defer f.Close()
 	fi, err := f.Stat()
-	if err != nil {
-		return err
+	if err != nil || fi.Size() != int64(len(data)) {
+		return false, nil
 	}
-	if fi.Mode().Perm() != perm {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || st.Nlink != 1 {
+		return false, nil
+	}
+	old, err := io.ReadAll(io.LimitReader(f, int64(len(data))+1))
+	if err != nil || !bytes.Equal(old, data) {
+		return false, nil
+	}
+	// chown before chmod: chown clears set-id bits.
+	if uid >= 0 && (int(st.Uid) != uid || int(st.Gid) != gid) {
+		if err := f.Chown(uid, gid); err != nil {
+			return true, err
+		}
+	}
+	if fi.Mode()&(fs.ModePerm|fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) != perm {
 		if err := f.Chmod(perm); err != nil {
-			return err
+			return true, err
 		}
 	}
-	if runningAsRoot() {
-		uid, gid := gamerOwner()
-		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid || int(st.Gid) != gid {
-			return f.Chown(uid, gid)
-		}
-	}
-	return nil
+	return true, nil
 }

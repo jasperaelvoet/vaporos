@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -438,6 +439,9 @@ func TestWelcomeFileAndEvents(t *testing.T) {
 		t.Errorf("welcome.json = %+v", st)
 	}
 	fi, _ := os.Stat(config.WelcomeStatePath())
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("welcome.json (holds the setup code) is %v", fi.Mode().Perm())
+	}
 	mt := fi.ModTime()
 	time.Sleep(10 * time.Millisecond)
 	m.refreshWelcome() // unchanged: not rewritten
@@ -503,5 +507,227 @@ func TestVirtualPendingReboot(t *testing.T) {
 	resp := m.Begin(ctx, session.Request{Op: "begin", Width: 1920, Height: 1080, FPS: 60})
 	if !resp.OK || h.isActive(GamescopeUnit, true) {
 		t.Errorf("Begin started gamescope without its output: %+v", resp)
+	}
+}
+
+// TestHDRKeptWhileGameRuns: an HDR switch restarts gamescope and so kills
+// Steam and its game; with a game running, Begin keeps the running HDR
+// state and only switches the mode.
+func TestHDRKeptWhileGameRuns(t *testing.T) {
+	m, h, _, _ := newTestManager(t, false)
+	ctx := context.Background()
+	m.init(ctx)
+	m.reconcile(ctx, false) // headless: gamescope runs, SDR
+	h.mu.Lock()
+	h.game = true
+	h.mu.Unlock()
+	h.resetCalls()
+	resp := m.Begin(ctx, session.Request{Op: "begin", Client: "TV", Width: 3840, Height: 2160, FPS: 60, HDR: true})
+	calls := h.callLog()
+	if !resp.OK || resp.HDR || resp.Mode != "3840x2160@60" || !strings.Contains(resp.Message, "game is running") {
+		t.Errorf("Begin = %+v", resp)
+	}
+	if slices.Contains(calls, "restart "+GamescopeUnit) || !slices.Contains(calls, "gamescopectl backend_set_dirty") {
+		t.Errorf("must nudge, not restart, under a game: %v", calls)
+	}
+	if env := readGamescopeEnv(); env.HDR || h.gsHDR || m.gsHDR {
+		t.Errorf("HDR changed under a game: env %+v", env)
+	}
+	if st := m.welcomeState(); st.Detail != "3840x2160@60" {
+		t.Errorf("welcome detail = %q", st.Detail)
+	}
+	// The game is gone: the next HDR client gets its restart.
+	h.mu.Lock()
+	h.game = false
+	h.mu.Unlock()
+	h.resetCalls()
+	resp = m.Begin(ctx, session.Request{Op: "begin", Client: "TV", Width: 3840, Height: 2160, FPS: 60, HDR: true})
+	if !resp.OK || !resp.HDR || !slices.Contains(h.callLog(), "restart "+GamescopeUnit) || !m.gsHDR {
+		t.Errorf("idle HDR switch = %+v %v", resp, h.callLog())
+	}
+}
+
+// TestStaleSessionEnds: Sunshine crashed mid-stream and came back without
+// an app, so `vos session end` never comes. Once Sunshine has clearly run
+// no app for staleSessionAfter, the session ends by itself.
+func TestStaleSessionEnds(t *testing.T) {
+	m, h, clk, hub := newTestManager(t, true)
+	ctx := context.Background()
+	evs, cancel := hub.Subscribe()
+	defer cancel()
+	m.init(ctx)
+	m.reconcile(ctx, false)
+	m.Begin(ctx, session.Request{Op: "begin", Client: "Deck", Width: 1280, Height: 800, FPS: 90})
+	set := func(v string) {
+		h.mu.Lock()
+		h.sunApp = v
+		h.mu.Unlock()
+	}
+	streaming := func() bool { ok, _ := m.Streaming(); return ok }
+	tick := func(d time.Duration) {
+		clk.advance(d)
+		m.dropStaleSession(ctx)
+	}
+
+	set("busy") // the app runs: a live session, or a paused one Moonlight may resume
+	tick(time.Minute)
+	tick(time.Minute)
+	set("") // no answer from Sunshine proves nothing
+	for range 4 {
+		tick(20 * time.Second)
+	}
+	if !streaming() {
+		t.Fatal("session ended while Sunshine ran its app or did not answer")
+	}
+	set("free")
+	tick(0)
+	tick(20 * time.Second)
+	set("busy") // back: the timer starts over
+	tick(5 * time.Second)
+	set("free")
+	tick(0)
+	tick(29 * time.Second)
+	if !streaming() {
+		t.Fatal("session ended before staleSessionAfter")
+	}
+	// While a Begin holds op, Sunshine reports no app on purpose.
+	m.op.LockCtx(ctx)
+	tick(time.Hour)
+	m.op.Unlock()
+	if !streaming() {
+		t.Fatal("session ended while op was held")
+	}
+	tick(0)
+	if streaming() {
+		t.Fatal("stale session kept")
+	}
+	if drain(evs, "session.end") == nil {
+		t.Error("no session.end event")
+	}
+	// The monitor gets the welcome screen back after the grace period.
+	m.reconcile(ctx, false)
+	if !h.isActive(GamescopeUnit, true) {
+		t.Fatal("gamescope stopped without the grace period")
+	}
+	clk.advance(61 * time.Second)
+	m.reconcile(ctx, false)
+	if h.isActive(GamescopeUnit, true) || !h.isActive(WelcomeUnit, false) {
+		t.Fatalf("welcome did not return: %v", h.callLog())
+	}
+}
+
+// TestLateGPU: amdgpu binds seconds after vosd started; the next scan
+// picks the card up and the policy starts gamescope.
+func TestLateGPU(t *testing.T) {
+	m, h, _, _ := newTestManager(t, false)
+	good := h.gpu
+	h.gpu = GPUInfo{Vendor: "amd", Name: "Navi 48"} // PCI device only, no driver yet
+	ctx := context.Background()
+	m.init(ctx)
+	m.reconcile(ctx, false)
+	if h.isActive(GamescopeUnit, true) {
+		t.Fatal("gamescope without a supported GPU")
+	}
+	if st := m.welcomeState(); st.Status != "No supported graphics card" {
+		t.Errorf("welcome = %q", st.Status)
+	}
+	m.onScan(ctx) // nothing new yet
+	h.gpu = good
+	m.onScan(ctx)
+	if !h.isActive(GamescopeUnit, true) {
+		t.Fatalf("late GPU not picked up: %v", h.callLog())
+	}
+	if d := m.info(); d.Profile != "amd" {
+		t.Errorf("profile = %q", d.Profile)
+	}
+	if st := m.welcomeState(); st.Status != "Ready to stream" {
+		t.Errorf("welcome = %q", st.Status)
+	}
+	// Once supported, the GPU is not probed again.
+	h.gpu = GPUInfo{}
+	m.onScan(ctx)
+	if d := m.info(); d.Profile != "amd" {
+		t.Error("a supported GPU was re-probed")
+	}
+}
+
+// TestEnsureStoppedCancelsPendingRestart: gamescope exited (Steam quit)
+// and waits out RestartSec when the welcome screen is due. It must be
+// stopped, or systemd brings it back to fight the welcome for DRM master.
+func TestEnsureStoppedCancelsPendingRestart(t *testing.T) {
+	m, h, clk, _ := newTestManager(t, true)
+	ctx := context.Background()
+	m.init(ctx)
+	m.reconcile(ctx, false)
+	m.Begin(ctx, session.Request{Op: "begin", Width: 1920, Height: 1080, FPS: 60})
+	m.End(ctx)
+	k := unitKey(GamescopeUnit, true)
+	h.mu.Lock()
+	h.active[k], h.restarting[k] = false, true
+	h.mu.Unlock()
+	h.resetCalls()
+	clk.advance(61 * time.Second)
+	m.reconcile(ctx, false)
+	h.mu.Lock()
+	pending := h.restarting[k]
+	h.mu.Unlock()
+	if !slices.Contains(h.callLog(), "stop "+GamescopeUnit) || pending || !h.isActive(WelcomeUnit, false) {
+		t.Errorf("pending restart not cancelled: %v", h.callLog())
+	}
+	// A unit that is really down is not stopped again.
+	h.resetCalls()
+	m.reconcile(ctx, true)
+	if slices.Contains(h.callLog(), "stop "+GamescopeUnit) {
+		t.Errorf("stopped a stopped unit: %v", h.callLog())
+	}
+}
+
+// TestRunRestartAfterPanic: the daemon restarts Run after a panic. The
+// session socket, watchdog and hotplug watcher must not be started twice.
+func TestRunRestartAfterPanic(t *testing.T) {
+	m, h, _, _ := newTestManager(t, true)
+	m.now = time.Now
+	short, err := os.MkdirTemp("", "vp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveRun := config.RunDir
+	config.RunDir = short
+	t.Cleanup(func() { config.RunDir = saveRun; os.RemoveAll(short) })
+	h.panicIPs = 1 // the first Run panics in its first welcome refresh
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	runs := 0
+	go func() {
+		defer close(done)
+		for ctx.Err() == nil {
+			runs++
+			func() {
+				defer func() { recover() }()
+				m.Run(ctx)
+			}()
+		}
+	}()
+	stop := func() { cancel(); <-done }
+	t.Cleanup(stop) // before the paths are restored, also on failure
+	sock := config.SessionSock()
+	waitFor(t, func() bool {
+		c, err := net.Dial("unix", sock)
+		if err == nil {
+			c.Close()
+		}
+		return err == nil && h.isActive(WelcomeUnit, false)
+	})
+	resp, err := session.Call(ctx, sock, session.Request{Op: "begin", Client: "Deck", Width: 1280, Height: 800, FPS: 90})
+	if err != nil || !resp.OK {
+		t.Fatalf("begin after a restart = %+v, %v", resp, err)
+	}
+	stop()
+	h.mu.Lock()
+	calls := h.hotplugCalls
+	h.mu.Unlock()
+	if runs < 2 || calls != 1 {
+		t.Errorf("%d runs started the hotplug watcher %d times", runs, calls)
 	}
 }

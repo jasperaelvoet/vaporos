@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -33,26 +35,99 @@ func TestSteamGameRunning(t *testing.T) {
 }
 
 func TestSteamDownloading(t *testing.T) {
-	root := t.TempDir()
+	home := t.TempDir()
+	root := filepath.Join(home, steamRootRel)
 	lib := t.TempDir()
 	now := time.Now()
-	mustWrite(t, filepath.Join(root, "steamapps", "libraryfolders.vdf"), `"libraryfolders"
+	vdf := filepath.Join(root, "steamapps", "libraryfolders.vdf")
+	mustWrite(t, vdf, `"libraryfolders"
 {
 	"0"	{ "path"	"`+root+`" }
 	"1"	{ "path"	"`+lib+`" "label" "" }
 }`)
-	if libs := steamLibraries(root); len(libs) != 2 || libs[1] != lib {
+	if libs := steamLibraries(home); len(libs) != 2 || libs[0] != root || libs[1] != lib {
 		t.Fatalf("libraries = %v", libs)
 	}
 	old := filepath.Join(lib, "steamapps", "downloading", "730", "chunk")
 	mustWrite(t, old, "x")
 	os.Chtimes(old, now.Add(-time.Hour), now.Add(-time.Hour))
-	if steamDownloading(root, now) {
+	if steamDownloading(home, now) {
 		t.Fatal("stale download counted")
 	}
 	mustWrite(t, filepath.Join(lib, "steamapps", "temp", "730", "part"), "x")
-	if !steamDownloading(root, now) {
+	if !steamDownloading(home, now) {
 		t.Fatal("fresh download not detected")
+	}
+}
+
+// TestSteamLibrariesHostileFile: libraryfolders.vdf belongs to the gaming
+// user. A symlink to another file, a FIFO or a huge file must neither be
+// followed, hang vosd nor be read whole: only the Steam root is left.
+func TestSteamLibrariesHostileFile(t *testing.T) {
+	home := t.TempDir()
+	vdf := filepath.Join(home, steamRootRel, "steamapps", "libraryfolders.vdf")
+	elsewhere := filepath.Join(t.TempDir(), "secret.vdf")
+	mustWrite(t, elsewhere, `"libraryfolders" { "1" { "path" "/secret" } }`)
+	only := func(what string) {
+		t.Helper()
+		done := make(chan []string, 1)
+		go func() { done <- steamLibraries(home) }()
+		select {
+		case libs := <-done:
+			if len(libs) != 1 {
+				t.Errorf("%s: libraries = %v", what, libs)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: steamLibraries hangs", what)
+		}
+	}
+	os.MkdirAll(filepath.Dir(vdf), 0o755)
+	if err := os.Symlink(elsewhere, vdf); err != nil {
+		t.Fatal(err)
+	}
+	only("symlink")
+	os.Remove(vdf)
+	if err := syscall.Mkfifo(vdf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	only("fifo")
+	os.Remove(vdf)
+	f, err := os.Create(vdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(`"libraryfolders" { "1" { "path" "/big" } }`)
+	f.Truncate(maxVDF + 1) // sparse
+	f.Close()
+	only("oversized")
+	// A symlinked directory on the way is refused as well.
+	os.RemoveAll(filepath.Join(home, ".local"))
+	os.MkdirAll(filepath.Join(home, ".local"), 0o755)
+	realSteam := filepath.Join(t.TempDir(), "Steam")
+	mustWrite(t, filepath.Join(realSteam, "steamapps", "libraryfolders.vdf"), `"libraryfolders" { "1" { "path" "/linked" } }`)
+	if err := os.Symlink(filepath.Dir(realSteam), filepath.Join(home, ".local", "share")); err != nil {
+		t.Fatal(err)
+	}
+	only("symlinked directory")
+}
+
+// TestSteamGameRunningHugeEnviron: a game can make its environment huge;
+// the scan is bounded and still finds SteamAppId past a very long variable.
+func TestSteamGameRunningHugeEnviron(t *testing.T) {
+	proc := t.TempDir()
+	mustWrite(t, filepath.Join(proc, "200", "status"), "Uid:\t1000\t1000\t1000\t1000\n")
+	long := "JUNK=" + strings.Repeat("SteamAppId=1", 10000)
+	mustWrite(t, filepath.Join(proc, "200", "environ"), long+"\x00SteamAppId=440\x00")
+	if !steamGameRunning(proc, 1000) {
+		t.Error("SteamAppId after a long variable not found")
+	}
+	mustWrite(t, filepath.Join(proc, "200", "environ"), long+"\x00")
+	if steamGameRunning(proc, 1000) {
+		t.Error("a long variable's tail was taken for SteamAppId")
+	}
+	mustWrite(t, filepath.Join(proc, "200", "environ"), strings.Repeat("A=1\x00", maxEnviron/4+10)+"SteamAppId=440\x00")
+	if steamGameRunning(proc, 1000) {
+		t.Error("read past the environ bound")
 	}
 }
 

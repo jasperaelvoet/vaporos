@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -20,9 +21,11 @@ func (m *Manager) Routes(srv *api.Server) {
 }
 
 type connectorInfo struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Physical bool   `json:"physical"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	// Physical: a monitor is attached here (connected, and not the virtual
+	// connector, which reads connected only because the kernel forces it).
+	Physical bool `json:"physical"`
 }
 
 // displayInfo is GET /display (docs/CONTRACTS.md).
@@ -30,8 +33,12 @@ type displayInfo struct {
 	Profile          string          `json:"profile"`
 	VirtualConnector string          `json:"virtual_connector"`
 	Connectors       []connectorInfo `json:"connectors"`
-	Modes            []string        `json:"modes"`
-	Current          *string         `json:"current"`
+	// AvailableConnectors are the free ports PUT /display/settings accepts
+	// as the new virtual connector: disconnected DP and HDMI connectors of
+	// a supported GPU, other than the current one.
+	AvailableConnectors []string `json:"available_connectors"`
+	Modes               []string `json:"modes"`
+	Current             *string  `json:"current"`
 	// Planes counts the fb-backed planes on the virtual connector's CRTC:
 	// 1 while gamescope composites (what Sunshine's KMS capture needs), more
 	// when it scans out directly, 0 when nothing is shown or observable.
@@ -43,10 +50,10 @@ type displayInfo struct {
 }
 
 func (m *Manager) info() displayInfo {
+	dc := m.displayConfig()
+	virtual, hdr := dc.VirtualConnector, dc.HDR
 	m.mu.Lock()
 	gpu := m.gpu
-	virtual := m.cfg.Display.VirtualConnector
-	hdr := m.cfg.Display.HDR
 	state := m.state
 	if m.session != nil {
 		state = StateStreaming
@@ -55,14 +62,15 @@ func (m *Manager) info() displayInfo {
 	m.mu.Unlock()
 
 	d := displayInfo{
-		Profile:          "none",
-		VirtualConnector: virtual,
-		Connectors:       []connectorInfo{},
-		Modes:            []string{},
-		HDR:              hdr,
-		Learned:          m.learnedModes(),
-		RebootNeeded:     m.rebootNeededNow(),
-		State:            state,
+		Profile:             "none",
+		VirtualConnector:    virtual,
+		Connectors:          []connectorInfo{},
+		AvailableConnectors: []string{},
+		Modes:               []string{},
+		HDR:                 hdr,
+		Learned:             m.learnedModes(),
+		RebootNeeded:        m.rebootNeededNow(),
+		State:               state,
 	}
 	if p := gpu.Profile(); p != nil && p.Supported() {
 		d.Profile = p.Name()
@@ -71,7 +79,10 @@ func (m *Manager) info() displayInfo {
 		if c.Type == "Writeback" {
 			continue
 		}
-		d.Connectors = append(d.Connectors, connectorInfo{Name: c.Name, Status: c.Status, Physical: c.Name != virtual})
+		d.Connectors = append(d.Connectors, connectorInfo{Name: c.Name, Status: c.Status, Physical: c.Connected() && c.Name != virtual})
+		if gpu.Supported && c.Name != virtual && c.Status == "disconnected" && isCandidateType(c.Type) {
+			d.AvailableConnectors = append(d.AvailableConnectors, c.Name)
+		}
 	}
 	if virtual != "" && gpu.Supported {
 		modes := m.availableModes(gpu, virtual)
@@ -148,16 +159,16 @@ func (m *Manager) handleAddMode(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	m.mu.Lock()
-	if !slices.Contains(m.cfg.Display.ExtraModes, md.String()) {
-		m.cfg.Display.ExtraModes = append(m.cfg.Display.ExtraModes, md.String())
-		if err := m.cfg.Save(); err != nil {
-			m.mu.Unlock()
+	if !slices.Contains(m.displayConfig().ExtraModes, md.String()) {
+		if err := m.cfg.Mutate(func(c *config.Config) {
+			if !slices.Contains(c.Display.ExtraModes, md.String()) {
+				c.Display.ExtraModes = append(c.Display.ExtraModes, md.String())
+			}
+		}); err != nil {
 			api.Error(w, http.StatusInternalServerError, "saving config: %v", err)
 			return
 		}
 	}
-	m.mu.Unlock()
 	if _, err := m.regenerateEDID(); err != nil {
 		api.Error(w, http.StatusInternalServerError, "writing EDID: %v", err)
 		return
@@ -177,9 +188,14 @@ func (m *Manager) handleSettings(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "%v", err)
 		return
 	}
+	setHDR := func(c *config.Config) {
+		if req.HDR != nil {
+			c.Display.HDR = *req.HDR
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if req.VirtualConnector != nil && *req.VirtualConnector != m.cfg.Display.VirtualConnector {
+	if req.VirtualConnector != nil && *req.VirtualConnector != m.virtual() {
 		c := *req.VirtualConnector
 		if !m.gpu.Supported {
 			api.Error(w, http.StatusConflict, "no supported GPU for a virtual display")
@@ -189,16 +205,12 @@ func (m *Manager) handleSettings(w http.ResponseWriter, r *http.Request) {
 			api.Error(w, http.StatusBadRequest, "%q is not a DP or HDMI connector of %s", c, m.gpu.Name)
 			return
 		}
-		if req.HDR != nil {
-			m.cfg.Display.HDR = *req.HDR
-		}
-		if err := m.setVirtualLocked(c); err != nil {
+		if err := m.setVirtualLocked(c, setHDR); err != nil {
 			api.Error(w, http.StatusInternalServerError, "%v", err)
 			return
 		}
 	} else if req.HDR != nil {
-		m.cfg.Display.HDR = *req.HDR
-		if err := m.cfg.Save(); err != nil {
+		if err := m.cfg.Mutate(setHDR); err != nil {
 			api.Error(w, http.StatusInternalServerError, "saving config: %v", err)
 			return
 		}
@@ -218,8 +230,21 @@ func (m *Manager) connectorUsableLocked(c string) bool {
 	return false
 }
 
+// handleWelcome is GET /welcome: what the welcome screen shows, minus the
+// setup code. The route is open to any local process, and Steam and every
+// game run locally; the code must reach only people who see the screen.
 func (m *Manager) handleWelcome(w http.ResponseWriter, r *http.Request) {
-	api.WriteJSON(w, http.StatusOK, m.welcomeState())
+	api.WriteJSON(w, http.StatusOK, withoutSetupCode(m.welcomeState()))
+}
+
+// withoutSetupCode drops the setup code from a welcome state, including
+// the copy in the QR code's URL.
+func withoutSetupCode(st welcome.State) welcome.State {
+	st.Code = ""
+	if i := strings.Index(st.QR, "/setup?"); i >= 0 {
+		st.QR = st.QR[:i+1]
+	}
+	return st
 }
 
 // CLIWelcome is `vos welcome`.

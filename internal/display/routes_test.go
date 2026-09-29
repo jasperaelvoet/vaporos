@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/display/drm"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
 )
@@ -59,15 +61,20 @@ func TestGetDisplay(t *testing.T) {
 	if d.Current == nil || *d.Current != "1920x1080@60" {
 		t.Errorf("current = %v", d.Current)
 	}
+	// No monitor: nothing is physical (the forced DP-1 reads connected but
+	// is the virtual display), and both free ports can host the virtual one.
 	var names []string
 	for _, c := range d.Connectors {
 		names = append(names, c.Name)
-		if c.Physical == (c.Name == "DP-1") {
+		if c.Physical {
 			t.Errorf("physical flag wrong for %+v", c)
 		}
 	}
 	if !slices.Equal(names, []string{"DP-1", "DP-2", "HDMI-A-1"}) {
 		t.Errorf("connectors = %v", names)
+	}
+	if !slices.Equal(d.AvailableConnectors, []string{"DP-2", "HDMI-A-1"}) {
+		t.Errorf("available = %v", d.AvailableConnectors)
 	}
 	if d.Learned == nil || d.Connectors == nil {
 		t.Error("lists must be [] not null")
@@ -76,7 +83,7 @@ func TestGetDisplay(t *testing.T) {
 		t.Errorf("planes while compositing = %d", d.Planes)
 	}
 	raw := w.Body.String()
-	for _, k := range []string{`"profile"`, `"virtual_connector"`, `"connectors"`, `"modes"`, `"current"`, `"planes"`, `"hdr"`, `"learned"`, `"reboot_needed"`, `"state"`} {
+	for _, k := range []string{`"profile"`, `"virtual_connector"`, `"connectors"`, `"available_connectors"`, `"modes"`, `"current"`, `"planes"`, `"hdr"`, `"learned"`, `"reboot_needed"`, `"state"`} {
 		if !strings.Contains(raw, k) {
 			t.Errorf("response lacks %s: %s", k, raw)
 		}
@@ -94,6 +101,44 @@ func TestGetDisplay(t *testing.T) {
 	h.mu.Unlock()
 	if d := m.info(); d.Planes != 0 || d.Current != nil {
 		t.Errorf("idle info = planes %d current %v", d.Planes, d.Current)
+	}
+}
+
+// TestDisplayConnectors: a monitor is physical, the virtual connector
+// never is, and only free DP/HDMI ports are offered for the virtual one.
+func TestDisplayConnectors(t *testing.T) {
+	m, h, _, _ := newTestManager(t, true)
+	h.conns = append(h.conns,
+		drm.SysConnector{Card: "card1", Name: "eDP-1", Type: "eDP", Status: "disconnected"},
+		drm.SysConnector{Card: "card1", Name: "DP-3", Type: "DP", Status: "unknown"})
+	m.init(context.Background())
+	d := m.info()
+	phys := map[string]bool{}
+	for _, c := range d.Connectors {
+		phys[c.Name] = c.Physical
+	}
+	want := map[string]bool{"DP-1": false, "DP-2": false, "HDMI-A-1": true, "eDP-1": false, "DP-3": false}
+	if !maps.Equal(phys, want) {
+		t.Errorf("physical = %v", phys)
+	}
+	if !slices.Equal(d.AvailableConnectors, []string{"DP-2"}) {
+		t.Errorf("available = %v", d.AvailableConnectors)
+	}
+	// Each one offered is accepted by PUT /display/settings.
+	for _, c := range d.AvailableConnectors {
+		m.mu.Lock()
+		ok := m.connectorUsableLocked(c)
+		m.mu.Unlock()
+		if !ok {
+			t.Errorf("%s offered but not usable", c)
+		}
+	}
+	// Without a supported GPU there is nothing to offer.
+	m.mu.Lock()
+	m.gpu.Supported = false
+	m.mu.Unlock()
+	if d := m.info(); len(d.AvailableConnectors) != 0 || d.AvailableConnectors == nil {
+		t.Errorf("available without GPU = %#v", d.AvailableConnectors)
 	}
 }
 
@@ -192,6 +237,16 @@ func TestGetWelcome(t *testing.T) {
 	var st welcome.State
 	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.URL != "http://vapor.local" || st.Status != "Ready to stream" {
 		t.Errorf("welcome = %+v %v", st, err)
+	}
+	// Any local process (a game) may call it: never the setup code.
+	m.SetSetupCode("ABCD-EFGH")
+	w, _ = call(t, m.handleWelcome, http.MethodGet, "")
+	if strings.Contains(w.Body.String(), "ABCD") {
+		t.Errorf("GET /welcome leaks the setup code: %s", w.Body.String())
+	}
+	st = welcome.State{}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.QR != "http://192.168.1.50/" || st.Status != "Almost ready" {
+		t.Errorf("welcome with a code = %+v %v", st, err)
 	}
 }
 
