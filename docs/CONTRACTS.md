@@ -254,7 +254,7 @@ counting does the rest.
 | GET/PUT `/sunshine/settings` | Authed | `{"encoder","bitrate_kbps_max","audio_sink"?,"gamepad"}`, a whitelisted subset |
 | GET `/sunshine/logs` | Authed | `text/plain`, last 2000 lines |
 | POST `/sunshine/restart` | Authed | → `{}` |
-| GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none"}` |
+| GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none","planes":N}` (`planes`: fb-backed planes on the virtual connector's CRTC; 1 while gamescope composites) |
 | POST `/display/modes` | Authed | `{"mode":"WxH@R"}` → `{"reboot_needed":true}` |
 | PUT `/display/settings` | Authed | `{"hdr":bool,"virtual_connector"?}` → `{}` |
 | GET `/storage` | Authed | `{"disks":[{"path","model","size","uuid","label","fstype","mounted_at","is_system":bool,"steam_library":bool,"adopted":bool,"free"}]}` |
@@ -263,8 +263,8 @@ counting does the rest.
 | GET/PUT `/power` | Authed | `{"idle_shutdown","idle_minutes","keep_awake_until"?,"wol":[{"iface","mac","enabled"}],"busy":{"reason"}\|null}` |
 | POST `/power/keep-awake` | Authed | `{"minutes"}` (0 = clear) → `{}` |
 | GET/PUT `/ssh` | Authed | `{"enabled","keys":[…]}` |
-| GET `/install/probe` | Setup | `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}` |
-| POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":""}` → `{"job":"id"}`; empty source means the live medium |
+| GET `/install/probe` | Setup | query `?source=&channel=` (optional); returns `"source","channel","version","min_size","source_error"` plus `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}` |
+| POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`) |
 | GET `/install/status` | Setup | `{"state":"idle\|running\|done\|failed","step","percent","message","error"}` |
 | POST `/install/reboot` | Setup | → `{}` |
 | GET `/welcome` | Local | the welcome.json content |
@@ -281,7 +281,7 @@ Newline-delimited JSON, one request and one response per connection.
 - `{"op":"end"}` → `{"ok":true}`
 
 `vos session begin` reads `SUNSHINE_CLIENT_WIDTH/HEIGHT/FPS/HDR` and
-`SUNSHINE_APP_NAME` from the environment. It **always exits 0**, with a
+`SUNSHINE_APP_NAME` from the environment. vosd gives a request 80 s and answers on its own if the handler overruns. It **always exits 0**, with a
 hard timeout of 90 s.
 
 ## Welcome screen (`/run/vos/welcome.json`, written by vosd)
@@ -291,7 +291,7 @@ hard timeout of 90 s.
  "qr":"http://192.168.1.50/","code":"ABCD-EFGH","title":"VaporOS","status":"Ready to stream",
  "detail":"Open this address on your phone or computer","version":"…"}
 ```
-The virtual EDID's PNP id is `VPR` and its monitor name `VaporOS`, so gamescope's `modes.cfg` key is `<pnp.ids name for VPR> VaporOS`; vosd reads the real key from `gamescopectl` at runtime instead of assuming it.
+The virtual EDID's PNP id is `VOS` (not assigned in hwdata's pnp.ids, so gamescope falls back to the raw id) and its monitor name `VaporOS`, so gamescope's `modes.cfg` key is `VOS VaporOS`; vosd still reads the real key from `gamescopectl` at runtime instead of assuming it. vosd keeps gamescope compositing (the `composite_force` convar and the `GAMESCOPE_COMPOSITE_FORCE` root property, which Steam can reset) and re-asserts it every 5 s during sessions, because stock Sunshine's KMS capture loses the picture when gamescope scans a game out on its own plane.
 
 `vos welcome` redraws whenever the file changes (poll 1 s). It lights every
 connected physical connector with its preferred mode. It also lights the
