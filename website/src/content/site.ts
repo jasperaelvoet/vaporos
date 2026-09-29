@@ -1,6 +1,7 @@
 // Site identity, URLs, per-page meta, navigation and footer.
 // Ported from the Astro site's layouts/Base.astro and lib/paths.ts.
 import { RELEASES_URL, REPO_URL } from '@/lib/release-shape';
+import { tokens } from '@/lib/tokens.gen';
 import type { IconName, LinkItem, PageMeta } from './types';
 
 export const site = {
@@ -22,8 +23,12 @@ export const site = {
   ogTagline: ['Headless Steam streaming for PCs with an AMD GPU.', 'Play anywhere with Moonlight.'],
   /** public/og.png: the Astro site's share card, 1200x630. Replace it if the look changes. */
   ogImage: { path: '/og.png', width: 1200, height: 630, alt: 'VaporOS: your gaming PC, as a streaming console.' },
-  themeColor: '#060a0f',
-  /** The wordmark is Vapor + OS, with OS in the accent color, as the product draws it. */
+  /** The browser's chrome colour: the page's ash (design/tokens.json, colour role canvas). */
+  themeColor: tokens.color.dark.canvas,
+  /**
+   * The wordmark as text (for alt text and OG images): "Vapor" in the hot cut,
+   * "OS" in the cold cut, as the drawn wordmark in src/lib/logo.gen.ts.
+   */
   wordmark: { text: 'Vapor', accent: 'OS' },
 } as const;
 
@@ -62,6 +67,8 @@ export const routes = {
   verify: `/download/#${anchors.verify}`,
   requirements: `/download/#${anchors.requirements}`,
   releaseKey: '/release.pub',
+  /** The live demo (content/demo.ts turns it on; hidden from nav, footer and sitemap until then). */
+  demo: '/demo/',
 } as const;
 
 export const pageMeta = {
@@ -84,11 +91,17 @@ export const pageMeta = {
     description:
       'Answers about VaporOS: supported graphics cards, monitors, dual boot, Secure Boot, updates, rollback and power.',
   },
+  demo: {
+    path: routes.demo,
+    title: 'Live demo',
+    description:
+      'Try the VaporOS control center in your browser: start a stream, pair a device and install an update, on made-up data.',
+  },
   // GitHub Pages serves the 404 page at any missing path: no canonical, noindex.
   notFound: { path: '/404/', title: 'Page not found', description: "This page doesn't exist.", noindex: true },
 } satisfies Record<string, PageMeta>;
 
-export type NavKey = 'home' | 'download' | 'install' | 'faq';
+export type NavKey = 'home' | 'download' | 'install' | 'faq' | 'demo';
 
 export const nav = {
   skipLink: 'Skip to content',
@@ -99,12 +112,25 @@ export const nav = {
   /** aria-labels of the two navs. */
   mainLabel: 'Main',
   mobileLabel: 'Main menu',
-  /** The page links. On wide screens the Astro site showed Download as the CTA button instead of a link. */
+  /**
+   * The header's links from 901 px, before the Download button (always last and
+   * primary). The live demo joins them when content/demo.ts turns it on (`demo`).
+   */
   items: [
+    { key: 'install', label: 'Install guide', href: routes.install },
+    { key: 'faq', label: 'FAQ', href: routes.faq },
+    { label: 'GitHub', href: links.repo, icon: 'github' },
+  ] satisfies (LinkItem & { key?: NavKey })[],
+  /** The menu below 901 px (Download stays in the bar next to it). */
+  menu: [
+    { key: 'home', label: 'Home', href: routes.home },
     { key: 'download', label: 'Download', href: routes.download },
     { key: 'install', label: 'Install guide', href: routes.install },
     { key: 'faq', label: 'FAQ', href: routes.faq },
-  ] satisfies (LinkItem & { key: NavKey })[],
+    { label: 'GitHub', href: links.repo, icon: 'github' },
+  ] satisfies (LinkItem & { key?: NavKey })[],
+  /** The live demo's link, for when content/demo.ts turns the demo on. */
+  demo: { key: 'demo', label: 'Live demo', href: routes.demo } satisfies LinkItem & { key: NavKey },
   /** First item of the mobile menu. */
   home: { key: 'home', label: 'Home', href: routes.home } satisfies LinkItem & { key: NavKey },
   github: { label: 'GitHub', href: links.repo, icon: 'github' as IconName },
