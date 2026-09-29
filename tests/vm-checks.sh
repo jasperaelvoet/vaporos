@@ -9,6 +9,7 @@
 #   system   --slot S --version V --password P   the whole installed system
 #   booted   --slot S --version V [--blessed]    after an update or a rollback
 #   fallback --slot S --version V --failed F     after F failed its health check
+#   web                                          the control center's pages only
 #
 # Every check prints one line, "VOS-CHECK <ok|warn|FAIL> <name> <detail>", and
 # the run ends with "VOS-CHECKS-DONE pass=N warn=N fail=N". dev.sh reads those
@@ -19,7 +20,18 @@ set -uo pipefail # no -e: one failed check must not stop the others
 
 # Overridable only so the checks themselves can be tested off the VM.
 API=${VOS_API:-http://127.0.0.1/api/v1}
+WEB=${VOS_WEB:-${API%/api/v1}}
 ESP=${VOS_ESP:-/efi}
+
+# The control center's pages (docs/CONTRACTS.md "Pages"). The redesigned
+# UI ("next") replaces the legacy one at a single switch commit; check_web
+# tells which one a build serves from the markup of GET /.
+WEB_CSP="default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+WEB_PAGES_LEGACY="/ /pair /streaming /display /storage /updates /power /advanced /login /setup"
+WEB_PAGES_NEXT="/ /devices /screen /system /system/updates /system/power /system/storage /system/settings /system/logs /system/about /login /setup"
+# The legacy URLs the next UI still answers, as FROM=TO: 303 to TO, with the
+# query kept (before TO's #fragment).
+WEB_OLD_URLS="/pair=/devices#pair /streaming=/screen#stream /display=/screen /storage=/system/storage /updates=/system/updates /power=/system/power /advanced=/system/settings"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 pass=0 warns=0 fails=0
@@ -48,6 +60,22 @@ http() {
     : >"$tmp/body"
     curl -sS -m 15 -X "$method" -o "$tmp/body" -w '%{http_code}' "$@" "$API$path" 2>/dev/null ||
         true
+}
+
+# page PATH [curl args...]: GET a page without following redirects. The body
+# lands in $tmp/body, the headers in $tmp/headers; prints the status code.
+page() {
+    local path=$1
+    shift
+    : >"$tmp/body"
+    : >"$tmp/headers"
+    curl -sS -m 15 -o "$tmp/body" -D "$tmp/headers" -w '%{http_code}' "$@" "$WEB$path" 2>/dev/null ||
+        true
+}
+
+# header NAME: that header's value in $tmp/headers (the first one).
+header() {
+    grep -i "^$1:" "$tmp/headers" | head -n1 | cut -d: -f2- | sed 's/^ *//' | tr -d '\r'
 }
 
 # ---------------------------------------------------------------- checks ----
@@ -239,6 +267,79 @@ check_api() {
     if [[ $code == 403 ]]; then ok csrf "POST without X-VOS-CSRF -> 403"; else bad csrf "POST without X-VOS-CSRF -> $code, expected 403"; fi
 }
 
+# Every page of the UI set this build serves answers 200 with the CSP, the
+# assets the home page links answer, and (in the next UI) the legacy URLs
+# redirect to their new pages. Pages are Public: no session needed.
+check_web() {
+    local code ui pages p csp type failed=0 n=0 u from to want loc asset
+    code=$(page /)
+    if [[ $code != 200 ]]; then
+        bad web "GET / -> $code, expected 200"
+        return
+    fi
+    cp "$tmp/body" "$tmp/home"
+    if grep -q 'data-page="home"' "$tmp/home"; then
+        ui=next pages=$WEB_PAGES_NEXT
+    elif grep -q 'data-page="dashboard"' "$tmp/home"; then
+        ui=legacy pages=$WEB_PAGES_LEGACY
+    else
+        bad web "GET / is neither UI's home page: $(tr -s ' \n' ' ' <"$tmp/home" | cut -c1-200)"
+        return
+    fi
+
+    for p in $pages; do
+        n=$((n + 1))
+        code=$(page "$p")
+        csp=$(header Content-Security-Policy)
+        type=$(header Content-Type)
+        if [[ $code != 200 || $csp != "$WEB_CSP" || $type != text/html* ]]; then
+            bad web-page "GET $p -> $code, type '${type:-none}', CSP '${csp:-none}'"
+            failed=$((failed + 1))
+        fi
+    done
+    ((failed)) || ok web-pages "$n pages of the $ui UI answer 200 with the CSP"
+
+    failed=0 n=0
+    for asset in $(grep -oE '(href|src)="/static/[^"]+"' "$tmp/home" | sed 's/^[a-z]*="//; s/"$//' | sort -u); do
+        n=$((n + 1))
+        code=$(page "$asset")
+        if [[ $code != 200 ]]; then
+            bad web-asset "GET $asset -> $code"
+            failed=$((failed + 1))
+        fi
+    done
+    if ((n == 0)); then
+        bad web-assets "GET / links no /static/ assets"
+    elif ((failed == 0)); then
+        ok web-assets "the $n assets the home page links answer 200"
+    fi
+
+    code=$(page /vos-check-no-such-page)
+    if [[ $code == 404 ]]; then ok web-404 "an unknown page -> 404"; else bad web-404 "GET /vos-check-no-such-page -> $code, expected 404"; fi
+
+    [[ $ui == next ]] || return 0
+    failed=0 n=0
+    for u in $WEB_OLD_URLS; do
+        n=$((n + 1))
+        from=${u%%=*} to=${u#*=}
+        want=${to%%#*}?vos-check=1
+        [[ $to != *#* ]] || want+="#${to#*#}"
+        code=$(page "$from?vos-check=1")
+        loc=$(header Location)
+        if [[ $code != 303 || $loc != "$want" ]]; then
+            bad web-old-url "GET $from?vos-check=1 -> $code to '${loc:-nowhere}', expected 303 to $want"
+            failed=$((failed + 1))
+            continue
+        fi
+        code=$(page "$from?vos-check=1" -L)
+        if [[ $code != 200 ]]; then
+            bad web-old-url "GET $from, followed to ${to%%#*} -> $code, expected 200"
+            failed=$((failed + 1))
+        fi
+    done
+    ((failed)) || ok web-old-urls "$n legacy URLs answer 303 to their new page (query kept), which answers 200"
+}
+
 check_hardening() {
     local caps rules
     caps=$(getcap /usr/bin/sunshine 2>/dev/null)
@@ -317,6 +418,7 @@ usage() {
 usage: vm-checks.sh system   --slot S --version V --password P
        vm-checks.sh booted   --slot S --version V [--blessed]
        vm-checks.sh fallback --slot S --version V --failed F
+       vm-checks.sh web
 USAGE
     exit 2
 }
@@ -334,7 +436,7 @@ while (($#)); do
         *) usage ;;
     esac
 done
-[[ -n $slot && -n $version ]] || usage
+[[ $group == web || -n $slot && -n $version ]] || usage
 
 case $group in
     system)
@@ -347,6 +449,7 @@ case $group in
         check_health
         check_ping "$version"
         check_api "$password"
+        check_web
         check_hardening
         check_no_reboot_keys
         ;;
@@ -362,6 +465,9 @@ case $group in
         check_booted "$slot" "$version"
         check_fallback "$failed"
         check_ping "$version"
+        ;;
+    web)
+        check_web
         ;;
     *) usage ;;
 esac
