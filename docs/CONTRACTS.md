@@ -240,7 +240,7 @@ systemd-boot counting does the rest.
 
 **Errors:** `{"error":"message"}` with a proper status.
 
-**Events:** `GET /api/v1/events` (Authed or Setup) is an SSE stream: `event: <topic>`, `data: <json>`. A new stream starts with the latest event of each topic except `system.message` and `pairing.pending`, which are live-only. `session.begin` and `session.end` replace each other, so only the newer of the two is replayed.
+**Events:** `GET /api/v1/events` (Authed or Setup) is an SSE stream: `event: <topic>`, `data: <json>`. A new stream starts with the latest event of each topic except `system.message` and `pairing.pending`, which are live-only. `session.begin` and `session.end` replace each other, so only the newer of the two is replayed. Signed out and without a setup code, it answers 403 (`setup code required`), since it is Authed-or-Setup.
 
 | Topic | Data |
 | --- | --- |
@@ -253,13 +253,13 @@ systemd-boot counting does the rest.
 | `pairing.state` | `{pairings:[{id,name,address}]}`: who waits for a PIN (as in GET `/sunshine` `pairings`), sent after vosd's first poll of Sunshine and whenever the list changes. An empty list ends any pairing prompt; Sunshine not answering counts as an empty list |
 | `display.changed` | `{}` |
 | `power.idle` | `{idle_seconds,shutdown_in,busy}` (as in GET `/power`; `busy` is null while idle; sent every 15 s while idle and whenever the busy reason changes) |
-| `system.message` | `{level,text}` |
+| `system.message` | `{level,text}` (`level`: `info`, `warning` or `error`) |
 
 | Method + path | Access | Request → Response |
 | --- | --- | --- |
 | GET `/ping` | Public | `{"ok":true,"mode":"os\|installer","version"}` |
 | GET `/auth/me` | Public | `{"authenticated":bool,"csrf":"…","needs_setup":bool,"installer":bool}` |
-| POST `/auth/login` | Public | `{"password"}` → `{"csrf"}` + cookie; 401 on a wrong password; 429 after 5 failures per IP (backoff up to 15 min), and (Retry-After 1) while another check from the same client is running; 503 when too many sign-ins (8) are being checked |
+| POST `/auth/login` | Public | `{"password"}` → `{"csrf"}` + cookie; 401 on a wrong password; 409 while no admin password is set yet (as on the installer); 429 after 5 failures per IP (backoff up to 15 min), and (Retry-After 1) while another check from the same client is running; 503 when too many sign-ins (8) are being checked |
 | POST `/auth/logout` | Authed | → `{}` |
 | POST `/auth/setup` | Setup | `{"password"}` → `{"csrf"}`; only when auth.json is missing (first run after a CLI install); 409 in installer mode |
 | POST `/auth/password` | Authed | `{"current","new"}` → `{}`; 403 on a wrong current password; shares the login limit (429, 503) |
@@ -275,7 +275,7 @@ systemd-boot counting does the rest.
 | PUT `/update/settings` | Authed | `{"channel","auto"}` → `{}` |
 | GET `/sunshine` | Authed | `{"running":bool,"version","streaming":bool,"session":{"client","mode","hdr","app"?,"since"}\|null,"pending_pairing":bool,"pairings":[{"id","name","address"}]}` (`session.client`: the device that started the running app; `session.app` and `session.since` as in `session.begin`; `since` falls back to when vosd saw the `session.begin`) |
 | POST `/sunshine/pair` | Authed | `{"pin","name","pairing_id"?}` → `{}` (Sunshine `POST /api/pin`); 409 when no device waits, or several wait and none is named |
-| GET `/sunshine/clients` | Authed | `{"clients":[{"uuid","name"}]}` |
+| GET `/sunshine/clients` | Authed | `{"clients":[{"uuid","name","enabled":bool}]}` |
 | DELETE `/sunshine/clients/{uuid}` | Authed | → `{}` |
 | GET/PUT `/sunshine/settings` | Authed | `{"encoder","bitrate_kbps_max","audio_sink","gamepad"}`, a whitelisted subset (`audio_sink` `""` = Sunshine's default sink). Both answers add `"choices":{"encoder":["vulkan","vaapi","software"],"gamepad":["auto","xone","xseries","x360","ds4","ds5","switch","generic"],"bitrate_kbps_max":{"min":0,"max":1000000}}`: what the UI offers. PUT also accepts `nvenc`, ignores `choices` and answers the saved settings; 400 on any other value |
 | GET `/sunshine/logs` | Authed | `text/plain`, last 2000 lines |
@@ -293,7 +293,7 @@ systemd-boot counting does the rest.
 | GET/PUT `/ssh` | Authed | `{"enabled","keys":[…]}` |
 | GET `/install/probe` | Setup | query `?source=&channel=` (optional); returns `"source","channel","version","min_size","source_error"` plus `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","hostname"?,"steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}`; `hostname` is the name the VaporOS install on that disk answers to (`<hostname>.local`, the one a repair keeps), read from `etc/upper/hostname` on its vos_data (mounted read-only without journal replay, never while an install runs); omitted when unknown |
 | POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`); in repair, an empty hostname or timezone keeps the installed one; `hostname` (lower-cased first) follows PUT `/system/hostname`'s rule, so `localhost` is a 400 |
-| GET `/install/status` | Setup | `{"state":"idle\|running\|done\|failed","step","percent","message","error"}` |
+| GET `/install/status` | Setup | `{"state":"idle\|running\|done\|failed","step","percent","message","error"}`; `step` is one of `probe`, `partition`, `write`, `verify`, `bootloader`, `configure`, `done` (empty while `idle`) |
 | POST `/install/reboot` | Setup | → `{}` |
 | GET `/welcome` | Local | the welcome.json content without the setup code (`code` empty, `qr` cut before `setup?`) |
 
