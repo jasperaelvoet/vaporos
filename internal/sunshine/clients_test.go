@@ -298,17 +298,14 @@ func TestRunReplaysTheJournalHistory(t *testing.T) {
 		replayed.Store(int32(len(hist)))
 		return ch, nil
 	})
-	waitFor(t, "replayed client count", func() bool {
+	// Wait for the whole history: the client count is also idle part way
+	// through it (right after the "Sunshine version" line resets it).
+	want := clock.now().Add(-20 * time.Minute)
+	waitFor(t, "idle since the replayed ping timeout "+want.String(), func() bool {
 		h.s.mu.Lock()
 		defer h.s.mu.Unlock()
-		return replayed.Load() > 0 && h.s.clients.idle() && !h.s.busySince.IsZero()
+		return replayed.Load() > 0 && h.s.clients.idle() && !h.s.busySince.IsZero() && h.s.clients.since.Equal(want)
 	})
-	h.s.mu.Lock()
-	since := h.s.clients.since
-	h.s.mu.Unlock()
-	if want := clock.now().Add(-20 * time.Minute); !since.Equal(want) {
-		t.Errorf("idle since %v, want %v (the replayed ping timeout)", since, want)
-	}
 
 	// Abandoned for 20 minutes already, but vosd only now saw the app:
 	// it still waits the full window from here.
