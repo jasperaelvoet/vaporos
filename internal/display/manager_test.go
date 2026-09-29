@@ -398,18 +398,29 @@ func TestVerifyRestartsCrashedUnit(t *testing.T) {
 	if !h.isActive(GamescopeUnit, true) {
 		t.Fatal("verify did not restart gamescope")
 	}
-	// Failed starts back off.
+	// Failed starts back off. Count only starts: the composite watchdog
+	// that the successful start above kicked off keeps calling gamescopectl
+	// and xprop in the background.
+	starts := func() int {
+		n := 0
+		for _, c := range h.callLog() {
+			if strings.HasPrefix(c, "start ") {
+				n++
+			}
+		}
+		return n
+	}
 	h.setActive(GamescopeUnit, true, false)
 	h.startErr = errors.New("boom")
 	m.reconcile(ctx, true)
-	n := len(h.callLog())
+	n := starts()
 	m.reconcile(ctx, true)
-	if len(h.callLog()) != n {
+	if starts() != n {
 		t.Error("retried a failed start inside the backoff")
 	}
 	clk.advance(11 * time.Second)
 	m.reconcile(ctx, true)
-	if len(h.callLog()) == n {
+	if starts() == n {
 		t.Error("never retried after the backoff")
 	}
 }
