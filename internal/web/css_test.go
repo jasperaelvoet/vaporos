@@ -226,9 +226,27 @@ func forEachCheckedSet(t *testing.T, tailwindOnly bool, fn func(t *testing.T, se
 // jsBlank returns src with comments replaced by spaces and, unless
 // keepStrings, the contents of string, template and regex literals blanked
 // too. Delimiters and newlines stay, so offsets and line numbers still match
-// src, and code inside a template's ${…} stays code. It is a lexer, not a
-// parser: a regex literal after a keyword such as return reads as division.
+// src, and code inside a template's ${…} stays code.
 func jsBlank(src string, keepStrings bool) string {
+	b := []byte(jsScan(src, nil))
+	if !keepStrings {
+		jsScan(src, func(_ byte, from, to int) {
+			for k := from; k < to; k++ {
+				if b[k] != '\n' {
+					b[k] = ' '
+				}
+			}
+		})
+	}
+	return string(b)
+}
+
+// jsScan returns src with its comments blanked and calls lit (if not nil)
+// with the span of every literal's contents: kind is the quote of a string,
+// '`' for each static part of a template literal, '/' for a regex. It is a
+// lexer, not a parser: a regex literal after a keyword such as return reads
+// as division.
+func jsScan(src string, lit func(kind byte, from, to int)) string {
 	b := []byte(src)
 	blank := func(from, to int) {
 		for k := from; k < to && k < len(b); k++ {
@@ -237,9 +255,9 @@ func jsBlank(src string, keepStrings bool) string {
 			}
 		}
 	}
-	lit := func(from, to int) {
-		if !keepStrings {
-			blank(from, to)
+	emit := func(kind byte, from, to int) {
+		if lit != nil && to > from {
+			lit(kind, from, to)
 		}
 	}
 	var scanCode func(i int, inTemplate bool) int
@@ -251,17 +269,17 @@ func jsBlank(src string, keepStrings bool) string {
 				j += 2
 				continue
 			case b[j] == '`':
-				lit(start, j)
+				emit('`', start, j)
 				return j + 1
 			case b[j] == '$' && j+1 < len(b) && b[j+1] == '{':
-				lit(start, j)
+				emit('`', start, j)
 				j = scanCode(j+2, true)
 				start = j
 				continue
 			}
 			j++
 		}
-		lit(start, len(b))
+		emit('`', start, len(b))
 		return len(b)
 	}
 	scanCode = func(i int, inTemplate bool) int {
@@ -293,7 +311,7 @@ func jsBlank(src string, keepStrings bool) string {
 					}
 					j++
 				}
-				lit(i+1, j)
+				emit(c, i+1, min(j, len(b)))
 				i, prev = min(j+1, len(b)), 'a'
 				continue
 			case c == '`':
@@ -313,7 +331,7 @@ func jsBlank(src string, keepStrings bool) string {
 					j++
 				}
 				if j < len(b) && b[j] == '/' {
-					lit(i+1, j)
+					emit('/', i+1, j)
 					i, prev = j+1, 'a'
 					continue
 				}
