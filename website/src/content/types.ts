@@ -11,11 +11,13 @@ import type { IconName } from '@/lib/icons';
 export type { IconName };
 
 /**
- * Inline text with a tiny markup, rendered by <Rich> (src/components/rich.tsx)
+ * Inline text with a tiny markup, rendered by <Rich> (src/components/ui/rich.tsx)
  * and flattened to plain text by plain() (for metadata, aria labels, alt text):
  *
  *   `code`          → <code>
  *   **strong**      → <strong>
+ *   [[UI label]]    → <strong data-ui>: a label in the control center, word for
+ *                     word (tests check it against the control center's strings)
  *   [label](href)   → a link. '/…' is a site route or file (base path added),
  *                     anything else is external.
  *   ++Key++         → <kbd>
