@@ -1,0 +1,72 @@
+{
+  "about": "Shared vectors for validate.js (jstest/validate.test.mjs) and the Go validators (TestValidationParity, VOS_WEB_STRICT=1): the client must refuse what the server refuses (T6). ok is the expected verdict of both sides; for modes, cvt marks sizes the client passes and only the server's pixel-clock or line-rate check refuses.",
+  "hostname": [
+    {"v": "vapor", "ok": true},
+    {"v": "vapor-2", "ok": true},
+    {"v": "a", "ok": true},
+    {"v": "0123456789012345678901234567890123456789012345678901234567890ab", "ok": true},
+    {"v": "", "ok": false},
+    {"v": "0123456789012345678901234567890123456789012345678901234567890abc", "ok": false},
+    {"v": "-vapor", "ok": false},
+    {"v": "vapor-", "ok": false},
+    {"v": "Vapor", "ok": false},
+    {"v": "vapor.local", "ok": false},
+    {"v": "vapor box", "ok": false},
+    {"v": "vapör", "ok": false},
+    {"v": "localhost", "ok": false}
+  ],
+  "password": [
+    {"v": "vaporvapor", "ok": true},
+    {"v": "12345678", "ok": true},
+    {"v": "1234567", "ok": false},
+    {"v": "", "ok": false},
+    {"v": "ééééééé", "ok": false},
+    {"v": "éééééééé", "ok": true},
+    {"v": "🎮🎮🎮🎮🎮🎮🎮🎮", "ok": true},
+    {"v": "🎮🎮🎮🎮🎮🎮🎮", "ok": false},
+    {"repeat": "a", "times": 1024, "ok": true},
+    {"repeat": "a", "times": 1025, "ok": false},
+    {"repeat": "é", "times": 512, "ok": true},
+    {"repeat": "é", "times": 513, "ok": false}
+  ],
+  "mode": [
+    {"w": 1920, "h": 1080, "hz": 60, "ok": true},
+    {"w": 3840, "h": 2160, "hz": 120, "ok": true},
+    {"w": 320, "h": 200, "hz": 60, "ok": true},
+    {"w": 319, "h": 200, "hz": 60, "ok": false},
+    {"w": 320, "h": 199, "hz": 60, "ok": false},
+    {"w": 8193, "h": 1080, "hz": 60, "ok": false},
+    {"w": 1920, "h": 8193, "hz": 60, "ok": false},
+    {"w": 1920, "h": 1080, "hz": 23, "ok": false},
+    {"w": 1920, "h": 1080, "hz": 241, "ok": false},
+    {"w": 1920, "h": 1080, "hz": 24, "ok": true},
+    {"w": 1920, "h": 1080, "hz": 240, "ok": true},
+    {"w": 4096, "h": 2160, "hz": 60, "ok": false},
+    {"w": 8192, "h": 8192, "hz": 240, "ok": true, "cvt": true}
+  ],
+  "channel": [
+    {"v": "main", "ok": true},
+    {"v": "beta_2", "ok": true},
+    {"v": "v1.2-rc", "ok": true},
+    {"v": "_x", "ok": true},
+    {"v": "", "ok": false},
+    {"v": ".hidden", "ok": false},
+    {"v": "-dash", "ok": false},
+    {"v": "a/b", "ok": false},
+    {"v": "with space", "ok": false}
+  ],
+  "audio_sink": [
+    {"v": "", "ok": true},
+    {"v": "alsa_output.pci-0000_0b_00.4.analog-stereo", "ok": true},
+    {"v": "sink@1:x+y", "ok": true},
+    {"v": "bad sink", "ok": false},
+    {"v": "semi;colon", "ok": false}
+  ],
+  "bitrate_mbps": [
+    {"v": 0, "ok": true},
+    {"v": 150, "ok": true},
+    {"v": 1000, "ok": true},
+    {"v": 1001, "ok": false},
+    {"v": -1, "ok": false}
+  ]
+}
