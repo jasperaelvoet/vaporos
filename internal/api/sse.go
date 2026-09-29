@@ -15,7 +15,8 @@ import (
 const sseWriteTimeout = 30 * time.Second
 
 // handleEvents is GET /api/v1/events: every hub event as Server-Sent Events,
-// starting with the latest event of each topic so a fresh page has state.
+// starting with the latest event of each state topic so a fresh page has
+// state (one-off notifications are live only; see events.Hub.Last).
 // A comment line every heartbeat keeps proxies and NAT from idling the
 // connection out and notices when the session has ended.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
