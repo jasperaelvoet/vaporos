@@ -394,7 +394,7 @@ func TestGetWelcome(t *testing.T) {
 	m, _, _, _ := newTestManager(t, true)
 	w, _ := call(t, m.handleWelcome, http.MethodGet, "")
 	var st welcome.State
-	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.URL != "http://vapor.local" || st.Status != "Ready to stream" {
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.URL != "http://vapor.local" || st.Status != "Ready to stream" || st.Tone != "ready" {
 		t.Errorf("welcome = %+v %v", st, err)
 	}
 	// Any local process (a game) may call it: never the setup code.

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/brand"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
@@ -446,7 +447,8 @@ func TestWelcomeFileAndEvents(t *testing.T) {
 	if err := config.ReadJSON(config.WelcomeStatePath(), &st); err != nil {
 		t.Fatal(err)
 	}
-	if st.Code != "ABCD-EFGH" || st.QR != "http://192.168.1.50/setup?code=ABCD-EFGH" || st.URL != "http://vapor.local" || st.Mode != "os" {
+	if st.Code != "ABCD-EFGH" || st.QR != "http://192.168.1.50/setup?code=ABCD-EFGH" || st.URL != "http://vapor.local" || st.Mode != "os" ||
+		st.Tone != brand.Installing {
 		t.Errorf("welcome.json = %+v", st)
 	}
 	fi, _ := os.Stat(config.WelcomeStatePath())
@@ -466,7 +468,8 @@ func TestWelcomeFileAndEvents(t *testing.T) {
 	}
 	m.overlay.apply(ev("pairing.pending", map[string]string{"name": "Jasper's iPhone"}), clk.now())
 	// The setup code's QR wins over the pairing page's.
-	if st := m.welcomeState(); st.Status != "Jasper's iPhone wants to pair" || st.QR != "http://192.168.1.50/setup?code=ABCD-EFGH" {
+	if st := m.welcomeState(); st.Status != "Jasper's iPhone wants to pair" || st.QR != "http://192.168.1.50/setup?code=ABCD-EFGH" ||
+		st.Attention != welcome.AttentionPair {
 		t.Errorf("pairing = %+v", st)
 	}
 	clk.advance(3 * time.Minute)
@@ -513,7 +516,7 @@ func TestVirtualPendingReboot(t *testing.T) {
 	if h.isActive(GamescopeUnit, true) || !h.isActive(WelcomeUnit, false) {
 		t.Fatalf("units: %v", h.callLog())
 	}
-	if st := m.welcomeState(); st.Status != "Restart to finish setup" {
+	if st := m.welcomeState(); st.Status != "Restart to finish setup" || st.Tone != brand.RestartNeeded {
 		t.Errorf("welcome = %+v", st)
 	}
 	resp := m.Begin(ctx, session.Request{Op: "begin", Width: 1920, Height: 1080, FPS: 60})
@@ -640,8 +643,8 @@ func TestLateGPU(t *testing.T) {
 	if h.isActive(GamescopeUnit, true) {
 		t.Fatal("gamescope without a supported GPU")
 	}
-	if st := m.welcomeState(); st.Status != "No supported graphics card" {
-		t.Errorf("welcome = %q", st.Status)
+	if st := m.welcomeState(); st.Status != "No supported graphics card" || st.Tone != brand.Fault {
+		t.Errorf("welcome = %+v", st)
 	}
 	m.onScan(ctx) // nothing new yet
 	h.gpu = good
@@ -652,8 +655,8 @@ func TestLateGPU(t *testing.T) {
 	if d := m.info(); d.Profile != "amd" {
 		t.Errorf("profile = %q", d.Profile)
 	}
-	if st := m.welcomeState(); st.Status != "Ready to stream" {
-		t.Errorf("welcome = %q", st.Status)
+	if st := m.welcomeState(); st.Status != "Ready to stream" || st.Tone != brand.Ready {
+		t.Errorf("welcome = %+v", st)
 	}
 	// Once supported, the GPU is not probed again.
 	h.gpu = GPUInfo{}

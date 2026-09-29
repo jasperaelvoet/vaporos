@@ -215,25 +215,31 @@ func buildWelcome(in welcomeInputs) welcome.State {
 	case in.live:
 		st.Status = "Ready to install"
 		st.Detail = "Open this address on a phone or computer to install VaporOS"
+		st.Tone = brand.Installing
 	case in.code != "":
 		st.Status = "Almost ready"
 		st.Detail = "Open this address and enter the setup code to finish setting up"
+		st.Tone = brand.Installing
 	case !in.gpuSupported:
 		st.Status = "No supported graphics card"
 		st.Detail = "VaporOS streams with an AMD Radeon graphics card"
 		if in.gpuName != "" {
 			st.Detail = in.gpuName + " is not supported yet; VaporOS streams with an AMD Radeon graphics card"
 		}
+		st.Tone = brand.Fault
 	case in.virtualPending:
 		st.Status = "Restart to finish setup"
 		st.Detail = "Restart VaporOS from this address to switch on its virtual display"
+		st.Tone = brand.RestartNeeded
 	default:
 		st.Status = "Ready to stream"
 		st.Detail = "Open this address on a phone or computer to pair Moonlight"
+		st.Tone = brand.Ready
 	}
 	if len(in.ips) == 0 {
 		st.Status = "Waiting for the network"
 		st.Detail = "Connect this computer to your router with a network cable"
+		st.Tone = brand.Fault
 	}
 
 	o := in.overlay
@@ -243,6 +249,7 @@ func buildWelcome(in welcomeInputs) welcome.State {
 			st.Status = fmt.Sprintf("Going to sleep in %d min", mins)
 		}
 		st.Detail = "Moonlight wakes it: open Moonlight and pick this PC"
+		st.Tone = brand.Asleep
 	}
 	if o.staged != "" && !in.live {
 		st.Detail = "Update " + o.staged + " installs on the next restart"
@@ -253,6 +260,7 @@ func buildWelcome(in welcomeInputs) welcome.State {
 	if s := in.session; s != nil {
 		st.Status = "Streaming to " + s.Client
 		st.Detail = brand.ModeLabel(s.Mode, s.HDR)
+		st.Tone = brand.Streaming
 	}
 	if o.updateActive(in.now) {
 		u := o.update
@@ -261,6 +269,7 @@ func buildWelcome(in welcomeInputs) welcome.State {
 			st.Status += " " + u.Version
 		}
 		st.Detail = fmt.Sprintf("%s… %d%%", capitalize(u.Phase), u.Percent)
+		st.Tone, st.Progress = brand.Updating, percent(u.Percent)
 	}
 	if p := o.pairing; p != nil && in.now.Sub(o.pairingAt) < progressTTL {
 		st.Status = "A device wants to pair"
@@ -271,22 +280,29 @@ func buildWelcome(in welcomeInputs) welcome.State {
 		if in.code == "" {
 			st.QR = base + "/pair"
 		}
+		st.Attention = welcome.AttentionPair
 	}
 	if p := o.install; p != nil {
 		switch p.State {
 		case "done":
 			st.Status = "VaporOS is installed"
 			st.Detail = orDefault(p.Message, "Remove the USB drive; the computer restarts into VaporOS")
+			st.Tone, st.Progress = brand.Installing, 100
 		case "failed":
 			st.Status = "Installation failed"
 			st.Detail = orDefault(p.Message, "Open this address for details")
+			st.Tone, st.Progress = brand.Fault, 0
 		case "running":
 			st.Status = fmt.Sprintf("Installing VaporOS… %d%%", p.Percent)
 			st.Detail = orDefault(p.Message, p.Step)
+			st.Tone, st.Progress = brand.Installing, percent(p.Percent)
 		}
 	}
 	return st
 }
+
+// percent clamps a progress figure to 0–100.
+func percent(p int) int { return min(max(p, 0), 100) }
 
 func capitalize(s string) string {
 	if s == "" {
