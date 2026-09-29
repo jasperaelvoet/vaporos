@@ -1,0 +1,111 @@
+# Control center checks that need Node, kept out of build.yml so they never
+# block an OS release (MASTER-PLAN §0, §3.2 F2).
+#
+#   cc    the committed internal/web/static/app.css is exactly what the
+#         pinned Tailwind builds from its inputs (css:check); the strict Go
+#         tests of internal/web and internal/brand (VOS_WEB_STRICT=1: the
+#         inactive UI set and the contract's gaps too); the tooling's own
+#         unit tests
+#   e2e   the headless smoke matrix against the dev server; informational,
+#         not a required check
+#
+# Before the switch to the new UI, cc may be red between a commit that
+# changes classes or tokens and the one that regenerates static/app.css
+# (M-2); it must be green after that one.
+name: web
+
+on:
+  push:
+    paths:
+      - 'internal/**'
+      - 'design/**'
+      - 'tools/web/**'
+      - 'docs/CONTRACTS.md'
+      - '.github/workflows/web.yml'
+  pull_request:
+    paths:
+      - 'internal/**'
+      - 'design/**'
+      - 'tools/web/**'
+      - 'docs/CONTRACTS.md'
+      - '.github/workflows/web.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  cc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # TestJavaScript and the tooling tests run under this Node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/web/package-lock.json
+
+      - name: Install the pinned web tools
+        run: npm ci --prefix tools/web --ignore-scripts
+
+      - name: static/app.css is what Tailwind builds from its inputs
+        run: npm --prefix tools/web run css:check
+
+      - name: Strict control center and brand tests
+        env:
+          VOS_WEB_STRICT: '1'
+        run: go test -count=1 ./internal/web/... ./internal/brand/...
+
+      - name: Tooling unit tests
+        run: node --test tools/web/test/*.test.mjs
+
+  e2e:
+    needs: cc
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/web/package-lock.json
+
+      - name: Install the pinned web tools
+        run: npm ci --prefix tools/web --ignore-scripts
+
+      # The runner's preinstalled Chrome, headless; nothing is downloaded.
+      - name: Smoke matrix, headless
+        run: |
+          CHROME_PATH="$(command -v google-chrome)"
+          export CHROME_PATH
+          node tools/web/e2e/run.mjs --matrix=smoke --out "$RUNNER_TEMP/cc-smoke"
+
+      - name: Keep the report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-smoke
+          path: |
+            ${{ runner.temp }}/cc-smoke
+            !${{ runner.temp }}/cc-smoke/web.test
+          retention-days: 7
+          if-no-files-found: ignore
