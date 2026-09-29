@@ -3,8 +3,8 @@
 // A headline that stretches (with scroll, or with friction heat) is sized for
 // the widest it can ever get. We measure the widest line once, at 100 px and
 // at the hottest cut it can reach, and store K = width / 100 px (the line's
-// width in em) as --fit-k. type.css then sets the size to 100cqi / K inside
-// the headline's own inline-size container, clamped to --fit-min…--fit-max:
+// width in em) as --fit-k. type.css then sets the size to min(the preset's
+// size, 100cqi / K) inside the headline's own inline-size container:
 // resizing needs no script, and stretching never overflows because the fit
 // already assumed the hottest width.
 //
@@ -24,13 +24,14 @@ export const WDTH_MIN = 56;
 export const WDTH_MAX = 136;
 
 /**
- * The hottest width a headline reaches: its cut, plus the most a scroll
- * scene stretches it (`stretch`, percent points; `stretchG`, weight), plus
- * full friction (`friction`, percent points).
+ * The hottest width a headline reaches: its cut plus the larger of the most
+ * a scroll scene stretches it (`stretch`, percent points) and full friction
+ * (`friction`, percent points): type.css caps their sum there
+ * (--stretch-max). `stretchG` is the weight the scroll scene adds.
  */
 export function hottestOf(cut: CutName, stretch = 0, stretchG = 0, friction = 0): Hottest {
   const c = CUTS[cut];
-  return { w: Math.min(WDTH_MAX, c.w + stretch + friction), g: Math.min(860, c.g + stretchG) };
+  return { w: Math.min(WDTH_MAX, c.w + Math.max(stretch, friction)), g: Math.min(860, c.g + stretchG) };
 }
 
 /**

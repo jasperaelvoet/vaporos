@@ -12,11 +12,16 @@
      --friction     0..1, scroll speed, written by src/lib/motion/friction.ts
                     on [data-friction] elements (desktop fine pointers only)
      --friction-gain  how much width full friction adds (e.g. 8% on the H1)
+     --stretch-max  the hottest width it may reach (default 136%, the font's
+                    widest); a .headline takes it from --stretch-max-wide and,
+                    below 901 px, --stretch-max-narrow, which <Headline> sets
+                    to cut + max(stretch, friction) (phones: no friction)
 
    All six are registered, so CSS transitions and GSAP tween them smoothly.
-   The resulting width is cut + stretch + friction × gain, clamped by the
-   font to 56-136%. A stretching headline is fitted at its hottest width
-   first (<Headline>, src/lib/type/fit.ts), so nothing ever reflows.
+   The resulting width is min(stretch-max, cut + stretch + friction × gain):
+   a stretched headline gets no extra friction beyond its hot end. A
+   stretching headline is fitted at that hottest width first (<Headline>,
+   src/lib/type/fit.ts), so nothing ever reflows.
 
    Headline markup (src/components/ui/headline.tsx renders it):
 
@@ -28,7 +33,7 @@
      </h2>
 
    .headline is an inline-size container. Its size is the preset's
-   (--headline-size); once fitted it becomes min(size, max(min, 100cqi / K)),
+   (--headline-size); once fitted it becomes min(size, 100cqi / K),
    where K (--fit-k) is the widest line's width in em at the hottest cut, so
    the hottest width always fits and resizing needs no script. */
 
@@ -68,7 +73,7 @@
   --cut-g: var(--cut-cold-g);
   font-family: var(--font-display);
   font-weight: calc(var(--cut-g) + var(--stretch-g));
-  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-stretch: min(var(--stretch-max, 136%), calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain)));
   font-synthesis: none;
 }
 @utility cut-warm {
@@ -76,7 +81,7 @@
   --cut-g: var(--cut-warm-g);
   font-family: var(--font-display);
   font-weight: calc(var(--cut-g) + var(--stretch-g));
-  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-stretch: min(var(--stretch-max, 136%), calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain)));
   font-synthesis: none;
 }
 @utility cut-hot {
@@ -84,7 +89,7 @@
   --cut-g: var(--cut-hot-g);
   font-family: var(--font-display);
   font-weight: calc(var(--cut-g) + var(--stretch-g));
-  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-stretch: min(var(--stretch-max, 136%), calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain)));
   font-synthesis: none;
 }
 /* The nearest [data-state] picks the cut (tokens: asleep and installing are
@@ -94,7 +99,7 @@
   --cut-g: var(--state-cut-g);
   font-family: var(--font-display);
   font-weight: calc(var(--cut-g) + var(--stretch-g));
-  font-stretch: calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain));
+  font-stretch: min(var(--stretch-max, 136%), calc(var(--cut-w) + var(--stretch) + var(--friction) * var(--friction-gain)));
   font-synthesis: none;
 }
 
@@ -108,19 +113,21 @@
 
 @layer components {
   .headline {
+    --stretch-max: var(--stretch-max-wide, 136%);
     container-type: inline-size;
     margin: 0;
     line-height: var(--headline-leading, 0.92);
     letter-spacing: var(--headline-tracking, -0.018em);
   }
   /* The preset size (--headline-size, set by <Headline>), shrunk once fitted
-     so the hottest width still fits: min(size, max(min, 100cqi / K)). */
+     so the hottest width still fits: min(size, 100cqi / K). No floor: a
+     floor is what would let a stretched line overflow a narrow phone. */
   .headline-fit {
     display: block;
     font-size: var(--headline-size, clamp(2.75rem, 6.6vw, 5.75rem));
   }
   .headline[data-fitted] .headline-wide {
-    font-size: min(var(--headline-size), max(var(--fit-min, 2.5rem), calc(100cqi / var(--fit-k))));
+    font-size: min(var(--headline-size), calc(100cqi / var(--fit-k)));
   }
   .headline .ln {
     display: block;
@@ -138,6 +145,9 @@
     display: none;
   }
   @media (max-width: 56.25rem) {
+    .headline {
+      --stretch-max: var(--stretch-max-narrow, var(--stretch-max-wide, 136%));
+    }
     .headline[data-narrow] .headline-wide {
       display: none;
     }
@@ -146,7 +156,7 @@
       font-size: var(--headline-size-narrow, 2.75rem);
     }
     .headline[data-narrow][data-fitted-narrow] .headline-narrow {
-      font-size: min(var(--headline-size-narrow), max(var(--fit-min-narrow, 2.5rem), calc(100cqi / var(--fit-k-narrow))));
+      font-size: min(var(--headline-size-narrow), calc(100cqi / var(--fit-k-narrow)));
     }
     .headline[data-narrow]:not([data-fitted-narrow]) .headline-narrow .ln {
       white-space: normal;
