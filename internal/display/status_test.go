@@ -229,3 +229,30 @@ func TestPreSleepNotice(t *testing.T) {
 		t.Errorf("after a busy tick = %+v", st)
 	}
 }
+
+func TestPairingStateClearsWelcomePrompt(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	in := welcomeInputs{hostname: "vapor", ips: []string{"192.168.1.50"}, port: 80, gpuSupported: true, now: now}
+	if in.overlay.apply(event("pairing.state", map[string]any{"pairings": []any{}}), now) {
+		t.Error("an empty list with no prompt changed the overlay")
+	}
+	in.overlay.apply(event("pairing.pending", map[string]any{"name": "Deck"}), now)
+	if st := buildWelcome(in); st.Status != "Deck wants to pair" || st.QR != "http://192.168.1.50/pair" {
+		t.Fatalf("pairing = %+v", st)
+	}
+	deck := map[string]any{"id": strings.Repeat("7f", 16), "name": "Deck", "address": "192.168.1.31"}
+	if in.overlay.apply(event("pairing.state", map[string]any{"pairings": []any{deck}}), now) {
+		t.Error("a waiting device changed the overlay")
+	}
+	if st := buildWelcome(in); st.Status != "Deck wants to pair" {
+		t.Errorf("prompt gone while the device waits: %+v", st)
+	}
+	if !in.overlay.apply(event("pairing.state", map[string]any{"pairings": []any{}}), now) {
+		t.Error("the end of pairing left the overlay alone")
+	}
+	st := buildWelcome(in)
+	if st.Status != "Ready to stream" || st.QR != "http://192.168.1.50/" {
+		t.Errorf("after pairing = %+v", st)
+	}
+	wantTone(t, "after pairing", st, brand.Ready, "", 0)
+}

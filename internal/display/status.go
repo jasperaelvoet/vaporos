@@ -108,6 +108,16 @@ func (o *statusOverlay) apply(ev events.Event, now time.Time) bool {
 		} else {
 			o.pairing, o.pairingAt = &p, now
 		}
+	case "pairing.state":
+		// Only the end of every pairing matters here: a new device arrives
+		// as pairing.pending, with its name.
+		var st struct {
+			Pairings []json.RawMessage `json:"pairings"`
+		}
+		if json.Unmarshal(ev.Data, &st) != nil || len(st.Pairings) > 0 || o.pairing == nil {
+			return false
+		}
+		o.pairing = nil
 	case "system.message":
 		var m systemMessage
 		if json.Unmarshal(ev.Data, &m) == nil {
