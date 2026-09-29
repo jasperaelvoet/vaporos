@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -217,4 +218,314 @@ func forEachCheckedSet(t *testing.T, tailwindOnly bool, fn func(t *testing.T, se
 			fn(t, set)
 		})
 	}
+}
+
+// ---- scanners: just enough JavaScript and CSS lexing for the class rules
+
+// jsBlank returns src with comments replaced by spaces and, unless
+// keepStrings, the contents of string, template and regex literals blanked
+// too. Delimiters and newlines stay, so offsets and line numbers still match
+// src, and code inside a template's ${…} stays code. It is a lexer, not a
+// parser: a regex literal after a keyword such as return reads as division.
+func jsBlank(src string, keepStrings bool) string {
+	b := []byte(src)
+	blank := func(from, to int) {
+		for k := from; k < to && k < len(b); k++ {
+			if b[k] != '\n' {
+				b[k] = ' '
+			}
+		}
+	}
+	lit := func(from, to int) {
+		if !keepStrings {
+			blank(from, to)
+		}
+	}
+	var scanCode func(i int, inTemplate bool) int
+	scanTemplate := func(i int) int { // b[i] == '`'
+		j, start := i+1, i+1
+		for j < len(b) {
+			switch {
+			case b[j] == '\\':
+				j += 2
+				continue
+			case b[j] == '`':
+				lit(start, j)
+				return j + 1
+			case b[j] == '$' && j+1 < len(b) && b[j+1] == '{':
+				lit(start, j)
+				j = scanCode(j+2, true)
+				start = j
+				continue
+			}
+			j++
+		}
+		lit(start, len(b))
+		return len(b)
+	}
+	scanCode = func(i int, inTemplate bool) int {
+		depth, prev := 0, byte(0)
+		for i < len(b) {
+			c := b[i]
+			switch {
+			case c == '/' && i+1 < len(b) && b[i+1] == '/':
+				j := i
+				for j < len(b) && b[j] != '\n' {
+					j++
+				}
+				blank(i, j)
+				i = j
+				continue
+			case c == '/' && i+1 < len(b) && b[i+1] == '*':
+				end := len(b)
+				if k := strings.Index(src[i+2:], "*/"); k >= 0 {
+					end = i + 2 + k + 2
+				}
+				blank(i, end)
+				i = end
+				continue
+			case c == '\'' || c == '"':
+				j := i + 1
+				for j < len(b) && b[j] != c && b[j] != '\n' {
+					if b[j] == '\\' {
+						j++
+					}
+					j++
+				}
+				lit(i+1, j)
+				i, prev = min(j+1, len(b)), 'a'
+				continue
+			case c == '`':
+				i, prev = scanTemplate(i), 'a'
+				continue
+			case c == '/' && (prev == 0 || strings.IndexByte("(,=:[!&|?{};+-*%<>~^", prev) >= 0):
+				j, class := i+1, false
+				for j < len(b) && b[j] != '\n' && (b[j] != '/' || class) {
+					switch b[j] {
+					case '\\':
+						j++
+					case '[':
+						class = true
+					case ']':
+						class = false
+					}
+					j++
+				}
+				if j < len(b) && b[j] == '/' {
+					lit(i+1, j)
+					i, prev = j+1, 'a'
+					continue
+				}
+			case c == '{':
+				depth++
+			case c == '}':
+				if inTemplate && depth == 0 {
+					return i + 1
+				}
+				depth--
+			}
+			if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+				prev = c
+			}
+			i++
+		}
+		return i
+	}
+	scanCode(0, false)
+	return string(b)
+}
+
+// lineOf is the 1-based line of offset off in s.
+func lineOf(s string, off int) int { return strings.Count(s[:off], "\n") + 1 }
+
+// jsQuoted returns the end of the '…', "…" or `…` literal at s[i] and, for a
+// template literal, whether it has a ${…} part.
+func jsQuoted(s string, i int) (end int, hasExpr bool) {
+	q, j := s[i], i+1
+	for j < len(s) {
+		switch {
+		case s[j] == '\\':
+			j += 2
+			continue
+		case s[j] == q:
+			return j + 1, hasExpr
+		case q != '`' && s[j] == '\n':
+			return j, false
+		case q == '`' && s[j] == '$' && j+1 < len(s) && s[j+1] == '{':
+			hasExpr = true
+			j += 2
+			for d := 1; j < len(s) && d > 0; {
+				switch s[j] {
+				case '\'', '"', '`':
+					j, _ = jsQuoted(s, j)
+					continue
+				case '{':
+					d++
+				case '}':
+					d--
+				}
+				j++
+			}
+			continue
+		}
+		j++
+	}
+	return len(s), hasExpr
+}
+
+// jsExpr reads one expression of comment-free source from s[i]: up to a
+// ',' or ';' or an unmatched closing bracket. It returns the string literals
+// at its top level (never keys or indexes inside brackets), why it builds a
+// value at runtime ("" if it does not), and where it stopped.
+func jsExpr(s string, i int) (lits []string, dynamic string, end int) {
+	depth, start := 0, i
+	for i < len(s) && i-start < 2000 {
+		c := s[i]
+		switch c {
+		case '\'', '"', '`':
+			j, hasExpr := jsQuoted(s, i)
+			if depth == 0 {
+				switch {
+				case hasExpr:
+					dynamic = "a template literal with ${…}"
+				case j-1 > i:
+					lits = append(lits, s[i+1:j-1])
+				}
+			}
+			i = j
+			continue
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return lits, dynamic, i
+			}
+			depth--
+		case ',', ';':
+			if depth == 0 {
+				return lits, dynamic, i
+			}
+		case '+':
+			if depth == 0 && !(i+1 < len(s) && s[i+1] == '+') && !(i > 0 && s[i-1] == '+') {
+				dynamic = "concatenation with +"
+			}
+		}
+		i++
+	}
+	return lits, dynamic, i
+}
+
+// jsClassUse is one place a script sets or tests class names.
+type jsClassUse struct {
+	line    int
+	lits    []string // the class strings it names in full
+	dynamic string   // why it builds a class name at runtime, or ""
+}
+
+var (
+	jsClassContext = regexp.MustCompile(`(?:^|[{,\s(])(?:class|className|'class'|"class")\s*:|\bclassName\s*=|\.classList\.(add|remove|toggle|replace|contains)\(|\bsetAttribute\(\s*['"]class['"]\s*,`)
+	jsClassesMark  = regexp.MustCompile(`/\*\s*classes\s*\*/\s*[{\[]`)
+)
+
+// jsClassUses finds every class context in a script: an h() or object key
+// class:, className =, classList.add/remove/toggle/replace/contains(…),
+// setAttribute('class', …), and lookup objects marked /* classes */.
+func jsClassUses(src string) []jsClassUse {
+	s := jsBlank(src, true)
+	var out []jsClassUse
+	for _, m := range jsClassContext.FindAllStringSubmatchIndex(s, -1) {
+		at := m[1]
+		if strings.HasSuffix(s[m[0]:m[1]], "=") && at < len(s) && s[at] == '=' {
+			continue // className == …, a comparison
+		}
+		u := jsClassUse{line: lineOf(s, m[0])}
+		method := ""
+		if m[2] >= 0 {
+			method = s[m[2]:m[3]]
+		}
+		for n := 0; ; n++ {
+			lits, dyn, end := jsExpr(s, at)
+			if !((method == "toggle" || method == "contains") && n > 0) {
+				u.lits = append(u.lits, lits...)
+				if u.dynamic == "" {
+					u.dynamic = dyn
+				}
+			}
+			if method == "" || end >= len(s) || s[end] != ',' {
+				break
+			}
+			at = end + 1
+		}
+		out = append(out, u)
+	}
+	for _, m := range jsClassesMark.FindAllStringIndex(src, -1) {
+		open := m[1] - 1
+		u := jsClassUse{line: lineOf(src, m[0])}
+		for i, depth := open, 0; i < len(s); i++ {
+			switch s[i] {
+			case '\'', '"', '`':
+				j, _ := jsQuoted(s, i)
+				rest := strings.TrimLeft(s[j:], " \t\r\n")
+				if !strings.HasPrefix(rest, ":") && j-1 > i {
+					u.lits = append(u.lits, s[i+1:j-1])
+				}
+				i = j - 1
+				continue
+			case '{', '[', '(':
+				depth++
+			case '}', ']', ')':
+				depth--
+			}
+			if depth == 0 {
+				break
+			}
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+// The JavaScript scanners behind the class rules, on inputs small enough to read.
+func TestClassScanners(t *testing.T) {
+	js := strings.Join([]string{
+		`// class: 'in-a-comment'`,
+		`const SIZE = /* classes */ { sm: 'btn btn-sm', 'md': "btn" };`,
+		`h('span', { class: 'badge', dataset: { tone } }, text);`,
+		"h('p', { class: open ? 'sheet is-open' : `sheet`, text: 'not a class' });",
+		`el.classList.add('rail:flex', "p-4"); el.classList.toggle('open', 'x' === y);`,
+		`el.className = SIZE[size]; if (el.className == 'nope') {}`,
+		"el.setAttribute('class', `badge badge-${tone}`);",
+		`h('i', { class: 'icon ' + name });`,
+		`const re = /class: 'regex'/g;`,
+	}, "\n")
+	uses := jsClassUses(js)
+	var lits, dyn []string
+	for _, u := range uses {
+		lits = append(lits, u.lits...)
+		if u.dynamic != "" {
+			dyn = append(dyn, fmt.Sprintf("%d:%s", u.line, u.dynamic))
+		}
+	}
+	sort.Strings(lits)
+	if got, want := strings.Join(lits, "|"), "btn|btn btn-sm|icon |open|p-4|rail:flex|sheet|sheet is-open|badge"; got != sortedJoin(want) {
+		t.Errorf("class literals = %s\nwant %s", got, sortedJoin(want))
+	}
+	if got, want := strings.Join(dyn, "|"), "7:a template literal with ${…}|8:concatenation with +"; got != want {
+		t.Errorf("dynamic class names = %s, want %s", got, want)
+	}
+
+	blank := jsBlank("a = 'x.toSorted('; /* .toSorted( */ b = `t${c.toSorted()}`; // .toSorted(\nd = /[/]x/.test(e)", false)
+	if n := strings.Count(blank, ".toSorted("); n != 1 {
+		t.Errorf("jsBlank left %d .toSorted( outside the ${…} code:\n%s", n, blank)
+	}
+	if len(blank) != len("a = 'x.toSorted('; /* .toSorted( */ b = `t${c.toSorted()}`; // .toSorted(\nd = /[/]x/.test(e)") {
+		t.Error("jsBlank changed the length")
+	}
+
+}
+
+func sortedJoin(s string) string {
+	parts := strings.Split(s, "|")
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
