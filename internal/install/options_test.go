@@ -3,8 +3,6 @@ package install
 import (
 	"strings"
 	"testing"
-
-	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
 func TestNormalize(t *testing.T) {
@@ -31,7 +29,13 @@ func TestNormalize(t *testing.T) {
 		{"nul password", Options{Disk: "sda", Password: "12345678\x00"}, Options{}, "not valid"},
 		{"traversal timezone", Options{Disk: "sda", Timezone: "../../etc/shadow"}, Options{}, "invalid timezone"},
 		{"bad uuid", Options{Disk: "sda", Libraries: []string{"x/../y"}}, Options{}, "invalid filesystem UUID"},
-		{"oci source", Options{Disk: "sda", Source: "oci://ghcr.io/jasperaelvoet/vaporos"}, Options{}, "not supported"},
+		{"oci source", Options{Disk: "sda", Source: " oci://ghcr.io/jasperaelvoet/vaporos ", Channel: " dev-tooling "},
+			Options{Disk: "sda", Mode: ModeErase, Hostname: "vapor", Libraries: []string{},
+				Source: "oci://ghcr.io/jasperaelvoet/vaporos", Channel: "dev-tooling"}, ""},
+		{"live alias", Options{Disk: "sda", Source: "live"},
+			Options{Disk: "sda", Mode: ModeErase, Hostname: "vapor", Libraries: []string{}}, ""},
+		{"bad oci source", Options{Disk: "sda", Source: "oci://ghcr.io/Jasper/VaporOS"}, Options{}, "invalid repository"},
+		{"bad channel", Options{Disk: "sda", Source: "oci://ghcr.io/x/y", Channel: "no/slashes"}, Options{}, "invalid channel"},
 		{"relative source", Options{Disk: "sda", Source: "out/"}, Options{}, "unsupported source"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,30 +51,11 @@ func TestNormalize(t *testing.T) {
 				t.Fatal(err)
 			}
 			if o.Disk != tc.want.Disk || o.Mode != tc.want.Mode || o.Hostname != tc.want.Hostname ||
-				o.Timezone != tc.want.Timezone || o.Source != tc.want.Source ||
+				o.Timezone != tc.want.Timezone || o.Source != tc.want.Source || o.Channel != tc.want.Channel ||
 				strings.Join(o.Libraries, ",") != strings.Join(tc.want.Libraries, ",") {
 				t.Errorf("normalize = %+v, want %+v", o, tc.want)
 			}
 		})
-	}
-}
-
-func TestParseSource(t *testing.T) {
-	for _, tc := range []struct{ in, kind, dir string }{
-		{"", "live", ""},
-		{"/srv/vos/out", "dir", "/srv/vos/out"},
-		{"file:///srv/vos/out/", "dir", "/srv/vos/out"},
-		{"https://example.com/vos/", "http", ""},
-	} {
-		s, err := parseSource(tc.in)
-		if err != nil || s.kind != tc.kind || s.dir != tc.dir {
-			t.Errorf("parseSource(%q) = %+v, %v", tc.in, s, err)
-		}
-	}
-	for _, bad := range []string{"http://", "file://relative/x", "ftp://x/", "oci://ghcr.io/x"} {
-		if _, err := parseSource(bad); err == nil {
-			t.Errorf("parseSource(%q) accepted", bad)
-		}
 	}
 }
 
@@ -85,50 +70,6 @@ func TestCheckTimezone(t *testing.T) {
 		}
 	}
 	_ = f
-}
-
-func TestCheckManifest(t *testing.T) {
-	good := func() *manifest.Manifest {
-		a := manifest.Artifact{Name: "root.erofs", Size: 10, SHA256: strings.Repeat("ab", 32)}
-		k, i := a, a
-		k.Name, i.Name = "vmlinuz", "initramfs.img"
-		return &manifest.Manifest{Schema: 1, Version: "20260929.123456", MinUpdater: 1,
-			Artifacts: map[string]manifest.Artifact{"root": a, "kernel": k, "initrd": i}}
-	}
-	if err := checkManifest(good()); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name string
-		mod  func(m *manifest.Manifest)
-		want string
-	}{
-		{"schema", func(m *manifest.Manifest) { m.Schema = 2 }, "schema"},
-		{"min_updater", func(m *manifest.Manifest) { m.MinUpdater = 2 }, "newer installer"},
-		{"version path", func(m *manifest.Manifest) { m.Version = "../../EFI" }, "invalid version"},
-		{"missing kernel", func(m *manifest.Manifest) { delete(m.Artifacts, "kernel") }, "no kernel"},
-		{"name path", func(m *manifest.Manifest) {
-			a := m.Artifacts["root"]
-			a.Name = "../root.erofs"
-			m.Artifacts["root"] = a
-		}, "invalid name"},
-		{"size", func(m *manifest.Manifest) {
-			a := m.Artifacts["initrd"]
-			a.Size = 0
-			m.Artifacts["initrd"] = a
-		}, "invalid size"},
-		{"sha", func(m *manifest.Manifest) {
-			a := m.Artifacts["root"]
-			a.SHA256 = "abc"
-			m.Artifacts["root"] = a
-		}, "invalid sha256"},
-	} {
-		m := good()
-		tc.mod(m)
-		if err := checkManifest(m); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: err = %v", tc.name, err)
-		}
-	}
 }
 
 func TestLibraryMountpoints(t *testing.T) {

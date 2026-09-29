@@ -1,14 +1,15 @@
 package install
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,6 +37,10 @@ type fakeSys struct {
 	entry     entryCall
 	entryN    int
 	adminPass string
+
+	// onStep, if set, runs for every progress report of f.recorder, in
+	// the installer's goroutine: tests use it to act between steps.
+	onStep func(step string)
 }
 
 type entryCall struct {
@@ -57,11 +62,11 @@ func newFakeSys(t *testing.T) *fakeSys {
 
 	oldPaths, oldBlock, oldAllow := paths, isBlockDevice, allowAnywhere
 	oldRun, oldLive, oldKeys, oldInfo := config.RunDir, config.LiveMedium, config.KeysDir, config.ImageInfoPath
-	oldRetries, oldIdle := httpMaxRetries, httpIdleTimeout
+	oldProbeTimeout := probeImageTimeout
 	t.Cleanup(func() {
 		paths, isBlockDevice, allowAnywhere = oldPaths, oldBlock, oldAllow
 		config.RunDir, config.LiveMedium, config.KeysDir, config.ImageInfoPath = oldRun, oldLive, oldKeys, oldInfo
-		httpMaxRetries, httpIdleTimeout = oldRetries, oldIdle
+		probeImageTimeout = oldProbeTimeout
 	})
 
 	paths = sysPaths{
@@ -85,6 +90,7 @@ func newFakeSys(t *testing.T) *fakeSys {
 	for _, d := range []string{"sys/class/block", "sys/dev/block", "dev/disk/by-label", "proc", "sys/firmware/efi", "run/vos/medium/vos", "keys", "etc"} {
 		f.mkdir(d)
 	}
+	f.write("keys/test.pub", manifest.EncodePublicKey(testKey.Public().(ed25519.PublicKey)))
 	f.write("usr/share/zoneinfo/Europe/Brussels", "TZif")
 	f.write("usr/share/zoneinfo/UTC", "TZif")
 	f.write("proc/swaps", "Filename\tType\tSize\tUsed\tPriority\n")
@@ -157,7 +163,38 @@ func (f *fakeSys) addPart(disk, name, majmin string, n int, label string, size i
 	f.write(filepath.Join(dir, "uevent"), fmt.Sprintf("DEVNAME=%s\nDEVTYPE=partition\nPARTN=%d\nPARTNAME=%s\n", name, n, label))
 	f.symlink(f.path(dir), "sys/class/block/"+name)
 	f.symlink(f.path(dir), "sys/dev/block/"+majmin)
+	// The node has a capacity, like a real partition (update.WriteRoot
+	// refuses an image larger than its slot); sparse, and capped so a
+	// test never holds gigabytes.
 	f.write("dev/"+name, "")
+	if err := os.Truncate(f.path("dev/"+name), min(size, fakePartCap)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// fakePartCap caps the size of a fake partition node.
+const fakePartCap = 64 << 20
+
+// slotHas reports whether the partition node at p starts with want.
+func slotHas(t *testing.T, p string, want []byte) bool {
+	t.Helper()
+	fh, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fh.Close()
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(fh, got); err != nil {
+		return false
+	}
+	return bytes.Equal(got, want)
+}
+
+// setImageInfo writes the running (live) image's image.json.
+func (f *fakeSys) setImageInfo(version, channel string, debug bool) {
+	f.t.Helper()
+	b, _ := json.Marshal(config.ImageInfo{Version: version, Channel: channel, Debug: debug})
+	f.write("usr/lib/vos/image.json", string(b))
 }
 
 func (f *fakeSys) removeParts(disk string) {
@@ -210,8 +247,14 @@ func sha(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-// fakeSig is what the fake verifier accepts for manifest bytes b.
-func fakeSig(b []byte) string { return "sig:" + sha(b) }
+// testKey signs test images; newFakeSys trusts its public half.
+var testKey = func() ed25519.PrivateKey {
+	_, k, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return k
+}()
 
 // writeImage writes root.erofs, vmlinuz, initramfs.img and a signed
 // manifest to dir.
@@ -245,7 +288,7 @@ func (img *image) sign(t *testing.T) {
 	t.Helper()
 	b, _ := json.Marshal(img.man)
 	os.WriteFile(filepath.Join(img.dir, "manifest.json"), b, 0o644)
-	os.WriteFile(filepath.Join(img.dir, "manifest.json.sig"), []byte(fakeSig(b)), 0o644)
+	os.WriteFile(filepath.Join(img.dir, "manifest.json.sig"), manifest.Sign(b, testKey), 0o644)
 }
 
 // exitErr is a Runner error with an exit status, like *exec.ExitError.
@@ -361,19 +404,6 @@ func (f *fakeSys) env(r Runner) *env {
 		gpu:               func() display.GPUInfo { return f.gpu },
 		chooseConnector:   func() (string, error) { return "DP-1", nil },
 		machineCmdlineFor: func(c string) string { return "video=" + c + ":e drm.edid_firmware=" + c + ":edid/vaporos.bin" },
-		verifyManifest: func(b, sig []byte, keysDir string) error {
-			if keysDir != config.KeysDir {
-				return fmt.Errorf("keys from %s", keysDir)
-			}
-			if string(sig) != fakeSig(b) {
-				return errors.New("bad signature")
-			}
-			return nil
-		},
-		parseManifest: func(b []byte) (*manifest.Manifest, error) {
-			var m manifest.Manifest
-			return &m, json.Unmarshal(b, &m)
-		},
 		bootCmdline: func(slot, image, machine string) string {
 			return strings.Join(strings.Fields("vos.slot="+slot+" "+image+" "+machine), " ")
 		},
@@ -407,9 +437,8 @@ func (f *fakeSys) env(r Runner) *env {
 			f.mu.Unlock()
 			return config.WriteJSONAtomic(filepath.Join(root, config.AuthPath()), map[string]string{"user": "admin"}, 0o600)
 		},
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		sleep:      func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
-		logf:       f.t.Logf,
+		sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+		logf:  f.t.Logf,
 	}
 }
 
@@ -425,5 +454,16 @@ func recorder(recs *[]progressRec) Progress {
 		mu.Lock()
 		*recs = append(*recs, progressRec{step, percent, message})
 		mu.Unlock()
+	}
+}
+
+// recorder is the package recorder that also runs f.onStep.
+func (f *fakeSys) recorder(recs *[]progressRec) Progress {
+	rec := recorder(recs)
+	return func(step string, percent int, message string) {
+		if f.onStep != nil {
+			f.onStep(step)
+		}
+		rec(step, percent, message)
 	}
 }

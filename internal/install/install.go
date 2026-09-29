@@ -4,20 +4,26 @@
 //
 // An install runs in fixed steps, each reported through Progress:
 //
-//	probe       check the system, the target disk and the signed image
+//	probe       check the system, the target disk and the signed image;
+//	            fetch the kernel and initramfs (verified) to a temp dir
 //	partition   erase: a new GPT with vos_esp, vos_a, vos_b, vos_data and
 //	            fresh filesystems; repair: fsck vos_data, reformat the ESP
 //	write       stream root.erofs into slot a while hashing it
-//	verify      read slot a back; check the kernel and initramfs
+//	verify      read slot a back from the disk and check it again
 //	bootloader  systemd-boot, loader.conf and the slot a entry
 //	configure   first-boot state on vos_data: hostname, timezone, admin
 //	            password, machine kernel args, config.json
 //	done
 //
-// Nothing is written before probe has accepted the disk and verified the
-// image's signature. On failure every mount is undone and a boot entry
-// that was already written is removed again, so a half-installed disk is
-// never booted.
+// The image comes through the update package's Source, the same verified
+// fetch layer `vos update` uses, from the live medium, a directory, an
+// http(s) server or an OCI registry (see source.go).
+//
+// Nothing is written to a disk before probe has accepted it, verified the
+// image's signature and fetched the kernel and initramfs, so neither a bad
+// image nor a network problem can leave a half-erased disk. On failure
+// every mount is undone and a boot entry that was already written is
+// removed again, so a half-installed disk is never booted.
 package install
 
 import (
@@ -30,6 +36,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
@@ -58,7 +65,8 @@ type Options struct {
 	Password  string   `json:"password"` // web admin password
 	Timezone  string   `json:"timezone"`
 	Libraries []string `json:"libraries"` // filesystem UUIDs to adopt
-	Source    string   `json:"source"`    // "" = live medium; else a directory or http(s) URL with the update files
+	Source    string   `json:"source"`    // "" = live medium; else a directory, http(s) URL or oci://registry/repo
+	Channel   string   `json:"channel"`   // OCI tag when Source has none; "" = the live image's channel, else main
 }
 
 // Progress reports one step of an install. percent is the whole install's
@@ -93,11 +101,12 @@ type installer struct {
 	opts     Options
 	progress Progress
 
-	disk    string // kernel name of the target disk ("sda", "nvme0n1")
-	src     source
-	man     *manifest.Manifest
-	slotMiB int64   // erase: size of each slot
-	parts   partSet // kernel names of the four partitions
+	disk     string // kernel name of the target disk ("sda", "nvme0n1")
+	src      *imageSource
+	man      *manifest.Manifest
+	unsigned bool    // accepted under unsignedRule (a debug live medium)
+	slotMiB  int64   // erase: size of each slot
+	parts    partSet // kernel names of the four partitions
 
 	connector      string // virtual connector for this hardware ("" = none)
 	machineCmdline string // kernel args for connector
@@ -205,26 +214,24 @@ func (in *installer) prepare(ctx context.Context) error {
 	}
 	in.disk = disk
 
-	src, err := newSource(in.opts.Source, in.env)
+	spec, err := parseSource(in.opts.Source)
+	if err != nil {
+		return err
+	}
+	src, err := openSource(spec, in.opts.Channel)
 	if err != nil {
 		return err
 	}
 	in.src = src
 	in.report(StepProbe, 1, "Reading the VaporOS image from %s", src)
-	m, err := loadManifest(ctx, in.env, src)
+	img, err := loadManifest(ctx, in.env, src)
 	if err != nil {
 		return err
 	}
-	in.man = m
-	if d := src.dir(); d != "" {
-		root := m.Artifacts["root"]
-		fi, err := os.Stat(filepath.Join(d, root.Name))
-		if err != nil {
-			return fmt.Errorf("the image on %s is incomplete: %w", src, err)
-		}
-		if fi.Size() != root.Size {
-			return fmt.Errorf("%s on %s is %d bytes, the manifest says %d", root.Name, src, fi.Size(), root.Size)
-		}
+	m := img.man
+	in.man, in.unsigned = m, img.unsigned
+	if err := checkLocalRoot(src, m); err != nil {
+		return err
 	}
 
 	if err := in.planDisk(); err != nil {
@@ -249,7 +256,7 @@ func (in *installer) prepare(ctx context.Context) error {
 
 // planDisk sizes the slots (erase) or finds the existing ones (repair).
 func (in *installer) planDisk() error {
-	root := in.man.Artifacts["root"]
+	root := in.man.Artifact(manifest.Root)
 	if in.opts.Mode == ModeRepair {
 		parts, err := vosLayout(in.disk)
 		if err != nil {
@@ -261,11 +268,12 @@ func (in *installer) planDisk() error {
 		in.parts = parts
 		return nil
 	}
-	in.slotMiB = slotSizeMiB(root.Size)
-	if in.slotMiB*mib < root.Size {
-		return fmt.Errorf("the image (%s) is larger than the largest slot VaporOS creates", humanBytes(root.Size))
+	slotMiB, need, err := eraseLayout(root.Size)
+	if err != nil {
+		return err
 	}
-	if have, need := sizeBytes(in.disk), minDiskBytes(in.slotMiB); have < need {
+	in.slotMiB = slotMiB
+	if have := sizeBytes(in.disk); have < need {
 		return fmt.Errorf("%s is too small (%s): VaporOS needs at least %s", devName(in.disk), humanBytes(have), humanBytes(need))
 	}
 	return nil
@@ -298,7 +306,7 @@ func (in *installer) execute(ctx context.Context) error {
 		return err
 	}
 	steps := []func(context.Context) error{
-		in.partition, in.writeRoot, in.verify, in.installBootloader, in.configure, in.finish,
+		in.fetchBoot, in.partition, in.writeRoot, in.installBootloader, in.configure, in.finish,
 	}
 	for _, step := range steps {
 		if err := step(ctx); err != nil {
@@ -465,8 +473,8 @@ func (in *installer) installBootloader(ctx context.Context) error {
 	if err := in.env.installEntry(esp, in.man.Version, "a", in.bootDir, options, 0); err != nil {
 		return fmt.Errorf("boot entry: %w", err)
 	}
-	for _, key := range []string{"kernel", "initrd"} {
-		if err := verifyFile(filepath.Join(esp, "vos", in.man.Version, bootNames[key]), in.man.Artifacts[key]); err != nil {
+	for i, key := range []string{manifest.Kernel, manifest.Initrd} {
+		if err := verifyFile(filepath.Join(esp, "vos", in.man.Version, boot.BootFiles[i]), in.man.Artifact(key)); err != nil {
 			return fmt.Errorf("the ESP copy does not verify: %w", err)
 		}
 	}

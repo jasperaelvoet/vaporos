@@ -10,16 +10,70 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display"
+	"github.com/jasperaelvoet/vaporos/internal/manifest"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
-// ProbeResult is GET /install/probe.
+// ProbeResult is GET /install/probe[?source=S&channel=C].
 type ProbeResult struct {
 	Disks    []ProbeDisk     `json:"disks"`
 	IPs      []string        `json:"ips"`
 	Timezone string          `json:"timezone"`
 	GPU      display.GPUInfo `json:"gpu"`
+
+	// Source and Channel echo the image source the disks were sized for
+	// (as POST /install takes them; "" = the live medium), so the UI can
+	// tell which of its requests an answer belongs to.
+	Source  string `json:"source"`
+	Channel string `json:"channel,omitempty"`
+	// Version is the image the source offers, when it could be read.
+	Version string `json:"version,omitempty"`
+	// MinSize is the smallest disk, in bytes, an erase install of that
+	// image fits on (the slot sizing rule, docs/CONTRACTS.md "Disk
+	// layout"). When the image cannot be read it is the rule's floor,
+	// which no image goes below, and SourceError says why.
+	MinSize     int64  `json:"min_size"`
+	SourceError string `json:"source_error,omitempty"`
+}
+
+// probeImageTimeout bounds how long a probe waits for a remote source's
+// manifest: the disks are worth showing even when a registry is slow.
+var probeImageTimeout = 20 * time.Second
+
+// imageFit is what a probe learns about the chosen image.
+type imageFit struct {
+	version string
+	minSize int64
+	err     error
+}
+
+// probeImage reads the manifest of the image an install from source would
+// write, under the same trust rules as the install itself, and sizes it.
+func (s *Service) probeImage(ctx context.Context, source, channel string) imageFit {
+	_, floor, _ := eraseLayout(0)
+	fail := func(version string, err error) imageFit {
+		return imageFit{version: version, minSize: floor, err: err}
+	}
+	spec, err := parseSource(source)
+	if err != nil {
+		return fail("", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeImageTimeout)
+	defer cancel()
+	src, err := openSource(spec, channel)
+	if err != nil {
+		return fail("", err)
+	}
+	img, err := loadManifest(ctx, s.env, src)
+	if err != nil {
+		return fail("", err)
+	}
+	_, need, err := eraseLayout(img.man.Artifact(manifest.Root).Size)
+	if err != nil {
+		return fail(img.man.Version, err)
+	}
+	return imageFit{version: img.man.Version, minSize: need}
 }
 
 // ProbeDisk is one whole disk the installer could write to.
@@ -90,11 +144,31 @@ func sysfsDisks() []*diskGroup {
 	return out
 }
 
-func (s *Service) probe(ctx context.Context) ProbeResult {
-	res := ProbeResult{Disks: []ProbeDisk{}, IPs: sysd.LocalIPs(), Timezone: guessTimezone(), GPU: s.env.gpu()}
+// probe describes the machine, and the image an install from source and
+// channel would write, for the installer wizard.
+func (s *Service) probe(ctx context.Context, source, channel string) ProbeResult {
+	res := ProbeResult{Disks: []ProbeDisk{}, IPs: sysd.LocalIPs(), Timezone: guessTimezone(), GPU: s.env.gpu(),
+		Source: source, Channel: channel}
 	if res.IPs == nil {
 		res.IPs = []string{}
 	}
+	// The image may be a download away: read it while the disks are
+	// scanned.
+	fit := make(chan imageFit, 1)
+	go func() { fit <- s.probeImage(ctx, source, channel) }()
+	res.Disks = s.probeDisks(ctx)
+	img := <-fit
+	res.Version, res.MinSize = img.version, img.minSize
+	if img.err != nil {
+		res.SourceError = img.err.Error()
+	}
+	return res
+}
+
+// probeDisks lists the whole physical disks (from lsblk, filled in from
+// sysfs) with the Steam libraries on each.
+func (s *Service) probeDisks(ctx context.Context) []ProbeDisk {
+	out := []ProbeDisk{}
 	scanned, err := s.env.scanDisks(ctx)
 	if err != nil {
 		s.env.logf("install: listing disks: %v", err)
@@ -141,10 +215,10 @@ func (s *Service) probe(ctx context.Context) ProbeResult {
 		if !d.IsLive {
 			d.SteamLibraries = s.steamLibraries(ctx, g, mountAllowed)
 		}
-		res.Disks = append(res.Disks, d)
+		out = append(out, d)
 	}
-	sort.Slice(res.Disks, func(i, j int) bool { return res.Disks[i].Path < res.Disks[j].Path })
-	return res
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 // steamLibraries finds Steam libraries on a disk's filesystems, skipping

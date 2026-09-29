@@ -14,17 +14,18 @@ func TestParseCLI(t *testing.T) {
 	c, err := parseCLI([]string{
 		"--disk", "/dev/sda", "--hostname", "den", "--user", "vapor", "--password", "vaporvapor",
 		"--timezone=Europe/Brussels", "--library", "a-1", "--library", "b-2", "--mode", "repair",
-		"--source", "http://builder:8000", "--yes",
+		"--source", "oci://ghcr.io/jasperaelvoet/vaporos", "--channel", "dev-tooling", "--yes",
 	}, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Options{Disk: "/dev/sda", Mode: "repair", Hostname: "den", Password: "vaporvapor",
-		Timezone: "Europe/Brussels", Source: "http://builder:8000"}
+		Timezone: "Europe/Brussels", Source: "oci://ghcr.io/jasperaelvoet/vaporos", Channel: "dev-tooling"}
 	libs := c.opts.Libraries
 	c.opts.Libraries = nil
 	if c.opts.Disk != want.Disk || c.opts.Mode != want.Mode || c.opts.Hostname != want.Hostname ||
 		c.opts.Password != want.Password || c.opts.Timezone != want.Timezone || c.opts.Source != want.Source ||
+		c.opts.Channel != want.Channel ||
 		strings.Join(libs, ",") != "a-1,b-2" || !c.yes {
 		t.Errorf("parseCLI = %+v %v", c, libs)
 	}

@@ -6,344 +6,261 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
+	"github.com/jasperaelvoet/vaporos/internal/update"
 )
 
-// source is where the image comes from: the live medium, a directory, or
-// an http(s) URL with the same files (docs/CONTRACTS.md "Sources").
-//
-// This duplicates a small part of the update package's fetch layer on
-// purpose: the two were written in parallel, and the installer only needs
-// plain files. Once update exports its fetcher (with OCI), use that.
-type source interface {
-	String() string
-	// open returns the named file. size is the length the manifest
-	// promises, or -1 for small files read whole.
-	open(ctx context.Context, name string, size int64) (io.ReadCloser, error)
-	// dir is the local directory holding the files, or "" for remote ones.
-	dir() string
+// Source kinds (sourceSpec.kind).
+const (
+	srcLive = "live" // the medium the live ISO booted from
+	srcDir  = "dir"  // a local directory with the five update files
+	srcHTTP = "http" // an http(s) directory with the same files
+	srcOCI  = "oci"  // an OCI registry (oci://registry/repo[:tag])
+)
+
+// sourceSpec is a parsed Options.Source.
+type sourceSpec struct {
+	kind string
+	dir  string // srcDir: the absolute directory
+	raw  string // srcHTTP, srcOCI: the spec for update.OpenSource
 }
 
-func newSource(spec string, e *env) (source, error) {
-	s, err := parseSource(spec)
+// parseSource checks an image source without touching the system:
+//
+//	"" or "live"                  the live medium
+//	/abs/dir, file:///abs/dir     a local directory
+//	http(s)://host/dir/           a web server with the same files
+//	oci://registry/repo[:tag]     a registry (oci+http:// for a plain-HTTP one)
+//
+// Relative directories are refused: the web installer has no meaningful
+// working directory.
+func parseSource(s string) (sourceSpec, error) {
+	switch {
+	case s == "" || s == srcLive:
+		return sourceSpec{kind: srcLive}, nil
+	case strings.HasPrefix(s, "oci://"), strings.HasPrefix(s, "oci+http://"):
+		// OpenSource only parses an OCI spec; nothing is fetched yet.
+		if _, err := update.OpenSource(s, ""); err != nil {
+			return sourceSpec{}, err
+		}
+		return sourceSpec{kind: srcOCI, raw: s}, nil
+	case strings.HasPrefix(s, "http://"), strings.HasPrefix(s, "https://"):
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" {
+			return sourceSpec{}, fmt.Errorf("invalid source URL %q", s)
+		}
+		return sourceSpec{kind: srcHTTP, raw: s}, nil
+	case strings.HasPrefix(s, "file://"):
+		u, err := url.Parse(s)
+		if err != nil || (u.Host != "" && u.Host != "localhost") || !filepath.IsAbs(u.Path) {
+			return sourceSpec{}, fmt.Errorf("invalid source URL %q: use file:///absolute/dir", s)
+		}
+		return sourceSpec{kind: srcDir, dir: filepath.Clean(u.Path)}, nil
+	case filepath.IsAbs(s):
+		return sourceSpec{kind: srcDir, dir: filepath.Clean(s)}, nil
+	}
+	return sourceSpec{}, fmt.Errorf("unsupported source %q: use an absolute directory, an http(s) URL or oci://registry/repository", s)
+}
+
+// checkChannel validates an OCI channel (a tag); "" means the default.
+func checkChannel(ch string) error {
+	if ch != "" && !update.ValidChannel(ch) {
+		return fmt.Errorf("invalid channel %q", ch)
+	}
+	return nil
+}
+
+// defaultChannel is the channel an oci:// source without one installs
+// from: the live image's own (image.json), else main. "Install the newest
+// version" from the ISO of a branch then means that branch's newest.
+func defaultChannel() string {
+	if ii, err := config.LoadImageInfo(); err == nil && update.ValidChannel(ii.Channel) {
+		return ii.Channel
+	}
+	return "main"
+}
+
+// imageSource is where an install reads VaporOS from. Fetching, resuming,
+// signature and sha256 checks are the update package's Source, which
+// `vos update` uses too: the live medium, a directory, an http(s) server
+// and a registry all go through one verified code path.
+type imageSource struct {
+	*update.Source
+	spec sourceSpec
+}
+
+// openSource opens spec. channel picks the OCI tag when the spec has none
+// ("" = defaultChannel); other kinds ignore it. Nothing is fetched yet.
+func openSource(spec sourceSpec, channel string) (*imageSource, error) {
+	var (
+		src *update.Source
+		err error
+	)
+	switch spec.kind {
+	case srcLive:
+		src = update.LiveSource()
+	case srcDir:
+		if fi, serr := os.Stat(spec.dir); serr != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("no VaporOS image found at %s: not a directory", spec.dir)
+		}
+		src, err = update.OpenSource(spec.dir, "")
+	case srcOCI:
+		if channel == "" {
+			channel = defaultChannel()
+		}
+		src, err = update.OpenSource(spec.raw, channel)
+	default:
+		src, err = update.OpenSource(spec.raw, "")
+	}
 	if err != nil {
 		return nil, err
 	}
-	switch s.kind {
-	case "live":
-		return dirSource{path: config.LiveMedium, live: true}, nil
-	case "dir":
-		return dirSource{path: s.dir}, nil
-	}
-	return &httpSource{base: s.url, env: e}, nil
+	return &imageSource{Source: src, spec: spec}, nil
 }
 
-type dirSource struct {
-	path string
-	live bool
-}
-
-func (s dirSource) String() string {
-	if s.live {
+func (s *imageSource) String() string {
+	if s.spec.kind == srcLive {
 		return "the installation medium"
 	}
-	return s.path
+	return s.Source.String()
 }
 
-func (s dirSource) open(_ context.Context, name string, _ int64) (io.ReadCloser, error) {
-	return os.Open(filepath.Join(s.path, name))
-}
-
-func (s dirSource) dir() string { return s.path }
-
-type httpSource struct {
-	base *url.URL
-	env  *env
-}
-
-func (s *httpSource) String() string { return s.base.Redacted() }
-func (s *httpSource) dir() string    { return "" }
-
-func (s *httpSource) open(ctx context.Context, name string, size int64) (io.ReadCloser, error) {
-	r := &httpReader{ctx: ctx, env: s.env, url: s.base.JoinPath(name).String(), size: size}
-	// Connect now, so a missing file fails here rather than mid-copy.
-	if err := r.connect(); err != nil {
-		return nil, err
+// dir is the local directory holding the files, or "" for remote ones.
+func (s *imageSource) dir() string {
+	switch s.spec.kind {
+	case srcLive:
+		return config.LiveMedium
+	case srcDir:
+		return s.spec.dir
 	}
-	return r, nil
+	return ""
 }
 
-// httpMaxRetries and httpIdleTimeout bound how long a flaky download may
-// take. Variables for tests.
-var (
-	httpMaxRetries  = 5
-	httpIdleTimeout = 60 * time.Second
-)
-
-// httpReader streams one file and survives dropped connections by
-// resuming with a Range request at the current offset. The caller hashes
-// what it reads, so a resumed stream is verified like any other.
-type httpReader struct {
-	ctx  context.Context
-	env  *env
-	url  string
-	size int64 // expected length; -1 when unknown
-	off  int64
-
-	body   io.ReadCloser
-	cancel context.CancelFunc
-	idle   *time.Timer
-	fails  int
-	mu     sync.Mutex
-}
-
-type statusError struct {
-	url    string
-	status int
-}
-
-func (e *statusError) Error() string {
-	return fmt.Sprintf("GET %s: %d %s", e.url, e.status, http.StatusText(e.status))
-}
-
-// retryable: 5xx, 408 and 429 are worth another try, other statuses are not.
-func (e *statusError) retryable() bool {
-	return e.status >= 500 || e.status == http.StatusRequestTimeout || e.status == http.StatusTooManyRequests
-}
-
-func (r *httpReader) connect() error {
-	for {
-		err := r.request()
-		if err == nil {
-			return nil
-		}
-		if !r.retry(err) {
-			return err
-		}
-	}
-}
-
-// request opens the body at r.off.
-func (r *httpReader) request() error {
-	ctx, cancel := context.WithCancel(r.ctx)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.url, nil)
-	if err != nil {
-		cancel()
-		return err
-	}
-	if r.off > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", r.off))
-	}
-	resp, err := r.env.httpClient.Do(req)
-	if err != nil {
-		cancel()
-		return err
-	}
-	switch {
-	case resp.StatusCode == http.StatusPartialContent && r.off > 0:
-		if start, ok := contentRangeStart(resp.Header.Get("Content-Range")); !ok || start != r.off {
-			resp.Body.Close()
-			cancel()
-			return fmt.Errorf("GET %s: server resumed at the wrong offset", r.url)
-		}
-	case resp.StatusCode == http.StatusOK:
-		// A server that ignores Range sends everything again; skip what
-		// was already read.
-		if r.off > 0 {
-			if _, err := io.CopyN(io.Discard, resp.Body, r.off); err != nil {
-				resp.Body.Close()
-				cancel()
-				return err
-			}
-		}
-	default:
-		resp.Body.Close()
-		cancel()
-		return &statusError{url: r.url, status: resp.StatusCode}
-	}
-	r.body, r.cancel = resp.Body, cancel
-	// Cancelling the request context is the only way to interrupt a body
-	// read that has stalled; the timer does that after a quiet minute.
-	r.idle = time.AfterFunc(httpIdleTimeout, cancel)
-	return nil
-}
-
-func contentRangeStart(h string) (int64, bool) {
-	rest, ok := strings.CutPrefix(h, "bytes ")
-	if !ok {
-		return 0, false
-	}
-	start, _, ok := strings.Cut(rest, "-")
-	if !ok {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(start, 10, 64)
-	return n, err == nil
-}
-
-// retry records a failure and waits before the next attempt; false means
-// give up with err.
-func (r *httpReader) retry(err error) bool {
-	var se *statusError
-	if r.ctx.Err() != nil || (errors.As(err, &se) && !se.retryable()) {
-		return false
-	}
-	r.fails++
-	if r.fails > httpMaxRetries {
-		return false
-	}
-	r.env.logf("install: %s: %v; retrying (%d/%d)", r.url, err, r.fails, httpMaxRetries)
-	return r.env.sleep(r.ctx, time.Duration(r.fails)*time.Second) == nil
-}
-
-func (r *httpReader) closeBody() {
-	if r.body != nil {
-		r.idle.Stop()
-		r.body.Close()
-		r.cancel()
-		r.body = nil
-	}
-}
-
-func (r *httpReader) Read(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for {
-		if r.size >= 0 && r.off >= r.size {
-			r.closeBody()
-			return 0, io.EOF
-		}
-		if r.body == nil {
-			if err := r.connect(); err != nil {
-				return 0, err
-			}
-		}
-		if r.size >= 0 && int64(len(p)) > r.size-r.off {
-			p = p[:r.size-r.off]
-		}
-		n, err := r.body.Read(p)
-		r.off += int64(n)
-		if n > 0 {
-			r.fails = 0
-			r.idle.Reset(httpIdleTimeout)
-		}
-		switch {
-		case err == nil:
-			return n, nil
-		case err == io.EOF && (r.size < 0 || r.off >= r.size):
-			r.closeBody()
-			return n, io.EOF
-		}
-		// A dropped connection or a short body: reconnect at r.off.
-		r.closeBody()
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-		if n > 0 {
-			return n, nil
-		}
-		if !r.retry(err) {
-			return 0, err
-		}
-	}
-}
-
-func (r *httpReader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.closeBody()
-	return nil
-}
-
-// readSmall reads a whole small file (manifest, signature) from src.
-func readSmall(ctx context.Context, src source, name string, limit int64) ([]byte, error) {
-	r, err := src.open(ctx, name, -1)
-	if err != nil {
-		return nil, err
-	}
+// readSmall reads a whole small file (the manifest) from s.
+func (s *imageSource) readSmall(ctx context.Context, name string, limit int64) ([]byte, error) {
+	r := s.Open(ctx, name, -1)
 	defer r.Close()
 	b, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", name, err)
+		return nil, fmt.Errorf("reading %s from %s: %w", name, s, err)
 	}
 	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("%s is larger than %d bytes", name, limit)
+		return nil, fmt.Errorf("%s on %s is larger than %d bytes", name, s, limit)
 	}
 	return b, nil
 }
 
-// loadManifest fetches manifest.json and its signature from src and
-// accepts it only if a trusted key (config.KeysDir) signed it.
-func loadManifest(ctx context.Context, e *env, src source) (*manifest.Manifest, error) {
-	b, err := readSmall(ctx, src, "manifest.json", 1<<20)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("no VaporOS image found on %s (manifest.json is missing)", src)
-		}
-		return nil, fmt.Errorf("reading the manifest from %s: %w", src, err)
-	}
-	sig, err := readSmall(ctx, src, "manifest.json.sig", 64<<10)
-	if err != nil {
-		return nil, fmt.Errorf("reading the manifest signature from %s: %w", src, err)
-	}
-	if err := e.verifyManifest(b, sig, config.KeysDir); err != nil {
-		return nil, fmt.Errorf("the image on %s is not signed by a trusted key: %w", src, err)
-	}
-	m, err := e.parseManifest(b)
-	if err != nil {
-		return nil, fmt.Errorf("manifest: %w", err)
-	}
-	if err := checkManifest(m); err != nil {
-		return nil, fmt.Errorf("manifest: %w", err)
-	}
-	return m, nil
+// loadedImage is a manifest the installer accepted, and how.
+type loadedImage struct {
+	man *manifest.Manifest
+	// unsigned: accepted under unsignedRule, not by a signature.
+	unsigned bool
 }
 
-var (
-	versionRE = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
-	sha256RE  = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-)
-
-// bootNames are the file names boot.InstallEntry copies from its source
-// directory, keyed by manifest artifact.
-var bootNames = map[string]string{"kernel": "vmlinuz", "initrd": "initramfs.img"}
-
-// checkManifest re-checks what the installer relies on, whatever
-// manifest.Parse already did: the version becomes a path on the ESP and
-// artifact names become paths in the source.
-func checkManifest(m *manifest.Manifest) error {
-	if m.Schema != manifest.Schema {
-		return fmt.Errorf("unsupported schema %d", m.Schema)
-	}
-	if m.MinUpdater > manifest.UpdaterVersion {
-		return fmt.Errorf("this image needs a newer installer (min_updater %d)", m.MinUpdater)
-	}
-	if !versionRE.MatchString(m.Version) {
-		return fmt.Errorf("invalid version %q", m.Version)
-	}
-	for _, key := range []string{"root", "kernel", "initrd"} {
-		a, ok := m.Artifacts[key]
-		switch {
-		case !ok:
-			return fmt.Errorf("no %s artifact", key)
-		case a.Name == "" || a.Name != filepath.Base(a.Name) || a.Name == "." || a.Name == "..":
-			return fmt.Errorf("%s artifact has an invalid name %q", key, a.Name)
-		case a.Size <= 0:
-			return fmt.Errorf("%s artifact has an invalid size", key)
-		case !sha256RE.MatchString(a.SHA256):
-			return fmt.Errorf("%s artifact has an invalid sha256", key)
+// loadManifest returns src's manifest once it is trusted: signed by a key
+// in config.KeysDir (update.Source.Manifest, which for a registry also
+// matches every layer against it), or covered by unsignedRule. Parsing
+// includes manifest.Validate: schema, min_updater, a version that is safe
+// as a path, and well-formed artifact names, sizes and hashes.
+func loadManifest(ctx context.Context, e *env, src *imageSource) (*loadedImage, error) {
+	if d := src.dir(); d != "" {
+		if _, err := os.Stat(filepath.Join(d, update.ManifestName)); errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("no VaporOS image found on %s (%s is missing)", src, update.ManifestName)
 		}
+		if _, err := os.Stat(filepath.Join(d, update.SignatureName)); errors.Is(err, fs.ErrNotExist) {
+			return loadUnsigned(ctx, e, src)
+		}
+	}
+	m, err := src.Manifest(ctx)
+	switch {
+	case errors.Is(err, manifest.ErrBadSignature), errors.Is(err, manifest.ErrNoKeys):
+		return nil, fmt.Errorf("the image on %s is not signed by a trusted key: %w", src, err)
+	case err != nil:
+		return nil, fmt.Errorf("reading the VaporOS image: %w", err)
+	}
+	return &loadedImage{man: m}, nil
+}
+
+// errUnsigned is the refusal of an image without manifest.json.sig.
+var errUnsigned = errors.New("the image is not signed")
+
+// unsignedRule is the one exception to "only signed images are
+// installed". A debug build made without a signing key (build.sh warns
+// "manifest.json is unsigned") must still install itself from its own
+// ISO, or the dev loop could not test that ISO. So an image without
+// manifest.json.sig is accepted only when all of this holds:
+//
+//   - it is on the live medium: never a directory, a web server or a
+//     registry, where anyone could have put it;
+//   - the running image, which is the medium's own, is a debug image
+//     (image.json "debug": true): a release ISO installs signed images only;
+//   - the manifest is that running image's (same version), not something
+//     else copied onto the stick.
+//
+// A signature that is present but does not verify is never "unsigned": it
+// is refused as tampering whatever the build. The artifacts' sizes and
+// sha256 are still checked against the manifest as they are streamed, so a
+// damaged medium is caught; only the manifest's origin goes unproven.
+func unsignedRule(src *imageSource, running *config.ImageInfo, m *manifest.Manifest) error {
+	switch {
+	case src.spec.kind != srcLive:
+		return fmt.Errorf("%w (%s is missing on %s); only the live medium of a debug build may install without a signature",
+			errUnsigned, update.SignatureName, src)
+	case running == nil || !running.Debug:
+		return fmt.Errorf("%w (%s is missing on %s); only debug builds may install without a signature",
+			errUnsigned, update.SignatureName, src)
+	case m != nil && m.Version != running.Version:
+		return fmt.Errorf("%w, and it is not the running debug image (%s on %s, running %s)",
+			errUnsigned, m.Version, src, running.Version)
+	}
+	return nil
+}
+
+// loadUnsigned reads a manifest without a signature file, if unsignedRule
+// allows it.
+func loadUnsigned(ctx context.Context, e *env, src *imageSource) (*loadedImage, error) {
+	running, _ := config.LoadImageInfo()
+	// Refuse before reading anything when the rule cannot hold.
+	if err := unsignedRule(src, running, nil); err != nil {
+		return nil, err
+	}
+	raw, err := src.readSmall(ctx, update.ManifestName, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	m, err := manifest.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := unsignedRule(src, running, m); err != nil {
+		return nil, err
+	}
+	e.logf("install: WARNING: %s has no %s; accepted unverified because this is debug build %s",
+		src, update.SignatureName, running.Version)
+	return &loadedImage{man: m, unsigned: true}, nil
+}
+
+// checkLocalRoot fails early when a local source's root.erofs is missing
+// or not the size the manifest promises (a truncated copy), before any
+// disk is touched. Remote sources are checked as they stream.
+func checkLocalRoot(src *imageSource, m *manifest.Manifest) error {
+	d := src.dir()
+	if d == "" {
+		return nil
+	}
+	root := m.Artifact(manifest.Root)
+	fi, err := os.Stat(filepath.Join(d, root.Name))
+	if err != nil {
+		return fmt.Errorf("the image on %s is incomplete: %w", src, err)
+	}
+	if fi.Size() != root.Size {
+		return fmt.Errorf("%s on %s is %d bytes, the manifest says %d", root.Name, src, fi.Size(), root.Size)
 	}
 	return nil
 }

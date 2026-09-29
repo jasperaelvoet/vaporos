@@ -38,13 +38,14 @@ func parseCLI(args []string, stderr io.Writer) (cliArgs, error) {
 	fs.StringVar(&c.opts.Hostname, "hostname", "", "machine name (default "+defaultHostname+")")
 	fs.StringVar(&c.opts.Password, "password", "", "web admin password (default: set it in the web UI on first boot)")
 	fs.StringVar(&c.opts.Timezone, "timezone", "", "tz database name, e.g. Europe/Brussels (default UTC)")
-	fs.StringVar(&c.opts.Source, "source", "", "image source: a directory or http(s) URL (default: the live medium)")
+	fs.StringVar(&c.opts.Source, "source", "", "image source: a directory, an http(s) URL or oci://registry/repo (default: the live medium)")
+	fs.StringVar(&c.opts.Channel, "channel", "", "channel (tag) for an oci:// source without one (default: the live image's)")
 	fs.Var(&libs, "library", "filesystem UUID of a Steam library disk to adopt (repeatable)")
 	fs.BoolVar(&c.yes, "yes", false, "do not ask for confirmation (required when not on a terminal)")
 	fs.StringVar(&user, "user", "", "ignored; the gaming user is built in and the web admin is 'admin'")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: vos install --disk D [--mode erase|repair] [--hostname H] [--password P]\n"+
-			"                   [--timezone Z] [--source SRC] [--library UUID]... [--yes]")
+			"                   [--timezone Z] [--source SRC [--channel C]] [--library UUID]... [--yes]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -66,8 +67,8 @@ func isTerminal(f *os.File) bool {
 }
 
 // CLI implements `vos install --disk D --hostname H --password P
-// --timezone Z [--source SRC] [--library UUID]... [--mode erase|repair]
-// [--yes]`.
+// --timezone Z [--source SRC [--channel C]] [--library UUID]...
+// [--mode erase|repair] [--yes]`.
 func CLI(args []string) int {
 	log.SetFlags(0)
 	c, err := parseCLI(args, os.Stderr)
@@ -154,9 +155,13 @@ func (in *installer) summary() []string {
 	if m := sysModel(in.disk); m != "" {
 		disk += ", " + m
 	}
+	version := fmt.Sprintf("%s from %s", in.man.Version, in.src)
+	if in.unsigned {
+		version += " (UNSIGNED debug build)"
+	}
 	lines := []string{
 		"Disk:       " + disk + ")",
-		"Version:    " + in.man.Version,
+		"Version:    " + version,
 	}
 	if in.opts.Mode == ModeRepair {
 		lines = append(lines, "Mode:       repair (slot a and the ESP are rewritten, data is kept)")

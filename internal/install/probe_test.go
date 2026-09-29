@@ -2,12 +2,17 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
@@ -110,7 +115,7 @@ func probeMachine(t *testing.T) (*fakeSys, *fakeRunner, *Service) {
 
 func TestProbe(t *testing.T) {
 	f, r, s := probeMachine(t)
-	res := s.probe(context.Background())
+	res := s.probe(context.Background(), "", "")
 
 	if len(res.Disks) != 4 {
 		t.Fatalf("disks = %+v", res.Disks)
@@ -157,7 +162,7 @@ func TestProbe(t *testing.T) {
 	}
 
 	// Results are cached: a second probe mounts nothing.
-	s.probe(context.Background())
+	s.probe(context.Background(), "", "")
 	if len(r.callList()) != 2 {
 		t.Errorf("second probe ran %v", r.callList())
 	}
@@ -166,7 +171,7 @@ func TestProbe(t *testing.T) {
 func TestProbeNoMountWhileInstalling(t *testing.T) {
 	_, r, s := probeMachine(t)
 	s.status.State = StateRunning
-	res := s.probe(context.Background())
+	res := s.probe(context.Background(), "", "")
 	if len(r.callList()) != 0 {
 		t.Errorf("probe mounted during an install: %v", r.callList())
 	}
@@ -185,7 +190,7 @@ func TestProbeFailedMountNotCached(t *testing.T) {
 		}
 		return "", nil, false
 	}
-	s.probe(context.Background())
+	s.probe(context.Background(), "", "")
 	if _, cached := s.libCache["01D9ABCDEF"]; cached {
 		t.Error("a failed mount was cached")
 	}
@@ -194,7 +199,7 @@ func TestProbeFailedMountNotCached(t *testing.T) {
 func TestProbeWithoutLsblk(t *testing.T) {
 	f, _, s := probeMachine(t)
 	s.env.scanDisks = func(context.Context) ([]storage.Disk, error) { return nil, errors.New("lsblk: not found") }
-	res := s.probe(context.Background())
+	res := s.probe(context.Background(), "", "")
 	var names []string
 	for _, d := range res.Disks {
 		names = append(names, d.Path)
@@ -209,4 +214,146 @@ func TestProbeWithoutLsblk(t *testing.T) {
 		t.Errorf("disks = %s", got)
 	}
 	_ = f
+}
+
+// floorMin is the smallest min_size there is: 512 MiB + 2 x 8 GiB + 8 GiB.
+const floorMin = (512 + 2*8192 + 8192) * mib
+
+func TestProbeMinSize(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		setup    func(f *fakeSys, img *image)
+		min      int64
+		errMatch string
+	}{
+		{"small image: the floor", nil, floorMin, ""},
+		{"4 GiB image: 12 GiB slots", func(f *fakeSys, img *image) {
+			a := img.man.Artifacts["root"]
+			a.Size = 4 * gib
+			img.man.Artifacts["root"] = a
+			img.sign(t)
+		}, (512 + 2*12288 + 8192) * mib, ""},
+		{"image larger than a slot", func(f *fakeSys, img *image) {
+			a := img.man.Artifacts["root"]
+			a.Size = 17 * gib
+			img.man.Artifacts["root"] = a
+			img.sign(t)
+		}, floorMin, "larger than the largest slot"},
+		{"no image", func(f *fakeSys, img *image) {
+			os.Remove(filepath.Join(img.dir, "manifest.json"))
+		}, floorMin, "no VaporOS image found on the installation medium"},
+		{"unsigned release medium", func(f *fakeSys, img *image) {
+			os.Remove(filepath.Join(img.dir, "manifest.json.sig"))
+		}, floorMin, "only debug builds may install without a signature"},
+		{"unsigned debug medium", func(f *fakeSys, img *image) {
+			os.Remove(filepath.Join(img.dir, "manifest.json.sig"))
+			f.setImageInfo(img.man.Version, "main", true)
+		}, floorMin, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _, s := probeMachine(t)
+			img := writeImage(t, config.LiveMedium, 1<<20)
+			if tc.setup != nil {
+				tc.setup(f, img)
+			}
+			res := s.probe(context.Background(), "", "")
+			if res.MinSize != tc.min {
+				t.Errorf("min_size = %d (%s), want %d (%s)", res.MinSize, humanBytes(res.MinSize), tc.min, humanBytes(tc.min))
+			}
+			if tc.errMatch == "" {
+				if res.SourceError != "" || res.Version != img.man.Version {
+					t.Errorf("version %q, source_error %q", res.Version, res.SourceError)
+				}
+			} else if !strings.Contains(res.SourceError, tc.errMatch) {
+				t.Errorf("source_error = %q, want %q", res.SourceError, tc.errMatch)
+			}
+			if res.Source != "" || len(res.Disks) != 4 {
+				t.Errorf("source %q, %d disks", res.Source, len(res.Disks))
+			}
+		})
+	}
+}
+
+func getProbe(t *testing.T, s *Service, query string) (int, map[string]json.RawMessage) {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/v1/install/probe"+query, nil)
+	w := httptest.NewRecorder()
+	s.handleProbe(w, req)
+	var out map[string]json.RawMessage
+	json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
+}
+
+func jsonString(raw json.RawMessage) string {
+	var s string
+	json.Unmarshal(raw, &s)
+	return s
+}
+
+func TestProbeHandlerSource(t *testing.T) {
+	_, _, s := probeMachine(t)
+	live := writeImage(t, config.LiveMedium, 1<<20)
+	dir := t.TempDir()
+	other := writeImage(t, dir, 1<<20)
+	other.man.Version = "20261001.000000"
+	other.sign(t)
+	reg := newFakeRegistry(t, dir, []string{"beta"}, nil)
+
+	for _, tc := range []struct {
+		query, source, channel, version string
+	}{
+		{"", "", "", live.man.Version},
+		{"?source=live", "", "", live.man.Version},
+		{"?source=" + url.QueryEscape(dir), dir, "", "20261001.000000"},
+		{"?source=" + url.QueryEscape(reg.spec()) + "&channel=beta", reg.spec(), "beta", "20261001.000000"},
+	} {
+		code, out := getProbe(t, s, tc.query)
+		if code != http.StatusOK {
+			t.Fatalf("%q: %d %s", tc.query, code, out["error"])
+		}
+		if jsonString(out["source"]) != tc.source || jsonString(out["channel"]) != tc.channel || jsonString(out["version"]) != tc.version {
+			t.Errorf("%q: source %s channel %s version %s", tc.query, out["source"], out["channel"], out["version"])
+		}
+		if _, ok := out["min_size"]; !ok {
+			t.Errorf("%q: no min_size", tc.query)
+		}
+		if e, ok := out["source_error"]; ok {
+			t.Errorf("%q: source_error %s", tc.query, e)
+		}
+	}
+
+	for query, want := range map[string]string{
+		"?source=ftp%3A%2F%2Fx%2F":                          "unsupported source",
+		"?source=relative%2Fdir":                            "unsupported source",
+		"?source=oci%3A%2F%2Fghcr.io%2Fx%2Fy&channel=a%2Fb": "invalid channel",
+	} {
+		code, out := getProbe(t, s, query)
+		if code != http.StatusBadRequest || !strings.Contains(jsonString(out["error"]), want) {
+			t.Errorf("%s -> %d %s, want 400 %q", query, code, out["error"], want)
+		}
+	}
+}
+
+// A source that does not answer costs the probe probeImageTimeout, not the
+// updater's minutes of retries, and the disks are still listed.
+func TestProbeSlowSource(t *testing.T) {
+	_, _, s := probeMachine(t)
+	probeImageTimeout = 200 * time.Millisecond
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	start := time.Now()
+	res := s.probe(context.Background(), srv.URL+"/vos/", "")
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("probe took %v", took)
+	}
+	if res.SourceError == "" || res.MinSize != floorMin || len(res.Disks) != 4 || res.Source != srv.URL+"/vos/" {
+		t.Errorf("probe = %+v", res)
+	}
 }

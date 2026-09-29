@@ -77,6 +77,17 @@ func minDiskBytes(slotMiB int64) int64 {
 	return (espMiB + 2*slotMiB + minDataMiB) * mib
 }
 
+// eraseLayout applies the slot sizing rule to an image whose root.erofs is
+// rootBytes: the size of each slot and the smallest disk an erase install
+// fits on. An image larger than the largest slot fits no disk.
+func eraseLayout(rootBytes int64) (slotMiB, minDisk int64, err error) {
+	slotMiB = slotSizeMiB(rootBytes)
+	if slotMiB*mib < rootBytes {
+		return 0, 0, fmt.Errorf("the image (%s) is larger than the largest slot VaporOS creates", humanBytes(rootBytes))
+	}
+	return slotMiB, minDiskBytes(slotMiB), nil
+}
+
 // sgdiskArgs creates the four VaporOS partitions on disk in one sgdisk run.
 // Slots are 8300 (plain Linux data) on purpose: the "root" or "home" type
 // GUIDs would invite systemd-gpt-auto-generator to mount them.
