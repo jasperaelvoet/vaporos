@@ -7,10 +7,14 @@ import (
 )
 
 // Identity of the virtual display. gamescope names a display "<Make>
-// <Model>", where Make is the PNP id looked up in hwdata's pnp.ids and Model
-// is the display product name; that string keys its modes.cfg.
+// <Model>", where Make is the PNP id looked up in hwdata's pnp.ids (or the
+// raw id when pnp.ids does not list it) and Model is the display product
+// name; that string keys its modes.cfg and is what Steam shows.
+//
+// "VOS" is not assigned in pnp.ids, so the display is "VOS VaporOS". (The
+// first choice, "VPR", belongs to Best Buy: Steam showed "Best Buy VaporOS".)
 const (
-	PNPID       = "VPR"
+	PNPID       = "VOS"
 	ProductCode = 1
 	// ModelName is the product name descriptor. The descriptor holds at
 	// most 13 characters, so "VaporOS Virtual" cannot fit.

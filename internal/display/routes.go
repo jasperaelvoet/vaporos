@@ -32,10 +32,14 @@ type displayInfo struct {
 	Connectors       []connectorInfo `json:"connectors"`
 	Modes            []string        `json:"modes"`
 	Current          *string         `json:"current"`
-	HDR              bool            `json:"hdr"`
-	Learned          []string        `json:"learned"`
-	RebootNeeded     bool            `json:"reboot_needed"`
-	State            string          `json:"state"`
+	// Planes counts the fb-backed planes on the virtual connector's CRTC:
+	// 1 while gamescope composites (what Sunshine's KMS capture needs), more
+	// when it scans out directly, 0 when nothing is shown or observable.
+	Planes       int      `json:"planes"`
+	HDR          bool     `json:"hdr"`
+	Learned      []string `json:"learned"`
+	RebootNeeded bool     `json:"reboot_needed"`
+	State        string   `json:"state"`
 }
 
 func (m *Manager) info() displayInfo {
@@ -78,6 +82,9 @@ func (m *Manager) info() displayInfo {
 		if cur, active, err := m.h.Scanout(gpu.Card, virtual); err == nil && active {
 			s := cur.String()
 			d.Current = &s
+		}
+		if n, err := m.h.Planes(gpu.Card, virtual); err == nil {
+			d.Planes = n
 		}
 	}
 	return d

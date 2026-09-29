@@ -29,9 +29,14 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
-// Timeout is the hard ceiling for one request: the CLI gives up after it,
-// and vosd gives each request's handler the same budget.
+// Timeout is the hard ceiling for one request: the CLI gives up after it.
+// Sunshine runs the CLI as a prep-cmd, and Moonlight's launch waits for it.
 const Timeout = 90 * time.Second
+
+// HandlerTimeout is the budget vosd gives each request's handler: less
+// than Timeout, so an answer (even "gave up") reaches the CLI before the
+// CLI gives up on it.
+const HandlerTimeout = Timeout - 10*time.Second
 
 // maxLine bounds a request or response line.
 const maxLine = 64 << 10
@@ -125,29 +130,63 @@ func restrict(path string) error {
 	return os.Chown(path, 0, gid)
 }
 
-// serveConn handles one request.
+// serveConn handles one request. The handler gets HandlerTimeout; should
+// it not return by then (plus a second to say why it gave up), the reply
+// goes out without it: the hook must never hold a stream back.
 func serveConn(ctx context.Context, conn net.Conn, h Handler) {
+	serveConnWithin(ctx, conn, h, HandlerTimeout, time.Second)
+}
+
+func serveConnWithin(ctx context.Context, conn net.Conn, h Handler, budget, grace time.Duration) {
 	defer conn.Close()
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	conn.SetDeadline(time.Now().Add(Timeout + 5*time.Second))
 
 	var resp Response
 	req, err := readRequest(conn)
-	switch {
-	case err != nil:
+	if err != nil {
 		resp = Response{Message: "bad request: " + err.Error()}
-	case req.Op == "begin":
-		resp = h.Begin(ctx, req)
-	case req.Op == "end":
-		h.End(ctx)
-		resp = Response{OK: true}
-	default:
-		resp = Response{Message: fmt.Sprintf("unknown op %q", req.Op)}
+	} else {
+		resp = handleWithin(ctx, req, h, grace)
 	}
 	if err := writeLine(conn, resp); err != nil {
 		log.Printf("session: reply: %v", err)
 	}
+}
+
+// handleWithin runs the handler for req. Once ctx ends, the handler has
+// grace to return its own answer; after that handleWithin answers for it
+// and leaves it to finish in the background.
+func handleWithin(ctx context.Context, req Request, h Handler, grace time.Duration) Response {
+	done := make(chan Response, 1)
+	go func() { done <- handle(ctx, req, h) }()
+	select {
+	case resp := <-done:
+		return resp
+	case <-ctx.Done():
+	}
+	t := time.NewTimer(grace)
+	defer t.Stop()
+	select {
+	case resp := <-done:
+		return resp
+	case <-t.C:
+		log.Printf("session: %s still busy after its budget; answering without it", req.Op)
+		return Response{Message: fmt.Sprintf("%s did not finish in time (%v); continuing anyway", req.Op, ctx.Err())}
+	}
+}
+
+// handle dispatches one request.
+func handle(ctx context.Context, req Request, h Handler) Response {
+	switch req.Op {
+	case "begin":
+		return h.Begin(ctx, req)
+	case "end":
+		h.End(ctx)
+		return Response{OK: true}
+	}
+	return Response{Message: fmt.Sprintf("unknown op %q", req.Op)}
 }
 
 func readRequest(r io.Reader) (Request, error) {

@@ -177,6 +177,26 @@ func TestGenerateStructure(t *testing.T) {
 	}
 }
 
+// TestIdentity pins the vendor bytes: gamescope's modes.cfg key and the
+// name Steam shows derive from them. "VPR" (Best Buy in hwdata) must not
+// come back.
+func TestIdentity(t *testing.T) {
+	if PNPID != "VOS" || ModelName != "VaporOS" {
+		t.Fatalf("identity %q %q", PNPID, ModelName)
+	}
+	res, err := Generate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// V=22 O=15 S=19, five bits each, big-endian: 0x59f3.
+	if got := res.EDID[8:10]; got[0] != 0x59 || got[1] != 0xf3 {
+		t.Errorf("manufacturer bytes % x, want 59 f3", got)
+	}
+	if info, err := Decode(res.EDID); err != nil || info.PNP != "VOS" {
+		t.Errorf("decoded PNP %q, %v", info.PNP, err)
+	}
+}
+
 func TestRoundTrip(t *testing.T) {
 	res, err := Generate(nil)
 	if err != nil {

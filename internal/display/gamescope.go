@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,9 +23,46 @@ var (
 	UserRuntimeDir = "/run/user/" + strconv.Itoa(config.GamerUID)
 	// PNPIDsPath is the hwdata database gamescope resolves EDID vendor ids with.
 	PNPIDsPath = "/usr/share/hwdata/pnp.ids"
-	// X11SocketDir holds Xwayland's sockets (for the xprop fallback).
+	// X11SocketDir holds Xwayland's sockets (xprop finds DISPLAY there).
 	X11SocketDir = "/tmp/.X11-unix"
 )
+
+// compositeForceProp is the X root window property behind gamescope's
+// composite_force convar. gamescope's PropertyNotify handler assigns the
+// property's value to the convar whenever anyone writes it (Steam does, with
+// 0), overriding `gamescopectl composite_force 1`; an unset property reads
+// as 0. vosd therefore sets both, and re-checks the property.
+const compositeForceProp = "GAMESCOPE_COMPOSITE_FORCE"
+
+// xprop arguments that set and read compositeForceProp on the root window.
+var (
+	setCompositeForceArgs = []string{"-root", "-f", compositeForceProp, "32c", "-set", compositeForceProp, "1"}
+	getCompositeForceArgs = []string{"-root", compositeForceProp}
+)
+
+// parseXpropCardinal reads `xprop -root NAME` output for a CARDINAL
+// property: "NAME(CARDINAL) = 1" gives (1, true); "NAME:  not found." (or
+// anything without a value) gives (0, false).
+func parseXpropCardinal(out, name string) (int64, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		rest, ok := strings.CutPrefix(line, name)
+		if !ok || (rest != "" && rest[0] != '(' && rest[0] != ':' && rest[0] != ' ' && rest[0] != '=') {
+			continue // another property whose name merely starts the same
+		}
+		_, v, ok := strings.Cut(rest, "=")
+		if !ok {
+			return 0, false
+		}
+		first, _, _ := strings.Cut(strings.TrimSpace(v), ",")
+		n, err := strconv.ParseInt(strings.TrimSpace(first), 0, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
+}
 
 // GamescopeEnvPath is read by vos-gamescope.service (EnvironmentFile=).
 func GamescopeEnvPath() string { return filepath.Join(UserRuntimeDir, "vos", "gamescope.env") }
@@ -100,12 +138,15 @@ func updateModesCfg(content []byte, keys []string, m edid.Mode) []byte {
 	return out.Bytes()
 }
 
-// gamescopectlInfo is the display part of `gamescopectl` (no arguments):
+// gamescopectlInfo is the display part of `gamescopectl` (no arguments),
+// as gamescope 3.16 prints it:
 //
 //	gamescope_control info:
 //	  - Connector Name: DP-1
-//	  - Display Make: Best Buy
-//	  - Display Model: VaporOS
+//	  - Display Make: Dell Inc.
+//	  - Display Model: DELL U2723QE
+//
+// On the virtual display, Make is "VOS": pnp.ids does not list that id.
 type gamescopectlInfo struct {
 	Connector, Make, Model string
 }
@@ -143,8 +184,10 @@ var (
 	keyCache = map[[32]byte]string{}
 )
 
-// pnpName resolves a PNP id the way gamescope does (hwdata pnp.ids:
-// "ID\tName" lines), falling back to the raw id.
+// pnpName resolves a PNP id the way gamescope's connector Make does: the
+// name hwdata's pnp.ids gives it, else (id not listed, or no pnp.ids at
+// all) the raw three-letter id itself. VaporOS's "VOS" is not listed, so
+// it stays "VOS".
 func pnpName(id string) string {
 	pnpOnce.Do(func() {
 		pnpDB = map[string]string{}
@@ -153,17 +196,31 @@ func pnpName(id string) string {
 			return
 		}
 		defer f.Close()
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			if k, v, ok := strings.Cut(sc.Text(), "\t"); ok {
-				pnpDB[k] = v
-			}
-		}
+		pnpDB = parsePNPIDs(f)
 	})
 	if n, ok := pnpDB[id]; ok {
 		return n
 	}
 	return id
+}
+
+// parsePNPIDs reads pnp.ids exactly like gamescope's load_pnps: each line
+// loses its newline and is split at its first tab into id and name (the
+// name kept verbatim, whatever its length); lines without a tab are
+// skipped, and a later line for the same id wins.
+func parsePNPIDs(r io.Reader) map[string]string {
+	db := map[string]string{}
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadString('\n')
+		line = strings.TrimSuffix(line, "\n")
+		if id, name, ok := strings.Cut(line, "\t"); ok {
+			db[id] = name
+		}
+		if err != nil {
+			return db
+		}
+	}
 }
 
 // gamescopeKeyForEDID computes the modes.cfg key gamescope will use for a

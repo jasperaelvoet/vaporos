@@ -34,9 +34,13 @@ type host interface {
 	// Scanout reports the mode a connector currently scans out with a
 	// framebuffer; err != nil means the state cannot be observed at all.
 	Scanout(card, name string) (mode edid.Mode, active bool, err error)
+	// Planes counts the planes that scan a framebuffer out on the CRTC
+	// driving a connector (0 when no CRTC drives it).
+	Planes(card, name string) (int, error)
 
 	Gamescopectl(ctx context.Context, args ...string) (string, error)
-	Xprop(ctx context.Context, args ...string) error
+	// Xprop runs xprop against gamescope's X server and returns its output.
+	Xprop(ctx context.Context, args ...string) (string, error)
 	Busy(ctx context.Context) (bool, string)
 	LocalIPs() []string
 	Hotplug(ctx context.Context) <-chan struct{}
@@ -154,6 +158,27 @@ func (h *realHost) Scanout(card, name string) (edid.Mode, bool, error) {
 	return m, s.Active, nil
 }
 
+// Planes reads the connector's CRTC and counts the fb-backed planes on it,
+// read-only like Scanout. The observer has the universal-planes cap, so
+// primary and cursor planes count as well as overlays.
+func (h *realHost) Planes(card, name string) (int, error) {
+	c, err := h.observer(card)
+	if err != nil {
+		return 0, err
+	}
+	s, err := c.ScanoutOf(name)
+	if err != nil {
+		return 0, err
+	}
+	if s.CRTC == 0 {
+		return 0, nil
+	}
+	return c.PlanesOn(s.CRTC)
+}
+
+// Gamescopectl runs gamescopectl as the gaming user: sysd.AsGamer sets
+// XDG_RUNTIME_DIR=/run/user/1000, and GAMESCOPE_WAYLAND_DISPLAY names
+// gamescope's socket in it ("gamescope-0").
 func (h *realHost) Gamescopectl(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -161,12 +186,13 @@ func (h *realHost) Gamescopectl(ctx context.Context, args ...string) (string, er
 	return sysd.AsGamer(ctx, "env", full...)
 }
 
-func (h *realHost) Xprop(ctx context.Context, args ...string) error {
+// Xprop runs xprop as the gaming user against gamescope's first Xwayland
+// (DISPLAY=:0, the one Steam runs on) and returns its output.
+func (h *realHost) Xprop(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	full := append([]string{"DISPLAY=" + xDisplay(), "xprop"}, args...)
-	_, err := sysd.AsGamer(ctx, "env", full...)
-	return err
+	return sysd.AsGamer(ctx, "env", full...)
 }
 
 func (h *realHost) Busy(ctx context.Context) (bool, string) { return gamerBusy(ctx) }
