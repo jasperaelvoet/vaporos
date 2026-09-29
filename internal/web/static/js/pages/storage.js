@@ -3,9 +3,9 @@ import {
   boot, api, onReconnect, byId, h, fill, icon, badge, toast, busy, confirmDialog, bytes, percent,
 } from '../lib.js';
 
-// Filesystems Linux games run from reliably. Windows filesystems still mount,
-// but Proton trips over their permissions, so adopting one asks first.
-const WINDOWS_FS = new Set(['ntfs', 'ntfs3', 'exfat', 'vfat', 'fat32']);
+// storage.LibraryFS: games need Unix permissions and symlinks (no exFAT or
+// FAT). Proton trips over NTFS permissions, so adopting NTFS asks first.
+const LIBRARY_FS = /^(ext[234]|btrfs|xfs|f2fs|ntfs3?)$/;
 
 let disks = [];
 
@@ -38,10 +38,14 @@ function usage(d) {
 }
 
 function item(d, actions, iconName = 'drive') {
-  const facts = [d.fstype, d.mounted_at ? '' : bytes(d.size), d.model && d.label ? d.model : '', d.path].filter(Boolean);
+  const facts = [d.fstype, d.mounted_at || !d.size ? '' : bytes(d.size), d.model && d.label ? d.model : '', d.path].filter(Boolean);
   const tags = [];
   if (d.steam_library) tags.push(badge('Steam library', 'ok'));
-  if (d.adopted) tags.push(badge('Mounted for Steam', 'accent'));
+  if (d.adopted) {
+    tags.push(d.missing ? badge('Disk not found', 'danger') : d.mounted_at ? badge('Mounted', 'accent') : badge('Not mounted', 'warn'));
+    if (d.registered) tags.push(badge('Added to Steam', 'ok'));
+    else if (d.registration_pending) tags.push(badge('Added to Steam soon', 'warn'));
+  }
   if (d.is_system) tags.push(badge('VaporOS'));
   return h('li', { class: 'list-item top wrap-sm' },
     h('span', { class: 'list-icon' }, icon(iconName)),
@@ -49,7 +53,10 @@ function item(d, actions, iconName = 'drive') {
       h('span', { class: 'list-title', text: title(d) }),
       h('span', { class: 'list-sub', text: facts.join(' · ') }),
       d.mounted_at ? h('span', { class: 'list-sub mono', text: d.adopted ? libraryPath(d) : d.mounted_at }) : null,
-      d.adopted ? h('span', { class: 'list-sub', text: 'Add this folder once in Steam: Settings → Storage → Add Drive.' }) : null,
+      d.adopted && d.mounted_at && !d.registered ? h('span', {
+        class: 'list-sub',
+        text: `${d.registration_pending ? "VaporOS adds it to Steam the next time Steam isn't running, at the latest after a restart. To use it now, add" : 'Add'} this folder once in Steam: Settings → Storage → Add Drive.`,
+      }) : null,
       usage(d),
       tags.length ? h('span', { class: 'chips' }, tags) : null),
     actions.length ? h('div', { class: 'list-actions' }, actions) : null);
@@ -58,7 +65,7 @@ function item(d, actions, iconName = 'drive') {
 function adoptButton(d) {
   const b = h('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': `Use ${title(d)} for games` }, icon('plus'), 'Use for games');
   b.addEventListener('click', async () => {
-    if (WINDOWS_FS.has(String(d.fstype).toLowerCase())) {
+    if (/^ntfs/.test(d.fstype)) {
       const ok = await confirmDialog({
         title: `${title(d)} is a Windows drive`,
         body: `Its filesystem (${d.fstype}) works for storing files, but many games won't start from it. Use it anyway?`,
@@ -67,15 +74,10 @@ function adoptButton(d) {
       if (!ok) return;
     }
     await busy(b, async () => {
-      // The server says which folder Steam needs: the library can sit in
-      // a subfolder, and the mount name is not simply the label.
-      const res = (await api('POST', '/storage/libraries', { uuid: d.uuid })) || {};
+      // The hint says what Steam still needs, if anything, and which folder.
+      const res = await api('POST', '/storage/libraries', { uuid: d.uuid });
       await load();
-      const now = disks.find((x) => x.uuid === d.uuid);
-      const where = res.library || res.mountpoint || (now && libraryPath(now));
-      toast(res.hint || (where
-        ? `${title(d)} is ready. In Steam, open Settings → Storage → Add Drive and choose ${where}.`
-        : `${title(d)} is ready. Add it in Steam under Settings → Storage.`), 'ok');
+      toast(res.hint || `${title(d)} is ready.`, 'ok');
     });
   });
   return b;
@@ -111,7 +113,7 @@ function render() {
 
   // Steam libraries first: those are what people came here for.
   others.sort((a, b) => Number(b.steam_library) - Number(a.steam_library) || title(a).localeCompare(title(b)));
-  fill(byId('others'), others.map((d) => item(d, d.uuid ? [adoptButton(d)] : [])));
+  fill(byId('others'), others.map((d) => item(d, d.uuid && LIBRARY_FS.test(d.fstype) ? [adoptButton(d)] : [])));
   byId('others').hidden = !others.length;
   byId('others-empty').hidden = others.length > 0;
 

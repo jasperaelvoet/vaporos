@@ -29,11 +29,12 @@ multi-call:
 | `vos daemon` | `vosd`: web UI/API, policy, updates, display manager |
 | `vos welcome` | welcome screen renderer (DRM master, dumb buffers) |
 | `vos session begin` / `vos session end` | Sunshine prep-cmd hooks (run as `vapor`) |
+| `vos session launch <steam-url>` | a game's Sunshine `detached` command (as `vapor`, never root): waits up to 90 s for gamescope's Wayland socket and a Steam holding `~/.steam/steam.pipe` (else, at the deadline, a `steam` process inside gamescope), then runs `steam <url>` with that Steam's `DISPLAY`, `WAYLAND_DISPLAY`, `GAMESCOPE_WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`. `steam://` URLs only; never starts a Steam of its own; always exits 0 |
 | `vos install [flags]` | CLI install (dev and tests); the web installer uses the same code |
 | `vos update [--from SRC] [--force] [--stage-only]` | fetch, verify and write the idle slot |
-| `vos rollback` | next boot uses the other slot |
-| `vos status [--json]` | version, booted slot, both slots, staged/failed |
-| `vos health` | boot health check (vos-health.service) |
+| `vos rollback` | next boot uses the other slot (rolling back to an older one holds the version left, see "Update state") |
+| `vos status [--json]` | version, booted slot, both slots, staged/failed/held |
+| `vos health` | boot health check (vos-health.service, see "Health") |
 | `vos edid generate --out FILE [--modes-from FILE]` / `vos edid decode FILE` | EDID generator |
 | `vos sign --key FILE\|env:VAR MANIFEST` / `vos keygen --out PREFIX` | ed25519 manifest signing |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json |
@@ -56,21 +57,23 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/update-state.json` | vosd, `vos update` | see "Update state" |
 | `/var/lib/vos/clients.json` | vosd | learned Moonlight client modes `{name: {w,h,fps,hdr,last_seen}}` |
 | `/var/lib/vos/sunshine-api.json` | vosd | `{"user","password"}` for Sunshine's local API, mode 0600 |
-| `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (virtual connector + EDID) |
+| `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (boot disk, virtual connector + EDID) |
+| `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running |
 | `/var/lib/vos/firmware/edid/vaporos.bin` | vosd | EDID with learned modes; overrides the image one via `firmware_class.path=/var/lib/vos/firmware` |
 | `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool}` from the last good boot |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
-| `/run/vos/welcome.json` | vosd | what the welcome screen shows (below) |
+| `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
 | `/run/vos/medium/vos/` | initramfs (live) | ISO contents: root.erofs, vmlinuz, initramfs.img, manifest.json(.sig) |
-| `/efi` | fstab automount | ESP (systemd-boot, `/vos/<ver>/{vmlinuz,initramfs.img}`, `loader/entries/vos-<ver>[+N[-M]].conf`) |
+| `/efi` | fstab automount of `PARTLABEL=vos_esp` | ESP (systemd-boot, `/vos/<ver>/{vmlinuz,initramfs.img}`, `loader/entries/vos-<ver>[+N[-M]].conf`). The initramfs gives the boot disk's partitions udev `link_priority=100` (`/run/udev/rules.d/61-vos-boot-disk.rules`); vos refuses an ESP that is not on the disk `/` is on |
 | `/var/home/vapor` | tmpfiles | gaming user home (Steam, Sunshine config/state) |
-| `/var/mnt/<label>` | generator | adopted game library disks (`/mnt` → `var/mnt`) |
+| `/var/mnt/<label>` | generator | adopted game library disks (`/mnt` → `var/mnt`), mounted `nofail,noatime,nosuid,nodev,x-systemd.device-timeout=10s` (+`uid=1000,gid=1000` for ntfs3) |
 
 Tests override these through the package variables in `internal/config`.
 
 ## Users
 
 - `vapor` (uid/gid 1000) is created by sysusers. It is in groups `input render video seat audio`, has no password, lingers, and its home is `/var/home/vapor`. It runs gamescope, Steam, Sunshine and PipeWire as user units.
+- `vosd` (root) reads and writes under `/var/home/vapor` and `/run/user/1000` only through `internal/gamerfs`: no symlink is followed in any component, every step is relative to a directory descriptor, and only regular files are read (bounded, non-blocking).
 - `root` is locked.
 - The web admin is `admin`, with the password in `auth.json` only (not a Unix account). Passwords are 8–1024 characters (`auth.ValidatePassword`), everywhere a password is set.
 - Debug images (`image.json.debug=true`) autologin root on the ttyS0 serial console. Release images have no gettys at all.
@@ -88,7 +91,7 @@ Tests override these through the package variables in `internal/config`.
   "web":     {"https": false, "allow_public": false}
 }
 ```
-A missing file or field means the default. `power.idle_shutdown` defaults to false; the installer sets it to true when a wired NIC supports Wake-on-LAN (magic packet), so a PC is never switched off with no way to wake it remotely. Services change the shared config only through `config.Mutate` and read it through `Snapshot`/`View`. `update.channel` defaults to
+A missing file or field means the default. `power.idle_shutdown` defaults to false; a new install sets it to true when a wired NIC supports Wake-on-LAN (magic packet, `power.WakeOnLANCapable`), so a PC is never switched off with no way to wake it remotely; a repair keeps the existing value. Services change the shared config only through `config.Mutate` and read it through `Snapshot`/`View`. `update.channel` defaults to
 `image.json.channel`. `auto` is `"stage"` (download and stage; applies on
 next boot) or `"off"`.
 
@@ -97,14 +100,18 @@ next boot) or `"off"`.
 A boot entry's `options` are built as: `vos.slot=<a|b>` + image cmdline + machine cmdline.
 - **Image cmdline** (`/usr/lib/vos/cmdline`, and `manifest.cmdline` for a new image):
   `quiet loglevel=3 rd.udev.log_level=3 systemd.show_status=false rd.systemd.show_status=false vt.global_cursor_default=0 systemd.getty_auto=0 panic=10 console=ttyS0,115200`
-- **Machine cmdline** (`/var/lib/vos/cmdline`): on a machine with a supported GPU,
+- **Machine cmdline** (`/var/lib/vos/cmdline`): `vos.disk=<GPT disk GUID of the install disk, lowercase>`
+  (written by the installer; the initramfs and `vos update` look for `vos_*` partitions only on that disk;
+  without it the initramfs goes by `/dev/disk/by-partlabel` and `vos update` by the disk `/` is on, then the label),
+  plus, on a machine with a supported GPU,
   `video=<C>:e drm.edid_firmware=<C>:edid/vaporos.bin firmware_class.path=/var/lib/vos/firmware`
 - **Live ISO entry:** `vos.mode=live vos.label=VOS_LIVE` + the image cmdline.
-- **Test knobs:** `vos.health.fail=1` makes `vos health` fail. `vos.debug=1` is reserved.
+- **Test knobs:** `vos.health.fail=1` makes `vos health` fail on a counted boot (ignored on a blessed entry). `vos.debug=1` is reserved.
 
 `vos update` writes the new entry with the *new* manifest's cmdline. `vosd`
 rewrites both slots' entries when the machine cmdline changes
-(`boot.RewriteOptions`).
+(`update.ApplyMachineCmdline`: under the update lock, entries first and the
+file last, keeping `vos.disk` unless the new cmdline names one).
 
 ## Disk layout (unchanged from bash `vos`, with slot sizing updated)
 
@@ -117,7 +124,10 @@ GPT:
 Slot size: `clamp(3 × image size, 8 GiB, 16 GiB)`. The minimum disk is
 `512 MiB + 2×slot + 8 GiB`. On `vos_data`: `var/`, `etc/{upper,work}`.
 Mounting is done by the initramfs hook (erofs slot ro at `/`, data at `/state`,
-`/var` bind, `/etc` overlay `index=off`).
+`/var` bind, `/etc` overlay `index=off`). It finds the partitions by GPT name
+on the `vos.disk` disk (and reboots if that disk does not appear). Before any
+reboot it takes, it renames an uncounted entry of the failing slot to
+`+0-1` when the other slot has a bootable entry.
 
 `loader.conf`:
 ```
@@ -154,6 +164,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - The signature is `manifest.json.sig`: base64 of the ed25519 signature over the exact bytes of `manifest.json`.
 - Private keys are base64 of the 64-byte ed25519 private key.
 - The release public key is `keys/release.pub` in the repo. Debug builds also trust `dev.pub`; the dev key lives on the builder LXC and is never in git.
+- The release key signs only in CI's `sign` job, which runs no package code; `build/build.sh` refuses to run with a release key in reach. Publishing waits for the VM test.
+- A channel tag only ever moves to a manifest with a higher `rollback_index`. Cleanup never deletes a version a channel tag points to and keeps the newest 10 version-tagged versions per channel.
 
 **Sources** (`vos update --from`, or `config.update.source` + `channel`):
 - `oci://ghcr.io/jasperaelvoet/vaporos` with a tag, which is the channel (branch name, `main` by default). Pulled anonymously:
@@ -167,37 +179,48 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `schema` = 1 and `min_updater` ≤ 1.
 - `version` ≠ booted version, unless `--force`.
 - `rollback_index` > booted image's, unless `--force` or `--allow-downgrade`.
+- Without a picked version or `--force`: `rollback_index` > `held.rollback_index`.
 - The version is not in `failed`, unless `--force`.
 - Every artifact's size and sha256 match.
+- Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
 1. Remove the idle slot's entries.
 2. Stream root into the idle slot partition while hashing.
 3. Re-read and verify.
 4. Kernel and initrd to `/efi/vos/<ver>/` (tmp + rename).
-5. Write entry `vos-<ver>+3.conf` last.
-6. Record `staged` in update-state.
+5. Write entry `vos-<ver>+3.conf` last. The running entry stays a fallback: `+0-1` for a downgrade or the same version, re-blessed if it was at `+0` and the new version is newer. systemd-boot's NVRAM overrides (`LoaderConfigTimeout`, `LoaderEntryDefault`, `LoaderEntryPreferred`) are cleared; the installer clears them after `bootctl install` too.
+6. Record `staged` in update-state (and `held` for a downgrade).
 
 **Update state** (`/var/lib/vos/update-state.json`):
 ```json
 {"booted":"<ver>","staged":{"version":"<ver>","slot":"b","at":"RFC3339"},"failed":["<ver>"],
- "available":{"version":"<ver>","size":123,"checked":"RFC3339"},"last_error":""}
+ "available":{"version":"<ver>","size":123,"checked":"RFC3339"},"checked":"RFC3339","last_error":"",
+ "held":{"version":"<ver>","rollback_index":N}}
 ```
 On daemon start: if `staged.version` ≠ booted, and the staged entry has no
 tries left (or is gone), append it to `failed` and clear `staged`. If it
-equals booted, clear `staged`.
+equals booted, clear `staged` once the boot is no longer on trial.
+`held` (omitted when unset) is the newest version the user went back from: set by
+rolling back to an older slot or staging an older version; cleared by rolling
+forward to it (or past it), by staging it or a newer one, or once a version at
+or above it passes health.
 
 ## Health
 
-`vos-health.service` is `RequiredBy=boot-complete.target`, `Before=boot-complete.target`, `Type=oneshot`. It runs `vos health`, which exits non-zero if any check fails:
+`vos-health.service` is `RequiredBy=boot-complete.target`, `Before=boot-complete.target`, `Type=oneshot`, and runs on every installed boot. It runs `vos health`, whose checks are:
 - `/state` is mounted rw and `/etc` is an overlay;
 - `vosd` answers `GET http://127.0.0.1/api/v1/ping` within 60 s;
 - `user@1000.service` is active;
 - if `health-ok.gpu`, a DRM card with an amdgpu (or other supported) driver exists;
+- if `health-ok.stream`, `vos-sunshine.service` is active;
 - `vos.health.fail=1` forces a failure.
 
-On success it writes `health-ok`. Its `OnFailure=` reboots, and systemd-boot
-counting does the rest.
+It exits non-zero only on a counted boot when another entry would boot once
+this one runs out of tries; otherwise a failing check is logged as degraded
+and it exits 0. It writes `health-ok` unless it fails, and prints the
+`VOS-HEALTH` serial line on every outcome. `FailureAction=reboot`, and
+systemd-boot counting does the rest.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
@@ -211,16 +234,16 @@ counting does the rest.
 **Access levels:**
 - `Public`: no auth.
 - `Authed`: valid session.
-- `Setup`: installer or first-run setup code, via header `X-VOS-Setup: <code>` or a `vos_setup` cookie set by `GET /setup?code=…`.
+- `Setup`: installer or first-run setup code, via header `X-VOS-Setup: <code>` or a `vos_setup` cookie set by `GET /setup?code=…`. `?code=` counts only on a first-party navigation (`Sec-Fetch-Site` none, same-origin or absent, and `Sec-Fetch-Dest` document or absent); otherwise `/setup` redirects to the same URL without it. In installer mode the code is waived while no monitor is attached (no connected DRM connector other than writeback or a `video=<C>:e` one; none listed yet does not count), checked on every request.
 - `Local`: loopback only.
 
 **Errors:** `{"error":"message"}` with a proper status.
 
-**Events:** `GET /api/v1/events` (Authed or Setup) is an SSE stream: `event: <topic>`, `data: <json>`.
+**Events:** `GET /api/v1/events` (Authed or Setup) is an SSE stream: `event: <topic>`, `data: <json>`. A new stream starts with the latest event of each topic except `system.message` and `pairing.pending`, which are live-only.
 
 | Topic | Data |
 | --- | --- |
-| `update.progress` | `{phase,percent,bytes,total,version}` |
+| `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped) |
 | `update.state` | the update-state |
 | `install.progress` | `{step,percent,message,state}` |
 | `session.begin` | `{client,mode,hdr}` |
@@ -234,40 +257,40 @@ counting does the rest.
 | --- | --- | --- |
 | GET `/ping` | Public | `{"ok":true,"mode":"os\|installer","version"}` |
 | GET `/auth/me` | Public | `{"authenticated":bool,"csrf":"…","needs_setup":bool,"installer":bool}` |
-| POST `/auth/login` | Public | `{"password"}` → `{"csrf"}` + cookie; 401 on a wrong password; 429 after 5 failures per IP (backoff up to 15 min) |
+| POST `/auth/login` | Public | `{"password"}` → `{"csrf"}` + cookie; 401 on a wrong password; 429 after 5 failures per IP (backoff up to 15 min), and (Retry-After 1) while another check from the same client is running; 503 when too many sign-ins (8) are being checked |
 | POST `/auth/logout` | Authed | → `{}` |
 | POST `/auth/setup` | Setup | `{"password"}` → `{"csrf"}`; only when auth.json is missing (first run after a CLI install); 409 in installer mode |
-| POST `/auth/password` | Authed | `{"current","new"}` → `{}` |
+| POST `/auth/password` | Authed | `{"current","new"}` → `{}`; 403 on a wrong current password; shares the login limit (429, 503) |
 | GET `/system` | Authed | `{"hostname","version","channel","booted_slot","uptime_s","cpu","gpu":{"vendor","name","driver","supported"},"ips":["…"],"mdns":"vapor.local","disk":{"data_total","data_free"},"temps":[{"name","c"}]}` |
 | PUT `/system/hostname` | Authed | `{"hostname"}` → `{}` |
 | POST `/system/reboot`, `/system/poweroff` | Authed | → `{}` |
-| GET `/update` | Authed | update-state + `{"config":config.update,"booted":…,"other_slot":{"version"}}` |
+| GET `/update` | Authed | update-state (with `held`) + `{"config":config.update,"booted_slot","other_slot":{"version","bootable","counting",…}\|null,"busy":bool,"progress":{…}\|null}` |
 | POST `/update/check` | Authed | → `{"available":{…}\|null}` |
-| POST `/update/stage` | Authed | `{"version"?}` → `{}` (progress via events) |
+| POST `/update/stage` | Authed | `{"version"?}` → `{}` (progress via events); 409 while an update runs. Later refusals (on trial, rollback waiting for a restart, held, …) arrive as `update.progress` `{"phase":"error","error"}` |
 | POST `/update/activate` | Authed | → `{}` (reboots into the staged version) |
-| POST `/update/rollback` | Authed | → `{}` (next boot = other slot; UI then offers reboot) |
+| POST `/update/rollback` | Authed | → `{}` (next boot = other slot; UI then offers reboot); 409 with the reason |
 | PUT `/update/settings` | Authed | `{"channel","auto"}` → `{}` |
-| GET `/sunshine` | Authed | `{"running":bool,"version","streaming":bool,"session":{"client","mode","hdr"}\|null,"pending_pairing":bool}` |
-| POST `/sunshine/pair` | Authed | `{"pin","name"}` → `{}` (Sunshine `POST /api/pin`) |
+| GET `/sunshine` | Authed | `{"running":bool,"version","streaming":bool,"session":{"client","mode","hdr"}\|null,"pending_pairing":bool,"pairings":[{"id","name","address"}]}` (`session.client`: the device that started the running app) |
+| POST `/sunshine/pair` | Authed | `{"pin","name","pairing_id"?}` → `{}` (Sunshine `POST /api/pin`); 409 when no device waits, or several wait and none is named |
 | GET `/sunshine/clients` | Authed | `{"clients":[{"uuid","name"}]}` |
 | DELETE `/sunshine/clients/{uuid}` | Authed | → `{}` |
 | GET/PUT `/sunshine/settings` | Authed | `{"encoder","bitrate_kbps_max","audio_sink"?,"gamepad"}`, a whitelisted subset |
 | GET `/sunshine/logs` | Authed | `text/plain`, last 2000 lines |
 | POST `/sunshine/restart` | Authed | → `{}` |
-| GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none","planes":N}` (`planes`: fb-backed planes on the virtual connector's CRTC; 1 while gamescope composites) |
+| GET `/display` | Authed | `{"profile":"amd\|none","virtual_connector","connectors":[{"name","status","physical":bool}],"available_connectors":["DP-2"],"modes":["WxH@R"],"current":"WxH@R"\|null,"hdr":bool,"learned":["WxH@R"],"reboot_needed":bool,"state":"gaming\|welcome\|streaming\|none","planes":N}` (`physical`: connected and not the virtual connector; `available_connectors`: disconnected DP/HDMI ports of a supported GPU other than the current one, what the UI offers as `virtual_connector`; `planes`: fb-backed planes on the virtual connector's CRTC, 1 while gamescope composites) |
 | POST `/display/modes` | Authed | `{"mode":"WxH@R"}` → `{"reboot_needed":true}` |
-| PUT `/display/settings` | Authed | `{"hdr":bool,"virtual_connector"?}` → `{}` |
-| GET `/storage` | Authed | `{"disks":[{"path","model","size","uuid","label","fstype","mounted_at","is_system":bool,"steam_library":bool,"adopted":bool,"free"}]}` |
-| POST `/storage/libraries` | Authed | `{"uuid"}` → `{}` (config + mount now + Steam library registration hint) |
+| PUT `/display/settings` | Authed | `{"hdr":bool,"virtual_connector"?}` → `{}`; a new `virtual_connector` must be a DP/HDMI connector of the GPU |
+| GET `/storage` | Authed | `{"disks":[{"path","model","size","uuid","label","fstype","mounted_at"?,"is_system":bool,"steam_library":bool,"library_dir"?,"adopted":bool,"missing"?:bool,"free"?,"registered":bool,"registration_pending"?:bool}]}` (`library_dir`: `.` or `SteamLibrary`; `missing`: adopted but not attached; `registered`: adopted, and Steam's library list has a library on it; `registration_pending`: queued in steam-libraries.json) |
+| POST `/storage/libraries` | Authed | `{"uuid"}` → `{"mountpoint","library","registered":bool,"registration_pending":bool,"hint"}` (config + mount now + add `library` to Steam's list now, or once Steam is not running). Only ext2/3/4, btrfs, xfs, f2fs and NTFS (ntfs3), never exFAT/FAT (`storage.LibraryFS`, shared with the installer and generator); else 400. A disk with no library gets a new vapor-owned `SteamLibrary/` |
 | DELETE `/storage/libraries/{uuid}` | Authed | → `{}` |
 | GET/PUT `/power` | Authed | `{"idle_shutdown","idle_minutes","keep_awake_until"?,"wol":[{"iface","mac","enabled"}],"busy":{"reason"}\|null}` |
 | POST `/power/keep-awake` | Authed | `{"minutes"}` (0 = clear) → `{}` |
 | GET/PUT `/ssh` | Authed | `{"enabled","keys":[…]}` |
 | GET `/install/probe` | Setup | query `?source=&channel=` (optional); returns `"source","channel","version","min_size","source_error"` plus `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}` |
-| POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`) |
+| POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`); in repair, an empty hostname or timezone keeps the installed one |
 | GET `/install/status` | Setup | `{"state":"idle\|running\|done\|failed","step","percent","message","error"}` |
 | POST `/install/reboot` | Setup | → `{}` |
-| GET `/welcome` | Local | the welcome.json content |
+| GET `/welcome` | Local | the welcome.json content without the setup code (`code` empty, `qr` cut before `setup?`) |
 
 **Pages** (server-rendered shells plus vanilla JS that calls the API):
 `/` dashboard, `/login`, `/setup` (first-run password or installer wizard), `/pair`, `/streaming`, `/display`, `/storage`, `/updates`, `/power`, `/advanced`. There are no external assets (no CDN): everything is embedded.
@@ -284,7 +307,11 @@ Newline-delimited JSON, one request and one response per connection.
 `SUNSHINE_APP_NAME` from the environment. vosd gives a request 80 s and answers on its own if the handler overruns. It **always exits 0**, with a
 hard timeout of 90 s.
 
-## Welcome screen (`/run/vos/welcome.json`, written by vosd)
+vosd ends a session itself (as `end` would) when Sunshine's serverinfo has
+reported `SUNSHINE_SERVER_FREE` for 30 s while no `begin` or `end` is running,
+so a Sunshine that crashed mid-stream does not hold gamescope or keep the PC awake.
+
+## Welcome screen (`/run/vos/welcome.json`, written by vosd, mode 0600)
 
 ```json
 {"mode":"os|installer","hostname":"vapor","url":"http://vapor.local","ip_url":"http://192.168.1.50",
@@ -296,15 +323,18 @@ The virtual EDID's PNP id is `VOS` (not assigned in hwdata's pnp.ids, so gamesco
 `vos welcome` redraws whenever the file changes (poll 1 s). It lights every
 connected physical connector with its preferred mode. It also lights the
 virtual connector (if configured) with a 1920x1080 splash, because Sunshine
-probes the encoder on the virtual connector before prep-cmd runs. It owns
-tty1 in `KD_GRAPHICS` mode, never reads input, and exits cleanly on SIGTERM
-(releasing DRM master).
+probes the encoder on the virtual connector before prep-cmd runs. While
+running it keeps the VT keyboard off (`K_OFF`, echo off, input flushed) and VT
+switching locked. On exit it flushes input, restores the previous keyboard
+mode and unlocks switching, but leaves tty1 in `KD_GRAPHICS`. It never reads
+input and exits cleanly on SIGTERM (releasing DRM master).
 
 ## Serial lines (harness contract; written to `/dev/ttyS0` if present)
 
-- `VOS-READY mode=installer version=<v> ip=<ip> code=<code>`: the installer API is up.
+- `VOS-READY mode=installer version=<v> ip=<ip> code=<code|->`: the installer API is up (`-` while the code is waived).
 - `VOS-READY mode=os version=<v> ip=<ip> code=<code|->`: the installed system is up (the code appears only when auth.json is missing).
 - `VOS-INSTALL state=<done|failed> message=<…>`
+- `VOS-HEALTH result=<ok|degraded|failed> failures=<a; b|->`: written by `vos health` on every installed boot.
 
 vosd re-emits `VOS-READY` whenever its IP changes.
 
@@ -313,13 +343,15 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 **System**, in `/usr/lib/systemd/system`:
 - `vosd.service`: `ExecStart=/usr/bin/vos daemon`, `Restart=always`
 - `vos-welcome.service`: started and stopped by vosd only
-- `vos-health.service`
+- `vos-health.service`: `FailureAction=reboot` (see "Health")
 - `seatd.service.d/vos.conf`
 - `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
 
+No keypress, local or from a Moonlight client, reboots or suspends the box: `ctrl-alt-del.target` is masked, `system.conf.d/vos.conf` sets `CtrlAltDelBurstAction=none`, `sysctl.d/99-vos.conf` sets `kernel.sysrq = 0`, and logind ignores the reboot, suspend and hibernate keys (and their long presses).
+
 **User** (`vapor`), in `/usr/lib/systemd/user`, controlled by vosd via `systemctl --user -M vapor@`:
 - `vos-gamescope.service`: env from `%t/vos/gamescope.env` (`VOS_OUTPUT`, `VOS_GS_EXTRA`); `GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg`
-- `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; `Wants=`, not `Requires=`, gamescope
+- `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU.
 
 Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
 
@@ -327,11 +359,14 @@ Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
 - **No GPU profile:** no gamescope. Show the welcome screen if any connector is connected.
 - **GPU and no physical monitor:** gamescope and Steam run permanently, and Sunshine runs.
 - **GPU and a monitor:** the welcome screen runs while idle. `session begin` stops it, starts gamescope and applies the mode. `session end` plus 60 s idle (no game or download) stops gamescope and starts the welcome screen again.
+- **HDR:** a `begin` whose HDR differs from gamescope's restarts gamescope only when no Steam game runs; otherwise the session keeps the current HDR (the mode still switches).
 
 Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/sunshine/sunshine.conf`:
 - `capture = kms`, `encoder = vulkan`, `adapter_name = <render node of the virtual connector's card>`, `output_name = <virtual connector name, e.g. DP-1>` (Sunshine's KMS capture matches connector names; a number would mean "n-th active plane", which shifts while the welcome screen lights other outputs)
 - `origin_web_ui_allowed = pc`, `upnp = disabled`, `system_tray = disabled`, `gamepad = xone`
-- `global_prep_cmd = [{"do":"/usr/bin/vos session begin","undo":"/usr/bin/vos session end","elevated":false}]`
+- `global_prep_cmd = [{"do":"/usr/bin/vos session begin","undo":"/usr/bin/vos session end","elevated":false}]`. Sunshine runs prep commands on launch only, so a resumed stream keeps the mode and HDR it was launched with; vosd publishes a `system.message` when it sees a resume (a client connects with no `session.begin` since the last one left).
+
+`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, never `cmd`.
 
 **Firewall** (nftables, input policy drop):
 - accept lo, established, ICMP/ICMPv6, udp 5353, udp 67-68;
@@ -340,3 +375,5 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - tcp 22 only while SSH is enabled.
 
 47990 is never reachable from outside.
+
+**Network** (systemd-networkd, `20-wired.network` and `25-wireless.network`): DHCP with `ClientIdentifier=mac` under `[DHCPv4]`, so the installer and the installed system get the same address.

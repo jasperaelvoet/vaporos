@@ -69,9 +69,16 @@ function render() {
   byId('activate-btn').hidden = !s || inFlight();
   byId('check-btn').disabled = inFlight();
 
-  const err = u.last_error;
+  const held = u.held && u.held.version;
+  byId('uheld').hidden = !held;
+  setText('uheld-version', held || '');
+
+  // Why a stage stopped comes only as an update.progress error; refusals for
+  // now (on trial, rollback pending) never become last_error.
+  const stopped = progress && progress.phase === 'error' && progress.error;
+  const err = stopped || u.last_error;
   byId('ulast-error').hidden = !err;
-  setText('ulast-error-text', err ? `The last update attempt failed: ${err}` : '');
+  setText('ulast-error-text', err ? `${stopped ? "Couldn't install the update" : 'The last update attempt failed'}: ${err}` : '');
 
   const other = u.other_slot && u.other_slot.version;
   kv(byId('versions'), [
@@ -125,8 +132,10 @@ function wire() {
   const stage = byId('stage-btn');
   stage.addEventListener('click', () => busy(stage, async () => {
     const a = available();
+    progress = null;
     await api('POST', '/update/stage', a ? { version: a.version } : {});
-    progress = { phase: 'download', percent: 0, version: a && a.version };
+    // A quick refusal may have arrived as an event already.
+    progress = progress || { phase: 'download', percent: 0, version: a && a.version };
     render();
   }));
 

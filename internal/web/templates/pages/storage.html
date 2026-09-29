@@ -22,9 +22,10 @@
 <details class="card help" id="steam-help">
   <summary>{{icon "info"}}Using a drive in Steam</summary>
   <ol class="numbered small">
-    <li>Add the drive here. VaporOS mounts it at <span class="mono">/var/mnt/&lt;name&gt;</span> on every start.</li>
-    <li>Stream Steam with Moonlight, then open <strong>Settings → Storage</strong>.</li>
-    <li>Choose <strong>Add drive</strong> and pick the drive. Games already on it appear after Steam scans it.</li>
+    <li>Add the drive here. VaporOS mounts it at <span class="mono">/var/mnt/&lt;name&gt;</span> on every start and adds it to Steam's libraries, right away or the next time Steam isn't running.</li>
+    <li>To use it before it shows <strong>Added to Steam</strong>, stream Steam with Moonlight and open <strong>Settings → Storage</strong>.</li>
+    <li>Choose <strong>Add drive</strong> and pick the folder shown here. Games already on it appear after Steam scans it.</li>
   </ol>
+  <p class="hint">Drives formatted as exFAT or FAT can't hold Steam games. Use ext4, btrfs, xfs, f2fs or NTFS.</p>
 </details>
 {{end}}

@@ -40,7 +40,7 @@ function renderStatus() {
   }
   const dl = h('dl', { class: 'kv' });
   kv(dl, [
-    ['Device', s.client || 'Unknown'],
+    ['Started by', s.client || 'Unknown'],
     ['Mode', s.mode ? modeLabel(s.mode) : ''],
     ['HDR', s.hdr ? badge('On', 'accent') : 'Off'],
   ]);
