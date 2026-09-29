@@ -18,13 +18,14 @@ export function SiteHeader({ release }: { release: ReleaseLookup }) {
     <header className="site-nav">
       <div className="site-nav-bar">
         <Link href="/" aria-label={nav.homeLabel} className="mr-auto inline-flex min-h-11 items-center rounded-md">
-          <Logo className="[--logo:30px] desk:[--logo:34px]" />
+          {/* 28 px on phones, 34 px from 901 px; below 360 px the mark stands alone */}
+          <Logo className="[--logo:28px] desk:[--logo:34px] max-[22.5rem]:[&>svg:last-child]:hidden" />
         </Link>
         <nav aria-label={nav.mainLabel} className="max-desk:hidden">
           <NavLinks items={nav.items} className="site-nav-links flex items-center gap-7.5" />
         </nav>
         <ReleaseChip initial={release} className="max-desk:hidden" />
-        <LinkButton href={nav.cta.href} size="sm" icon={nav.cta.icon}>
+        <LinkButton href={nav.cta.href} size="sm" icon={nav.cta.icon} className="max-[25rem]:[&>svg]:hidden">
           {nav.cta.label}
         </LinkButton>
         <div className="desk:hidden">

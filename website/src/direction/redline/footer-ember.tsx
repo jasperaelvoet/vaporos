@@ -21,7 +21,7 @@ export function FooterEmber({ className = '' }: { className?: string }) {
         const u = x / W;
         // two embers, left of centre and far right, on a faint floor
         const glow =
-          0.34 * Math.exp(-(((u - 0.3) / 0.22) ** 2)) + 0.26 * Math.exp(-(((u - 0.86) / 0.16) ** 2)) + 0.08;
+          0.26 * Math.exp(-(((u - 0.3) / 0.22) ** 2)) + 0.2 * Math.exp(-(((u - 0.86) / 0.16) ** 2)) + 0.07;
         const n = valueNoise(X * 0.012, Y * 0.02) - 0.5;
         const rise = 1 - y / H + n * 0.35;
         return glow * smoothstep(0.02, 1.05, 1 - rise * 0.92) * 1.15;
