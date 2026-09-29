@@ -244,6 +244,38 @@ func TestResumeWithoutRangeSupport(t *testing.T) {
 	}
 }
 
+// A server without Range support resends the whole file after a drop. The
+// part we already have arrives at network speed too: skipping it for longer
+// than stallTimeout is progress, not a stall.
+func TestResumeLongSkipWithoutRangeSupport(t *testing.T) {
+	setup(t)
+	oldStall := stallTimeout
+	stallTimeout = 100 * time.Millisecond
+	defer func() { stallTimeout = oldStall }()
+	chunk := bytes.Repeat([]byte("x"), 1000)
+	const chunks, dropAt = 40, 25 // 25 chunks take 250 ms: more than a stall
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(chunks*len(chunk)))
+		first := calls.Add(1) == 1
+		for i := range chunks {
+			if first && i == dropAt {
+				panic(http.ErrAbortHandler)
+			}
+			w.Write(chunk)
+			w.(http.Flusher).Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	f, _ := newHTTPDir(srv.URL)
+	r := &resumeReader{ctx: context.Background(), f: f, name: "x", size: chunks * int64(len(chunk))}
+	got, err := io.ReadAll(r)
+	if err != nil || len(got) != chunks*len(chunk) || calls.Load() != 2 {
+		t.Fatalf("read %d bytes in %d requests, err %v", len(got), calls.Load(), err)
+	}
+}
+
 // Permanent failures are not retried; transient ones are, but not forever.
 func TestResumeGivesUp(t *testing.T) {
 	setup(t)

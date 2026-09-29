@@ -48,7 +48,8 @@ func setup(t *testing.T) *testEnv {
 	dir := t.TempDir()
 	strs := []*string{&config.StateDir, &config.RunDir, &config.ESP, &config.KeysDir, &config.ImageInfoPath,
 		&config.ImageCmdlinePath, &config.ProcCmdline, &config.OSReleasePath, &config.LiveMedium,
-		&PartLabelDir, &WorkDir, &MountInfoPath, &BootCountVar}
+		&WorkDir, &MountInfoPath, &BootCountVar, &boot.PartLabelDir, &boot.SysClassBlock, &boot.SysDevBlock,
+		&boot.DevDir, &boot.MountInfoPath, &boot.EFIVarsDir}
 	saved := make([]string, len(strs))
 	for i, p := range strs {
 		saved[i] = *p
@@ -74,20 +75,26 @@ func setup(t *testing.T) *testEnv {
 	config.ProcCmdline = filepath.Join(dir, "proc-cmdline")
 	config.OSReleasePath = filepath.Join(dir, "os-release")
 	config.LiveMedium = filepath.Join(dir, "medium")
-	PartLabelDir = filepath.Join(dir, "dev")
 	WorkDir = filepath.Join(dir, "tmp")
 	MountInfoPath = filepath.Join(dir, "mountinfo")
 	BootCountVar = filepath.Join(dir, "LoaderBootCountPath")
+	// No sysfs and no mountinfo for the boot disk: slots go by label.
+	boot.PartLabelDir = filepath.Join(dir, "dev", "disk", "by-partlabel")
+	boot.SysClassBlock = filepath.Join(dir, "sys", "class", "block")
+	boot.SysDevBlock = filepath.Join(dir, "sys", "dev", "block")
+	boot.DevDir = filepath.Join(dir, "dev")
+	boot.MountInfoPath = filepath.Join(dir, "boot-mountinfo")
+	boot.EFIVarsDir = filepath.Join(dir, "efivars")
 
 	e := &testEnv{t: t, dir: dir}
-	for _, d := range []string{config.StateDir, config.KeysDir, PartLabelDir, filepath.Join(config.ESP, "loader", "entries")} {
+	for _, d := range []string{config.StateDir, config.KeysDir, boot.PartLabelDir, boot.EFIVarsDir, filepath.Join(config.ESP, "loader", "entries")} {
 		e.must(os.MkdirAll(d, 0o755))
 	}
 	e.write(config.ImageInfoPath, fmt.Sprintf(`{"version":%q,"channel":"main","rollback_index":%d}`, bootedVersion, bootedRollback))
 	e.write(config.ImageCmdlinePath, imageCmdline+"\n")
 	e.bootSlot("a")
 	for _, s := range []string{"a", "b"} {
-		e.must(os.WriteFile(SlotDevice(s), make([]byte, slotSize), 0o644))
+		e.must(os.WriteFile(e.slotDev(s), make([]byte, slotSize), 0o644))
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	e.priv = priv
@@ -113,6 +120,14 @@ func (e *testEnv) write(path, content string) {
 	e.t.Helper()
 	e.must(os.MkdirAll(filepath.Dir(path), 0o755))
 	e.must(os.WriteFile(path, []byte(content), 0o644))
+}
+
+// slotDev is where Stage writes slot.
+func (e *testEnv) slotDev(slot string) string {
+	e.t.Helper()
+	dev, err := SlotDevice(slot)
+	e.must(err)
+	return dev
 }
 
 func (e *testEnv) bootSlot(slot string) {

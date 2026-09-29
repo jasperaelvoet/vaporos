@@ -22,10 +22,12 @@ import (
 )
 
 // `vos health` gates a new image (docs/CONTRACTS.md "Health"). It runs
-// before boot-complete.target; if it fails, OnFailure= reboots, and
+// before boot-complete.target; if it fails, FailureAction= reboots, and
 // systemd-boot's counting falls back to the previous slot after three
-// tries. The GPU and streaming checks apply only if they passed on the
-// previous good boot (health-ok), so a machine without a GPU is healthy.
+// tries. It only ever fails a boot that is counted and has a slot to fall
+// back to: failing any other boot would reboot into the same entry forever.
+// The GPU and streaming checks apply only if they passed on the previous
+// good boot (health-ok), so a machine without a GPU is healthy.
 
 var (
 	MountInfoPath = "/proc/self/mountinfo"
@@ -59,6 +61,7 @@ type healthEnv struct {
 	unitActive func(ctx context.Context, unit string, user bool) bool
 	gpu        func() bool
 	counting   func() bool // is this boot on trial (boot counting)?
+	fallback   func() bool // would another entry boot once this one runs out of tries?
 	forced     func() bool // vos.health.fail=1
 }
 
@@ -76,6 +79,7 @@ func systemHealthEnv() healthEnv {
 		unitActive: sysd.IsActive,
 		gpu:        supportedGPU,
 		counting:   bootCounting,
+		fallback:   hasFallback,
 		forced: func() bool {
 			v, _ := config.KernelArg("vos.health.fail")
 			return v == "1"
@@ -174,32 +178,40 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 		logf("health-ok: %v (checking the basics only)", err)
 	}
 	res := checkHealth(ctx, env, prev, logf)
-	switch {
-	case env.forced():
-		logf("health: FAILED (forced)")
-		return 1
-	case len(res.failures) == 0:
+	if len(res.failures) == 0 {
 		if err := config.WriteJSONAtomic(config.HealthOKPath(), res.seen, 0o644); err != nil {
 			logf("health-ok: %v", err)
 		}
-		// This version demonstrably works: it is no longer "failed", and
-		// no longer merely staged.
+		// This version demonstrably works: it is no longer "failed", no
+		// longer merely staged, and a hold on it or anything older is moot.
 		modifyState(func(st *State) error {
 			st.removeFailed(st.Booted)
 			if st.Staged != nil && st.Staged.Version == st.Booted {
 				st.Staged = nil
 			}
+			if st.Held != nil && boot.CompareVersions(st.Held.Version, st.Booted) <= 0 {
+				st.Held = nil
+			}
 			return nil
 		})
 		logf("health: ok")
 		return 0
-	case env.counting():
+	}
+	// Failing reboots, and only a counted entry with another one behind it
+	// ever boots anything else. On any other boot (a blessed entry, or the
+	// last entry systemd-boot has left) failing would boot the same image
+	// forever: report it, and let the baseline follow what the hardware
+	// does now (a GPU that was taken out stays out). The test knob
+	// vos.health.fail=1 follows the same rule.
+	switch {
+	case env.counting() && env.fallback():
 		logf("health: FAILED; this boot is on trial, so the next boot can fall back")
 		return 1
+	case env.counting():
+		logf("health: this boot is on trial, but no other entry would boot instead")
+	case env.forced():
+		logf("health: vos.health.fail=1 ignored: this boot is not on trial")
 	}
-	// A blessed entry has no fallback: failing would reboot into the same
-	// image forever. Report it and let the baseline follow what the
-	// hardware does now (a GPU that was taken out stays out).
 	if err := config.WriteJSONAtomic(config.HealthOKPath(), res.seen, 0o644); err != nil {
 		logf("health-ok: %v", err)
 	}
@@ -233,6 +245,26 @@ func bootCounting() bool {
 	}
 	e, err := boot.EntryForSlot(config.ESP, config.BootedSlot())
 	return err == nil && e != nil && e.Counting && e.Version == bootedImage().Version
+}
+
+// hasFallback reports whether systemd-boot would start the other slot once
+// the running entry has no tries left: when the other entry still has
+// tries, or, among entries without, when it sorts first (it is newer, or
+// the same version). When the ESP cannot be read it assumes so, as before.
+func hasFallback() bool {
+	if boot.EnsureESP(config.ESP) != nil {
+		return true
+	}
+	booted := config.BootedSlot()
+	cur, err1 := boot.EntryForSlot(config.ESP, booted)
+	other, err2 := boot.EntryForSlot(config.ESP, config.OtherSlot(booted))
+	switch {
+	case err1 != nil || err2 != nil || cur == nil:
+		return true
+	case other == nil:
+		return false
+	}
+	return other.Bootable() || boot.CompareVersions(other.Version, cur.Version) >= 0
 }
 
 func pingVosd(ctx context.Context) error {

@@ -149,6 +149,9 @@ func cliUpdate(args []string) error {
 	case errors.Is(err, ErrUpToDate):
 		out.say("Already up to date (%s).", img.Version)
 		return nil
+	case errors.Is(err, ErrHeld):
+		out.say("Not installing %s: %v.", res.Manifest.Version, err)
+		return nil
 	case errors.Is(err, ErrAlreadyStaged):
 		out.say("VaporOS %s is already staged in slot %s.", res.Manifest.Version, res.Slot)
 	case err != nil:
@@ -349,6 +352,9 @@ func printStatus(w io.Writer, s *Status) {
 	}
 	if s.Available != nil {
 		p.info("update:  %s available", s.Available.Version)
+	}
+	if s.Held != nil {
+		p.info("held:    %s and older (rolled back from; not reinstalled automatically)", s.Held.Version)
 	}
 	if len(s.Failed) > 0 {
 		p.info("failed:  %s", strings.Join(s.Failed, " "))

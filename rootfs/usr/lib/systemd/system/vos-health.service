@@ -2,12 +2,14 @@
 Description=VaporOS boot health check
 Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.md
 # Runs on every boot, so /var/lib/vos/health-ok always records what worked
-# last time. It only fails on a boot systemd-boot is counting (the first
-# boots of a freshly written update, where systemd-bless-boot pulls in
-# boot-complete.target): then the entry is never blessed and the machine
-# reboots, and after three failed tries systemd-boot falls back to the
-# previous slot and vosd records the version as failed. On any other boot
-# there is nothing to fall back to, so vos health reports and exits 0.
+# last time. It only fails a boot systemd-boot is counting (the first boots
+# of a freshly written update, where systemd-bless-boot pulls in
+# boot-complete.target) while another entry would start once this one runs
+# out of tries: then the entry is never blessed and the machine reboots,
+# and after three failed tries systemd-boot starts the other slot and vosd
+# records the version as failed. On any other boot a failure would start
+# the same entry again forever, so vos health reports and exits 0; that
+# includes the vos.health.fail=1 test knob.
 ConditionKernelCommandLine=!vos.mode=live
 Wants=vosd.service
 After=vosd.service systemd-logind.service network.target

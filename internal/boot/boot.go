@@ -550,38 +550,18 @@ func replaceOptions(text, opts string) []byte {
 // systemd-bless-boot renamed it first, the rename fails with ENOENT, and
 // MarkBad looks again. An entry already at +0 is left alone.
 func MarkBad(esp, slot string) error {
-	for range raceRetries {
-		es, err := Entries(esp)
-		if err != nil {
-			return err
+	found := false
+	err := renameEntries(esp, slot, func(e Entry) string {
+		found = true
+		if !e.Bootable() {
+			return ""
 		}
-		found, raced := false, false
-		for _, e := range es {
-			if e.Slot != slot {
-				continue
-			}
-			found = true
-			if !e.Bootable() {
-				continue
-			}
-			dst := filepath.Join(filepath.Dir(e.Path), e.Base()+"+0-1"+entrySuffix)
-			if err := os.Rename(e.Path, dst); err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					raced = true
-					continue
-				}
-				return err
-			}
-		}
-		if !found {
-			return fmt.Errorf("slot %s has no boot entry", slot)
-		}
-		if !raced {
-			syncDir(entriesDir(esp))
-			return nil
-		}
+		return e.Base() + "+0-1" + entrySuffix
+	})
+	if err == nil && !found {
+		return fmt.Errorf("slot %s has no boot entry", slot)
 	}
-	return fmt.Errorf("boot entry for slot %s keeps changing under us; try again", slot)
+	return err
 }
 
 // SetTries gives each of slot's entries that has run out of tries a fresh
@@ -592,6 +572,33 @@ func SetTries(esp, slot string, tries int) error {
 	if tries <= 0 {
 		return fmt.Errorf("invalid tries %d", tries)
 	}
+	return renameEntries(esp, slot, func(e Entry) string {
+		if e.Bootable() {
+			return ""
+		}
+		return e.Base() + "+" + strconv.Itoa(tries) + entrySuffix
+	})
+}
+
+// Bless drops the boot counter of slot's entries that ran out of tries
+// (vos-<ver>+0-1.conf -> vos-<ver>.conf), as systemd-bless-boot does after a
+// good boot. It is meant for the running slot, which demonstrably boots: an
+// uncounted entry is a fallback systemd-boot never gives up on.
+func Bless(esp, slot string) error {
+	return renameEntries(esp, slot, func(e Entry) string {
+		if e.Bootable() {
+			return ""
+		}
+		return e.Base() + entrySuffix
+	})
+}
+
+// renameEntries renames each of slot's entries to newName(e) ("" leaves it).
+// It never renames onto an existing file: with the same version in both
+// slots, the new name can be the other slot's entry, and replacing it would
+// silently drop that slot from the menu. An entry systemd-bless-boot renamed
+// under us (ENOENT) makes it list the entries again.
+func renameEntries(esp, slot string, newName func(Entry) string) error {
 	for range raceRetries {
 		es, err := Entries(esp)
 		if err != nil {
@@ -599,15 +606,21 @@ func SetTries(esp, slot string, tries int) error {
 		}
 		raced := false
 		for _, e := range es {
-			if e.Slot != slot || e.Bootable() {
+			if e.Slot != slot {
 				continue
 			}
-			dst := filepath.Join(filepath.Dir(e.Path), e.Base()+"+"+strconv.Itoa(tries)+entrySuffix)
-			if err := os.Rename(e.Path, dst); err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					raced = true
-					continue
-				}
+			name := newName(e)
+			if name == "" || name == e.Name() {
+				continue
+			}
+			err := renameNoReplace(e.Path, filepath.Join(filepath.Dir(e.Path), name))
+			switch {
+			case err == nil:
+			case errors.Is(err, fs.ErrNotExist):
+				raced = true
+			case errors.Is(err, fs.ErrExist):
+				return fmt.Errorf("cannot rename %s: %s already exists (another slot's entry)", e.Name(), name)
+			default:
 				return err
 			}
 		}
@@ -617,6 +630,16 @@ func SetTries(esp, slot string, tries int) error {
 		}
 	}
 	return fmt.Errorf("boot entry for slot %s keeps changing under us; try again", slot)
+}
+
+// renameIfAbsent renames src to dst unless dst exists. It stands in where
+// rename(2) cannot refuse by itself. The only other writer of the entries,
+// systemd-bless-boot, renames just the booted entry and never onto another.
+func renameIfAbsent(src, dst string) error {
+	if _, err := os.Lstat(dst); err == nil {
+		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: fs.ErrExist}
+	}
+	return os.Rename(src, dst)
 }
 
 // EnsureESP triggers the /efi automount and checks it is usable. /efi is a
@@ -638,7 +661,9 @@ func EnsureESP(esp string) error {
 	if _, err := os.ReadDir(loader); err != nil {
 		return fmt.Errorf("ESP at %s: %w", esp, err)
 	}
-	return nil
+	// fstab finds the ESP by partition label: with a second VaporOS disk
+	// attached it could be that disk's, which the firmware never boots.
+	return CheckESPDisk(esp)
 }
 
 // CompareVersions orders versions the way systemd-boot sorts entries of

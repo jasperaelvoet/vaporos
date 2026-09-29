@@ -7,6 +7,11 @@ build() {
     add_module overlay
     add_module loop
     add_module ext4
+    # The ESP, mounted to mark a slot that cannot start as bad. The nls
+    # modules are FAT's code page and charset; they may be built in.
+    add_module vfat
+    add_module 'nls_cp437?'
+    add_module 'nls_iso8859-1?'
 
     # Live boot from optical media or a CD-ROM-emulating hypervisor.
     add_module isofs
@@ -21,6 +26,8 @@ build() {
     add_binary umount
     # Checks (and if need be repairs) vos_data before it is mounted.
     add_binary e2fsck
+    # util-linux blkid: the GPT disk GUID (PTUUID) that vos.disk names.
+    add_binary blkid
 
     add_runscript
 }
@@ -28,8 +35,9 @@ build() {
 help() {
     cat <<HELPEOF
 Mounts the VaporOS root: a read-only erofs image with /etc overlaid and
-/var bind-mounted from the data partition (installed), or the same image
-from the ISO under a tmpfs overlay (live, vos.mode=live). Never opens a
-shell: failures reboot.
+/var bind-mounted from the data partition (installed; the partitions are
+found on the disk vos.disk= names), or the same image from the ISO under a
+tmpfs overlay (live, vos.mode=live). Never opens a shell: failures reboot,
+and a slot that cannot start is marked bad so the other one starts next.
 HELPEOF
 }

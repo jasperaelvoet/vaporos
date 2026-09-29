@@ -6,8 +6,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -23,7 +25,7 @@ const newVersion = "20260930.000000"
 // the new image's cmdline plus the machine's, and that update-state says so.
 func (e *testEnv) checkStaged(img *image) {
 	e.t.Helper()
-	slot, err := os.ReadFile(SlotDevice("b"))
+	slot, err := os.ReadFile(e.slotDev("b"))
 	e.must(err)
 	if len(slot) != slotSize {
 		e.t.Fatalf("the slot changed size: %d", len(slot))
@@ -182,7 +184,7 @@ func TestStageRejectsBeforeWriting(t *testing.T) {
 				e.setState(c.state)
 			}
 			img := c.build(e)
-			slotBefore, _ := os.ReadFile(SlotDevice("b"))
+			slotBefore, _ := os.ReadFile(e.slotDev("b"))
 			_, err := Stage(context.Background(), e.cfg(e.srcDir(img)), c.opts)
 			if c.want != nil && !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
@@ -190,7 +192,7 @@ func TestStageRejectsBeforeWriting(t *testing.T) {
 			if c.msg != "" && (err == nil || !strings.Contains(err.Error(), c.msg)) {
 				t.Fatalf("got %v, want %q", err, c.msg)
 			}
-			slotAfter, _ := os.ReadFile(SlotDevice("b"))
+			slotAfter, _ := os.ReadFile(e.slotDev("b"))
 			if !bytes.Equal(slotBefore, slotAfter) {
 				t.Fatal("slot b was written")
 			}
@@ -344,9 +346,14 @@ func TestRollback(t *testing.T) {
 	if b := e.entry("b"); b.Name() != "vos-"+oldIdleVersion+".conf" {
 		t.Fatalf("slot b: %s", b.Name())
 	}
+	if h := e.state().Held; h == nil || h.Version != bootedVersion || h.RollbackIndex != bootedRollback {
+		t.Fatalf("held %+v", h)
+	}
 
-	// Booted into b, roll back again: a was marked bad by the first
-	// rollback, so it gets fresh tries rather than a clean entry.
+	// Booted into b, roll forward again: a was marked bad by the first
+	// rollback, so it gets fresh tries rather than a clean entry. b, older
+	// and running, keeps its clean entry: marked bad it would sort after a
+	// failed a among the bad entries, and a would boot forever.
 	e.bootSlot("b")
 	e.write(config.ImageInfoPath, `{"version":"`+oldIdleVersion+`","rollback_index":50}`)
 	if v, err := Rollback(false); err != nil || v != bootedVersion {
@@ -355,8 +362,103 @@ func TestRollback(t *testing.T) {
 	if a := e.entry("a"); a.Name() != "vos-"+bootedVersion+"+3.conf" || !a.Bootable() {
 		t.Fatalf("slot a: %s", a.Name())
 	}
-	if b := e.entry("b"); b.Name() != "vos-"+oldIdleVersion+"+0-1.conf" {
+	if b := e.entry("b"); b.Name() != "vos-"+oldIdleVersion+".conf" {
 		t.Fatalf("slot b: %s", b.Name())
+	}
+	if h := e.state().Held; h != nil {
+		t.Fatalf("held after rolling forward: %+v", h)
+	}
+	// a fails all its tries: systemd-boot comes back to b.
+	if got := e.failUntilFallback(3); got.Slot != "b" {
+		t.Fatalf("after a failed: boots %s", got.Name())
+	}
+}
+
+// sdBootNext models systemd-boot's choice (boot_entry_compare): entries
+// with tries left first, then the newest version, then fewer tries done.
+// It picks one even when every entry is out of tries.
+func (e *testEnv) sdBootNext() boot.Entry {
+	e.t.Helper()
+	es, err := boot.Entries(config.ESP)
+	e.must(err)
+	if len(es) == 0 {
+		e.t.Fatal("no boot entries")
+	}
+	sort.SliceStable(es, func(i, j int) bool {
+		a, b := es[i], es[j]
+		if a.Bootable() != b.Bootable() {
+			return a.Bootable()
+		}
+		if c := boot.CompareVersions(a.Version, b.Version); c != 0 {
+			return c > 0
+		}
+		return a.Done < b.Done
+	})
+	return es[0]
+}
+
+// failUntilFallback boots whatever systemd-boot picks and fails it (the
+// counter goes down, as systemd-boot renames it before booting), until an
+// entry of another slot comes up; it gives up after limit+2 boots.
+func (e *testEnv) failUntilFallback(limit int) boot.Entry {
+	e.t.Helper()
+	first := e.sdBootNext()
+	for range limit + 2 {
+		next := e.sdBootNext()
+		if next.Slot != first.Slot {
+			return next
+		}
+		if !next.Counting {
+			e.t.Fatalf("%s has no counter: it would boot forever", next.Name())
+		}
+		left, done := max(next.Left-1, 0), next.Done+1
+		e.must(os.Rename(next.Path, filepath.Join(filepath.Dir(next.Path),
+			fmt.Sprintf("%s+%d-%d.conf", next.Base(), left, done))))
+	}
+	e.t.Fatalf("still booting slot %s after %d failed boots: %s", first.Slot, limit+2, e.sdBootNext().Name())
+	return boot.Entry{}
+}
+
+// A rollback to a newer staged image (the UI offers it) must leave the
+// running entry a fallback.
+func TestRollbackToStagedNewer(t *testing.T) {
+	e := setup(t)
+	img := e.makeImage(newVersion, 200, 1000, nil)
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := Rollback(false); err != nil || v != newVersion {
+		t.Fatalf("rollback: %q %v", v, err)
+	}
+	if a := e.entry("a"); !a.Bootable() {
+		t.Fatalf("slot a lost its tries: %s", a.Name())
+	}
+	if got := e.failUntilFallback(3); got.Slot != "a" || got.Version != bootedVersion {
+		t.Fatalf("after the new image failed: boots %s", got.Name())
+	}
+}
+
+// With the same version in both slots (a forced reinstall), a rollback
+// must not rename one slot's entry onto the other's.
+func TestRollbackSameVersion(t *testing.T) {
+	e := setup(t)
+	a, b := e.entry("a"), e.entry("b")
+	e.must(os.Rename(a.Path, filepath.Join(filepath.Dir(a.Path), "vos-"+bootedVersion+"+0-1.conf")))
+	text, err := os.ReadFile(b.Path)
+	e.must(err)
+	e.must(os.Remove(b.Path))
+	e.write(filepath.Join(filepath.Dir(b.Path), "vos-"+bootedVersion+".conf"),
+		strings.ReplaceAll(string(text), oldIdleVersion, bootedVersion))
+	e.bootSlot("b")
+
+	if v, err := Rollback(false); err != nil || v != bootedVersion {
+		t.Fatalf("rollback: %q %v", v, err)
+	}
+	if a := e.entry("a"); a == nil || a.Name() != "vos-"+bootedVersion+"+3.conf" {
+		t.Fatalf("slot a: %+v", a)
+	}
+	if b := e.entry("b"); b == nil || b.Name() != "vos-"+bootedVersion+"+0-1.conf" {
+		t.Fatalf("slot b: %+v", b)
 	}
 }
 

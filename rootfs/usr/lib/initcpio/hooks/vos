@@ -3,23 +3,32 @@
 #
 # VaporOS root assembly.
 #
-# Installed:  vos.slot=a|b
-#   /            erofs, read-only        PARTLABEL=vos_<slot>
-#   /state       ext4, read-write        PARTLABEL=vos_data (e2fsck'd first)
+# Installed:  vos.slot=a|b vos.disk=<GPT disk GUID>
+#   /            erofs, read-only        partition vos_<slot>
+#   /state       ext4, read-write        partition vos_data (e2fsck'd first)
 #   /var         bind of /state/var
 #   /etc         overlay: image /etc + /state/etc/upper
+#   The partitions are found by GPT name on the disk vos.disk names, so a
+#   second disk with VaporOS on it is never used. Installs from before
+#   vos.disk go by /dev/disk/by-partlabel, on whatever disk has the name.
 #
 # Live:       vos.mode=live
 #   /            overlay: erofs image on the ISO + tmpfs, all changes lost on reboot
 #
 # VaporOS never shows a shell. Anything that goes wrong here reboots the
-# machine instead; on a freshly updated slot, systemd-boot's boot counting
-# then falls back to the previous one. The reason goes to the serial console.
+# machine instead. A freshly updated slot is on trial, and systemd-boot's
+# boot counting falls back to the previous one after three tries; any other
+# slot that cannot start is marked bad on the ESP first, so the other slot
+# starts next rather than this one forever. The reason goes to the serial
+# console.
 
 run_hook() {
     vos_mode="$(getarg vos.mode disk)"
     vos_slot="$(getarg vos.slot)"
+    vos_disk="$(getarg vos.disk)"
     vos_label="$(getarg vos.label VOS_LIVE)"
+    vos_disk_name=""
+    slot_dev=""
 
     export mount_handler="vos_mount_handler"
 }
@@ -30,11 +39,16 @@ run_emergencyhook() {
     vos_reboot "the initramfs could not start the system"
 }
 
-vos_reboot() {
+vos_serial() {
     # stderr is redirected first, so a ttyS0 without a UART fails silently.
     if [ -c /dev/ttyS0 ]; then
-        echo "VaporOS: $* -- rebooting in 5 seconds" 2>/dev/null >/dev/ttyS0
+        echo "VaporOS: $*" 2>/dev/null >/dev/ttyS0
     fi
+}
+
+vos_reboot() {
+    vos_demote
+    vos_serial "$* -- rebooting in 5 seconds"
     sleep 5
     reboot -f
     # reboot -f does not return; if it somehow does, ask the kernel directly.
@@ -52,6 +66,159 @@ vos_mount_handler() {
         live) vos_mount_live "$root" ;;
         *)    vos_mount_disk "$root" ;;
     esac
+}
+
+# vos_part_on DISK NAME: prints /dev/<partition> for the partition of DISK
+# (a kernel name) whose GPT name is NAME, from the kernel's own uevent.
+vos_part_on() {
+    local p d
+    for p in /sys/class/block/"$1"/*/partition; do
+        [ -e "$p" ] || continue
+        d="${p%/partition}"
+        if grep -qx "PARTNAME=$2" "$d/uevent" 2>/dev/null; then
+            echo "/dev/${d##*/}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# vos_disk_guid DISK: prints the GPT disk GUID of DISK, lowercase.
+vos_disk_guid() {
+    local g
+    g="$(blkid -p -s PTUUID -o value "/dev/$1" 2>/dev/null)"
+    [ -n "$g" ] || g="$(udevadm info --query=property --name="/dev/$1" 2>/dev/null | sed -n 's/^ID_PART_TABLE_UUID=//p')"
+    echo "$g" | tr 'A-F' 'a-f'
+}
+
+# vos_find_disk: prints the kernel name of the disk whose GPT disk GUID is
+# vos.disk and that has this slot's partition. Exits 2 when no disk's GUID
+# could be read at all: then the tools failed, not the disk.
+vos_find_disk() {
+    local want d n g read=0
+    want="$(echo "$vos_disk" | tr 'A-F' 'a-f')"
+    for d in /sys/class/block/*; do
+        [ -e "$d/partition" ] && continue
+        n="${d##*/}"
+        vos_part_on "$n" "vos_${vos_slot}" >/dev/null || continue
+        g="$(vos_disk_guid "$n")"
+        [ -n "$g" ] && read=1
+        if [ "$g" = "$want" ]; then
+            echo "$n"
+            return 0
+        fi
+    done
+    [ "$read" = 1 ] && return 1
+    return 2
+}
+
+# vos_wait_disk: waits up to 30 s for the disk vos.disk names and sets
+# vos_disk_name. Returns 2 if disk GUIDs cannot be read here at all.
+vos_wait_disk() {
+    local i=0 rc
+    while :; do
+        vos_disk_name="$(vos_find_disk)"
+        rc=$?
+        [ "$rc" = 0 ] && return 0
+        [ "$i" -ge 60 ] && return "$rc"
+        i=$((i + 1))
+        sleep .5
+    done
+}
+
+# vos_prefer_disk DISK: after switch_root, every /dev/disk/by-partlabel/vos_*
+# link must name this disk's partition even when another disk has VaporOS
+# on it: fstab mounts /efi by PARTLABEL=vos_esp. A higher link_priority
+# wins that link in udev; /run survives switch_root, and the kernel names
+# stay the same for the whole boot.
+vos_prefer_disk() {
+    local p d
+    mkdir -p /run/udev/rules.d
+    {
+        echo "# Written by the VaporOS initramfs: this boot's disk is /dev/$1."
+        for p in /sys/class/block/"$1"/*/partition; do
+            [ -e "$p" ] || continue
+            d="${p%/partition}"
+            echo "SUBSYSTEM==\"block\", KERNEL==\"${d##*/}\", OPTIONS+=\"link_priority=100\""
+        done
+    } >/run/udev/rules.d/61-vos-boot-disk.rules
+}
+
+# vos_entry_of FILE SLOT: does loader entry FILE boot SLOT?
+vos_entry_of() {
+    grep -Eq "^[[:space:]]*options[[:space:]](.*[[:space:]])?vos\.slot=$2([[:space:]]|\$)" "$1" 2>/dev/null
+}
+
+# vos_bootable_entry DIR SLOT: has SLOT an entry systemd-boot still boots
+# (no boot counter, or tries left)?
+vos_bootable_entry() {
+    local f
+    for f in "$1"/vos-*.conf; do
+        [ -f "$f" ] || continue
+        vos_entry_of "$f" "$2" || continue
+        case "${f##*/}" in
+            *+0.conf | *+0-*.conf) continue ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
+# vos_disk_of PART: prints the kernel name of the disk partition PART is on.
+vos_disk_of() {
+    local d
+    d="$(readlink -f "/sys/class/block/$1")" || return 1
+    d="${d%/*}"
+    echo "${d##*/}"
+}
+
+# vos_esp_dev: prints this boot's ESP: on the vos.disk disk, or, before
+# vos.disk, the labelled one only if it shares the slot's disk.
+vos_esp_dev() {
+    local esp slot
+    if [ -n "$vos_disk" ]; then
+        [ -n "$vos_disk_name" ] || vos_disk_name="$(vos_find_disk)" || return 1
+        vos_part_on "$vos_disk_name" vos_esp
+        return
+    fi
+    [ -n "$slot_dev" ] && [ -b "$slot_dev" ] || return 1
+    esp="$(readlink -f /dev/disk/by-partlabel/vos_esp)" && [ -b "$esp" ] || return 1
+    slot="$(readlink -f "$slot_dev")" || return 1
+    [ "$(vos_disk_of "${esp##*/}")" = "$(vos_disk_of "${slot##*/}")" ] || return 1
+    echo "$esp"
+}
+
+# vos_demote: marks this boot's entry bad (vos-<ver>+0-1.conf) before a
+# reboot, so systemd-boot starts the other slot next. A blessed entry has
+# no boot counter: without this, a slot that stops booting would start
+# again and again while the other slot's entry sits unused. Only when the
+# other slot has an entry that can boot; a counted entry (a trial boot) is
+# left to systemd-boot's own counting. Best effort, and silent.
+vos_demote() {
+    local other esp mnt dir f bad
+    [ "$vos_mode" = live ] && return 0
+    case "$vos_slot" in
+        a) other=b ;;
+        b) other=a ;;
+        *) return 0 ;;
+    esac
+    esp="$(vos_esp_dev 2>/dev/null)" && [ -b "$esp" ] || return 0
+    mnt=/run/vos/esp
+    mkdir -p "$mnt"
+    mount -t vfat -o rw,noatime "$esp" "$mnt" 2>/dev/null || return 0
+    dir="$mnt/loader/entries"
+    if vos_bootable_entry "$dir" "$other"; then
+        for f in "$dir"/vos-*.conf; do
+            [ -f "$f" ] || continue
+            case "${f##*/}" in *+*) continue ;; esac
+            vos_entry_of "$f" "$vos_slot" || continue
+            bad="${f%.conf}+0-1.conf"
+            [ -e "$bad" ] && continue
+            mv "$f" "$bad" && vos_serial "marked ${f##*/} bad; slot ${other} starts next"
+        done
+    fi
+    sync
+    umount "$mnt" 2>/dev/null
 }
 
 # Check the data partition before mounting it: it is the only writable
@@ -81,6 +248,26 @@ vos_mount_disk() {
 
     slot_dev="/dev/disk/by-partlabel/vos_${vos_slot}"
     data_dev="/dev/disk/by-partlabel/vos_data"
+    if [ -n "$vos_disk" ]; then
+        vos_wait_disk
+        case $? in
+            0)
+                slot_dev="$(vos_part_on "$vos_disk_name" "vos_${vos_slot}")"
+                data_dev="$(vos_part_on "$vos_disk_name" vos_data)" ||
+                    vos_die "/dev/${vos_disk_name} has no vos_data partition"
+                vos_prefer_disk "$vos_disk_name"
+                ;;
+            2)
+                # No disk GUID is readable here: a tool is missing, not the
+                # disk. Booting by label beats never booting.
+                vos_disk=""
+                vos_serial "cannot read GPT disk GUIDs; finding partitions by label"
+                ;;
+            *)
+                vos_die "no disk with GPT disk GUID ${vos_disk} (vos.disk) and a vos_${vos_slot} partition"
+                ;;
+        esac
+    fi
 
     poll_device "$slot_dev" 30 || vos_die "slot ${vos_slot} not found at ${slot_dev}"
     poll_device "$data_dev" 30 || vos_die "data partition not found at ${data_dev}"

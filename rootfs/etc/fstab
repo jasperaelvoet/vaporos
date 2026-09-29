@@ -1,3 +1,7 @@
 # / is assembled in the initramfs (see /usr/lib/initcpio/hooks/vos).
 # The ESP holds the bootloader and one kernel per slot; vos-update writes it.
+# With a second VaporOS disk attached, two partitions carry this label: the
+# initramfs gives the boot disk's partitions the higher udev link priority,
+# so the link names this disk's ESP, and vos refuses to write an ESP that is
+# not on the disk it runs from.
 PARTLABEL=vos_esp  /efi  vfat  umask=0077,noauto,x-systemd.automount,x-systemd.idle-timeout=60,nofail  0 2

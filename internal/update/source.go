@@ -343,12 +343,48 @@ func (r *resumeReader) connect() error {
 	ctx, cancel := context.WithCancel(r.ctx)
 	stall := time.AfterFunc(stallTimeout, cancel)
 	body, err := r.f.open(ctx, r.name, r.off)
+	if sb, ok := body.(*skipBody); err == nil && ok {
+		// Skipped bytes are arriving bytes: a long skip is not a stall.
+		err = sb.skip(func() { stall.Reset(stallTimeout) })
+	}
 	if err != nil {
 		stall.Stop()
+		if body != nil {
+			body.Close()
+		}
 		cancel()
 		return err
 	}
 	r.body, r.cancel, r.stall = body, cancel, stall
+	return nil
+}
+
+// skipBody is a whole-file answer to a Range request: its first n bytes are
+// ones the reader already has. connect skips them, where the stall timer
+// can see the progress.
+type skipBody struct {
+	io.ReadCloser
+	n int64
+}
+
+func (b *skipBody) skip(progress func()) error {
+	buf := make([]byte, 64<<10)
+	for b.n > 0 {
+		k, err := b.ReadCloser.Read(buf[:min(int64(len(buf)), b.n)])
+		b.n -= int64(k)
+		if k > 0 {
+			progress()
+		}
+		if b.n == 0 {
+			return nil
+		}
+		if errors.Is(err, io.EOF) {
+			return io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -514,11 +550,8 @@ func finish(ctx context.Context, resp *http.Response, offset int64) (io.ReadClos
 	switch resp.StatusCode {
 	case http.StatusOK:
 		if offset > 0 {
-			// The server ignored Range: skip what we already have.
-			if _, err := io.CopyN(io.Discard, resp.Body, offset); err != nil {
-				resp.Body.Close()
-				return nil, err
-			}
+			// The server ignored Range: the reader skips what it has.
+			return &skipBody{ReadCloser: resp.Body, n: offset}, nil
 		}
 		return resp.Body, nil
 	case http.StatusPartialContent:

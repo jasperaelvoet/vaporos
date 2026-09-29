@@ -246,6 +246,82 @@ func TestMarkBadAndSetTries(t *testing.T) {
 	}
 }
 
+// With the same version in both slots, one slot's new name can be the
+// other slot's entry: the rename must fail rather than replace it.
+func TestRenamesNeverReplace(t *testing.T) {
+	esp, _ := newESP(t)
+	entries := filepath.Join(esp, "loader", "entries")
+	write := func(name, slot string) {
+		os.WriteFile(filepath.Join(entries, name), []byte(entryText("5", "vos.slot="+slot)), 0o644)
+	}
+	write("vos-5+0-1.conf", "a")
+	write("vos-5.conf", "b")
+	if err := MarkBad(esp, "b"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("MarkBad over slot a's entry: %v", err)
+	}
+	if e, _ := EntryForSlot(esp, "a"); e == nil || e.Name() != "vos-5+0-1.conf" {
+		t.Fatalf("slot a: %+v", e)
+	}
+	if err := Bless(esp, "a"); err == nil {
+		t.Fatal("Bless over slot b's entry succeeded")
+	}
+	// Freeing the name first (as Rollback does) makes both work.
+	if err := SetTries(esp, "a", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkBad(esp, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(entryNames(t, esp), " "); got != "vos-5+0-1.conf vos-5+3.conf" {
+		t.Fatalf("entries: %s", got)
+	}
+	if e, _ := EntryForSlot(esp, "a"); e == nil || e.Name() != "vos-5+3.conf" {
+		t.Fatalf("slot a: %+v", e)
+	}
+}
+
+func TestBless(t *testing.T) {
+	esp, src := newESP(t)
+	mustInstall(t, esp, "1", "a", src, "", 0)
+	mustInstall(t, esp, "2", "b", src, "", 3)
+	if err := MarkBad(esp, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bless(esp, "a"); err != nil {
+		t.Fatal(err)
+	}
+	// Bootable entries (with tries, or blessed) are left alone.
+	if err := Bless(esp, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(entryNames(t, esp), " "); got != "vos-1.conf vos-2+3.conf" {
+		t.Fatalf("entries: %s", got)
+	}
+}
+
+func TestClearLoaderOverrides(t *testing.T) {
+	old := EFIVarsDir
+	EFIVarsDir = t.TempDir()
+	defer func() { EFIVarsDir = old }()
+	names := []string{"LoaderConfigTimeout", "LoaderEntryDefault", "LoaderEntryPreferred", "LoaderEntryOneShot", "LoaderBootCountPath"}
+	for _, n := range names {
+		os.WriteFile(filepath.Join(EFIVarsDir, n+"-"+loaderVendor), []byte("x"), 0o644)
+	}
+	if err := ClearLoaderOverrides(); err != nil {
+		t.Fatal(err)
+	}
+	for i, n := range names {
+		_, err := os.Stat(filepath.Join(EFIVarsDir, n+"-"+loaderVendor))
+		if kept := err == nil; kept != (i >= 3) {
+			t.Errorf("%s kept=%v", n, kept)
+		}
+	}
+	// Nothing to clear is fine.
+	if err := ClearLoaderOverrides(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRewriteOptions(t *testing.T) {
 	esp, src := newESP(t)
 	mustInstall(t, esp, "1", "a", src, "quiet video=DP-1:e", 0)

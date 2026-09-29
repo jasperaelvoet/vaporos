@@ -12,6 +12,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,12 +35,14 @@ var (
 )
 
 type Service struct {
-	cfg *config.Config
+	cfg *config.Config // shared: read through Snapshot, changed through Mutate
 
-	mu       sync.Mutex // guards the fields below and s.cfg.Update
+	mu       sync.Mutex // guards the fields below
 	ctx      context.Context
 	running  bool
+	stopping bool // Run is returning: no new background stages
 	progress *Progress
+	stages   sync.WaitGroup // stages StartStage runs
 	reboot   func(context.Context) error
 }
 
@@ -69,6 +72,7 @@ func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
 	}
+	defer s.waitStages(ctx)
 	if _, err := Reconcile(); err != nil {
 		log.Printf("update: %v", err)
 	}
@@ -83,6 +87,22 @@ func (s *Service) Run(ctx context.Context) {
 		s.autoStage(ctx)
 		timer.Reset(checkInterval + jitter())
 	}
+}
+
+// waitStages lets a stage started from the web UI finish before vosd exits.
+// Its context is the daemon's, so a download or write stops at once; what
+// may still run is the install tail (ESP files, the entry, then
+// update-state), and stopping between the entry and its record would hide a
+// failing version from failed[]. The daemon bounds the wait. After a panic
+// (ctx still live) Run is restarted instead, and must not wait.
+func (s *Service) waitStages(ctx context.Context) {
+	if ctx.Err() == nil {
+		return
+	}
+	s.mu.Lock()
+	s.stopping = true
+	s.mu.Unlock()
+	s.stages.Wait()
 }
 
 func jitter() time.Duration {
@@ -113,6 +133,44 @@ func (s *Service) autoStage(ctx context.Context) {
 	}
 }
 
+// ApplyMachineCmdline sets the machine kernel arguments
+// (/var/lib/vos/cmdline) and rewrites both slots' boot entries to carry
+// them; they take effect on the next boot. It holds the update lock, so it
+// never interleaves with a stage writing an entry, and waits for one until
+// ctx ends. The boot disk (vos.disk=) stays unless cmdline names one.
+func ApplyMachineCmdline(ctx context.Context, cmdline string) error {
+	if config.IsLive() {
+		return ErrLive
+	}
+	cmdline = strings.TrimSpace(cmdline)
+	if strings.ContainsFunc(cmdline, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return errors.New("machine cmdline contains control characters")
+	}
+	lock, err := takeUpdateLock(ctx, 0)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	esp := config.ESP
+	if err := boot.EnsureESP(esp); err != nil {
+		return err
+	}
+	old := boot.MachineCmdline()
+	if boot.DiskArgOf(cmdline) == "" {
+		cmdline = boot.WithDiskArg(cmdline, boot.DiskArgOf(old))
+	}
+	// The entries first and the file last: until the file changes, a retry
+	// computes the same swap, and dropping the new arguments as well as the
+	// old ones lets it finish a rewrite that stopped half way.
+	drop := old + " " + cmdline
+	if err := boot.RewriteOptions(esp, func(e boot.Entry) string {
+		return boot.SwapMachineArgs(e.Options, drop, cmdline)
+	}); err != nil {
+		return fmt.Errorf("boot entries: %w", err)
+	}
+	return boot.SetMachineCmdline("", cmdline)
+}
+
 // Busy reports whether an update is downloading/writing (keeps power awake).
 // It also sees a `vos update` running in another process, through its lock.
 func (s *Service) Busy() (bool, string) {
@@ -133,9 +191,9 @@ func (s *Service) Busy() (bool, string) {
 
 // updateLocked reports whether some process holds the update lock.
 func updateLocked() bool {
-	l, err := lockFile(updateLockPath(), false)
+	l, err := takeUpdateLock(context.Background(), probePatience)
 	if err != nil {
-		return errors.Is(err, errLocked)
+		return errors.Is(err, ErrBusy)
 	}
 	l.Unlock()
 	return false
@@ -143,9 +201,7 @@ func updateLocked() bool {
 
 // config returns a snapshot of the configuration.
 func (s *Service) config() *config.Config {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c := *s.cfg
+	c := s.cfg.Snapshot()
 	return &c
 }
 
@@ -174,10 +230,19 @@ func (s *Service) reserve() bool {
 // StartStage stages in the background; progress goes out as
 // update.progress events. It fails at once if an update is running.
 func (s *Service) StartStage(opts Options) error {
-	if !s.reserve() {
+	s.mu.Lock()
+	if s.running || s.stopping {
+		s.mu.Unlock()
 		return ErrBusy
 	}
-	go s.doStage(s.lifetime(), opts)
+	s.running, s.progress = true, &Progress{Phase: "check"}
+	s.stages.Add(1) // under mu, so never after waitStages began to Wait
+	s.mu.Unlock()
+	ctx := s.lifetime()
+	go func() {
+		defer s.stages.Done()
+		s.doStage(ctx, opts)
+	}()
 	return nil
 }
 
@@ -244,9 +309,7 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 // effectiveConfig is config.update with the defaults filled in.
 func (s *Service) effectiveConfig() config.UpdateConfig {
-	s.mu.Lock()
-	c := s.cfg.Update
-	s.mu.Unlock()
+	c := s.cfg.Snapshot().Update
 	if c.Source == "" {
 		c.Source = config.DefaultUpdateSrc
 	}
@@ -324,11 +387,11 @@ func (s *Service) handleActivate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
+	// Rollback records the hold in update-state, which tells the UI.
 	if _, err := Rollback(false); err != nil {
 		api.Error(w, http.StatusConflict, "%v", err)
 		return
 	}
-	modifyState(func(*State) error { return nil }) // tell the UI
 	api.OK(w)
 }
 
@@ -349,21 +412,23 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, `auto must be "stage" or "off"`)
 		return
 	}
-	s.mu.Lock()
-	oldChannel := s.cfg.Update.Channel
+	var channel string
 	if req.Channel != nil {
-		ch := *req.Channel
-		if ch == "" {
-			ch = config.Defaults().Update.Channel // back to the image's channel
+		channel = *req.Channel
+		if channel == "" {
+			channel = config.Defaults().Update.Channel // back to the image's channel
 		}
-		s.cfg.Update.Channel = ch
 	}
-	if req.Auto != nil {
-		s.cfg.Update.Auto = *req.Auto
-	}
-	err := s.cfg.Save()
-	changed := s.cfg.Update.Channel != oldChannel
-	s.mu.Unlock()
+	changed := false
+	err := s.cfg.Mutate(func(c *config.Config) {
+		if req.Channel != nil {
+			changed = c.Update.Channel != channel
+			c.Update.Channel = channel
+		}
+		if req.Auto != nil {
+			c.Update.Auto = *req.Auto
+		}
+	})
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, "saving settings: %v", err)
 		return
