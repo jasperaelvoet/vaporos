@@ -1,0 +1,139 @@
+{
+  "description": "The machine: its name, SSH keys, restarts and power off, and GET /status over the presets.",
+  "vectors": [
+    {
+      "name": "system-hostname",
+      "preset": "idle",
+      "steps": [
+        {"req": "PUT /system/hostname", "body": {"hostname": "-vapor"}, "expect": {"status": 400, "body": {"error": "the name must be 1-63 letters, digits or hyphens, and cannot start or end with a hyphen"}, "copy": "Use 1–63 lowercase letters, digits or dashes, not starting or ending with a dash."}},
+        {"req": "PUT /system/hostname", "body": {"hostname": "localhost"}, "expect": {"status": 400, "copy": "\"localhost\" is reserved. Pick another name."}},
+        {"req": "PUT /system/hostname", "body": {"hostname": "a.b"}, "expect": {"status": 400}},
+        {"req": "PUT /system/hostname", "body": {"hostname": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}, "expect": {"status": 400}},
+        {"req": "PUT /system/hostname", "raw": "{\"hostname\":", "expect": {"status": 400}},
+        {"req": "PUT /system/hostname", "body": {"hostname": 42}, "expect": {"status": 400}},
+        {"req": "PUT /system/hostname", "body": {"Hostname": " Den-PC "}, "expect": {"status": 200, "body": {}}},
+        {"req": "GET /system", "passive": true, "expect": {"body": {"hostname": "den-pc", "mdns": "den-pc.local"}}}
+      ]
+    },
+    {
+      "name": "system-ssh",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /ssh", "expect": {"body": {"enabled": false, "keys": []}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": []}, "expect": {"status": 400, "body": {"error": "add at least one public key before enabling SSH: the vapor account has no password"}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["", "  "]}, "expect": {"status": 400}},
+        {"req": "PUT /ssh", "body": {"enabled": false, "keys": ["ssh-ed25519 notbase64"]}, "expect": {"status": 400, "body": {"error": "key 1 is not an OpenSSH public key (it should start with ssh-ed25519, ecdsa-sha2-… or ssh-rsa)"}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa", "garbage"]}, "expect": {"status": 400, "body": {"error": "key 3 is not an OpenSSH public key (it should start with ssh-ed25519, ecdsa-sha2-… or ssh-rsa)"}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa\necdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCmqb++z5HmY7Y1/RAmfzzwrknfiAKKziuliwba/ujv72+gP83EgUZIDRi1Eag14+sREPIgZc6eqyVYHxzUECoQ= deck"]}, "expect": {"status": 400, "body": {"error": "key 1: one key per entry, on a single line"}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["no-pty,command=\"echo hi there\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa opts"]}, "expect": {"status": 400, "body": {"error": "key 1: authorized_keys options are not supported"}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQDyt0TiUPo+crIq1bNV5TQum6VwLBomIwqz6KPfIOxFjMgzUF8w7erxDgi1KRxr4ezRs07RY1zEJWR5s4vJGL2dI9kcO2DN2UKEWFOHxYlgD3OvIwSsKtQZ8ExpGduMZeBuSAktzW3/1HGuJTqo4wEHf1HulycTqMzBgE5q63nQ2Q== weak"]}, "expect": {"status": 400, "body": {"error": "key 1: RSA keys need at least 2048 bits"}}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCmqb++z5HmY7Y1/RAmfzzwrknfiAKKziuliwba/ujv72+gP83EgUZIDRi1Eag14+sREPIgZc6eqyVYHxzUECoU="]}, "expect": {"status": 400}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCmqb++z5HmY7Y1/RAmfzzwrknfiAKKziuliwba/ujv72+gP83EgUZIDRi1Eag14+sREPIgZc6eqyVYHxzUECoQ"]}, "expect": {"status": 400}},
+        {"req": "PUT /ssh", "body": {"enabled": true, "keys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa sam@laptop", "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCmqb++z5HmY7Y1/RAmfzzwrknfiAKKziuliwba/ujv72+gP83EgUZIDRi1Eag14+sREPIgZc6eqyVYHxzUECoQ= deck", "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAEeJJENmZuSLACdaryVXuENxM5YS188q6kvgjTrXXOTj0k0fN6/FAvRZWAkGl8UaWxNMZz8PGcpSDwspCDpWZr23wCdDrAwG6GqGycY8NT5sHZDL05CFXzpFHsJ3HkW2lbVS8RNA7q0sUog/1PkqxUEHSrEXPlkZxNOn8l2X4XVumAUQw==", "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC+2kxnFUq+R6Das/zR8mP5mPpZgUYbeoefbiLzbGDAnNo9sW7lEEysYKlEQ6U3j8IdTYTNEGn5RCQORG/4d4SLWmXUEo21HwGmosH2WaNslFioLMb/zZJGa57yRlLtl+2LViKA1AyatmJTKzUfiTbMLhSSZreYfqy7aQWikf/if2TOid/V0D3Bm1/xn8zJIrGlZ1eZ/QwrYxST1LoPGB+oB8Qi6NBJ6uYN7C9ZCWj4hWHbgJu+p/EhIN8TXONvJPMTGo0TNfrYrdyB+gLF6xC3csveFIXlw3yFGsYRAEqLzAEqx0/tSag6oBzPnxM07xJ7Ns5ohJGUT/935E9PWZ1D old desktop", "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHaAAAABHNzaDo= yubikey", "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa relabelled", "  ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa  ", "ssh-ed25519\tAAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa\tsam at\u0007laptop", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcUwoocU3j8bCBzkBXa3g4haSDeAUmth2m3gmDX6RHa héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld héllo wörld ", null]}, "expect": {"status": 200, "body": {"enabled": true}}},
+        {"req": "GET /ssh", "passive": true},
+        {"req": "PUT /ssh", "body": {"enabled": false}, "expect": {"status": 200, "body": {"enabled": false, "keys": []}}}
+      ]
+    },
+    {
+      "name": "system-reboot",
+      "slow": true,
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /system/reboot", "expect": {"status": 200, "events": [["power.idle", {}], ["system.message", {"level": "info", "text": "Restarting…"}]]}},
+        {"wait": {"until": "down"}, "expect": {"matched": true}},
+        {"req": "GET /system", "expect": {"status": 0}},
+        {"stream": {"passive": true}, "expect": {"status": 0}},
+        {"wake": true},
+        {"req": "GET /system", "passive": true, "expect": {"status": 200, "body": {"uptime_s": 0}}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": true}}},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "system-poweroff",
+      "slow": true,
+      "preset": "streaming",
+      "steps": [
+        {"req": "POST /system/poweroff", "passive": true, "expect": {"status": 200}},
+        {"wait": {"until": "down"}},
+        {"req": "GET /ping", "expect": {"status": 0}},
+        {"event": ["session.end", {}], "expect": {}},
+        {"wake": true},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"streaming": false, "session": null}}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"state": "welcome", "current": "3840x2160@60", "reboot_needed": false}}}
+      ]
+    },
+    {
+      "name": "system-status-idle",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /status", "passive": true},
+        {"req": "GET /status"}
+      ]
+    },
+    {
+      "name": "system-status-streaming",
+      "preset": "streaming",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-update-staged",
+      "preset": "update-staged",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-reboot-needed",
+      "preset": "reboot-needed",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-rollback-pending",
+      "preset": "rollback-pending",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-no-gpu",
+      "preset": "no-gpu",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-sunshine-stopped",
+      "preset": "sunshine-stopped",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-keep-awake",
+      "preset": "keep-awake",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-idle-countdown",
+      "preset": "idle-countdown",
+      "steps": [
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "system-status-update-staging",
+      "preset": "update-staging",
+      "ignore_topics": ["update.progress", "power.idle"],
+      "steps": [
+        {"req": "GET /status", "passive": true, "ignore": ["body.update.progress", "body.power.busy.reason"]}
+      ]
+    }
+  ]
+}

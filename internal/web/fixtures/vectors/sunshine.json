@@ -1,0 +1,157 @@
+{
+  "description": "Sunshine: pairing with a PIN (one device waiting, two, none), paired devices, stream settings, the log, a stopped or starting server, ending a stream, and what a session does to Sunshine, the display and power.",
+  "vectors": [
+    {
+      "name": "sunshine-pair-one",
+      "preset": "pairing-1",
+      "steps": [
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"pending_pairing": true, "pairings": [{"name": "Steam Deck"}]}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "12a4"}, "expect": {"status": 400, "body": {"error": "the PIN is the 4 digits Moonlight shows"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "name": "two\nlines"}, "expect": {"status": 400, "body": {"error": "the device name must be at most 128 characters on one line"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "pairing_id": "xyz"}, "expect": {"status": 400, "body": {"error": "invalid pairing_id"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": 1234}, "expect": {"status": 400}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "0000"}, "expect": {"status": 400, "body": {"error": "pairing failed: check the PIN and try again"}, "copy": "That PIN didn't work. Check Moonlight and try again."}},
+        {"req": "POST /sunshine/pair", "body": {"pin": " 1234 "}, "expect": {"status": 200, "events": [["pairing.state", {"pairings": []}]]}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"body": {"clients": [{}, {}, {}, {"name": "Steam Deck", "enabled": true}]}}},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"pending_pairing": false, "pairings": []}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234"}, "expect": {"status": 409, "copy": "Moonlight isn't waiting any more. Start pairing again in Moonlight."}}
+      ]
+    },
+    {
+      "name": "sunshine-pair-two",
+      "preset": "pairing-2",
+      "steps": [
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234"}, "expect": {"status": 409, "body": {"error": "2 devices are waiting to pair; choose which one this PIN is for"}, "copy": "More than one device is waiting. Choose the one that shows this PIN."}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "pairing_id": "00000000000000000000000000000000"}, "expect": {"status": 400}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "pairing_id": "D628A0C01C288581E8BA02A8230917FE"}, "expect": {"status": 400}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "pairing_id": "d628a0c01c288581e8ba02a8230917fe", "name": "  "}, "expect": {"status": 200}},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"pending_pairing": true, "pairings": [{"name": "Steam Deck"}]}}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"body": {"clients": [{}, {}, {}, {"name": "Pixel 9"}]}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "name": "Deck in the den"}, "expect": {"status": 200}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"body": {"clients": [{}, {}, {}, {}, {"name": "Deck in the den"}]}}}
+      ]
+    },
+    {
+      "name": "sunshine-pair-script",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234"}, "expect": {"status": 409, "body": {"error": "no device is waiting to pair: start pairing in Moonlight, then enter the PIN it shows"}}},
+        {"script": "pair", "expect": {"events": [["pairing.pending", {"name": "Steam Deck"}], ["pairing.state", {}]]}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"sunshine": {"pending_pairing": true}}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234"}, "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "sunshine-clients",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /sunshine/clients", "passive": true},
+        {"req": "DELETE /sunshine/clients/bad_uuid", "expect": {"status": 400, "body": {"error": "invalid client uuid"}}},
+        {"req": "DELETE /sunshine/clients/ABCDEF", "expect": {"status": 404, "body": {"error": "no paired client ABCDEF"}}},
+        {"req": "DELETE /sunshine/clients/A07D2E91-44C3-4B8F-8E6D-1B2C3D4E5F60", "expect": {"status": 200}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"body": {"clients": [{"name": "Sam's iPhone"}, {"name": "MacBook Pro"}]}}},
+        {"req": "GET /sunshine/clients/A07D2E91-44C3-4B8F-8E6D-1B2C3D4E5F60", "expect": {"status": 405}}
+      ]
+    },
+    {
+      "name": "sunshine-settings",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /sunshine/settings", "passive": true},
+        {"req": "PUT /sunshine/settings", "body": {"encoder": "auto"}, "expect": {"status": 400, "body": {"error": "encoder must be one of vulkan, vaapi, software, nvenc"}}},
+        {"req": "PUT /sunshine/settings", "body": {"gamepad": "xbox"}, "expect": {"status": 400}},
+        {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 1000001}, "expect": {"status": 400}},
+        {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 1.5}, "expect": {"status": 400}},
+        {"req": "PUT /sunshine/settings", "body": {"audio_sink": "a#b"}, "expect": {"status": 400, "body": {"error": "audio_sink is not a valid sink name"}}},
+        {"req": "PUT /sunshine/settings", "body": {"encoder": "nvenc", "audio_sink": " alsa_output.pci-0000_03_00.1.hdmi-stereo ", "choices": {"encoder": []}}, "expect": {"status": 200, "body": {"encoder": "nvenc", "audio_sink": "alsa_output.pci-0000_03_00.1.hdmi-stereo", "bitrate_kbps_max": 150000, "choices": {"encoder": ["vulkan", "vaapi", "software"]}}}},
+        {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 0, "gamepad": "ds5", "audio_sink": ""}, "expect": {"status": 200}},
+        {"req": "GET /sunshine/settings", "passive": true, "expect": {"body": {"bitrate_kbps_max": 0, "gamepad": "ds5", "audio_sink": ""}}}
+      ]
+    },
+    {
+      "name": "sunshine-logs",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /sunshine/logs", "passive": true, "expect": {"status": 200}},
+        {"preset": "logs-empty"},
+        {"req": "GET /sunshine/logs", "passive": true},
+        {"preset": "logs-error"},
+        {"req": "GET /sunshine/logs", "passive": true, "expect": {"status": 502}}
+      ]
+    },
+    {
+      "name": "sunshine-stopped",
+      "preset": "sunshine-stopped",
+      "steps": [
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"running": false, "pairings": []}}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"status": 502, "copy": "The stream server isn't answering. Restart streaming, or check the log."}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234"}, "expect": {"status": 502, "copy": "Moonlight didn't finish pairing. Start again in Moonlight."}},
+        {"req": "POST /sunshine/restart", "expect": {"status": 200}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"status": 200}},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"running": true}}}
+      ]
+    },
+    {
+      "name": "sunshine-starting",
+      "preset": "sunshine-starting",
+      "steps": [
+        {"req": "GET /sunshine", "passive": true, "expect": {"status": 503, "copy": "Streaming is starting. Try again in a few seconds."}},
+        {"req": "GET /status", "passive": true, "expect": {"status": 200}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1"}, "expect": {"status": 503}}
+      ]
+    },
+    {
+      "name": "sunshine-end-stream",
+      "preset": "streaming",
+      "steps": [
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": {"reason": "streaming to Living room TV"}}}},
+        {"req": "POST /sunshine/end-stream", "expect": {"status": 200, "events": []}},
+        {"wait": {"topic": "display.changed"}, "expect": {"matched": true, "events": [["power.idle", {"busy": {"reason": "web UI in use", "web": true}}], ["session.end", {}], ["display.changed", {}]]}},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"streaming": false, "session": null}}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"state": "welcome", "current": "3840x2160@60"}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"stream": null}}},
+        {"req": "POST /sunshine/end-stream", "expect": {"status": 409, "body": {"error": "nothing is streaming"}, "copy": "Nothing is streaming right now."}},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "sunshine-session",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": null}}},
+        {"event": ["session.begin", {"client": "Pixel 9", "mode": "3024x1964@60", "hdr": false, "app": "Steam"}], "expect": {"events": [["power.idle", {"busy": {"reason": "streaming to Pixel 9"}}], ["session.begin", {"client": "Pixel 9", "app": "Steam"}]]}},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"streaming": true, "session": {"client": "Pixel 9", "mode": "3024x1964@60"}}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"stream": {"client": "Pixel 9"}, "restart": {"needed": false}}}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"state": "streaming", "current": "3024x1964@60", "learned": ["3024x1964@60", "2360x1640@120"], "reboot_needed": true, "devices": [{"name": "Pixel 9"}, {}, {}, {}, {}]}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "display"}]}}}},
+        {"stream": {"passive": true}},
+        {"event": ["session.end", {}]},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"state": "welcome", "current": "1920x1080@60"}}},
+        {"stream": {"passive": true}},
+        {"event": ["display.changed", null]}
+      ]
+    },
+    {
+      "name": "sunshine-stream-scripts",
+      "preset": "idle",
+      "steps": [
+        {"script": "stream"},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"stream": {"client": "Living room TV", "hdr": true}}}},
+        {"req": "GET /power", "expect": {"body": {"busy": {"reason": "streaming to Living room TV"}}}},
+        {"script": "stream-end"},
+        {"req": "GET /power", "expect": {"body": {"busy": {"reason": "web UI in use", "web": true}}}},
+        {"stream": {}}
+      ]
+    },
+    {
+      "name": "sunshine-headless-session",
+      "preset": "headless",
+      "steps": [
+        {"req": "GET /display", "passive": true},
+        {"event": ["session.begin", {"client": "MacBook Pro", "mode": "2560x1600@120", "hdr": false}]},
+        {"event": ["session.end", {}]},
+        {"req": "GET /display", "passive": true}
+      ]
+    }
+  ]
+}

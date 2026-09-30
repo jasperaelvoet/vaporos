@@ -1,0 +1,140 @@
+{
+  "description": "The api core both fakes run on: /ping, sessions and CSRF, unknown routes, the setup code, and the event stream's replay.",
+  "vectors": [
+    {
+      "name": "core-ping-and-me",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /ping", "expect": {"status": 200, "body": {"ok": true, "mode": "os", "version": "20260929.101500"}}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": true, "needs_setup": false, "installer": false}}}
+      ]
+    },
+    {
+      "name": "core-signed-out",
+      "preset": "signed-out",
+      "steps": [
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": false, "csrf": "", "needs_setup": false}}},
+        {"req": "GET /system", "expect": {"status": 401, "body": {"error": "login required"}}},
+        {"req": "PUT /power", "body": {"idle_minutes": 30}, "expect": {"status": 401}},
+        {"stream": {}, "expect": {"status": 403, "body": {"error": "setup code required"}}},
+        {"req": "GET /ping", "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "core-login",
+      "preset": "idle",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /auth/login", "raw": "", "expect": {"status": 400, "body": {"error": "bad request body: EOF"}}},
+        {"req": "POST /auth/login", "body": {"password": "wrong password"}, "expect": {"status": 401, "body": {"error": "wrong password"}, "copy": "That password isn't right."}},
+        {"req": "POST /auth/login", "body": {"password": "vaporvapor"}, "expect": {"status": 200}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": true}}},
+        {"req": "GET /system", "expect": {"status": 200, "body": {"hostname": "vapor", "mdns": "vapor.local"}}}
+      ]
+    },
+    {
+      "name": "core-csrf",
+      "preset": "idle",
+      "steps": [
+        {"req": "PUT /power", "body": {"idle_minutes": 30}, "csrf": "", "expect": {"status": 403, "body": {"error": "missing or invalid CSRF token"}}},
+        {"req": "PUT /power", "body": {"idle_minutes": 30}, "csrf": "not-the-token", "expect": {"status": 403}},
+        {"req": "PUT /power", "body": {"idle_minutes": 30}, "expect": {"status": 200, "body": {"idle_minutes": 30}}}
+      ]
+    },
+    {
+      "name": "core-unknown-routes",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /nope", "expect": {"status": 404, "body": {"error": "no such API endpoint"}}},
+        {"req": "GET /sunshine/clients/3F1C9A52", "expect": {"status": 405}},
+        {"req": "POST /system", "body": {}},
+        {"req": "PATCH /power", "body": {}},
+        {"req": "GET /install/probe"},
+        {"req": "GET /system/", "passive": true}
+      ]
+    },
+    {
+      "name": "core-logout",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /auth/logout", "csrf": "", "expect": {"status": 403}},
+        {"req": "POST /auth/logout", "expect": {"status": 200}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": false}}},
+        {"req": "GET /system", "expect": {"status": 401}}
+      ]
+    },
+    {
+      "name": "core-password",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /auth/password", "body": {"current": "nope nope", "new": "a new password"}, "expect": {"status": 403, "body": {"error": "the current password is wrong"}, "copy": "That's not the current password."}},
+        {"req": "POST /auth/password", "body": {"current": "vaporvapor", "new": "short"}, "expect": {"status": 400, "body": {"error": "the password must be 8 to 1024 characters long"}}},
+        {"req": "POST /auth/password", "body": {"current": "vaporvapor", "new": "a new password"}, "expect": {"status": 200}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": true}}},
+        {"req": "POST /auth/logout"},
+        {"req": "POST /auth/login", "body": {"password": "vaporvapor"}, "expect": {"status": 401}},
+        {"req": "POST /auth/login", "body": {"password": "a new password"}, "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "core-login-limit",
+      "note": "Five wrong passwords lock the client out for 15 s; each is an argon2 check on the Go side.",
+      "slow": true,
+      "preset": "idle",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /auth/login", "body": {"password": "wrong 1"}},
+        {"req": "POST /auth/login", "body": {"password": "wrong 2"}},
+        {"req": "POST /auth/login", "body": {"password": "wrong 3"}},
+        {"req": "POST /auth/login", "body": {"password": "wrong 4"}},
+        {"req": "POST /auth/login", "body": {"password": "wrong 5"}, "expect": {"status": 401}},
+        {"req": "POST /auth/login", "body": {"password": "vaporvapor"}, "expect": {"status": 429, "body": {"error": "too many failed attempts; try again in 15s"}, "copy": "Too many tries. Try again in 15 s."}}
+      ]
+    },
+    {
+      "name": "core-stream-replay",
+      "preset": "streaming",
+      "steps": [
+        {"stream": {"passive": true}, "expect": {"status": 200}},
+        {"req": "GET /power", "passive": true},
+        {"stream": {}},
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": {"reason": "streaming to Living room TV"}}}}
+      ]
+    },
+    {
+      "name": "core-stream-pairing",
+      "preset": "pairing-2",
+      "steps": [
+        {"stream": {"passive": true}},
+        {"script": "pair"},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "core-first-run",
+      "preset": "first-run",
+      "signed_in": false,
+      "steps": [
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": false, "needs_setup": true}}},
+        {"req": "POST /auth/login", "body": {"password": "vaporvapor"}, "expect": {"status": 409, "body": {"error": "no admin password is set yet; finish setup first"}}},
+        {"req": "POST /auth/setup", "body": {"password": "a fine password"}, "expect": {"status": 403, "body": {"error": "setup code required"}}},
+        {"req": "POST /auth/setup", "body": {"password": "a fine password"}, "setup": "WRONG-CODE", "expect": {"status": 403, "body": {"error": "wrong or expired setup code"}}},
+        {"stream": {"setup": "abcd efgh"}, "expect": {"status": 200}},
+        {"req": "POST /auth/setup", "body": {"password": "short"}, "setup": "abcd-efgh", "expect": {"status": 400}},
+        {"req": "POST /auth/setup", "body": {"password": "a fine password"}, "setup": "ABCD-EFGH", "expect": {"status": 200}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": true, "needs_setup": false}}},
+        {"req": "POST /auth/setup", "body": {"password": "a fine password"}, "setup": "ABCD-EFGH", "expect": {"status": 403, "body": {"error": "wrong or expired setup code"}}},
+        {"req": "GET /system", "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "core-first-run-signed-in",
+      "note": "first-run removes auth.json but keeps the sessions, as the dev server does.",
+      "preset": "first-run",
+      "steps": [
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": true, "needs_setup": true}}},
+        {"req": "POST /auth/setup", "body": {"password": "a fine password"}, "setup": "ABCD-EFGH", "expect": {"status": 200}}
+      ]
+    }
+  ]
+}
