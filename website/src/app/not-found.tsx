@@ -6,8 +6,14 @@
 // whose last heat is sinking out of it. The way on is white-hot: Home first,
 // then the pages people come for.
 import type { Metadata } from 'next';
-import { DeadScreen } from '@/components/docs';
-import { Headline, LinkButton, Rich } from '@/components/ui';
+// Straight from the files, not the barrels: the root not-found boundary is
+// part of every page's bundle, and the docs barrel would bring the install
+// guide's client components (the TOC, the installer screen, the code block)
+// to the home page.
+import { DeadScreen } from '@/components/docs/dead-screen';
+import { LinkButton } from '@/components/ui/button';
+import { Headline } from '@/components/ui/headline';
+import { Rich } from '@/components/ui/rich';
 import { notFound, pageMeta } from '@/content';
 import { HEAT } from '@/direction';
 import { pageMetadata } from '@/lib/metadata';

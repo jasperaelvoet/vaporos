@@ -9,9 +9,12 @@ export const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
 // The browser reads the release list instead: it answers 200 with [] before
 // the first release, where /releases/latest answers 404, which browsers log
 // as a console error on every visit. Every push to a non-main branch adds a
-// prerelease, so read a full page (100) to reach the newest stable release.
-// A list without one never downgrades the card (see use-latest-release.ts).
-export const LIST_API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
+// prerelease and cleanup.yml keeps the newest 10 each week, so the newest
+// stable release sits within the first 20 (each release is about 13 kB of
+// JSON with its notes: 20 keeps the answer near 40 kB gzipped where 100
+// would grow toward 180 kB). A list without a stable one never downgrades
+// the card (see use-latest-release.ts); the daily build refreshes it.
+export const LIST_API = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
 
 // latestFromList picks what /releases/latest would: the newest published
 // release that isn't a prerelease (the list is sorted newest first).

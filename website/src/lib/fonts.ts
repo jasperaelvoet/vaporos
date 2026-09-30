@@ -11,10 +11,13 @@
 // 124/800) with font-stretch and font-weight. Declaring the width range lets
 // `font-stretch: 124%` pick the wdth axis directly (src/styles/type.css).
 //
-// Preloads: only Anybody (48.9 kB), because every page's LCP is a headline set
-// in it. Mona Sans (19 kB a weight) and Martian Mono (8.6 kB) swap in with
-// metric-matched fallbacks, so the page doesn't shift (WEB §12: at most two
-// preloads).
+// Preloads: Mona Sans, its two weights (19 kB each). Every page's Largest
+// Contentful Paint is a paragraph set in it (the hero's lead, a page's
+// lead): the headlines are one block per line, so no line outgrows the
+// paragraph, and the first screen's kicker and buttons are its semibold.
+// Anybody (48.9 kB) and Martian Mono (8.6 kB) swap in with metric-matched
+// fallbacks; the headlines are fitted per line, so the swap never reflows
+// them (WEB §12: at most two preloads, 110 kB).
 import localFont from 'next/font/local';
 
 export const anybody = localFont({
@@ -22,7 +25,7 @@ export const anybody = localFont({
   weight: '300 860',
   style: 'normal',
   display: 'swap',
-  preload: true,
+  preload: false,
   variable: '--font-anybody',
   declarations: [{ prop: 'font-stretch', value: '56% 136%' }],
   adjustFontFallback: 'Arial',
@@ -35,7 +38,7 @@ export const monaSans = localFont({
     { path: '../fonts/monasans-semibold.woff2', weight: '600', style: 'normal' },
   ],
   display: 'swap',
-  preload: false,
+  preload: true,
   variable: '--font-mona',
   adjustFontFallback: 'Arial',
   fallback: ['-apple-system', 'Segoe UI', 'system-ui', 'sans-serif'],

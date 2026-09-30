@@ -131,7 +131,7 @@ try {
   // ---------------------------------------------------------- release-shape
   const shape = await import(new URL('release-shape.ts', lib).href);
   check('ISO regex', shape.ISO_PATTERN.test(ISO) && !shape.ISO_PATTERN.test('vaporos.img') && !shape.ISO_PATTERN.test('x-vaporos-1.iso'));
-  check('LIST_API per_page=100', shape.LIST_API === 'https://api.github.com/repos/jasperaelvoet/vaporos/releases?per_page=100');
+  check('LIST_API per_page=20', shape.LIST_API === 'https://api.github.com/repos/jasperaelvoet/vaporos/releases?per_page=20');
   check(
     'formatSize/formatDate',
     shape.formatSize(1721292800) === '1.7 GB' && shape.formatSize(48213e3) === '48 MB' && shape.formatSize(0) === '' && shape.formatDate(one.published_at) === 'Sep 29, 2026',
