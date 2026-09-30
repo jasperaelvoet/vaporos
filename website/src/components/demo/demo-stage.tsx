@@ -13,8 +13,13 @@
 //
 // The layout is CSS (demo-layouts.css) so the first paint is already the right one;
 // this component only sets the frame's scale (--s) and runs the channel.
-// The frame is sandboxed without top navigation: store links open in a new
-// tab, and nothing in it can take the site's page away.
+// The frame is our own page on the site's origin, and trusted as such: it
+// needs allow-same-origin (sessionStorage, and the origin checks on both
+// ends of the protocol), and with allow-scripts that lets it reach this page,
+// so the sandbox is no wall. It only stops accidents: without top navigation,
+// store links open in a new tab and a stray link can't take the site's page
+// away. Chromium warns about the pair on every page the frame loads ("can
+// escape its sandboxing"); that is expected.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Icon } from '@/components/ui/icon';
 import { DEMO_OPEN, DEMO_UI, demoPage, demoStage as copy } from '@/content/demo';
