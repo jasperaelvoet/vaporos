@@ -1,2 +1,72 @@
-/* The chosen direction's skins: REDLINE's signature element, the hero art
-   and the scene (MASTER-PLAN §4). Filled by C6. */
+/* REDLINE's pieces that several pages share (MASTER-PLAN §4.3), on top of
+   the shell's REDLINE look in components.css and motion.css. Heat comes
+   fast and goes slowly (tokens --vos-dur-heat 600 ms, --vos-dur-cool
+   1400 ms), and at rest nothing here moves: every change is a transition
+   started by an attribute or a custom property. The pages draw their own
+   signature art (Home's viewfinder, Screen's spot meter).
+     ⟦cc-progress⟧ .heat-bar > .heat-bar-fill, filled to --progress (0-1)
+     ⟦cc-meter⟧    .meter > .meter-fill, filled to --v (ui/controls.js)
+     ⟦cc-skeleton⟧ a cool sweep the compositor runs
+     ⟦cc-tabs⟧ ⟦cc-link⟧ the tab underline and the link dot take the
+                   page's temperature fast and give it back slowly
+     ⟦cc-scene⟧    the word stretches into the warm cut when VaporOS answers */
+
+@layer components {
+  /* ---------------------------------------- ⟦cc-progress⟧ ⟦cc-meter⟧
+     The heat ramp filling, with a tick every tenth. A nearly full drive
+     runs white-hot; past 95 % it is a fault, so it goes cold. */
+  .heat-bar, .meter {
+    position: relative; overflow: hidden; border-radius: 3px;
+    background: var(--color-surface); box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+  .heat-bar { height: 0.75rem; }
+  .meter { height: 0.5rem; }
+  .heat-bar-fill, .meter-fill {
+    position: absolute; inset: 0;
+    background: linear-gradient(90deg, var(--color-h1), var(--color-h2) 14%, var(--color-h3) 26%, var(--color-h4) 38%, var(--color-h5) 50%, var(--color-h6) 62%, var(--color-h7) 75%, var(--color-h8) 88%, var(--color-h9));
+    transition: clip-path var(--vos-dur-pct) var(--ease-out);
+  }
+  .heat-bar-fill { clip-path: inset(0 calc(100% - var(--progress, 0) * 100%) 0 0); }
+  .meter-fill { clip-path: inset(0 calc(100% - var(--v, 0) * 100%) 0 0); }
+  .meter[data-level="danger"] .meter-fill { background: var(--color-cold); }
+  .heat-bar::after {
+    content: ""; position: absolute; inset: 0;
+    background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgb(0 0 4 / 0.55) calc(10% - 1px) 10%);
+  }
+
+  /* ------------------------------------------ ⟦cc-skeleton⟧ a cool sweep
+     A transform on a pseudo-element, so the bar is painted once and the
+     compositor moves the sweep; skeletons live only until data comes. */
+  .skel { position: relative; overflow: hidden; animation: none; background: color-mix(in oklab, var(--color-h1) 28%, var(--color-surface-2)); }
+  .skel::after {
+    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--color-h2) 55%, var(--color-surface-2)), transparent);
+    animation: vos-skel-sweep 1.8s linear infinite;
+  }
+
+  /* ------------------------------------------- ⟦cc-tabs⟧ ⟦cc-link⟧ */
+  .tab-mark { transition-duration: var(--vos-dur-release), var(--vos-dur-cool); }
+  .link-dot { transition-duration: var(--vos-dur-cool); }
+  :root:is([data-state="streaming"], [data-state="updating"], [data-state="restart-needed"]) .tab-mark { transition-duration: var(--vos-dur-release), var(--vos-dur-heat); }
+  :root:is([data-state="streaming"], [data-state="updating"], [data-state="restart-needed"]) .link-dot { transition-duration: var(--vos-dur-heat); }
+
+  /* ------------------------------------------------------ ⟦cc-scene⟧
+     Back: the word goes from the cold cut to the warm one as the field
+     heats up again, stretching (transform only) from the cold width. */
+  .scene-title { transform-origin: 0 100%; }
+  .scene[data-phase="back"] .scene-title { animation: vos-stretch-warm var(--vos-dur-stretch) var(--ease-width); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .heat-bar-fill, .meter-fill, .tab-mark, .link-dot { transition: none; }
+    .skel::after, .scene[data-phase="back"] .scene-title { animation: none; }
+  }
+
+  @media (forced-colors: active) {
+    .heat-bar, .meter { border: 1px solid CanvasText; }
+    .heat-bar-fill, .meter-fill { background: Highlight; forced-color-adjust: none; }
+    .heat-bar::after, .skel::after { display: none; }
+  }
+}
+
+@keyframes vos-skel-sweep { to { transform: translateX(100%); } }
+@keyframes vos-stretch-warm { from { transform: scaleX(0.74); } }
