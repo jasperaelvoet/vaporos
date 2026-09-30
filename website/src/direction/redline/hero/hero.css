@@ -392,6 +392,21 @@
     bottom: 1.75rem;
     width: auto;
   }
+  /* On short or narrow phones the words climb over the PC: they always sit
+     on the dark, which fades in over the 3rem above them. */
+  .hero-copy::before {
+    content: "";
+    position: absolute;
+    inset: -3rem -1rem -1.75rem;
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      transparent,
+      color-mix(in srgb, var(--color-h0) 84%, transparent) 3rem,
+      color-mix(in srgb, var(--color-h0) 84%, transparent)
+    );
+  }
   .hero-kicker {
     margin-bottom: 0.875rem;
     font-size: 1rem;

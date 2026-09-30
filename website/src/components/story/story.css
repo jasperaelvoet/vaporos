@@ -685,7 +685,7 @@
   grid-column: 1 / -1;
   grid-row: 1;
   width: 74%;
-  transition: opacity var(--vos-dur-cool) var(--ease-out);
+  transition: box-shadow var(--vos-dur-heat) var(--ease-out);
 }
 .duo .phone {
   grid-column: 2;
@@ -694,15 +694,23 @@
   z-index: 1;
   width: 86%;
   margin-top: 12%;
-  transition: opacity var(--vos-dur-cool) var(--ease-out);
+  transition: box-shadow var(--vos-dur-heat) var(--ease-out);
 }
-/* As the steps light up, the picture follows them: at step 2 the screen on
-   the PC is what you look at, from step 3 the phone. Only while things may
-   move: with motion off every step is lit at once and both stay bright. */
+/* As the steps light up, the picture follows them: the device the lit step
+   happens on gets a white-hot rim (the thing you touch), the screen on the
+   PC at step 2, the phone from step 3. Only while things may move: with
+   motion off every step is lit at once and neither rim shows. */
 @media (prefers-reduced-motion: no-preference) {
-  html:not([data-motion="paused"]) .setup-cols:has(.steps li:nth-of-type(2)[data-on]):not(:has(.steps li:nth-of-type(3)[data-on])) .duo .phone,
-  html:not([data-motion="paused"]) .setup-cols:has(.steps li:nth-of-type(3)[data-on]) .duo .tv {
-    opacity: 0.55;
+  html:not([data-motion="paused"]) .setup-cols:has(.steps li:nth-of-type(2)[data-on]):not(:has(.steps li:nth-of-type(3)[data-on])) .duo .tv {
+    box-shadow:
+      0 0 0 10px color-mix(in srgb, var(--color-h0) 60%, var(--color-ash)),
+      0 0 0 12px var(--color-h9);
+  }
+  html:not([data-motion="paused"]) .setup-cols:has(.steps li:nth-of-type(3)[data-on]) .duo .phone {
+    box-shadow:
+      0 0 0 8px color-mix(in srgb, var(--color-h0) 60%, var(--color-ash)),
+      0 0 0 10px var(--color-h9),
+      0 30px 60px color-mix(in srgb, var(--color-h0) 60%, transparent);
   }
 }
 @media (max-width: 56.25rem) {
