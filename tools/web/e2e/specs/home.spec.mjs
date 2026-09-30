@@ -472,6 +472,8 @@ export default [
       await step('letting go early nudges: keep holding', async () => {
         await page.click('#home-power');
         await page.locator('#power-sheet[open]').waitFor();
+        // The sheet slides in: press only once it has settled under the pointer.
+        await page.waitForFunction(() => document.getElementById('power-sheet').getAnimations({ subtree: true }).every((a) => a.playState !== 'running'));
         await hold(page, '#home-reboot', 500);
         assert.equal(await text(page, '#home-hold-hint'), 'Keep holding Restart until the key fills.');
       });
