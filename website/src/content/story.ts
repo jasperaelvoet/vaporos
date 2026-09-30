@@ -75,10 +75,27 @@ export const remoteStory = {
     { label: 'Updates', text: 'Signed, in the background, with a rollback to the previous version.' },
     { label: 'Power', text: 'Idle power-off, Stay awake and Wake-on-LAN.' },
   ],
-  /** The demo is off until the next release (content/demo.ts): what shows instead of it. */
+  /** The demo is off until the next release (content/demo.ts): a line under the picture instead of it. */
   demoLater: 'The live demo arrives with the next VaporOS release.',
   tvCaption:
     "A monitor is optional, even to install. If one is connected, it only ever shows this: the address and a QR code. Never a terminal, never a desktop.",
+  figureLabel: 'The control center on a phone, ready to stream, and the screen connected to the PC showing its address',
+  /**
+   * The phone: the control center's home page as it is today, ready to
+   * stream (internal/web/templates/legacy/pages/dashboard.html and
+   * static/legacy/js/pages/dashboard.js renderStatus: the host, "Ready to
+   * stream", its detail, the display's mode, the live pill and the quick
+   * actions). Drawn in the site's look; the words are the page's own.
+   */
+  phone: {
+    host: 'vapor.local',
+    live: 'Live',
+    status: { verb: 'Ready', rest: 'to stream' },
+    detail: 'Open Moonlight on any device and pick this PC.',
+    mode: '3840 × 2160 · 60 Hz',
+    actionsLabel: 'Quick actions',
+    actions: ['Pair a device', 'Stay awake 1 h', 'Restart', 'Power off'],
+  },
 };
 
 /** The welcome screen as the PC draws it once VaporOS is installed. */

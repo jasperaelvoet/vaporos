@@ -1,11 +1,13 @@
 // B3 and B4: your phone is the remote, and a monitor only says where to go.
 // Warm, at the ready temperature: what the control center does, one line
-// each, beside the welcome screen a connected monitor shows once VaporOS is
-// installed. The live demo is off until the next release (content/demo.ts),
-// so the beat says when it arrives instead of linking it.
+// each, beside the picture of it: the control center's home page on a phone
+// (as it is today), in front of the welcome screen a connected monitor shows
+// once VaporOS is installed. The live demo is off until the next release
+// (content/demo.ts), so a line under the picture says when it arrives.
 import { remoteBeat } from '@/content/home';
 import { remoteStory } from '@/content/story';
 import { Beat, BeatHead } from './beat';
+import { RemotePhone } from './remote-phone';
 import { TvScreen } from './tv-screen';
 
 export function RemoteBeat() {
@@ -22,11 +24,13 @@ export function RemoteBeat() {
               </div>
             ))}
           </dl>
-          <p className="remote-demo telemetry">{remoteStory.demoLater}</p>
         </div>
-        <figure className="remote-tv">
+        <figure className="remote-fig" aria-label={remoteStory.figureLabel}>
           <TvScreen state="ready" />
-          <figcaption className="beat-note">{remoteStory.tvCaption}</figcaption>
+          <RemotePhone />
+          <figcaption className="beat-note">
+            {remoteStory.tvCaption} <span className="remote-demo">{remoteStory.demoLater}</span>
+          </figcaption>
         </figure>
       </div>
     </Beat>
