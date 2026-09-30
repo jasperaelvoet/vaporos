@@ -5,18 +5,24 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-// parseArgs reads --name=value and --flag. Unknown flags are an error, and
-// so is anything that would show a browser window.
+// parseArgs reads --name=value, --name value (for flags that take a value,
+// i.e. whose default isn't a boolean) and --flag. Unknown flags are an error,
+// and so is anything that would show a browser window.
 export function parseArgs(argv, known) {
   const out = {};
-  for (const a of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
     const m = a.match(/^--([a-z][a-z-]*)(?:=(.*))?$/);
     if (!m) throw new Error(`unexpected argument ${a}`);
-    const [, name, value] = m;
+    const [, name] = m;
+    let value = m[2];
     if (['headed', 'show', 'attach', 'extension', 'debug'].includes(name)) {
       throw new Error(`--${name} is refused: the harness is headless only and never shows a window`);
     }
     if (!(name in known)) throw new Error(`unknown flag --${name}; known: ${Object.keys(known).map((k) => '--' + k).join(' ')}`);
+    if (value === undefined && typeof known[name] !== 'boolean' && i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+      value = argv[++i];
+    }
     out[name] = value ?? true;
   }
   return { ...known, ...out };
