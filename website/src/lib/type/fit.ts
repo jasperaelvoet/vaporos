@@ -39,19 +39,45 @@ export function hottestOf(cut: CutName, stretch = 0, stretchG = 0, friction = 0)
  * The set is shown for the measurement if CSS hides it, then restored.
  */
 export function measureK(set: HTMLElement, hot: Hottest): number {
+  return measure(set, hot, (range, ln) => {
+    range.selectNodeContents(ln);
+    return range.getBoundingClientRect().width;
+  });
+}
+
+/**
+ * K for the longest word in `set` (in em, at `hot`): what a headline with no
+ * narrow line set is fitted to on phones, where its lines run together and
+ * wrap, so no single word is ever wider than the column.
+ */
+export function measureWordK(set: HTMLElement, hot: Hottest): number {
+  return measure(set, hot, (range, ln) => {
+    let widest = 0;
+    const walker = document.createTreeWalker(ln, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const m of (node.textContent ?? '').matchAll(/\S+/g)) {
+        range.setStart(node, m.index);
+        range.setEnd(node, m.index + m[0].length);
+        widest = Math.max(widest, range.getBoundingClientRect().width);
+      }
+    }
+    return widest;
+  });
+}
+
+/** Sets `set` at 100 px and the hottest cut, and returns the widest `.ln` as `width` measures it, in em plus 1%. */
+function measure(set: HTMLElement, hot: Hottest, width: (range: Range, ln: HTMLElement) => number): number {
   const before = set.getAttribute('style');
   set.style.setProperty('display', 'block', 'important');
   set.style.setProperty('position', 'absolute');
   set.style.setProperty('visibility', 'hidden');
+  set.style.setProperty('white-space', 'nowrap', 'important');
   set.style.setProperty('font-size', '100px', 'important');
   set.style.setProperty('font-stretch', `${hot.w}%`, 'important');
   set.style.setProperty('font-weight', String(hot.g), 'important');
   const range = document.createRange();
   let widest = 0;
-  for (const ln of set.querySelectorAll<HTMLElement>('.ln')) {
-    range.selectNodeContents(ln);
-    widest = Math.max(widest, range.getBoundingClientRect().width);
-  }
+  for (const ln of set.querySelectorAll<HTMLElement>('.ln')) widest = Math.max(widest, width(range, ln));
   range.detach?.();
   if (before === null) set.removeAttribute('style');
   else set.setAttribute('style', before);
@@ -61,7 +87,8 @@ export function measureK(set: HTMLElement, hot: Hottest): number {
 
 /**
  * Measures the headline's wide set (and its narrow set, when it has one) and
- * writes --fit-k / --fit-k-narrow and data-fitted / data-fitted-narrow.
+ * writes --fit-k / --fit-k-narrow and data-fitted / data-fitted-narrow; with
+ * no narrow set, --fit-k-word (its longest word, for phones).
  * Also records the measured value in data-fit-k, so an author can copy it
  * into <Headline fitK> and render the right size before any script runs.
  */
@@ -83,5 +110,8 @@ export function fitHeadline(el: HTMLElement, hot: Hottest, hotNarrow: Hottest = 
       el.dataset.fittedNarrow = '';
       el.dataset.fitKNarrow = k.toFixed(3);
     }
+  } else if (wide) {
+    const k = measureWordK(wide, hotNarrow);
+    if (k > 0) el.style.setProperty('--fit-k-word', k.toFixed(4));
   }
 }

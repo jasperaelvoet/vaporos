@@ -9,18 +9,19 @@
 //
 // - `cut` picks the Anybody cut (cold, warm, hot); a scroll scene may stretch
 //   the headline further by writing --stretch/--stretch-g (percent points and
-//   weight; see src/lib/type/scroll-stretch.ts or a ScrollTrigger scrub), and
+//   weight; the hero's does, direction/redline/hero/hero-stage.tsx), and
 //   friction heat adds up to `friction` points on desktop.
-// - Every line is kept on one line (`lines`, and `narrow` below 901 px), and
-//   the headline is fitted at the hottest width it can reach (the cut plus
-//   the larger of stretch and friction, where type.css caps it), so it never
-//   reflows while it stretches.
+// - Every line is kept on one line (`lines` from 600 px up, `narrow` on
+//   phones), and the headline is fitted at the hottest width it can reach
+//   (the cut plus the larger of stretch and friction, where type.css caps
+//   it), so it never reflows while it stretches. On tablets the wide lines
+//   are fitted to the column at up to 1.25× the phone size.
 // - `fitK`/`fitKNarrow`: the measured fit (the element's data-fit-k after it
 //   runs once). With them the server HTML already has the right size, so
 //   the page doesn't shift when the script measures; without them long
 //   lines wrap until the script has measured.
 // - With no `narrow` set, the lines run together and wrap on phones at the
-//   preset's phone size.
+//   preset's phone size, or smaller so the longest word fits.
 // The whole text is one accessible string; the visual lines are aria-hidden
 // when there are two sets.
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
@@ -66,9 +67,9 @@ export interface HeadlineProps {
   as?: Tag;
   id?: string;
   cut: CutName;
-  /** The lines from 901 px up, each kept on one line. */
+  /** The lines from 600 px up, each kept on one line. */
   lines: readonly string[];
-  /** The lines below 901 px; omit to let `lines` run together and wrap there. */
+  /** The lines on phones (below 600 px); omit to let `lines` run together and wrap there. */
   narrow?: readonly string[];
   size?: HeadlineSize;
   /** Width a scroll scene adds at most, in percent points (warm 100 → hot 124 is 24). */

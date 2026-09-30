@@ -17,7 +17,7 @@
                     below 901 px, --stretch-max-narrow, which <Headline> sets
                     to cut + max(stretch, friction) (phones: no friction)
 
-   All six are registered, so CSS transitions and GSAP tween them smoothly.
+   All six are registered, so CSS transitions and animations tween them.
    The resulting width is min(stretch-max, cut + stretch + friction × gain):
    a stretched headline gets no extra friction beyond its hot end. A
    stretching headline is fitted at that hottest width first (<Headline>,
@@ -132,25 +132,29 @@
   .headline[data-fitted] .headline-wide {
     font-size: min(var(--headline-size), calc(100cqi / var(--fit-k)));
   }
+  /* Each line is a block. At the page's own spacing the fit already keeps it
+     on one line; it may still wrap (never clip) when a reader's text-spacing
+     settings widen it (WCAG 1.4.12). */
   .headline .ln {
     display: block;
-    white-space: nowrap;
-  }
-  /* Not fitted yet (no script, no fitK): let long lines wrap rather than
-     overflow the page. */
-  .headline:not([data-fitted]) .headline-wide .ln {
-    white-space: normal;
   }
 
-  /* Two line sets: wide (≥ 901 px) and narrow. With no narrow set, the wide
-     lines run together and wrap on phones, at the preset's phone size. */
+  /* Two line sets: wide (≥ 600 px) and narrow (phones). On tablets the wide
+     lines are kept, fitted to the column at up to 1.25× the phone size. */
   .headline-narrow {
     display: none;
+  }
+  @media (min-width: 37.5rem) and (max-width: 56.25rem) {
+    .headline[data-fitted] .headline-wide {
+      font-size: min(max(var(--headline-size), calc(var(--headline-size-narrow, 2.75rem) * 1.25)), calc(100cqi / var(--fit-k)));
+    }
   }
   @media (max-width: 56.25rem) {
     .headline {
       --stretch-max: var(--stretch-max-narrow, var(--stretch-max-wide, 136%));
     }
+  }
+  @media (max-width: 37.4375rem) {
     .headline[data-narrow] .headline-wide {
       display: none;
     }
@@ -161,17 +165,16 @@
     .headline[data-narrow][data-fitted-narrow] .headline-narrow {
       font-size: min(var(--headline-size-narrow), calc(100cqi / var(--fit-k-narrow)));
     }
-    .headline[data-narrow]:not([data-fitted-narrow]) .headline-narrow .ln {
-      white-space: normal;
-    }
-    .headline:not([data-narrow]) .headline-wide {
-      font-size: var(--headline-size-narrow, 2.75rem);
+    /* No narrow set: the lines run together and wrap, at the phone size or
+       smaller, so the longest word (--fit-k-word, measured) always fits. */
+    .headline:not([data-narrow]) .headline-wide,
+    .headline:not([data-narrow])[data-fitted] .headline-wide {
+      font-size: min(var(--headline-size-narrow, 2.75rem), calc(100cqi / var(--fit-k-word, 6.2)));
       line-height: 0.95;
       text-wrap: balance;
     }
     .headline:not([data-narrow]) .headline-wide .ln {
       display: inline;
-      white-space: normal;
     }
   }
 }

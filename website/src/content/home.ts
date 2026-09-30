@@ -5,10 +5,12 @@
 // facts they draw on stay in features.ts, how-it-works.ts, install.ts and
 // faq.ts.
 //
-// Headline lines: `lines` is the set from 901 px up (each kept on one
-// line), `narrow` the set below. `fitK`/`fitKNarrow` are the fits the
-// Headline measured at its hottest width (its data-fit-k), so the first
-// paint is already fitted; re-measure them when a line changes.
+// Headline lines: `lines` is the set from 600 px up (each kept on one
+// line, fitted to the column), `narrow` the set for phones, broken so each
+// line keeps a phrase together. `fitK`/`fitKNarrow` are the fits the
+// Headline measured at its hottest width (its data-fit-k and
+// data-fit-k-narrow), so the first paint is already fitted; re-measure them
+// when a line changes.
 import { anchors, routes } from './site';
 import type { ButtonItem, IconName, Rich } from './types';
 
@@ -60,7 +62,9 @@ export const screenBeat: BeatHead = {
   heatLabel: 'streaming',
   title: {
     lines: ['Every screen gets', 'its own picture.'],
+    narrow: ['Every screen', 'gets its own', 'picture.'],
     fitK: 14.554,
+    fitKNarrow: 9.582,
   },
   lead: "**No dummy plug.** When Moonlight starts a stream, VaporOS switches its virtual display to that device's resolution, refresh rate and HDR. The TV gets 4K HDR; your phone gets its own odd shape." as Rich,
 };
@@ -72,7 +76,9 @@ export const remoteBeat: BeatHead = {
   heatLabel: 'ready',
   title: {
     lines: ['Your console,', 'in your pocket.'],
+    narrow: ['Your console,', 'in your pocket.'],
     fitK: 9.136,
+    fitKNarrow: 8.085,
   },
   lead: 'Open `vapor.local` on your phone and everything is there. The screen on the PC, if you have one, just tells you where to go.' as Rich,
 };
@@ -84,7 +90,9 @@ export const setupBeat: BeatHead = {
   heatLabel: 'cold boot',
   title: {
     lines: ['Three steps.', 'The last one is', 'on your phone.'],
+    narrow: ['Three steps.', 'The last one', 'is on your phone.'],
     fitK: 6.119,
+    fitKNarrow: 5.812,
   },
   lead: "Once the PC boots from the USB stick, the rest happens in your phone's browser. The PC itself only shows where to go.",
 };
@@ -96,7 +104,9 @@ export const updatesBeat: BeatHead = {
   heatLabel: 'updating',
   title: {
     lines: ['Updates that', 'undo themselves.'],
+    narrow: ['Updates', 'that undo', 'themselves.'],
     fitK: 10.794,
+    fitKNarrow: 6.638,
   },
   lead: "VaporOS keeps two copies of the system. A new version goes to the copy you aren't running and starts on the next restart. **If it doesn't start cleanly, the PC goes back to the previous version by itself**, and won't install that version again." as Rich,
 };
@@ -108,7 +118,9 @@ export const powerBeat: BeatHead = {
   heatLabel: 'asleep',
   title: {
     lines: ['Off when nobody plays.', 'On when you do.'],
+    narrow: ['Off when', 'nobody plays.', 'On when', 'you do.'],
     fitK: 9.58,
+    fitKNarrow: 4.67,
   },
   // Idle power-off is off by default; a new install turns it on only when a
   // wired network adapter wakes on a magic packet (internal/config/config.go
@@ -124,9 +136,9 @@ export const getBeat = {
   heatLabel: 'white-hot',
   title: {
     lines: ['Turn it into a', 'console tonight.'],
-    narrow: ['Turn it', 'into a console', 'tonight.'],
+    narrow: ['Turn it into', 'a console', 'tonight.'],
     fitK: 12.58,
-    fitKNarrow: 9.913,
+    fitKNarrow: 7.92,
   },
   /** downloadPage.lead plus downloadPage.channelsShort, in one breath. */
   lead: 'One ISO. Write it to a USB stick, boot the PC from it, and finish the setup on your phone. An installed PC updates itself, so you only download this once.' as Rich,
@@ -140,7 +152,7 @@ export const faqTeaser = {
   id: 'questions',
   heat: 0.42,
   heatLabel: 'ready',
-  title: { lines: ['Good', 'to know'], fitK: 4.359 },
+  title: { lines: ['Good', 'to know'], narrow: ['Good', 'to know'], fitK: 4.359, fitKNarrow: 4.359 },
   /** Which faq.ts entries, in this order. */
   ids: ['gpu', 'monitor', 'headless', 'rollback', 'wake', 'dual-boot'],
   more: { label: 'All questions', href: routes.faq, icon: 'arrow' as IconName },
