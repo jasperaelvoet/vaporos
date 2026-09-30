@@ -158,7 +158,9 @@ export function start() {
     else fieldError(name, '');
   });
   const chosen = () => (pick.value === 'other' ? name.value.trim() : pick.value);
-  bindForm(form, {
+  // An unsaved channel survives a sign-in or a tab switch (CRIT 35).
+  const channel = bindForm(form, {
+    draft: true,
     saved: '',
     validate: () => (pick.value === 'other' ? { 'upd-channel-name': channelError(name.value.trim()) || '' } : {}),
     fieldFor: (err) => (err.status === 400 && pick.value === 'other' ? 'upd-channel-name' : ''),
@@ -171,4 +173,5 @@ export function start() {
       queueMicrotask(() => refresh(0));
     },
   });
+  if (channel.isDirty()) byId('upd-other-field').hidden = pick.value !== 'other';
 }

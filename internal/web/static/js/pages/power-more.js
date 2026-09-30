@@ -155,7 +155,9 @@ export function start() {
     if (custom) minutes.focus();
     else fieldError(minutes, '');
   });
-  bindForm(byId('pwr-idle-form'), {
+  // Unsaved minutes survive a sign-in or a tab switch (CRIT 35).
+  const idle = bindForm(byId('pwr-idle-form'), {
+    draft: true,
     saved: '',
     validate: () => ({ 'pwr-minutes': idleMinutesError(chosen()) }),
     fieldFor: (err) => (err.status === 400 ? 'pwr-minutes' : ''),
@@ -171,6 +173,7 @@ export function start() {
       notify(`Saved. VaporOS powers off after ${n} idle minutes.`, { kind: 'ok' });
     },
   });
-  byId('pwr-save').disabled = true;
+  if (idle.isDirty()) byId('pwr-custom').hidden = radios().find((x) => x.checked)?.value !== 'custom';
+  else byId('pwr-save').disabled = true;
   render();
 }

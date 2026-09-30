@@ -109,7 +109,7 @@
   .pwr-wol { display: grid; gap: 0.625rem; }
   .pwr-wait { display: flex; align-items: center; gap: 0.5rem; min-height: 3.25rem; margin: 0; padding: 0 1rem; border-radius: var(--radius-2xl); background: var(--color-surface); color: var(--color-ink-2); }
   .pwr-wait[hidden], .pwr-wake[hidden] { display: none; }
-  .pwr-pip { width: 0.5rem; height: 0.5rem; border-radius: var(--radius-xs); background: var(--color-h4); animation: vos-pulse 1.6s ease-in-out infinite alternate; }
+  .pwr-pip { width: 0.5rem; height: 0.5rem; border-radius: var(--radius-xs); background: var(--color-h4); animation: vos-pulse 1.6s ease-in-out 3 alternate; }
   .pwr-nics { display: grid; margin: 0; padding: 0; list-style: none; border-radius: var(--radius-2xl); background: var(--color-surface); overflow: hidden; }
   .pwr-nics:empty { display: none; }
   .pwr-nic { display: grid; gap: 0.375rem; padding: 0.875rem 1rem; border-top: 1px solid var(--color-line); }
@@ -148,13 +148,11 @@
   }
 
   @media (forced-colors: active) {
-    .pwr .btn, .pwr .input, .pwr .copy { border: 1px solid ButtonText; }
     .pwr-vf { height: 4.5rem; min-height: 0; }
     .pwr-state, .pwr-card, .pwr-banner, .pwr-preset-text, .pwr-switch, .pwr-nics, .pwr-tag, .pwr-wait, .pwr-count, .pwr-needle-label, .pwr-scale { border: 1px solid CanvasText; }
     .pwr-vf .heat-field { display: none; }
     .pwr-tag { forced-color-adjust: none; background: Canvas; color: CanvasText; }
     .pwr-radio:checked + .pwr-preset-text, .pwr-switch-input:checked + .pwr-switch::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
     .pwr-needle::after { forced-color-adjust: none; border-top-color: Highlight; }
-    .pwr-form .input:focus-visible { outline: 2px solid Highlight; }
   }
 }

@@ -2,7 +2,7 @@
 // the two copies from GET /update and live events (updates-more.js wires
 // the buttons). GET is the truth (R1): replays never show as updating (B1).
 
-import { api, serverNow } from '../core/api.js';
+import { api, serverNow, signedInBefore } from '../core/api.js';
 import { announce } from '../core/announce.js';
 import { byId, cloneTpl, h, part, setText, setVar } from '../core/dom.js';
 import { on, onReconnect } from '../core/live.js';
@@ -11,8 +11,11 @@ import { onStatus, shell } from '../ui/shell.js';
 import { UPDATE_PHASES } from '../copy.js';
 import { ago, bytes, compareVersions as cmp, percent, phaseLabel } from '../fmt.js';
 
-const early = api('GET', '/update');
-early.catch(() => {});
+// The read starts before boot (ARCH §7.4) in a tab that was signed in;
+// otherwise after it, so a signed-out visit makes no 401 before sign-in.
+const read = () => api('GET', '/update');
+const early = signedInBefore() ? read() : null;
+early?.catch(() => {});
 const more = import('./updates-more.js');
 
 // live: working progress; failed: a live error; checking: a stage's check;
@@ -225,7 +228,7 @@ async function start() {
   (await more).start();
   const failed = (err) => more.then((m) => m.failedLoad(err));
   byId('upd-retry').addEventListener('click', () => api('GET', '/update').then(take, failed));
-  early.then(take, failed);
+  (early || read()).then(take, failed);
   onStatus((snap) => {
     if (snap.update) take({ ...snap.update });
     // This page says itself what a restart installs; the row keeps the rest.

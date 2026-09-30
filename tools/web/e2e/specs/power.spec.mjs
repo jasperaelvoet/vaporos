@@ -6,15 +6,13 @@
 
 import assert from 'node:assert/strict';
 
-import { dev } from '../lib/dev.mjs';
+import { dev, write } from '../lib/dev.mjs';
 
 const PATH = '/system/power';
 const text = async (page, sel) => (await page.textContent(sel))?.trim() ?? '';
 const until = (page, fn, arg, timeout = 5000) => page.waitForFunction(fn, arg, { timeout });
 const title = (page, want) => until(page, (w) => document.getElementById('pwr-title').textContent === w, want);
 const notice = (page, words) => page.locator('#notices .notice', { hasText: words }).first().waitFor();
-const write = (page, method, path) =>
-  page.waitForRequest((r) => r.method() === method && new URL(r.url()).pathname === `/api/v1${path}`).then((r) => r.postDataJSON());
 const CLOCK = /^\d{1,2}:\d{2}(\s?[AP]M)?$/;
 
 async function open(t, preset) {
@@ -48,11 +46,11 @@ export default [
     preset: 'busy-web',
     async run(t) {
       const { page, step } = t;
-      await step('only this page keeps it on: said honestly, with when it powers off (B5)', async () => {
+      await step('only this page keeps it on: the title says until when the PC stays on (B5)', async () => {
         await open(t);
-        assert.equal(await text(page, '#pwr-title'), 'Only this page keeps it on');
-        const m = /^It powers off about (.+) if nobody plays\.$/.exec(await text(page, '#pwr-detail'));
-        assert.ok(m && CLOCK.test(m[1]), await text(page, '#pwr-detail'));
+        const m = /^On until about (.+)$/.exec(await text(page, '#pwr-title'));
+        assert.ok(m && CLOCK.test(m[1]), await text(page, '#pwr-title'));
+        assert.equal(await text(page, '#pwr-detail'), 'Idle power-off starts 15 min after this page closes.');
         assert.equal(await page.getAttribute('#pwr-state', 'data-level'), 'web');
         assert.equal(await text(page, '#pwr-needle'), 'on');
       });

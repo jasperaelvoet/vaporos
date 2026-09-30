@@ -2,7 +2,7 @@
 // level from GET /power and power.idle, counted down here between events;
 // power-more.js wires the controls, the adapters and the Wake card.
 
-import { api, errorText, serverNow } from '../core/api.js';
+import { api, errorText, serverNow, signedInBefore } from '../core/api.js';
 import { announce } from '../core/announce.js';
 import { byId, setText, setVar } from '../core/dom.js';
 import { on, onReconnect } from '../core/live.js';
@@ -11,8 +11,11 @@ import { onStatus, shell } from '../ui/shell.js';
 import { busyReason } from '../copy.js';
 import { clock, duration } from '../fmt.js';
 
-const early = api('GET', '/power');
-early.catch(() => {});
+// The read starts before boot (ARCH §7.4) in a tab that was signed in;
+// otherwise after it, so a signed-out visit makes no 401 before sign-in.
+const read = () => api('GET', '/power');
+const early = signedInBefore() ? read() : null;
+early?.catch(() => {});
 const more = import('./power-more.js');
 
 // p: GET /power (wol kept from the last full answer); at: when shutdown_in
@@ -36,7 +39,8 @@ export function view(p, now = serverNow()) {
   }
   if (p.busy && p.busy.web && p.idle_shutdown) {
     const off = T(p.web_until) ? clock(new Date(T(p.web_until) + n * 60e3).toISOString(), new Date(now)) : '';
-    return { key: 'web', title: 'Only this page keeps it on', detail: off ? `It powers off about ${off} if nobody plays.` : `It powers off ${n} minutes after this page closes if nobody plays.`, heat: 0.42, needle: 'on' };
+    // Whoever reads this has the page open: the title is the PC's state.
+    return { key: 'web', title: off ? `On until about ${off}` : 'On', detail: `Idle power-off starts ${n} min after this page closes.`, heat: 0.42, needle: 'on' };
   }
   if (p.idle_shutdown && left > 0) {
     return { key: 'countdown', title: `Powers off in ${duration(left)}`, detail: `Nobody has played for ${duration(idle)}. Start a stream to keep it on.`, awake: true,
@@ -110,7 +114,7 @@ async function start() {
   await shell('power');
   (await more).start();
   byId('pwr-retry').addEventListener('click', () => api('GET', '/power').then(take, failedLoad));
-  early.then(take, failedLoad);
+  (early || read()).then(take, failedLoad);
   onStatus((snap) => {
     if (!snap.power || !P.p) return;
     // The shell's copy of the adapters may be a day old; GET /power is not.

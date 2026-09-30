@@ -86,11 +86,17 @@ export function bindForm(form, { validate = () => ({}), submit, fieldFor = () =>
   return { setDirty, isDirty: () => isDirty(form) };
 }
 
+// A radio group keeps the value of its checked radio; a checkbox, whether
+// it is checked; anything else, its value. Passwords are never kept.
 function saveDraft(form, key) {
   const values = {};
   for (const el of form.elements) {
     if (!el.name || el.type === 'password' || el.type === 'hidden' || el.type === 'submit') continue;
-    values[el.name] = el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value;
+    if (el.type === 'radio') {
+      if (el.checked) values[el.name] = el.value;
+    } else {
+      values[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+    }
   }
   setJSON('session', `${DRAFTS}:${key}`, values);
 }
@@ -100,7 +106,8 @@ function restoreDraft(form, key, setDirty) {
   if (!values) return;
   for (const el of form.elements) {
     if (!(el.name in values) || el.type === 'password') continue;
-    if (el.type === 'checkbox' || el.type === 'radio') el.checked = !!values[el.name];
+    if (el.type === 'radio') el.checked = el.value === values[el.name];
+    else if (el.type === 'checkbox') el.checked = !!values[el.name];
     else el.value = values[el.name];
   }
   setDirty(true);
