@@ -22,6 +22,7 @@
   "devices": [
     {"name": "Sam's iPhone", "mode": "2796x1290@120", "hdr": true, "last_seen": "@-2h"},
     {"name": "Living room TV", "mode": "3840x2160@60", "hdr": true, "last_seen": "@-26h"},
+    {"name": "Sam's iPad", "mode": "2360x1640@120", "hdr": false, "last_seen": "@-50h"},
     {"name": "MacBook Pro", "mode": "2560x1600@120", "hdr": false, "last_seen": "@-72h"}
   ],
   "reboot_needed": false,
