@@ -19,7 +19,17 @@ var genericFamilies = []string{"serif", "sans-serif", "monospace", "cursive", "f
 	"ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong", "-apple-system", "BlinkMacSystemFont"}
 
 func fontStack(f fontTok) string {
+	return stackOf(f, false)
+}
+
+// stackOf is f's font stack. With local, a family whose faces ship as web
+// fonts gets its metric-matched "<family> fallback" (styles/fonts-fallback.css,
+// from tools/fonts) right after it, so the swap to the web font moves nothing.
+func stackOf(f fontTok, local bool) string {
 	parts := []string{strconv.Quote(f.Family)}
+	if local && f.hasWeb() {
+		parts = append(parts, strconv.Quote(f.Family+" fallback"))
+	}
 	for _, fb := range f.Fallback {
 		if slices.Contains(genericFamilies, fb) {
 			parts = append(parts, fb)
@@ -28,6 +38,16 @@ func fontStack(f fontTok) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// hasWeb reports whether any of f's faces ships as a web font.
+func (f fontTok) hasWeb() bool {
+	for _, k := range f.Faces.Keys {
+		if f.Faces.Vals[k].Web != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // modeDefaults orders a surface's modes so its default comes first.
@@ -107,16 +127,16 @@ func cssTokens(tf *tokensFile, sha string, o cssOpts) (string, error) {
 
 	w("\n  --font-*: initial;\n")
 	for _, r := range tf.Font.Keys {
-		w("  --font-%s: %s;\n", r, fontStack(tf.Font.Vals[r]))
+		w("  --font-%s: %s;\n", r, stackOf(tf.Font.Vals[r], o.fontFaces))
 		if f := tf.Font.Vals[r].Features; f != "" {
 			w("  --font-%s--font-feature-settings: %s;\n", r, f)
 		}
 	}
 	if ui, ok := tf.Font.get("ui"); ok {
-		w("  --default-font-family: %s;\n", fontStack(ui))
+		w("  --default-font-family: %s;\n", stackOf(ui, o.fontFaces))
 	}
 	if mono, ok := tf.Font.get("mono"); ok {
-		w("  --default-mono-font-family: %s;\n", fontStack(mono))
+		w("  --default-mono-font-family: %s;\n", stackOf(mono, o.fontFaces))
 		if mono.Features != "" {
 			w("  --default-mono-font-feature-settings: %s;\n", mono.Features)
 		}

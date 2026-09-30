@@ -610,15 +610,22 @@ const (
 	budgetLegacyRaw = 136_208 // static/legacy/**: 135,208 bytes when it was set aside, plus 1 kB; frozen
 	budgetSharedRaw = 45_000  // the files at the root of static/ that every set shares (icons, manifest)
 	budgetIconRaw   = 12_000  // each PNG icon at the root of static/
-	budgetTotalRaw  = 600_000 // every embedded static file of every set, until the legacy UI is deleted
+	budgetTotalRaw  = 700_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
+	budgetNextRaw   = 460_000 // the next set's own files (static/app.css, static/pages/, static/js/)
 
-	// The next set (ARCH §3.3): what one page needs before it can paint and work.
-	budgetPageGz     = 40_000 // HTML + app.css + head.js + the page script's static import graph, gzipped
-	budgetBarePageGz = 34_000 // sign-in and first-run setup
-	budgetInstallGz  = 48_000 // the installer wizard (its steps and the time zone list are in its HTML)
-	budgetCSSGz      = 14_000 // app.css as served
+	// The next set (ARCH §3.3): what one page needs before it can paint and
+	// work, as served. Re-baselined when the page stylesheets and the web
+	// fonts' @font-face rules were wired in and the HTML began to be counted
+	// as render() serves it (compressed once, cached per ETag), and the
+	// import() calls a page makes as it starts began to count as critical:
+	// the old numbers only passed because none of that was measured.
+	budgetPageGz     = 58_000 // HTML + app.css + the page's stylesheets + head.js + the modules it loads at start, gzipped
+	budgetBarePageGz = 40_000 // sign-in and first-run setup
+	budgetInstallGz  = 52_000 // the installer wizard (its steps and the time zone list are in its HTML)
+	budgetCSSGz      = 14_000 // app.css as served: the shell, the tokens and the font faces
+	budgetPageCSSGz  = 4_000  // each static/pages/<page>.css as served
 	budgetModuleRaw  = 24_000 // any single module, before gzip
-	budgetLazyGz     = 30_000 // a page's import() modules together
+	budgetLazyGz     = 30_000 // a page's on-demand import() modules together
 )
 
 func TestAssetBudget(t *testing.T) {
@@ -647,6 +654,7 @@ func TestAssetBudget(t *testing.T) {
 		size, limit int
 	}{
 		{"static/legacy", legacy, budgetLegacyRaw},
+		{"the next set's own files", next, budgetNextRaw},
 		{"the shared root files", shared, budgetSharedRaw},
 		{"all static files", total, budgetTotalRaw},
 	} {
@@ -665,6 +673,9 @@ func (a *asset) wire() int {
 }
 
 // The next set's budgets per page (ARCH §3.3), with a table in the log.
+// The HTML is measured as render() serves it (gzipPage); a page's own
+// stylesheets and every module it loads as it starts count, the modules it
+// imports on demand are its lazy total.
 func TestPageBudgets(t *testing.T) {
 	set := nextSet
 	u := testUI(t, set)
@@ -676,6 +687,9 @@ func TestPageBudgets(t *testing.T) {
 	for name, a := range u.assets.files {
 		if set.ownsStatic(name) && path.Ext(name) == ".js" && len(a.body) > budgetModuleRaw {
 			t.Errorf("%s: %d B, budget is %d for one module", name, len(a.body), budgetModuleRaw)
+		}
+		if set.ownsStatic(name) && strings.HasPrefix(name, path.Join(set.Static, "pages")+"/") && a.wire() > budgetPageCSSGz {
+			t.Errorf("%s: %d B gzipped, budget is %d for one page stylesheet", name, a.wire(), budgetPageCSSGz)
 		}
 	}
 	kinds := map[string]page{set.Installer.Script: set.Installer}
@@ -694,9 +708,10 @@ func TestPageBudgets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		htmlGz := len(gzipIfSmaller([]byte(pages[script])))
-		if htmlGz == 0 {
-			htmlGz = len(pages[script])
+		htmlGz := len(gzipPage([]byte(pages[script])))
+		pageCSS := 0
+		for _, rel := range u.styles[script] {
+			pageCSS += u.assets.files[path.Join(set.Static, rel)].wire()
 		}
 		js, lazyGz := 0, 0
 		var parts []string
@@ -707,7 +722,7 @@ func TestPageBudgets(t *testing.T) {
 		for _, m := range lazy {
 			lazyGz += u.assets.files[m].wire()
 		}
-		total := htmlGz + css.wire() + head.wire() + js
+		total := htmlGz + css.wire() + pageCSS + head.wire() + js
 		limit := budgetPageGz
 		switch {
 		case script == set.Installer.Script:
@@ -715,9 +730,9 @@ func TestPageBudgets(t *testing.T) {
 		case p.Bare:
 			limit = budgetBarePageGz
 		}
-		t.Logf("%-8s critical %6d B (html %d + css %d + head %d + js %d), lazy %d", script, total, htmlGz, css.wire(), head.wire(), js, lazyGz)
+		t.Logf("%-8s critical %6d B (html %d + css %d + page css %d + head %d + js %d), lazy %d", script, total, htmlGz, css.wire(), pageCSS, head.wire(), js, lazyGz)
 		if total > limit {
-			t.Errorf("%s: critical %d B > %d B (html %d + css %d + head %d + js %d: %s)", script, total, limit, htmlGz, css.wire(), head.wire(), js, strings.Join(parts, ", "))
+			t.Errorf("%s: critical %d B > %d B (html %d + css %d + page css %d + head %d + js %d: %s)", script, total, limit, htmlGz, css.wire(), pageCSS, head.wire(), js, strings.Join(parts, ", "))
 		}
 		if lazyGz > budgetLazyGz {
 			t.Errorf("%s: its import() modules are %d B gzipped, budget is %d", script, lazyGz, budgetLazyGz)
@@ -1145,8 +1160,8 @@ func TestPureModules(t *testing.T) {
 		if hit := impure.FindString(src); hit != "" {
 			t.Errorf("%s uses %q; pure modules touch no DOM, storage or network", m, hit)
 		}
-		st, lz := jsImports(b)
-		for _, rel := range append(st, lz...) {
+		st, eager, lz := jsImports(b)
+		for _, rel := range append(append(st, eager...), lz...) {
 			if target := path.Join(path.Dir(m), rel); !pure[target] {
 				t.Errorf("%s imports %s, which is not pure", m, rel)
 			}
@@ -1176,21 +1191,25 @@ func TestTransportSeam(t *testing.T) {
 func TestCSSURLsResolve(t *testing.T) {
 	set := nextSet
 	u := testUI(t, set)
-	css := string(u.assets.files[path.Join(set.Static, "app.css")].body)
 	pages := renderAll(t, set)
 	home := pages["home"]
-	for _, m := range cssURL.FindAllStringSubmatch(css, -1) {
-		ref := m[1] + m[2] + m[3]
-		switch {
-		case strings.HasPrefix(ref, "#"):
-			if !strings.Contains(home, `id="`+ref[1:]+`"`) {
-				t.Errorf("app.css: url(%s) names no element on the pages", ref)
-			}
-		case strings.HasPrefix(ref, "/") || strings.Contains(ref, ":"):
-			t.Errorf("app.css: url(%s) must be relative to app.css", ref)
-		default:
-			if _, ok := u.assets.files[path.Join(set.Static, ref)]; !ok {
-				t.Errorf("app.css: url(%s) is not an embedded asset", ref)
+	for name, a := range u.assets.files {
+		if !set.ownsStatic(name) || path.Ext(name) != ".css" {
+			continue
+		}
+		for _, m := range cssURL.FindAllStringSubmatch(string(a.body), -1) {
+			ref := m[1] + m[2] + m[3]
+			switch {
+			case strings.HasPrefix(ref, "#"):
+				if !strings.Contains(home, `id="`+ref[1:]+`"`) {
+					t.Errorf("%s: url(%s) names no element on the pages", name, ref)
+				}
+			case strings.HasPrefix(ref, "/") || strings.Contains(ref, ":"):
+				t.Errorf("%s: url(%s) must be relative to the stylesheet", name, ref)
+			default:
+				if _, ok := u.assets.files[path.Join(path.Dir(name), ref)]; !ok {
+					t.Errorf("%s: url(%s) is not an embedded asset", name, ref)
+				}
 			}
 		}
 	}

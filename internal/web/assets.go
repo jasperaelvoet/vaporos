@@ -184,25 +184,49 @@ var (
 	staticImport = regexp.MustCompile(`(?m)^[ \t]*(?:import|export)\b(?:[^;'"]*?\bfrom)?\s*'([^']+)'`)
 	// dynamicImport is import('./y.js') with a literal path.
 	dynamicImport = regexp.MustCompile(`\bimport\(\s*'([^']+)'\s*\)`)
+	// eagerImport is an import() in a statement at the top of a module, on
+	// a line that starts at column 0 (const more = import('./y.js');): it
+	// runs as the module is evaluated, so the page loads it at once, not on
+	// demand like an import() inside a function.
+	eagerImport = regexp.MustCompile(`(?m)^[^ \t\n/].*\bimport\(\s*'([^']+)'\s*\)`)
 )
 
-// jsImports lists the modules src imports statically and with import(),
-// as written.
-func jsImports(src []byte) (static, lazy []string) {
+// jsImports lists the modules src imports statically, with import() at the
+// top of the module (eager), and with import() anywhere else (lazy), as
+// written.
+func jsImports(src []byte) (static, eager, lazy []string) {
 	for _, m := range staticImport.FindAllSubmatch(src, -1) {
 		static = append(static, string(m[1]))
 	}
-	for _, m := range dynamicImport.FindAllSubmatch(src, -1) {
-		lazy = append(lazy, string(m[1]))
+	top := map[string]bool{}
+	for _, line := range eagerImport.FindAll(src, -1) {
+		for _, m := range dynamicImport.FindAllSubmatchIndex(line, -1) {
+			// const load = () => import('./y.js') only defines a loader.
+			if before := string(line[:m[0]]); strings.Contains(before, "=>") || strings.Contains(before, "function") {
+				continue
+			}
+			if name := string(line[m[2]:m[3]]); !top[name] {
+				top[name] = true
+				eager = append(eager, name)
+			}
+		}
 	}
-	return static, lazy
+	for _, m := range dynamicImport.FindAllSubmatch(src, -1) {
+		if !top[string(m[1])] {
+			lazy = append(lazy, string(m[1]))
+		}
+	}
+	return static, eager, lazy
 }
 
 // importGraph follows entry's imports, resolved against the importing file
-// the way the browser does. static is entry and every module it reaches
-// through static imports, in a stable order; lazy is what import() reaches
-// beyond that. An import of a file that is not an asset is an error, since
-// the page would fail in the browser.
+// the way the browser does. static is entry and every module the page loads
+// as it starts, in a stable order: what entry reaches through static imports
+// and through import() at the top of a module it loads (those are fetched
+// at once too, so they are preloaded and count in the critical path). lazy
+// is what the other import() calls reach beyond that, loaded on demand. An
+// import of a file that is not an asset is an error, since the page would
+// fail in the browser.
 func importGraph(files map[string]*asset, entry string) (static, lazy []string, err error) {
 	if files[entry] == nil {
 		return nil, nil, fmt.Errorf("no module %s", entry)
@@ -221,7 +245,12 @@ func importGraph(files map[string]*asset, entry string) (static, lazy []string, 
 			static = append(static, name)
 		}
 		a := files[name]
-		st, lz := jsImports(a.body)
+		st, eager, lz := jsImports(a.body)
+		if !dynamic {
+			st = append(st, eager...)
+		} else {
+			lz = append(lz, eager...)
+		}
 		for _, rel := range st {
 			target := path.Join(path.Dir(name), rel)
 			if files[target] == nil {

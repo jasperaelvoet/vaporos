@@ -48,6 +48,10 @@ type page struct {
 	Tab      string // a sub-page's tab root, by Name (next set)
 	Bare     bool   // centred card without navigation (sign-in, setup)
 	HideHead bool   // the <h1> is visually hidden (Home: the hero speaks first)
+	// Styles are the page's own stylesheets, in cascade order: each is
+	// styles/pages/<name>.css, which tools/web/css.mjs builds into
+	// static/pages/<name>.css and the layout links after app.css (next set).
+	Styles []string
 }
 
 // DocTitle is the next set's <title>: "Updates · VaporOS", or the title
@@ -133,29 +137,29 @@ var nextSet = uiSet{
 // going back (head.js). Wave agents fill the pages; this list is the one
 // place routes are added (spec-cc-screens §1.1).
 var nextPages = []page{
-	{Name: "home", Path: "/", Title: "Home", Script: "home", Icon: "vapor", Nav: true, HideHead: true},
-	{Name: "devices", Path: "/devices", Title: "Devices", Script: "devices", Icon: "devices", Nav: true,
+	{Name: "home", Path: "/", Title: "Home", Script: "home", Icon: "vapor", Nav: true, HideHead: true, Styles: []string{"home"}},
+	{Name: "devices", Path: "/devices", Title: "Devices", Script: "devices", Icon: "devices", Nav: true, Styles: []string{"devices"},
 		Lead: "Phones, tablets, TVs and computers that play from this PC."},
-	{Name: "screen", Path: "/screen", Title: "Screen", Script: "screen", Icon: "screen", Nav: true,
+	{Name: "screen", Path: "/screen", Title: "Screen", Script: "screen", Icon: "screen", Nav: true, Styles: []string{"screen"},
 		Lead: "The invisible screen Moonlight streams, and how it's sent."},
-	{Name: "system", Path: "/system", Title: "System", Script: "system", Icon: "system", Nav: true},
-	{Name: "updates", Path: "/system/updates", Title: "Updates", Script: "updates", Icon: "update", Tab: "system",
+	{Name: "system", Path: "/system", Title: "System", Script: "system", Icon: "system", Nav: true, Styles: []string{"system"}},
+	{Name: "updates", Path: "/system/updates", Title: "Updates", Script: "updates", Icon: "update", Tab: "system", Styles: []string{"system", "updates"},
 		Lead: "New versions install next to the running one and switch over on restart."},
-	{Name: "power", Path: "/system/power", Title: "Power", Script: "power", Icon: "power", Tab: "system",
+	{Name: "power", Path: "/system/power", Title: "Power", Script: "power", Icon: "power", Tab: "system", Styles: []string{"system", "power"},
 		Lead: "Sleep when nobody plays, wake from Moonlight."},
-	{Name: "storage", Path: "/system/storage", Title: "Storage", Script: "storage", Icon: "drive", Tab: "system",
+	{Name: "storage", Path: "/system/storage", Title: "Storage", Script: "storage", Icon: "drive", Tab: "system", Styles: []string{"system", "storage"},
 		Lead: "Drives in this PC, and the game libraries VaporOS mounts for Steam."},
-	{Name: "settings", Path: "/system/settings", Title: "Settings", Script: "settings", Icon: "sliders", Tab: "system",
+	{Name: "settings", Path: "/system/settings", Title: "Settings", Script: "settings", Icon: "sliders", Tab: "system", Styles: []string{"system", "settings"},
 		Lead: "Name, password and remote access."},
-	{Name: "logs", Path: "/system/logs", Title: "Logs", Script: "logs", Icon: "file", Tab: "system",
+	{Name: "logs", Path: "/system/logs", Title: "Logs", Script: "logs", Icon: "file", Tab: "system", Styles: []string{"system", "logs"},
 		Lead: "What the stream server has been doing."},
-	{Name: "about", Path: "/system/about", Title: "About", Script: "about", Icon: "info", Tab: "system"},
-	{Name: "login", Path: "/login", Title: "Sign in", Script: "login", Bare: true},
-	{Name: "setup", Path: "/setup", Title: "Set up VaporOS", Heading: "Welcome to VaporOS", Script: "setup", Bare: true},
+	{Name: "about", Path: "/system/about", Title: "About", Script: "about", Icon: "info", Tab: "system", Styles: []string{"system", "about"}},
+	{Name: "login", Path: "/login", Title: "Sign in", Script: "login", Bare: true, Styles: []string{"entry"}},
+	{Name: "setup", Path: "/setup", Title: "Set up VaporOS", Heading: "Welcome to VaporOS", Script: "setup", Bare: true, Styles: []string{"entry"}},
 }
 
 // nextInstaller replaces the setup page on the live ISO.
-var nextInstaller = page{Name: "setup", Path: "/setup", Title: "Install VaporOS", Script: "install", Bare: true}
+var nextInstaller = page{Name: "setup", Path: "/setup", Title: "Install VaporOS", Script: "install", Bare: true, Styles: []string{"entry", "install"}}
 
 // oldURLs are the eight-page UI's paths (spec-cc-screens §1.2). The
 // welcome screen prints /pair (internal/display/status.go), and README.md
@@ -185,7 +189,7 @@ func (s uiSet) ownsStatic(name string) bool {
 	if s.Static != "" {
 		return name == s.Static || strings.HasPrefix(name, s.Static+"/")
 	}
-	return name == "app.css" || name == "js" || strings.HasPrefix(name, "js/")
+	return name == "app.css" || name == "js" || strings.HasPrefix(name, "js/") || name == "pages" || strings.HasPrefix(name, "pages/")
 }
 
 // servesStatic reports whether the set's asset store holds name: its own
@@ -242,6 +246,7 @@ type pageData struct {
 	Shared    string // versioned prefix of the files every UI shares (icons, manifest, fonts), "/static/<hash>"
 	Base      string // prefix of every link: "" on the box, the demo's path on the website
 	Preloads  []string
+	Styles    []string // the page's own built stylesheets, relative to Static ("pages/home.css")
 	Fonts     []string // fonts to preload, relative to Shared
 	Theme     struct{ Dark, Light string }
 	Hostname  string // this machine's name, without .local
@@ -261,8 +266,11 @@ type ui struct {
 	nav      []page
 	preloads map[string][]string // page script → its static import graph, under the set's static dir
 	lazy     map[string][]string // page script → modules it imports with import()
+	styles   map[string][]string // page script → its built page stylesheets, under the set's static dir
 	fonts    []string
-	base     string // see pageData.Base
+	base     string       // see pageData.Base
+	gz       sync.Map     // ETag → the page's gzipped body (gzipped)
+	gzN      atomic.Int32 // entries in gz since it last started over
 }
 
 // uiHolder hands the handlers the current UI. Production stores one and
@@ -389,9 +397,29 @@ func newUI(srv *api.Server, set uiSet, fsys fs.FS) (*ui, error) {
 			}
 			u.preloads[p.Script], u.lazy[p.Script] = pre, lazy
 		}
+		u.styles = pageStyles(assets, set)
 		u.fonts = preloadFonts(assets, set)
 	}
 	return u, nil
+}
+
+// pageStyles maps each page script to its built stylesheets that the asset
+// store holds. A page whose stylesheet is not built yet (between a commit
+// that adds one and the regenerated CSS) links none rather than a 404;
+// TestAppCSSFresh and the class tests catch it for the active set.
+func pageStyles(assets *assetStore, set uiSet) map[string][]string {
+	out := map[string][]string{}
+	for _, p := range append([]page{set.Installer}, set.Pages...) {
+		var have []string
+		for _, name := range p.Styles {
+			rel := path.Join("pages", name+".css")
+			if assets.files[path.Join(set.Static, rel)] != nil {
+				have = append(have, rel)
+			}
+		}
+		out[p.Script] = have
+	}
+	return out
 }
 
 // fontPreloads are the faces design/fonts/fonts.json marks "preload": the
@@ -535,6 +563,7 @@ func (u *ui) data(p page) pageData {
 	}
 	if u.set.Current {
 		d.Preloads = u.preloads[p.Script]
+		d.Styles = u.styles[p.Script]
 		d.Fonts = u.fonts
 		d.Theme.Dark, d.Theme.Light = brand.ThemeColorDark, brand.ThemeColorLight
 		d.Hostname, _, _ = strings.Cut(config.Hostname(), ".")
@@ -565,6 +594,7 @@ func (u *ui) prepareSetup(w http.ResponseWriter, r *http.Request, d *pageData) {
 		d.Page = u.set.Installer
 		if u.set.Current {
 			d.Preloads = u.preloads[d.Page.Script]
+			d.Styles = u.styles[d.Page.Script]
 		}
 		d.Timezones = timezoneGroups()
 		// After the install reboots, the page waits for the new system at
@@ -626,25 +656,37 @@ func (u *ui) render(w http.ResponseWriter, r *http.Request, d pageData) {
 	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
 	h.Add("Vary", "Accept-Encoding")
 	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
-		body, etag = gzipPage(body), strings.TrimSuffix(etag, `"`)+`-gz"`
+		body, etag = u.gzipped(etag, body), strings.TrimSuffix(etag, `"`)+`-gz"`
 		h.Set("Content-Encoding", "gzip")
 	}
 	h.Set("ETag", etag)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 }
 
-var gzipWriters = sync.Pool{New: func() any {
-	zw, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-	return zw
-}}
+// gzipped returns the page compressed, from a small cache keyed by its
+// ETag: a page's HTML is the same on every request (only /setup?code= and
+// the installer differ), so each is compressed once, at the best level, and
+// served from memory after that. The cache starts over past 64 bodies, so a
+// flood of distinct setup codes cannot grow it.
+func (u *ui) gzipped(etag string, body []byte) []byte {
+	if b, ok := u.gz.Load(etag); ok {
+		return b.([]byte)
+	}
+	if u.gzN.Add(1) > 64 {
+		u.gz.Clear()
+		u.gzN.Store(1)
+	}
+	b := gzipPage(body)
+	u.gz.Store(etag, b)
+	return b
+}
 
-// gzipPage compresses a page at BestSpeed with a pooled writer.
+// gzipPage compresses a page as render serves it (TestPageBudgets measures
+// the same bytes).
 func gzipPage(b []byte) []byte {
 	var buf bytes.Buffer
-	zw := gzipWriters.Get().(*gzip.Writer)
-	zw.Reset(&buf)
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
 	zw.Write(b)
 	zw.Close()
-	gzipWriters.Put(zw)
 	return buf.Bytes()
 }

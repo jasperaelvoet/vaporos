@@ -84,12 +84,12 @@
   --color-attention-pair-soft: #291f2c;
 
   --font-*: initial;
-  --font-display: "Anybody", "Arial Narrow", "Helvetica Neue", "Arial", sans-serif;
-  --font-ui: "Mona Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Martian Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+  --font-display: "Anybody", "Anybody fallback", "Arial Narrow", "Helvetica Neue", "Arial", sans-serif;
+  --font-ui: "Mona Sans", "Mona Sans fallback", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Martian Mono", "Martian Mono fallback", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
   --font-mono--font-feature-settings: "tnum" 1;
-  --default-font-family: "Mona Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
-  --default-mono-font-family: "Martian Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+  --default-font-family: "Mona Sans", "Mona Sans fallback", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --default-mono-font-family: "Martian Mono", "Martian Mono fallback", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
   --default-mono-font-feature-settings: "tnum" 1;
 
   --text-2xs: 0.6875rem;
@@ -142,7 +142,7 @@
 
 :root {
   color-scheme: dark;
-  --vos-tokens: "4781863de595";
+  --vos-tokens: "1ea909ee04ec";
   --vos-dur-instant: 80ms;
   --vos-dur-fast: 180ms;
   --vos-dur-base: 250ms;
@@ -263,4 +263,67 @@
   --state-cut-w: 100%;
   --state-cut-g: 700;
   --state-from: 0.74;
+}
+
+@font-face {
+  font-family: "Anybody";
+  src: url("fonts/anybody-cold.woff2") format("woff2");
+  font-weight: 560;
+  font-stretch: 72%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Anybody";
+  src: url("fonts/anybody-warm.woff2") format("woff2");
+  font-weight: 700;
+  font-stretch: 100%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Anybody";
+  src: url("fonts/anybody-hot.woff2") format("woff2");
+  font-weight: 800;
+  font-stretch: 124%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Mona Sans";
+  src: url("fonts/monasans-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-stretch: 100%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Mona Sans";
+  src: url("fonts/monasans-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-stretch: 100%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martian Mono";
+  src: url("fonts/martianmono-medium.woff2") format("woff2");
+  font-weight: 500;
+  font-stretch: 100%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martian Mono";
+  src: url("fonts/martianmono-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-stretch: 100%;
+  font-style: normal;
+  font-display: swap;
 }

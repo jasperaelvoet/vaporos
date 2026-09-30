@@ -20,6 +20,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>{{.Page.DocTitle}}</title>
 <link rel="stylesheet" href="{{.Static}}/app.css">
+{{range .Styles}}<link rel="stylesheet" href="{{$.Static}}/{{.}}">
+{{end -}}
 {{range .Fonts}}<link rel="preload" as="font" type="font/woff2" crossorigin href="{{$.Shared}}/{{.}}">
 {{end -}}
 <script src="{{.Static}}/js/head.js"></script>

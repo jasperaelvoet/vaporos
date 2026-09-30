@@ -327,7 +327,16 @@ func testFontFaceDecls(t *testing.T, m fontManifest, faces []fontFace, byAsset m
 		}
 	}
 	if len(declared) == 0 {
-		t.Logf("no stylesheet declares the web fonts yet (tokens.json lists no web files)")
+		// The fonts ship and cost bytes, so a stylesheet must use them. Until
+		// the switch commit the Tailwind-built set is not active and its
+		// app.css is regenerated in batches, so only VOS_WEB_STRICT=1 (web.yml
+		// and our gates, after each CSS commit) holds it to that.
+		msg := "no stylesheet declares the web fonts that design/fonts/fonts.json ships: list them in design/tokens.json and rebuild static/app.css"
+		if strictWeb() || builtByTailwind(activeSet) {
+			t.Error(msg)
+		} else {
+			t.Log(msg)
+		}
 		return
 	}
 	for _, f := range faces {

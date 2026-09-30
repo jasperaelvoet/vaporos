@@ -3,7 +3,7 @@
 // Style with the utilities from src/styles/tokens.gen.css; read values here.
 
 export const tokens = {
-  sha: "4781863de595",
+  sha: "1ea909ee04ec",
   direction: "redline",
   app: { name: "VaporOS", shortName: "VaporOS", description: "Manage your VaporOS game streaming PC." },
   palette: {

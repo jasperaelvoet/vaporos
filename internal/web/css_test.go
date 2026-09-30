@@ -157,28 +157,40 @@ func TestCSSInputHashVector(t *testing.T) {
 }
 
 // TestAppCSSFresh catches a template, script, style or token change that was
-// committed without rebuilding static/app.css. It checks the Tailwind-built
-// set's stylesheet, so it waits for the switch commit (S1) that makes that set
-// active; until then web.yml's byte compare (css:check) covers it.
+// committed without rebuilding static/app.css and the page stylesheets in
+// static/pages/. It checks the Tailwind-built set's stylesheets, so it waits
+// for the switch commit (S1) that makes that set active; until then web.yml's
+// byte compare (css:check) covers them.
 func TestAppCSSFresh(t *testing.T) {
 	if !builtByTailwind(activeSet) {
 		t.Skipf("the active UI set %q has a hand-written stylesheet; this runs from the switch to the new UI", activeSet.Name)
-	}
-	b, err := content.ReadFile(path.Join("static", activeSet.Static, "app.css"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, _, _ := strings.Cut(string(b), "\n")
-	m := cssHeader.FindStringSubmatch(first)
-	if m == nil {
-		t.Fatalf("static/app.css does not start with the vaporos-css header (got %.80q): run npm --prefix tools/web run css", first)
 	}
 	want, err := cssInputHash(repoRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m[1] != want {
-		t.Errorf("static/app.css was built from inputs %s, but they now hash to %s: run npm --prefix tools/web run css and commit static/app.css with its inputs", m[1], want)
+	built := []string{path.Join("static", activeSet.Static, "app.css")}
+	for _, name := range pageStyleSources(t) {
+		built = append(built, path.Join("static", activeSet.Static, "pages", name+".css"))
+	}
+	var m []string
+	for _, name := range built {
+		b, err := content.ReadFile(name)
+		if err != nil {
+			t.Errorf("%s is missing: run npm --prefix tools/web run css", name)
+			continue
+		}
+		first, _, _ := strings.Cut(string(b), "\n")
+		m = cssHeader.FindStringSubmatch(first)
+		if m == nil {
+			t.Fatalf("%s does not start with the vaporos-css header (got %.80q): run npm --prefix tools/web run css", name, first)
+		}
+		if m[1] != want {
+			t.Errorf("%s was built from inputs %s, but they now hash to %s: run npm --prefix tools/web run css and commit it with its inputs", name, m[1], want)
+		}
+	}
+	if m == nil {
+		return
 	}
 	var pkg struct {
 		DevDependencies map[string]string `json:"devDependencies"`
@@ -192,6 +204,72 @@ func TestAppCSSFresh(t *testing.T) {
 	}
 	if pin := pkg.DevDependencies["tailwindcss"]; m[2] != pin {
 		t.Errorf("static/app.css was built with Tailwind %s, but tools/web pins %s: run npm ci --prefix tools/web, then npm --prefix tools/web run css", m[2], pin)
+	}
+}
+
+// pageStyleSources lists styles/pages/<name>.css by name.
+func pageStyleSources(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(repoRoot, "internal", "web", "styles", "pages", "*.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, f := range files {
+		out = append(out, strings.TrimSuffix(filepath.Base(f), ".css"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestPageStylesLinked: every page stylesheet in styles/pages is named by a
+// page of the next set (page.Styles), and every name a page lists has one, so
+// no page style is built for nothing and none is missing from the browser.
+// Once built (static/pages/), each page links exactly its own, after app.css.
+func TestPageStylesLinked(t *testing.T) {
+	sources := map[string]bool{}
+	for _, n := range pageStyleSources(t) {
+		sources[n] = true
+	}
+	named := map[string]bool{}
+	for _, p := range append([]page{nextSet.Installer}, nextSet.Pages...) {
+		for _, n := range p.Styles {
+			named[n] = true
+			if !sources[n] {
+				t.Errorf("page %s (%s) names styles/pages/%s.css, which does not exist", p.Name, p.Script, n)
+			}
+		}
+	}
+	for n := range sources {
+		if !named[n] {
+			t.Errorf("styles/pages/%s.css is linked by no page: name it in a page's Styles in web.go", n)
+		}
+	}
+	u := testUI(t, nextSet)
+	link := regexp.MustCompile(`<link rel="stylesheet" href="([^"]+)">`)
+	kinds := map[string]page{nextSet.Installer.Script: nextSet.Installer}
+	for _, p := range nextSet.Pages {
+		kinds[p.Script] = p
+	}
+	for script, body := range renderAll(t, nextSet) {
+		var want []string
+		want = append(want, u.static()+"/app.css")
+		for _, n := range kinds[script].Styles {
+			if u.assets.files[path.Join(nextSet.Static, "pages", n+".css")] == nil {
+				if strictWeb() {
+					t.Errorf("%s: static/pages/%s.css is not built: run npm --prefix tools/web run css", script, n)
+				}
+				continue
+			}
+			want = append(want, u.static()+"/pages/"+n+".css")
+		}
+		var got []string
+		for _, m := range link.FindAllStringSubmatch(body, -1) {
+			got = append(got, m[1])
+		}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%s links stylesheets %v, want %v", script, got, want)
+		}
 	}
 }
 
@@ -685,14 +763,24 @@ func usedClasses(t *testing.T, set uiSet) map[string]string {
 	return used
 }
 
-// setCSS is the set's built stylesheet.
+// setCSS is the set's built stylesheets: app.css and, for a Tailwind-built
+// set, every page stylesheet in static/pages/.
 func setCSS(t *testing.T, set uiSet) string {
 	t.Helper()
 	b, err := content.ReadFile(path.Join("static", set.Static, "app.css"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(b)
+	all := string(b)
+	if builtByTailwind(set) {
+		pages, _ := fs.Glob(content, path.Join("static", set.Static, "pages", "*.css"))
+		for _, name := range pages {
+			if b, err := content.ReadFile(name); err == nil {
+				all += "\n" + string(b)
+			}
+		}
+	}
+	return all
 }
 
 // unstyled lists classes that may appear without a rule. Keep it empty: a
@@ -714,7 +802,7 @@ func TestClassesAreStyled(t *testing.T) {
 		sort.Strings(names)
 		for _, c := range names {
 			if !defined[c] && !unstyled[c] {
-				t.Errorf("class %q (%s) has no rule in static/%s: run npm --prefix tools/web run css, or fix the name",
+				t.Errorf("class %q (%s) has no rule in static/%s or a page stylesheet: run npm --prefix tools/web run css, or fix the name",
 					c, used[c], path.Join(set.Static, "app.css"))
 			}
 		}

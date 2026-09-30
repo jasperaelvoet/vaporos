@@ -5,7 +5,7 @@ package brand
 import "image/color"
 
 // TokensSHA is the first 12 hex digits of the SHA-256 of design/tokens.json.
-const TokensSHA = "4781863de595"
+const TokensSHA = "1ea909ee04ec"
 
 // Direction is the visual direction design/tokens.json carries.
 const Direction = "redline"
