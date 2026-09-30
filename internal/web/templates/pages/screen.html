@@ -1,8 +1,205 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  Screen (spec-cc-screens §5): what the virtual screen does now, how the
+  stream is sent, and the few display settings. The server paints every
+  card at its final size with its controls disabled; pages/screen.js fills
+  them. Phones read top to bottom; from 75rem the page is two columns (7:5),
+  Now and Resolutions on the left.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="scr-grid">
+
+  <section class="rack scr-now-rack scr-area-now" aria-labelledby="now-heading">
+    <h2 class="rack-title" id="now-heading">Right now</h2>
+    <div class="scr-now" id="now" data-region="now" data-state="" data-phase="loading" aria-busy="true">
+      <div class="scr-stage">
+        {{template "screen-shape"}}
+      </div>
+      <div class="scr-now-text">
+        <p class="scr-now-title" id="now-title"><span class="skel skel-line skel-short"></span></p>
+        <p class="scr-now-detail" id="now-detail"></p>
+        <p class="scr-now-layers" id="now-layers" hidden>{{icon "alert"}}<span id="now-layers-text"></span></p>
+      </div>
+      <div class="region-error scr-error" id="now-error" role="alert" hidden><p class="region-error-text" id="now-error-text"></p><button class="btn small" id="now-retry" type="button">Try again</button></div>
+      <dl class="facts scr-facts">
+        <div class="fact"><dt>Virtual screen port</dt><dd class="mono" id="now-port">–</dd></div>
+        <div class="fact"><dt>Graphics</dt><dd id="now-gpu">–</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="rack scr-anchor scr-area-quality" id="stream" aria-labelledby="quality-heading">
+      <h2 class="rack-title" id="quality-heading">Stream quality</h2>
+      <form class="scr-card" id="quality" data-region="quality" aria-busy="true" novalidate>
+        <div class="region-error scr-error" id="quality-error" role="alert" hidden><p class="region-error-text" id="quality-error-text"></p><button class="btn small" id="quality-retry" type="button">Try again</button></div>
+        <fieldset class="scr-field" id="q-encoder" aria-describedby="q-encoder-hint" disabled>
+          <legend class="field-label scr-legend">Video encoder</legend>
+          <div class="scr-options" id="q-encoders">
+            <label class="scr-option" for="q-enc-vulkan"><input class="scr-radio" type="radio" name="encoder" id="q-enc-vulkan" value="vulkan"><span class="scr-option-name">Vulkan (recommended for AMD)</span></label>
+            <label class="scr-option" for="q-enc-vaapi"><input class="scr-radio" type="radio" name="encoder" id="q-enc-vaapi" value="vaapi"><span class="scr-option-name">VA-API</span></label>
+            <label class="scr-option" for="q-enc-software"><input class="scr-radio" type="radio" name="encoder" id="q-enc-software" value="software"><span class="scr-option-name">Software (CPU)</span></label>
+          </div>
+          <p class="field-hint" id="q-encoder-hint">Vulkan encodes on the graphics card with the least delay.</p>
+        </fieldset>
+        <div class="field">
+          <label class="field-label" for="q-bitrate">Maximum bitrate<span class="sr-only"> in Mbps</span></label>
+          <div class="scr-bitrate">
+            <div class="scr-presets" id="q-presets" role="group" aria-label="Bitrate presets">
+              <button class="scr-chip" type="button" data-mbps="0" aria-pressed="false" disabled>Auto</button>
+              <button class="scr-chip" type="button" data-mbps="50" aria-pressed="false" aria-label="50 Mbps" disabled>50</button>
+              <button class="scr-chip" type="button" data-mbps="100" aria-pressed="false" aria-label="100 Mbps" disabled>100</button>
+              <button class="scr-chip" type="button" data-mbps="150" aria-pressed="false" aria-label="150 Mbps" disabled>150</button>
+            </div>
+            <div class="scr-unit">
+              <input class="input mono" id="q-bitrate" name="bitrate" type="number" inputmode="numeric" min="0" max="1000" step="1" autocomplete="off" aria-describedby="q-bitrate-hint q-bitrate-error" disabled>
+              <span class="scr-unit-suffix" aria-hidden="true">Mbps</span>
+            </div>
+          </div>
+          <p class="field-hint" id="q-bitrate-hint">Auto lets each Moonlight device choose. Up to 1000 Mbps.</p>
+          <p class="field-error" id="q-bitrate-error" hidden></p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="q-gamepad">Controller type</label>
+          <div class="scr-select">
+            <select class="input" id="q-gamepad" name="gamepad" aria-describedby="q-gamepad-hint q-gamepad-error" disabled>
+              <option value="">–</option>
+            </select>
+          </div>
+          <p class="field-hint" id="q-gamepad-hint">What games see when you play with a controller.</p>
+          <p class="field-error" id="q-gamepad-error" hidden></p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="q-audio">Audio output</label>
+          <input class="input mono" id="q-audio" name="audio" type="text" placeholder="Default" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="255" aria-describedby="q-audio-hint q-audio-error" disabled>
+          <p class="field-hint" id="q-audio-hint">Leave empty unless sound doesn't reach Moonlight.</p>
+          <p class="field-error" id="q-audio-error" hidden></p>
+        </div>
+        <p class="form-error" id="quality-form-error" role="alert"></p>
+        <div class="scr-actions" id="quality-actions">
+          <button class="btn primary" id="quality-save" type="submit" disabled>Save</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="rack scr-area-virtual" aria-labelledby="virtual-heading">
+      <h2 class="rack-title" id="virtual-heading">Virtual screen</h2>
+      <div class="scr-card" id="virtual" data-region="virtual" aria-busy="true">
+        <div class="scr-switch-row">
+          <div class="scr-switch-text">
+            <label class="scr-switch-label" for="hdr">HDR</label>
+            <p class="field-hint" id="hdr-hint">Stream in HDR when the Moonlight device asks for it.</p>
+          </div>
+          <input class="scr-switch-input" type="checkbox" role="switch" id="hdr" aria-describedby="hdr-hint" disabled>
+          <span class="scr-switch" aria-hidden="true"></span>
+        </div>
+        <div class="field scr-port" id="port-field">
+          <label class="field-label" for="port">Virtual screen port</label>
+          <div class="scr-select">
+            <select class="input mono" id="port" aria-describedby="port-hint port-note" disabled><option value="">–</option></select>
+          </div>
+          <p class="field-hint" id="port-hint">An unused port on the graphics card that VaporOS drives as an invisible screen. Move it to plug a monitor into this port.</p>
+          <p class="scr-note" id="port-note" hidden></p>
+          <div class="scr-actions" id="port-actions" hidden><button class="btn" id="port-move" type="button">Move</button></div>
+        </div>
+      </div>
+    </section>
+
+  <section class="rack scr-area-modes" aria-labelledby="res-heading">
+    <h2 class="rack-title" id="res-heading">Resolutions</h2>
+    <div class="scr-card" id="modes-card" data-region="modes" aria-busy="true">
+      <p class="scr-intro">VaporOS switches the virtual screen to what each Moonlight device asks for. A device with an unusual screen gets the closest size now and its exact size after the next restart.</p>
+      <p class="scr-legend-row" aria-hidden="true"><span class="scr-rate" data-kind="current">in use</span><span class="scr-rate" data-kind="extra">extra</span></p>
+      <ul class="scr-modes" id="modes">
+        <li class="scr-mode"><span class="skel skel-line skel-short"></span></li>
+        <li class="scr-mode"><span class="skel skel-line skel-short"></span></li>
+        <li class="scr-mode"><span class="skel skel-line skel-short"></span></li>
+        <li class="scr-mode"><span class="skel skel-line skel-short"></span></li>
+      </ul>
+      <p class="region-empty" id="modes-empty" hidden>No resolutions yet. They appear once a graphics card drives the virtual screen.</p>
+      <div class="scr-extras-box">
+        <h3 class="scr-sub" id="extras-title" tabindex="-1">Extra resolutions</h3>
+        <p class="scr-note">Added by you, or learned from your devices.</p>
+        <div class="scr-extra-group" id="added-group" hidden>
+          <h4 class="scr-group-title" id="added-title">Added by you</h4>
+          <ul class="scr-extras" id="added" aria-labelledby="added-title"></ul>
+        </div>
+        <div class="scr-extra-group" id="asked-group" hidden>
+          <h4 class="scr-group-title" id="asked-title">Asked for by your devices</h4>
+          <ul class="scr-extras" id="asked" aria-labelledby="asked-title"></ul>
+        </div>
+        <p class="scr-note" id="extras-empty" hidden>None yet. Add one for a screen VaporOS doesn't offer, or connect the device once.</p>
+      </div>
+      <div class="scr-actions scr-actions-start"><button class="btn" id="add-mode" type="button" aria-haspopup="dialog" aria-controls="add-sheet" disabled>{{icon "plus"}}Add a resolution</button></div>
+    </div>
+  </section>
+
+    <section class="rack scr-area-server" aria-labelledby="server-heading">
+      <h2 class="rack-title" id="server-heading">Stream server</h2>
+      <div class="scr-card" id="server" data-region="server" aria-busy="true">
+        <div class="scr-server-head">
+          <span class="scr-server-name">Sunshine</span>
+          <span class="scr-badge" id="server-badge" data-tone="">Checking…</span>
+        </div>
+        <div class="region-error scr-error" id="server-error" role="alert" hidden><p class="region-error-text" id="server-error-text"></p><button class="btn small" id="server-retry" type="button">Try again</button></div>
+        <dl class="facts">
+          <div class="fact"><dt>Version</dt><dd class="mono" id="server-version">–</dd></div>
+          <div class="fact"><dt>Streaming</dt><dd id="server-streaming">–</dd></div>
+        </dl>
+        <div class="scr-actions scr-actions-start">
+          <button class="btn" id="server-restart" type="button" disabled>{{icon "restart"}}Restart streaming</button>
+          <a class="btn ghost" href="{{.Base}}/system/logs">{{icon "file"}}View log</a>
+        </div>
+      </div>
+    </section>
+
+    <details class="scr-disclosure scr-area-ports" id="ports-box">
+      <summary class="scr-summary">Ports and layers</summary>
+      <div class="scr-disclosure-body">
+        <ul class="rows scr-ports" id="ports"></ul>
+        <p class="scr-note" id="ports-empty" hidden>No ports found.</p>
+        <p class="scr-layers" id="layers-row" hidden><span class="scr-layers-key">Layers</span><span id="layers"></span></p>
+      </div>
+    </details>
+</div>
+
+<dialog class="sheet" id="add-sheet" aria-labelledby="add-sheet-title" data-snap="medium">
+  <div class="sheet-handle" data-part="handle" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <h2 class="sheet-title" id="add-sheet-title" tabindex="-1">Add a resolution</h2>
+    <button class="sheet-close" type="button" data-close aria-label="Close">{{icon "close"}}</button>
+  </header>
+  <form class="contents" id="add-form" novalidate>
+    <div class="sheet-body">
+      <p class="sheet-note" id="add-note">For a screen VaporOS doesn't offer yet. The virtual screen can use it after the next restart.</p>
+      <div class="scr-mode-fields">
+        <div class="field">
+          <label class="field-label" for="add-w">Width</label>
+          <input class="input mono" id="add-w" name="w" type="number" inputmode="numeric" min="320" max="8192" step="1" placeholder="2560" autocomplete="off" aria-describedby="add-w-error">
+          <p class="field-error" id="add-w-error" hidden></p>
+        </div>
+        <span class="scr-times" aria-hidden="true">×</span>
+        <div class="field">
+          <label class="field-label" for="add-h">Height</label>
+          <input class="input mono" id="add-h" name="h" type="number" inputmode="numeric" min="200" max="8192" step="1" placeholder="1080" autocomplete="off" aria-describedby="add-h-error">
+          <p class="field-error" id="add-h-error" hidden></p>
+        </div>
+        <div class="field scr-hz">
+          <label class="field-label" for="add-hz">Refresh (Hz)</label>
+          <input class="input mono" id="add-hz" name="hz" type="number" inputmode="numeric" min="24" max="240" step="1" placeholder="144" autocomplete="off" aria-describedby="add-hz-hint add-hz-error">
+          <p class="field-hint" id="add-hz-hint">24 to 240 Hz. Width and height from 320 × 200 to 8192.</p>
+          <p class="field-error" id="add-hz-error" hidden></p>
+        </div>
+      </div>
+      <p class="form-error" id="add-form-error" role="alert"></p>
+    </div>
+    <footer class="sheet-actions">
+      <button class="btn ghost" type="button" data-close>Cancel</button>
+      <button class="btn primary" id="add-submit" type="submit" disabled>Add</button>
+    </footer>
+  </form>
+</dialog>
+
+<template id="tpl-scr-art"><span class="scr-art"><svg class="heat-field" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="440" height="320" fill="#000"/><ellipse class="src src-plume" cx="186" cy="34" rx="150" ry="110"/><circle class="src src-core" cx="170" cy="120" r="150"/></g></svg><span class="scr-frame-label mono" data-part="label" hidden></span></span></template>
+<template id="tpl-scr-mode"><li class="scr-mode"><span class="scr-mode-size mono" data-part="size"></span><span class="scr-rates" data-part="rates"></span></li></template>
+<template id="tpl-scr-extra"><li class="scr-extra"><span class="scr-extra-main"><span class="scr-extra-mode mono" data-part="mode"></span><span class="scr-extra-sub" data-part="sub" hidden></span></span><button class="btn small ghost" type="button" data-part="remove">Remove<span class="sr-only" data-part="remove-name"></span></button></li></template>
+<template id="tpl-scr-port"><li class="row"><span class="scr-port-name mono" data-part="name"></span><span class="scr-tags" data-part="tags"></span></li></template>
 {{end}}

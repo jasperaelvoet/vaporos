@@ -1240,8 +1240,8 @@ func TestLinksHonourBase(t *testing.T) {
 // libraryModules are shell modules no page imports yet: the kit the tab
 // pages build with. Remove a name once a page uses it (the test says so).
 var libraryModules = map[string]string{
-	"js/ui/form.js":     "forms: C2, C3, C4a, C4b, C5",
 	"js/ui/controls.js": "switches, meters and steppers: C3, C4a, C4b",
+	"js/summary.js":     "Home's hero, cards and lines: C1",
 }
 
 var (
