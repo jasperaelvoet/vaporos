@@ -20,11 +20,13 @@ export function ScreenBeat() {
       <BeatHead head={screenBeat} cut="hot" split />
       <ScreenFollows />
       <div className="screen-foot">
-        <ol className="pipeline telemetry" aria-label={screenStory.pipelineLabel}>
+        {/* Five stages, each its name over its role, on one thin amber line:
+            across on desktops, down on phones. */}
+        <ol className="pipeline" aria-label={screenStory.pipelineLabel}>
           {path.map((n) => (
             <li key={n.title}>
               <b>{n.title}</b>
-              {n.detail && <span>{n.detail}</span>}
+              {n.detail && <span className="telemetry">{n.detail}</span>}
             </li>
           ))}
         </ol>

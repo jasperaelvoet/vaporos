@@ -141,17 +141,14 @@ export function ScreenFollows() {
         </div>
         <div className="stage-dims" aria-hidden="true">
           <div className="tach telemetry">
-            <div>
-              <b>
-                <span className="n-w" /> × <span className="n-h" />
-              </b>
-              <small>{copy.display}</small>
-            </div>
-            <div>
-              <b className="n-hz" />
-              <small>{copy.hz}</small>
-            </div>
+            <b>
+              <span className="n-w" /> × <span className="n-h" />
+            </b>
+            <b className="tach-hz">
+              <span className="n-hz" /> <span className="tach-unit">{copy.hz}</span>
+            </b>
             <span className={`hdr ${d.hdr ? '' : 'hdr-off'}`}>{copy.hdr}</span>
+            <small>{copy.display}</small>
           </div>
           <div className="pps telemetry">
             <b className="n-pps" />
