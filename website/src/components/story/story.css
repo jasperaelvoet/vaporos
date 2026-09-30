@@ -341,6 +341,31 @@
 .dev:focus-visible {
   outline-offset: -2px;
 }
+/* Forced colours drop the backgrounds that box each device and mark the
+   picked one: give each a border, the picked one a Highlight outline, and
+   keep the pip's fill. */
+@media (forced-colors: active) {
+  .dev {
+    border: 1px solid ButtonText;
+  }
+  .dev[aria-pressed="true"] {
+    outline: 3px solid Highlight;
+    outline-offset: -4px;
+  }
+  .dev:focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+  .dev-pip {
+    forced-color-adjust: none;
+    background: Canvas;
+    box-sizing: border-box;
+    border: 1px solid ButtonText;
+  }
+  .dev[aria-pressed="true"] .dev-pip {
+    background: Highlight;
+  }
+}
 
 .stage {
   position: relative;

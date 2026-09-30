@@ -54,7 +54,7 @@ export function Wordmark({ height = 22, ground = 'dark', className = '' }: { hei
       viewBox={d.viewBox}
       aria-hidden="true"
       focusable="false"
-      className={`${ground === 'light' ? 'text-ash' : 'text-bone'} ${className}`}
+      className={`logo-word ${ground === 'light' ? 'text-ash' : 'text-bone'} ${className}`}
     >
       <Paths drawing={d} osClass={ground === 'light' ? 'fill-hot-ink-2' : 'fill-smoke'} />
     </svg>
@@ -81,7 +81,7 @@ export function Logo({ size, ground = 'dark', className = '' }: { size?: number;
         viewBox={w.viewBox}
         aria-hidden="true"
         focusable="false"
-        className={`h-[calc(var(--logo,34px)*0.65)] w-auto ${ground === 'light' ? 'text-ash' : 'text-bone'}`}
+        className={`logo-word h-[calc(var(--logo,34px)*0.65)] w-auto ${ground === 'light' ? 'text-ash' : 'text-bone'}`}
       >
         <Paths drawing={w} osClass={ground === 'light' ? 'fill-hot-ink-2' : 'fill-smoke'} />
       </svg>

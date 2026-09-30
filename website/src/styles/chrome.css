@@ -183,3 +183,31 @@
     height: 6rem;
   }
 }
+
+/* Forced colours (Windows High Contrast): gradients and box-shadows are
+   dropped and colours become system colours. Unlayered, so these win over
+   the utilities. The nav gets a solid Canvas bar (its gradient scrim would
+   vanish and let headings show through the links), the Pause motion switch
+   keeps its state visible (an outlined track, and a knob that moves and turns
+   Highlight when motion is paused), and the wordmark follows the text colour
+   instead of keeping bone on a light theme. */
+@media (forced-colors: active) {
+  .site-nav::before,
+  html[data-nav~="scrolled"] .site-nav::before {
+    background: Canvas;
+    opacity: 1;
+  }
+  .motion-track {
+    border: 1px solid ButtonText;
+  }
+  .motion-knob {
+    forced-color-adjust: none;
+    background: ButtonText;
+  }
+  .motion-switch[aria-pressed="true"] .motion-knob {
+    background: Highlight;
+  }
+  .logo-word path {
+    fill: CanvasText;
+  }
+}

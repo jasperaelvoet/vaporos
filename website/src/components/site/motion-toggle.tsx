@@ -16,13 +16,13 @@ export function MotionToggle({ className = '' }: { className?: string }) {
       type="button"
       aria-pressed={paused}
       onClick={() => setMotionPaused(!paused)}
-      className={`group inline-flex min-h-11 items-center gap-2.5 text-fine font-semibold text-smoke transition-colors hover:text-bone ${className}`}
+      className={`motion-switch group inline-flex min-h-11 items-center gap-2.5 text-fine font-semibold text-smoke transition-colors hover:text-bone ${className}`}
     >
       <span
         aria-hidden
-        className="relative h-5 w-9 rounded-pill bg-char inset-ring-1 inset-ring-line transition-colors group-aria-pressed:bg-soot"
+        className="motion-track relative h-5 w-9 rounded-pill bg-char inset-ring-1 inset-ring-line transition-colors group-aria-pressed:bg-soot"
       >
-        <span className="absolute top-1 left-1 size-3 rounded-pill bg-h7 transition-[translate,background-color] duration-300 group-aria-pressed:translate-x-4 group-aria-pressed:bg-dim" />
+        <span className="motion-knob absolute top-1 left-1 size-3 rounded-pill bg-h7 transition-[translate,background-color] duration-300 group-aria-pressed:translate-x-4 group-aria-pressed:bg-dim" />
       </span>
       Pause motion
     </button>
