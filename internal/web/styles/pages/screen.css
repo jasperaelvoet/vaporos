@@ -277,5 +277,8 @@
     .scr-chip[aria-pressed="true"], .scr-rate[data-kind="current"], .scr-tag[data-kind="virtual"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
     .scr-radio:checked + .scr-dot::before, .scr-switch-input:checked + .scr-switch::before { forced-color-adjust: none; background: Highlight; }
     .scr-art { forced-color-adjust: none; }
+    .scr-badge { forced-color-adjust: none; background: Canvas; color: CanvasText; }
+    /* The shell's fields show focus with a box-shadow, which forced colours drop. */
+    .scr-grid .input:focus-visible, .scr-mode-fields .input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
   }
 }
