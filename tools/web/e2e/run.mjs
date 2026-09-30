@@ -10,7 +10,8 @@
 // preset on a free port, and loads each page in headless Chromium from
 // http://vapor.local:<port> (an insecure context, like the box). Every load
 // is checked for its status, readiness, console, CSP, failed requests,
-// overflow, landmarks, focus, target size and axe; flows from
+// overflow, landmarks, focus (and what covers it), target size, axe and the
+// contrast of text over the heat fields, from pixels; flows from
 // e2e/specs/*.spec.mjs run after. Output goes only to --out: report.json,
 // summary.txt, screenshots and server logs. Exit 1 on a failure.
 
@@ -95,8 +96,18 @@ const bin = buildTestBinary(out);
 const { browser, executablePath, version } = await launch();
 console.log(`e2e: ${version} at ${executablePath}`);
 
-const report = { ui: uiName, matrix: args.matrix, started: started.toISOString(), browser: version, servers: [], skipped: [], loads: [], flows: [] };
+const report = { ui: uiName, matrix: args.matrix, started: started.toISOString(), browser: version, servers: [], skipped: [], loads: [], flows: [], strays: [] };
 let serverNo = 0;
+
+// A spec that arms a waiter (page.waitForRequest) before an action that then
+// throws leaves the waiter to reject later with nobody listening. That flow
+// has already failed; the stray rejection must not take the whole run (and
+// its report) down with it, so it is recorded and the run goes on.
+process.on('unhandledRejection', (err) => {
+  const line = String(err?.message ?? err).split('\n')[0];
+  report.strays.push(line);
+  console.error(`e2e: stray rejection (a waiter a failed flow left behind): ${line}`);
+});
 
 async function server(p) {
   const s = await startServer({ bin, p, ui: uiName, logDir: join(out, 'servers'), stateDir: join(out, 'state', `${p.name}-${serverNo++}`) });
@@ -157,6 +168,7 @@ async function runLoad(context, s, l) {
     c.axe = await checks.axe(page, ui.axeKnown);
     c.targets = await checks.targets(page);
     c.focus = await checks.focus(page);
+    if (!l.forcedColors && ['phone', 'desktop'].includes(l.viewport)) c.heat = await checks.heatContrast(page);
     if (args.matrix === 'full' && l.viewport === 'phone' && l.scheme === 'dark' && l.motion === 'no-preference') c.clipped = await checks.clipped(page);
     c.perf = await checks.perf(page);
     Object.assign(c, await checks.logChecks(page, log, l.allow));
@@ -277,7 +289,7 @@ try {
   report.error = String(err?.message ?? err);
   exitCode = 2;
 } finally {
-  await browser.close();
+  await browser.close().catch(() => {});
 }
 
 report.finished = new Date().toISOString();
@@ -292,13 +304,14 @@ for (const l of failedLoads) {
   for (const k of l.failed) for (const d of l.checks[k].details.slice(0, 5)) summary.push(`  ${k}: ${d}`);
 }
 for (const f of failedFlows) summary.push(`FAIL flow ${f.id} ${f.viewport}/${f.scheme}`, ...f.details.slice(0, 5).map((d) => `  ${d.split('\n')[0]}`));
+if (report.strays.length) summary.push(`stray rejections left by failed flows: ${report.strays.length}`, ...report.strays.slice(0, 5).map((d) => `  ${d}`));
 const warn = new Map();
 for (const l of report.loads) {
   for (const [k, v] of Object.entries(l.checks)) {
     if (v.ok || ui.blocking.has(k)) continue;
     for (const d of v.details) warn.set(`${k}: ${d}`, (warn.get(`${k}: ${d}`) ?? 0) + 1);
   }
-  for (const w of [...(l.checks.axe?.warnings ?? []), ...(l.checks.targets?.warnings ?? [])]) {
+  for (const w of [...(l.checks.axe?.warnings ?? []), ...(l.checks.targets?.warnings ?? []), ...(l.checks.heat?.warnings ?? [])]) {
     const key = w.replace(/ \(\d+× e\.g\. .*?\)/, '');
     warn.set(key, (warn.get(key) ?? 0) + 1);
   }

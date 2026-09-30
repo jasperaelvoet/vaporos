@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { build, ID_RE, owner, PARITY_FILE, parseAdditions, parseScreens, specFlowIDs } from '../e2e/parity.mjs';
+import { build, ID_RE, owner, PARITY_FILE, parseAdditions, parseScreens, passing, specFlowIDs } from '../e2e/parity.mjs';
 
 const parity = JSON.parse(readFileSync(PARITY_FILE, 'utf8'));
 
@@ -58,4 +58,14 @@ test('every parity ID has a spec flow (VOS_WEB_STRICT=1, GATE-2b)', async (t) =>
     return;
   }
   assert.deepEqual(missing, []);
+});
+
+test('an ID passes only when every run of it passed', () => {
+  const runs = [
+    { id: 'SHELL-scene', ok: false, viewport: 'phone' },
+    { id: 'SHELL-scene', ok: true, viewport: 'desktop' },
+    { id: 'SHELL-tabs', ok: true, viewport: 'phone' },
+    { id: 'SHELL-tabs', ok: true, viewport: 'desktop' },
+  ];
+  assert.deepEqual([...passing(runs)], ['SHELL-tabs']);
 });

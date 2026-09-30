@@ -5,16 +5,13 @@
 
 import assert from 'node:assert/strict';
 
-import { closed, dev } from '../lib/dev.mjs';
+import { armed, closed, dev, write } from '../lib/dev.mjs';
 
 const text = async (page, sel) => (await page.textContent(sel))?.trim() ?? '';
 const notice = (page, words) => page.locator('#notices .notice', { hasText: words }).first().waitFor();
 const focusedId = (page) => page.evaluate(() => document.activeElement?.id ?? '');
 const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 5000 });
 
-// put waits for the next write to path and returns its JSON body.
-const write = (page, method, path) =>
-  page.waitForRequest((r) => r.method() === method && new URL(r.url()).pathname === `/api/v1${path}`).then((r) => r.postDataJSON());
 
 async function open(t, path = '/screen') {
   await t.page.goto(t.url(path));
@@ -408,7 +405,7 @@ export default [
         await page.getByRole('button', { name: 'Remove 2360 × 1640 · 120 Hz' }).waitFor();
       });
       await step('Remove forgets it (C10), focus stays in the section and a restart is asked for', async () => {
-        const del = page.waitForRequest((r) => r.method() === 'DELETE');
+        const del = armed(page.waitForRequest((r) => r.method() === 'DELETE'));
         await page.getByRole('button', { name: 'Remove 2360 × 1640 · 120 Hz' }).click();
         assert.match((await del).url(), /\/api\/v1\/display\/modes\/2360x1640(@|%40)120$/);
         await notice(page, 'Removed 2360 × 1640 · 120 Hz. Restart VaporOS to finish.');

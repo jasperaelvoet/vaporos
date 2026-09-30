@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 
-import { closed, dev } from '../lib/dev.mjs';
+import { closed, dev, request, write } from '../lib/dev.mjs';
 
 const text = async (page, sel) => (await page.textContent(sel))?.trim() ?? '';
 const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 5000 });
@@ -35,8 +35,6 @@ async function patchStorage(page, fn) {
   });
 }
 
-const request = (page, method, path) =>
-  page.waitForRequest((r) => r.method() === method && new URL(r.url()).pathname === `/api/v1${path}`);
 
 export default [
   {
@@ -164,7 +162,7 @@ export default [
         assert.equal(posted, 0);
       });
       await step('Use anyway adopts it: it moves to Game drives and keeps the focus', async () => {
-        const body = request(page, 'POST', '/storage/libraries').then((r) => r.postDataJSON());
+        const body = write(page, 'POST', '/storage/libraries');
         await drive(page, 'WINDATA').getByRole('button', { name: 'Use WINDATA for games' }).click();
         await page.click('#confirm-ok');
         assert.deepEqual(await body, { uuid: 'E0A133F2B4C5D6E7' });

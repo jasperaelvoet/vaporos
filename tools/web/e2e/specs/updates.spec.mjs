@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 
-import { closed, dev } from '../lib/dev.mjs';
+import { closed, dev, write } from '../lib/dev.mjs';
 
 const PATH = '/system/updates';
 // A restart takes the box down: /ping and the stream fail until it is back.
@@ -16,8 +16,6 @@ const until = (page, fn, arg, timeout = 5000) => page.waitForFunction(fn, arg, {
 const title = (page, want, timeout = 5000) => until(page, (w) => document.getElementById('upd-title').textContent === w, want, timeout);
 const notice = (page, words) => page.locator('#notices .notice', { hasText: words }).first().waitFor();
 const live = (page) => until(page, () => document.getElementById('link').dataset.link === 'live');
-const write = (page, method, path) =>
-  page.waitForRequest((r) => r.method() === method && new URL(r.url()).pathname === `/api/v1${path}`).then((r) => r.postDataJSON());
 const banners = (page) => page.$$eval('#upd-banners .upd-banner', (els) => els.map((e) => [e.dataset.tone, e.textContent.trim()]));
 
 async function open(t, preset) {

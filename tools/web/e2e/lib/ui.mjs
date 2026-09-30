@@ -22,7 +22,7 @@ export const UIS = {
       !document.querySelector('[data-region][aria-busy="true"]'),
     failed: () => document.documentElement.dataset.boot === 'failed',
     bare: () => document.body.hasAttribute('data-bare') || document.body.classList.contains('bare'),
-    blocking: new Set(['status', 'ready', 'console', 'csp', 'requests', 'overflow', 'landmarks', 'focus', 'targets', 'axe', 'clipped']),
+    blocking: new Set(['status', 'ready', 'console', 'csp', 'requests', 'overflow', 'landmarks', 'focus', 'targets', 'axe', 'clipped', 'heat']),
     axeKnown: [],
   },
 };

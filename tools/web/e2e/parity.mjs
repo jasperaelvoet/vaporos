@@ -76,6 +76,13 @@ export function build(screensMd, planMd) {
   };
 }
 
+// passing is the set of flow IDs that ran and passed in every run: a flow
+// that passes at 1440 but fails at 390 is not passing.
+export function passing(runs) {
+  const failed = new Set(runs.filter((f) => !f.ok).map((f) => f.id));
+  return new Set(runs.filter((f) => f.ok && !failed.has(f.id)).map((f) => f.id));
+}
+
 // specFlowIDs lists the flow IDs the spec files define, by spec.
 export async function specFlowIDs(dir = join(here, 'specs')) {
   const out = new Map();
@@ -105,9 +112,7 @@ async function main() {
   const missing = flows.filter((f) => !specs.has(f.id) && !f.conditional);
   let notPassing = [];
   if (args.report) {
-    const report = JSON.parse(readFileSync(args.report, 'utf8'));
-    const passed = new Set(report.flows.filter((f) => f.ok).map((f) => f.id));
-    notPassing = flows.filter((f) => specs.has(f.id) && !passed.has(f.id));
+    notPassing = flows.filter((f) => specs.has(f.id) && !passing(JSON.parse(readFileSync(args.report, 'utf8')).flows).has(f.id));
   }
   const byOwner = {};
   for (const f of missing) (byOwner[f.owner] ??= []).push(f.id);

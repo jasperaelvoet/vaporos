@@ -83,7 +83,8 @@ export async function landmarks(page, needNav) {
 }
 
 // focus tabs through the page: every stop must show a focus indicator, sit
-// in the viewport once focused, and follow DOM order.
+// in the viewport once focused, not be entirely covered by the fixed or
+// sticky chrome, and follow DOM order.
 export async function focus(page, maxStops = 40) {
   await page.evaluate(() => {
     document.activeElement?.blur?.();
@@ -105,13 +106,43 @@ export async function focus(page, maxStops = 40) {
       const rect = el.getBoundingClientRect();
       const inView = rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth;
       const name = el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.getAttribute('href') ? `[href="${el.getAttribute('href')}"]` : '');
-      return { end: false, name, visible: outline || shadow, inView, backwards: !!(order & 2), wrapped: el === window.__vosFirstFocus };
+      // WCAG 2.4.11: the focused element may not be entirely hidden by
+      // author content. Sample a 3x3 grid inside it; it is covered when
+      // every sample on screen lands on fixed or sticky chrome (the tab bar,
+      // the app bar, the strip) that is not the element or around it.
+      const pinned = (n) => {
+        for (let p = n; p && p !== document.body; p = p.parentElement) {
+          const pos = getComputedStyle(p).position;
+          if (pos === 'fixed' || pos === 'sticky') return p;
+        }
+        return null;
+      };
+      let samples = 0;
+      let covered = 0;
+      let by = '';
+      for (const fx of [0.2, 0.5, 0.8]) {
+        for (const fy of [0.2, 0.5, 0.8]) {
+          const x = rect.left + rect.width * fx;
+          const y = rect.top + rect.height * fy;
+          if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+          samples++;
+          const hit = document.elementFromPoint(x, y);
+          if (!hit || el.contains(hit) || hit.contains(el)) continue;
+          const chrome = pinned(hit);
+          if (chrome && !chrome.contains(el)) {
+            covered++;
+            by = chrome.tagName.toLowerCase() + (chrome.id ? '#' + chrome.id : '') + (chrome.classList.length ? '.' + [...chrome.classList].join('.') : '');
+          }
+        }
+      }
+      return { end: false, name, visible: outline || shadow, inView, obscured: samples > 0 && covered === samples ? by : '', backwards: !!(order & 2), wrapped: el === window.__vosFirstFocus };
     });
     if (r.end || r.wrapped) break;
     if (stops === 0) await page.evaluate(() => (window.__vosFirstFocus = document.activeElement));
     stops++;
     if (!r.visible) details.push(`${r.name}: no visible focus indicator`);
     if (!r.inView) details.push(`${r.name}: focused but outside the viewport`);
+    else if (r.obscured) details.push(`${r.name}: focused but entirely under ${r.obscured} (WCAG 2.4.11)`);
     if (r.backwards) details.push(`${r.name}: focus moved backwards in DOM order`);
   }
   await page.evaluate(() => {
@@ -169,10 +200,17 @@ export async function clipped(page) {
     root.style.setProperty('font-size', '200%');
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const out = [];
+    // Text only a screen reader gets (.sr-only, and the tab labels the
+    // landscape bar keeps for its accessible names) is clipped on purpose.
+    const srOnly = (el, cs) => {
+      const r = el.getBoundingClientRect();
+      return r.width <= 1 || r.height <= 1 || /inset\(50%/.test(cs.clipPath) || /^rect\(0/.test(cs.clip);
+    };
     for (const el of document.querySelectorAll('body *')) {
       const cs = getComputedStyle(el);
       if (!/(hidden|clip)/.test(cs.overflowX + cs.overflowY) || !(el.textContent || '').trim()) continue;
       if (el.closest('[hidden], [aria-hidden="true"]') || cs.display === 'none') continue;
+      if (srOnly(el, cs)) continue;
       if (el.scrollHeight > el.clientHeight + 2 || el.scrollWidth > el.clientWidth + 2) {
         out.push(`${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}.${[...el.classList].join('.')} clips its text`);
       }
@@ -188,16 +226,155 @@ export async function clipped(page) {
 // page's CSP, so the policy stays enforced while it runs. Serious and
 // critical violations fail, except the rule ids in known, which are listed
 // as warnings (a frozen UI's known defects).
-export async function axe(page, known = []) {
+//
+// In forced colours the browser, not the page, picks the colours, and axe
+// still measures the author's (a white-hot button reads 1.06:1), so the
+// contrast rule is off there. Contrast axe cannot decide (text over the
+// heat fields' pixels) comes back "incomplete": it is listed as a warning,
+// and heatContrast measures it from the pixels instead.
+export async function axe(page, known = [], context = 'document') {
   await page.evaluate(AXE);
   const r = await page.evaluate(
-    (tags) => window.axe.run(document, { runOnly: { type: 'tag', values: tags }, resultTypes: ['violations'] }),
-    AXE_TAGS,
+    ([tags, ctx]) => {
+      const forced = matchMedia('(forced-colors: active)').matches;
+      const opts = { runOnly: { type: 'tag', values: tags }, resultTypes: ['violations', 'incomplete'] };
+      if (forced) opts.rules = { 'color-contrast': { enabled: false } };
+      return window.axe.run(ctx === 'document' ? document : document.querySelector(ctx), opts);
+    },
+    [AXE_TAGS, context],
   );
   const fmt = (v) => `${v.impact} ${v.id}: ${v.help} (${v.nodes.length}× e.g. ${v.nodes[0]?.target?.join(' ')})`;
   const blocking = r.violations.filter((v) => (v.impact === 'serious' || v.impact === 'critical') && !known.includes(v.id));
   const other = r.violations.filter((v) => !blocking.includes(v));
-  return { ok: blocking.length === 0, details: blocking.map(fmt), warnings: other.map((v) => fmt(v) + (known.includes(v.id) ? ' (known)' : '')) };
+  const unsure = r.incomplete.filter((v) => v.id === 'color-contrast').map((v) => `incomplete ${fmt(v)}`);
+  return { ok: blocking.length === 0, details: blocking.map(fmt), warnings: [...other.map((v) => fmt(v) + (known.includes(v.id) ? ' (known)' : '')), ...unsure] };
+}
+
+// assertAxe fails a flow step on any serious or critical axe violation, for
+// the overlays the per-load checks never open (the PIN pad, sheets,
+// confirm, the scene, Recent with notices in it).
+export async function assertAxe(page, what) {
+  const r = await axe(page);
+  if (!r.ok) throw new Error(`axe with ${what}: ${r.details.join('; ')}`);
+}
+
+// heatContrast measures text over the heat fields from pixels, which axe
+// leaves "incomplete": inside every element that holds an svg.heat-field,
+// each text run is hidden, the page is screenshot with animations settled,
+// and the text colour is compared with every background pixel under its
+// line boxes. A run fails when its worst pixel, or its 10th percentile,
+// is under 4.5:1 (3:1 for large text).
+export async function heatContrast(page) {
+  const png = await pngReader();
+  if (!png) return { ok: true, details: [], warnings: ['heat contrast skipped: no PNG decoder in playwright-core'] };
+  const items = await page.evaluate(() => {
+    const out = [];
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 1;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    const rgba = (c) => {
+      cx.clearRect(0, 0, 1, 1);
+      cx.fillStyle = '#000';
+      cx.fillStyle = c;
+      cx.fillRect(0, 0, 1, 1);
+      return [...cx.getImageData(0, 0, 1, 1).data];
+    };
+    const roots = [...document.querySelectorAll('svg.heat-field')]
+      .map((s) => s.parentElement)
+      .filter((r) => r && !r.closest('[hidden], dialog:not([open])') && r.getBoundingClientRect().height > 0);
+    const seen = new Set();
+    let i = 0;
+    for (const root of roots) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        const el = t.parentElement;
+        if (!t.textContent.trim() || !el || seen.has(el) || el.closest('svg, [hidden], .sr-only')) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
+        const range = document.createRange();
+        range.selectNodeContents(t);
+        const rects = [...range.getClientRects()]
+          .filter((r) => r.width > 1 && r.height > 1 && r.bottom > 0 && r.top < innerHeight)
+          .map((r) => ({ x: r.x, y: r.y, w: r.width, h: r.height }));
+        if (!rects.length) continue;
+        seen.add(el);
+        el.dataset.vosM = String(i);
+        out.push({ id: String(i++), text: t.textContent.trim().slice(0, 40), color: rgba(cs.color), size: parseFloat(cs.fontSize), weight: Number(cs.fontWeight) || 400, rects, tag: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).join('.') : '') });
+      }
+    }
+    return out;
+  });
+  if (!items.length) return { ok: true, details: [] };
+  const toggle = (hide) =>
+    page.evaluate((h) => {
+      for (const el of document.querySelectorAll('[data-vos-m]')) {
+        for (const p of ['color', '-webkit-text-fill-color', 'text-shadow', 'caret-color']) {
+          if (h) el.style.setProperty(p, p === 'text-shadow' ? 'none' : 'transparent', 'important');
+          else el.style.removeProperty(p);
+        }
+        if (!h) delete el.dataset.vosM;
+      }
+    }, hide);
+  await toggle(true);
+  let buf;
+  try {
+    buf = await page.screenshot({ animations: 'disabled' });
+  } finally {
+    await toggle(false);
+  }
+  const img = png(buf);
+  const scale = img.width / (await page.evaluate(() => innerWidth));
+  const details = [];
+  for (const it of items) {
+    const cs = [];
+    const a = it.color[3] / 255;
+    for (const r of it.rects) {
+      const x0 = Math.max(0, Math.floor(r.x * scale));
+      const y0 = Math.max(0, Math.floor(r.y * scale));
+      const x1 = Math.min(img.width, Math.ceil((r.x + r.w) * scale));
+      const y1 = Math.min(img.height, Math.ceil((r.y + r.h) * scale));
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const k = (y * img.width + x) * 4;
+          const bg = [img.data[k], img.data[k + 1], img.data[k + 2]];
+          cs.push(contrast([0, 1, 2].map((j) => it.color[j] * a + bg[j] * (1 - a)), bg));
+        }
+      }
+    }
+    if (!cs.length) continue;
+    cs.sort((x, y) => x - y);
+    const need = it.size >= 24 || (it.size >= 18.66 && it.weight >= 700) ? 3 : 4.5;
+    const min = cs[0];
+    const p10 = cs[Math.floor(cs.length * 0.1)];
+    if (min < need || p10 < need) details.push(`${it.tag} "${it.text}" is ${min.toFixed(2)}:1 at its worst pixel (10th percentile ${p10.toFixed(2)}:1), under ${need}:1 on the heat field`);
+  }
+  return { ok: details.length === 0, details, measured: items.length };
+}
+
+const channel = (c) => {
+  const v = c / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+};
+const luminance = ([r, g, b]) => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+export function contrast(a, b) {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+// pngReader decodes a screenshot with the PNG codec playwright-core bundles
+// (its version is pinned exactly in package-lock.json).
+let pngCodec;
+async function pngReader() {
+  if (pngCodec === undefined) {
+    try {
+      const { PNG } = require('playwright-core/lib/utilsBundle');
+      pngCodec = (buf) => PNG.sync.read(buf);
+    } catch {
+      pngCodec = null;
+    }
+  }
+  return pngCodec;
 }
 
 export async function perf(page) {
