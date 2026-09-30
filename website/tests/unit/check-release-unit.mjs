@@ -168,11 +168,12 @@ try {
 console.log(failures ? `\n${failures} FAILED` : '\nALL RELEASE UNIT CHECKS PASSED');
 
 // npm test runs this file; it then runs the folder's other checks, each in
-// its own process: check-labels.mjs ([[labels]], markup, content links) and
-// check-og.mjs (the share cards).
+// its own process: check-labels.mjs ([[labels]], markup, content links),
+// check-og.mjs (the share cards) and check-demo.mjs (the live demo's protocol
+// and switch).
 if (!process.env.VAPOROS_UNIT_CHILD) {
   const { spawnSync } = await import('node:child_process');
-  for (const f of ['check-labels.mjs', 'check-og.mjs']) {
+  for (const f of ['check-labels.mjs', 'check-og.mjs', 'check-demo.mjs']) {
     console.log(`\n== ${f}`);
     const r = spawnSync(process.execPath, ['--conditions=react-server', fileURLToPath(new URL(f, import.meta.url))], {
       stdio: 'inherit',
