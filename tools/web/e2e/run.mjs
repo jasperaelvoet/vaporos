@@ -3,8 +3,8 @@
 //
 //   node tools/web/e2e/run.mjs [--ui=legacy|next] [--matrix=smoke|full]
 //        [--out=DIR] [--only=ID,…] [--presets=a,b] [--viewports=phone,…]
-//        [--schemes=dark,light] [--shots=all|fail|none] [--no-flows]
-//        [--no-loads] [--concurrency=N] [--list]
+//        [--schemes=dark,light] [--shots=all|fail|none] [--settle]
+//        [--no-flows] [--no-loads] [--concurrency=N] [--list]
 //
 // It builds internal/web's test binary once, runs the dev server once per
 // preset on a free port, and loads each page in headless Chromium from
@@ -12,8 +12,11 @@
 // is checked for its status, readiness, console, CSP, failed requests,
 // overflow, landmarks, focus (and what covers it), target size, axe and the
 // contrast of text over the heat fields, from pixels; flows from
-// e2e/specs/*.spec.mjs run after. Output goes only to --out: report.json,
-// summary.txt, screenshots and server logs. Exit 1 on a failure.
+// e2e/specs/*.spec.mjs run after. Every shot waits (at most 3 s) for the
+// heat fields to be painted at rest; --settle also finishes every finite
+// animation first, for captures to compare pixel by pixel. Output goes
+// only to --out: report.json, summary.txt, screenshots and server logs.
+// Exit 1 on a failure.
 
 import { mkdirSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -37,6 +40,7 @@ const args = parseArgs(process.argv.slice(2), {
   viewports: '',
   schemes: '',
   shots: '',
+  settle: false,
   'no-flows': false,
   'no-loads': false,
   concurrency: '4',
@@ -45,6 +49,9 @@ const args = parseArgs(process.argv.slice(2), {
 const uiName = args.ui || activeUI();
 const ui = uiAdapter(uiName);
 const shots = args.shots || (args.matrix === 'full' ? 'all' : 'fail');
+// Before a shot: the heat fields at rest (and with --settle, every finite
+// animation finished).
+const still = (page) => checks.settleHeat(page, { finish: !!args.settle });
 
 // ---- plan
 
@@ -161,6 +168,7 @@ async function runLoad(context, s, l) {
     let shot = '';
     if (shots === 'all') {
       shot = join('shots', `${slug(l.preset, l.path, l.viewport, l.scheme, l.motion, l.forcedColors ?? '')}.png`);
+      await still(page);
       await page.screenshot({ path: join(out, shot), fullPage: true });
     }
     c.overflow = await checks.overflow(page);
@@ -175,6 +183,7 @@ async function runLoad(context, s, l) {
     result.failed = Object.entries(c).filter(([k, v]) => !v.ok && ui.blocking.has(k)).map(([k]) => k);
     if (result.failed.length && shots === 'fail') {
       shot = join('shots', `${slug(l.preset, l.path, l.viewport, l.scheme, l.motion, l.forcedColors ?? '')}.png`);
+      await still(page);
       await page.screenshot({ path: join(out, shot), fullPage: true }).catch((e) => console.error(`e2e: screenshot failed: ${e.message}`));
     }
     result.screenshot = shot;
@@ -245,6 +254,7 @@ async function runFlow(flow, cell) {
     result.details = bad.flatMap(([k, v]) => v.details.map((d) => `${k}: ${d}`));
     if (!result.ok || shots === 'all') {
       result.screenshot = join('shots', `flow-${slug(flow.id, cell.viewport, cell.scheme)}.png`);
+      await still(page);
       await page.screenshot({ path: join(out, result.screenshot), fullPage: true }).catch((e) => console.error(`e2e: screenshot failed: ${e.message}`));
     }
   } catch (err) {

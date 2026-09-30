@@ -258,10 +258,39 @@ export async function assertAxe(page, what) {
   if (!r.ok) throw new Error(`axe with ${what}: ${r.details.join('; ')}`);
 }
 
+// settleHeat waits (at most timeout ms) until every heat field that shows
+// has its level painted in: ui/thermal.js marks a field data-settled once
+// its last key is in, so shots and pixel checks see it at rest. finish also
+// ends every finite animation first, and again while it waits (--settle).
+// Fields nobody sees (hidden, in a closed dialog, under opacity 0) are not
+// waited for. It returns the fields still busy when it gave up.
+export async function settleHeat(page, { finish = false, timeout = 3000 } = {}) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const busy = await page.evaluate((fin) => {
+      if (fin) {
+        for (const a of document.getAnimations()) {
+          try {
+            if (a.effect?.getTiming().iterations !== Infinity) a.finish();
+          } catch {
+            /* an animation that cannot finish is left alone */
+          }
+        }
+      }
+      return [...document.querySelectorAll('.heat-field[data-field]')]
+        .filter((h) => h.getClientRects().length && h.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && !('settled' in h.dataset))
+        .map((h) => h.dataset.field);
+    }, finish).catch(() => []);
+    if (!busy.length || Date.now() > until) return busy;
+    await page.waitForTimeout(50);
+  }
+}
+
 // heatContrast measures text over the heat fields from pixels, which axe
-// leaves "incomplete": inside every element that holds an svg.heat-field,
-// each text run is hidden, the page is screenshot with every transition
-// finished (so the boxes measured are where the pixels are), and the text
+// leaves "incomplete": inside every element that holds a .heat-field, once
+// the fields are settled (settleHeat), each text run is hidden, the page is
+// screenshot with every transition finished (so the boxes measured are
+// where the pixels are), and the text
 // colour is compared with every background pixel under its line boxes that
 // no fixed or sticky chrome (the app bar, the tab bar) covers. A run fails
 // when its 5th-percentile pixel is under 4.5:1 (3:1 for large text), so a
@@ -270,6 +299,7 @@ export async function assertAxe(page, what) {
 export async function heatContrast(page) {
   const png = await pngReader();
   if (!png) return { ok: true, details: [], warnings: ['heat contrast skipped: no PNG decoder in playwright-core'] };
+  const busy = await settleHeat(page, { finish: true });
   const items = await page.evaluate(() => {
     scrollTo(0, 0);
     for (const a of document.getAnimations()) {
@@ -303,7 +333,7 @@ export async function heatContrast(page) {
       cx.fillRect(0, 0, 1, 1);
       return [...cx.getImageData(0, 0, 1, 1).data];
     };
-    const roots = [...document.querySelectorAll('svg.heat-field')]
+    const roots = [...document.querySelectorAll('.heat-field')]
       .map((s) => s.parentElement)
       .filter((r) => r && !r.closest('[hidden], dialog:not([open])') && r.getBoundingClientRect().height > 0);
     const seen = new Set();
@@ -329,7 +359,8 @@ export async function heatContrast(page) {
     }
     return out;
   });
-  if (!items.length) return { ok: true, details: [] };
+  const warnings = busy.length ? [`heat fields still painting after 3 s: ${busy.join(', ')}`] : [];
+  if (!items.length) return { ok: true, details: [], warnings };
   const toggle = (hide) =>
     page.evaluate((h) => {
       for (const el of document.querySelectorAll('[data-vos-m]')) {
@@ -373,7 +404,7 @@ export async function heatContrast(page) {
     const p5 = cs[Math.floor(cs.length * 0.05)];
     if (p5 < need) details.push(`${it.tag} "${it.text}" is ${p5.toFixed(2)}:1 at its 5th-percentile pixel (worst ${min.toFixed(2)}:1), under ${need}:1 on the heat field`);
   }
-  return { ok: details.length === 0, details, measured: items.length };
+  return { ok: details.length === 0, details, measured: items.length, warnings };
 }
 
 const channel = (c) => {
