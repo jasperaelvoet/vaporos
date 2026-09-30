@@ -31,6 +31,8 @@ const say = (tpl: string): Log =>
     const key = /^\{(\w+)\}$/.exec(part)?.[1] as keyof typeof V | undefined;
     return key && key in V ? { b: V[key] } : part;
   });
+/** The log as one plain line, for the live region. */
+const plain = (log: Log) => log.map((part) => (typeof part === 'string' ? part : part.b)).join('');
 const REST: { a: Slot; b: Slot; log: Log } = {
   a: { heat: 'hot', role: copy.roles.running, version: V.running, status: copy.status.running },
   b: { heat: 'cool', role: copy.roles.previous, version: V.previous, status: copy.status.kept },
@@ -41,6 +43,7 @@ export function AbSlots({ children }: { children?: ReactNode }) {
   const [a, setA] = useState<Slot>(REST.a);
   const [b, setB] = useState<Slot>(REST.b);
   const [log, setLog] = useState<Log>(REST.log);
+  const [announce, setAnnounce] = useState(false);
   const timers = useRef<number[]>([]);
   const root = useRef<HTMLDivElement>(null);
 
@@ -50,6 +53,12 @@ export function AbSlots({ children }: { children?: ReactNode }) {
   };
   const later = (ms: number, fn: () => void) => {
     timers.current.push(window.setTimeout(fn, motionAllowed() ? ms : Math.min(ms, 60)));
+  };
+
+  // A button press: from now on the live region follows the log.
+  const press = (bad: boolean) => {
+    setAnnounce(true);
+    play(bad);
   };
 
   const play = (bad: boolean) => {
@@ -112,15 +121,22 @@ export function AbSlots({ children }: { children?: ReactNode }) {
       <div className="ab-text">
         {children}
         <div className="ab-ctl">
-          <Button size="md" variant="hot" onClick={() => play(false)}>
+          <Button size="md" variant="hot" onClick={() => press(false)}>
             {copy.play}
           </Button>
-          <Button size="md" variant="ghost" onClick={() => play(true)}>
+          <Button size="md" variant="ghost" onClick={() => press(true)}>
             {copy.playBad}
           </Button>
         </div>
-        <p className="ab-log telemetry" aria-live="polite">
+        <p className="ab-log telemetry" aria-hidden="true">
           {log.map((part, i) => (typeof part === 'string' ? part : <b key={i}>{part.b}</b>))}
+        </p>
+        {/* What a screen reader hears: the resting state, and each step of a
+            run someone started with a button. The autoplay as the slots
+            scroll in stays silent (the region is live from the start, so the
+            first step of a pressed run is announced too). */}
+        <p className="sr-only" aria-live="polite">
+          {plain(announce ? log : REST.log)}
         </p>
       </div>
       <div className="slots" role="group" aria-label={copy.slotsLabel}>
