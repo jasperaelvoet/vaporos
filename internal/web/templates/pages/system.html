@@ -1,28 +1,51 @@
-{{- /* A stub from the shell (C0b): the System index's owner (C4b) replaces
-  it. It already lists the six sub-pages and the two power keys, so the
-  shell's hold-to-confirm, confirm and reconnection scene can be tried. */ -}}
+{{- /*
+  System (spec-cc-screens §6), the index: this PC's nameplate, one row per
+  sub-page with what it has to say right now, Restart and Power off under
+  the hold rule, and Sign out on phones (the rail holds it from 64rem).
+  The nameplate is REDLINE's thermometer for the box: its name is set in
+  the cut of the page's temperature (<html data-state>) and a needle reads
+  it off the heat scale, so it is no data region (region.js would give it
+  a data-state of its own). The server paints every row with a skeleton for
+  its summary; pages/system.js fills them from the shell's GET /status and
+  the live events. styles/pages/system.css is its look.
+*/ -}}
 {{define "content"}}
-<section class="rack" aria-labelledby="sys-pages-title">
-  <h2 class="rack-title" id="sys-pages-title">Everything else</h2>
-  <ul class="rows" role="list">
-    <li><a class="row row-link" href="{{.Base}}/system/updates" data-vt="updates">{{icon "update"}}<span class="row-main"><span class="row-name">Updates</span></span></a></li>
-    <li><a class="row row-link" href="{{.Base}}/system/power" data-vt="power">{{icon "power"}}<span class="row-main"><span class="row-name">Power</span></span></a></li>
-    <li><a class="row row-link" href="{{.Base}}/system/storage" data-vt="storage">{{icon "drive"}}<span class="row-main"><span class="row-name">Storage</span></span></a></li>
-    <li><a class="row row-link" href="{{.Base}}/system/settings" data-vt="settings">{{icon "sliders"}}<span class="row-main"><span class="row-name">Settings</span><span class="row-sub">Name, password, remote access</span></span></a></li>
-    <li><a class="row row-link" href="{{.Base}}/system/logs" data-vt="logs">{{icon "file"}}<span class="row-main"><span class="row-name">Logs</span></span></a></li>
-    <li><a class="row row-link" href="{{.Base}}/system/about" data-vt="about">{{icon "info"}}<span class="row-main"><span class="row-name">About</span></span></a></li>
-  </ul>
-</section>
-<section class="rack" data-region="power-keys" aria-busy="true" aria-labelledby="sys-power-title">
-  <h2 class="rack-title" id="sys-power-title">Restart and power</h2>
-  <div class="keys-strip keys-two">
-    <button class="key-tile hold" type="button" id="sys-reboot" data-hold="reboot" aria-describedby="sys-hold-hint" disabled>{{icon "restart"}}<b>Restart</b><span class="hold-fill" aria-hidden="true"></span></button>
-    <button class="key-tile hold" type="button" id="sys-poweroff" data-hold="poweroff" aria-describedby="sys-hold-hint" disabled>{{icon "power"}}<b>Power off</b><span class="hold-fill" aria-hidden="true"></span></button>
-  </div>
-  <p class="hold-hint" id="sys-hold-hint" aria-live="polite">Hold to confirm, or tap to be asked first.</p>
-</section>
-<section class="rack rack-signout" aria-labelledby="sys-signout-title">
-  <h2 class="sr-only" id="sys-signout-title">Sign out</h2>
-  <button class="btn ghost" id="sys-signout" type="button">{{icon "logout"}}Sign out</button>
-</section>
+<div class="sys-grid">
+  <section class="sys-plate" id="plate" aria-busy="true" aria-labelledby="plate-name">
+    <div class="sys-scale" aria-hidden="true">
+      <span class="sys-ramp"></span>
+      <span class="sys-needle"><span class="sys-needle-word mono" id="plate-word"></span></span>
+    </div>
+    <h2 class="sys-plate-name" id="plate-name">{{.Hostname}}</h2>
+    <div class="sys-plate-facts">
+      <p class="sys-plate-addr mono" id="plate-addr">{{.Hostname}}.local</p>
+      <p class="sys-plate-meta" id="plate-meta"><span class="skel skel-line skel-short"></span></p>
+    </div>
+  </section>
+
+  <nav class="sys-pages" aria-label="System pages">
+    <ul class="rows sys-rows" id="sys-rows" data-region="rows" aria-busy="true" role="list">
+      <li><a class="row row-link" href="{{.Base}}/system/updates" id="row-updates">{{icon "update"}}<span class="row-main"><span class="row-name" data-vt="updates">Updates<span class="sr-only">,</span></span><span class="row-sub" id="sum-updates"><span class="skel skel-line skel-short"></span></span></span></a></li>
+      <li><a class="row row-link" href="{{.Base}}/system/power" id="row-power">{{icon "power"}}<span class="row-main"><span class="row-name" data-vt="power">Power<span class="sr-only">,</span></span><span class="row-sub" id="sum-power"><span class="skel skel-line skel-short"></span></span></span></a></li>
+      <li><a class="row row-link" href="{{.Base}}/system/storage" id="row-storage">{{icon "drive"}}<span class="row-main"><span class="row-name" data-vt="storage">Storage<span class="sr-only">,</span></span><span class="row-sub" id="sum-storage"><span class="skel skel-line skel-short"></span></span></span></a></li>
+      <li><a class="row row-link" href="{{.Base}}/system/settings">{{icon "sliders"}}<span class="row-main"><span class="row-name" data-vt="settings">Settings<span class="sr-only">,</span></span><span class="row-sub">Name, password and remote access</span></span></a></li>
+      <li><a class="row row-link" href="{{.Base}}/system/logs">{{icon "file"}}<span class="row-main"><span class="row-name" data-vt="logs">Logs<span class="sr-only">,</span></span><span class="row-sub">Stream server log</span></span></a></li>
+      <li><a class="row row-link" href="{{.Base}}/system/about">{{icon "info"}}<span class="row-main"><span class="row-name" data-vt="about">About<span class="sr-only">,</span></span><span class="row-sub">Hardware and versions</span></span></a></li>
+    </ul>
+  </nav>
+
+  <section class="rack sys-power" data-region="power-keys" aria-busy="true" aria-labelledby="sys-power-title">
+    <h2 class="rack-title" id="sys-power-title">Restart and power</h2>
+    <div class="keys-strip keys-two">
+      <button class="key-tile hold" type="button" id="sys-reboot" data-hold="reboot" aria-describedby="sys-hold-hint" disabled>{{icon "restart"}}<b>Restart</b><span class="hold-fill" aria-hidden="true"></span></button>
+      <button class="key-tile hold" type="button" id="sys-poweroff" data-hold="poweroff" aria-describedby="sys-hold-hint" disabled>{{icon "power"}}<b>Power off</b><span class="hold-fill" aria-hidden="true"></span></button>
+    </div>
+    <p class="hold-hint" id="sys-hold-hint" aria-live="polite">Hold to confirm, or tap to be asked first. Streams in progress stop.</p>
+  </section>
+
+  <section class="rack sys-signout" aria-labelledby="sys-signout-title">
+    <h2 class="sr-only" id="sys-signout-title">Sign out</h2>
+    <button class="btn ghost" id="sys-signout" type="button">{{icon "logout"}}Sign out</button>
+  </section>
+</div>
 {{end}}

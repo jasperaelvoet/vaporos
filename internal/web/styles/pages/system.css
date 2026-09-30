@@ -1,0 +1,95 @@
+/* System (spec-cc-screens §6), the index, in REDLINE. The one loud thing is
+   the nameplate: this PC's name set in the cut of its temperature (width is
+   temperature: condensed when cold, expanded while it streams), over the
+   heat scale with a needle that reads the page's <html data-state>. The
+   rows and the power keys are the shell's quiet soot pieces; a row that
+   has news carries a pip in its heat (hot) or the fault's cold, beside
+   words that say the same. Classes start with sys-, so none can be a
+   Tailwind utility (TestNoUtilityCollisions). */
+@layer components {
+  .sys-grid { display: grid; gap: 1.75rem; align-items: start; }
+  .sys-grid .rack { padding-top: 0; }
+
+  /* ------------------------------------------------------ the nameplate */
+  .sys-plate {
+    display: grid; gap: 0.25rem; padding: 1rem 1.25rem 1.25rem;
+    border-radius: var(--radius-3xl); background: var(--color-surface);
+  }
+  .sys-plate-name {
+    margin: 0.375rem 0 0.25rem; font-family: var(--font-display);
+    font-stretch: var(--state-cut-w); font-weight: var(--state-cut-g);
+    font-size: clamp(2.5rem, 13vw, 4rem); line-height: 0.92; letter-spacing: -0.015em;
+    overflow-wrap: anywhere;
+  }
+  .sys-plate-facts { display: grid; gap: 0.25rem; min-width: 0; }
+  .sys-plate-addr { margin: 0; color: var(--color-ink); font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .sys-plate-meta { margin: 0; color: var(--color-ink-2); font-size: var(--text-md); }
+  .sys-plate-meta .skel { width: 14rem; max-width: 100%; margin-top: 0.3125rem; }
+
+  /* the heat scale: the ramp in isotherm bands, and the needle at the
+     page's --state-heat (tokens.css); a fault sits below the scale, cold */
+  .sys-scale { position: relative; height: 1.625rem; }
+  .sys-ramp {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 0.375rem; border-radius: 2px;
+    background: linear-gradient(90deg,
+      var(--color-h1) 0 11.1%, var(--color-h2) 11.1% 22.2%, var(--color-h3) 22.2% 33.3%, var(--color-h4) 33.3% 44.4%,
+      var(--color-h5) 44.4% 55.5%, var(--color-h6) 55.5% 66.6%, var(--color-h7) 66.6% 77.7%, var(--color-h8) 77.7% 88.8%, var(--color-h9) 88.8%);
+  }
+  .sys-needle {
+    position: absolute; bottom: -0.1875rem; left: calc(var(--state-heat) * 100%);
+    width: 2px; height: 0.75rem; margin-left: -1px; border-radius: 1px; background: var(--color-ink);
+    transition: left var(--vos-dur-needle) var(--ease-tach), opacity var(--vos-dur-fast);
+  }
+  .sys-needle-word {
+    position: absolute; bottom: calc(100% + 0.25rem); left: 0; translate: calc(var(--state-heat) * -100%) 0;
+    color: var(--color-ink-2); font-size: var(--text-2xs); white-space: nowrap;
+    transition: translate var(--vos-dur-needle) var(--ease-tach);
+  }
+  :root[data-state=""] .sys-needle { opacity: 0; }
+  :root[data-state="fault"] .sys-needle { background: var(--color-cold); }
+
+  /* ----------------------------------------------------------- the rows */
+  .sys-rows .row { min-height: 3.5rem; }
+  .sys-rows .row-sub .skel { width: 9rem; margin-top: 0.3125rem; }
+  .sys-rows [data-tone] .row-sub::before {
+    content: ""; display: inline-block; width: 0.5rem; height: 0.5rem; margin-right: 0.4375rem;
+    border-radius: var(--radius-xs); background: var(--color-h8); translate: 0 -0.0625rem;
+  }
+  .sys-rows [data-tone="warm"] .row-sub::before { background: var(--color-h6); }
+  .sys-rows [data-tone="cold"] .row-sub::before { background: var(--color-cold); }
+
+  .sys-signout { justify-items: start; }
+
+  /* From the rail breakpoint: the nameplate over two columns of rows, the
+     power keys at the bottom right, Sign out in the rail. */
+  @media (min-width: 64rem) {
+    .sys-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem 1.5rem; }
+    .sys-plate, .sys-pages { grid-column: 1 / -1; }
+    /* a spec plate: the name on the left, its facts set right below the scale */
+    .sys-plate { grid-template-columns: minmax(0, 1fr) auto; align-items: end; column-gap: 2rem; padding: 1.25rem 1.75rem 1.5rem; }
+    .sys-scale { grid-column: 1 / -1; margin-bottom: 0.75rem; }
+    .sys-plate-name { margin: 0; font-size: 4.5rem; }
+    .sys-plate-facts { justify-items: end; text-align: right; padding-bottom: 0.375rem; }
+    .sys-rows {
+      grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, auto); grid-auto-flow: column;
+      column-gap: 1.5rem; background: none; border-radius: 0; overflow: visible;
+    }
+    .sys-rows > li { background: var(--color-surface); overflow: hidden; }
+    .sys-rows > li:nth-child(3n + 1) { border-radius: var(--radius-2xl) var(--radius-2xl) 0 0; }
+    .sys-rows > li:nth-child(3n) { border-radius: 0 0 var(--radius-2xl) var(--radius-2xl); }
+    .sys-rows > li:nth-child(4) > .row { border-top: 0; }
+    .sys-power { grid-column: 2; }
+    .sys-signout { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sys-needle, .sys-needle-word { transition: none; }
+  }
+
+  @media (forced-colors: active) {
+    .sys-plate { border: 1px solid CanvasText; }
+    .sys-ramp { forced-color-adjust: none; }
+    .sys-needle { background: CanvasText; }
+    .sys-rows [data-tone] .row-sub::before { background: CanvasText; }
+  }
+}
