@@ -41,6 +41,10 @@ function releaseJsonLd(r: Release): string {
 export default async function DownloadPage() {
   const release = await getLatestRelease();
   const ready = release.state === 'ready';
+  // With no release yet there is nothing to check: no verify section or link.
+  const none = release.state === 'none';
+  const channels = none ? downloadPage.channelsNone : downloadPage.channels;
+  const jump = none ? downloadPage.jump.filter((l) => l.href !== `#${anchors.verify}`) : downloadPage.jump;
   return (
     <>
       {release.state === 'ready' && (
@@ -59,8 +63,8 @@ export default async function DownloadPage() {
         </DownloadCard>
 
         <div className="mt-6 grid items-start gap-x-12 gap-y-6 desk:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-          <Notice icon={downloadPage.channels.icon}>
-            <Rich text={downloadPage.channels.text} />
+          <Notice icon={channels.icon}>
+            <Rich text={channels.text} />
           </Notice>
           <nav aria-label={downloadPage.jumpLabel} className="grid gap-3 desk:pt-4">
             <p>
@@ -69,7 +73,7 @@ export default async function DownloadPage() {
               </TextLink>
             </p>
             <p className="flex flex-wrap gap-x-6 gap-y-2 text-fine">
-              {downloadPage.jump.map((l) => (
+              {jump.map((l) => (
                 <TextLink key={l.href} href={l.href}>
                   {l.label}
                 </TextLink>
@@ -96,23 +100,25 @@ export default async function DownloadPage() {
         </div>
       </section>
 
-      <section
-        id={verifySection.id}
-        aria-labelledby="verify-title"
-        className="wrap mt-[clamp(5rem,10vw,8.5rem)] mb-[clamp(5rem,10vw,8rem)]"
-        data-heat={HEAT.coldBoot}
-        data-heat-label="cold boot"
-      >
-        <div className="mb-10 grid items-end gap-x-16 gap-y-5 desk:mb-14 desk:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-          <SectionTitle id="verify-title">{verifySection.title.text}</SectionTitle>
-          <p className="max-w-read text-smoke">
-            <Rich text={verifySection.lead} />
-          </p>
-        </div>
-        <div className="max-w-[56rem]">
-          <VerifySteps />
-        </div>
-      </section>
+      {!none && (
+        <section
+          id={verifySection.id}
+          aria-labelledby="verify-title"
+          className="wrap mt-[clamp(5rem,10vw,8.5rem)] mb-[clamp(5rem,10vw,8rem)]"
+          data-heat={HEAT.coldBoot}
+          data-heat-label="cold boot"
+        >
+          <div className="mb-10 grid items-end gap-x-16 gap-y-5 desk:mb-14 desk:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+            <SectionTitle id="verify-title">{verifySection.title.text}</SectionTitle>
+            <p className="max-w-read text-smoke">
+              <Rich text={verifySection.lead} />
+            </p>
+          </div>
+          <div className="max-w-[56rem]">
+            <VerifySteps />
+          </div>
+        </section>
+      )}
     </>
   );
 }

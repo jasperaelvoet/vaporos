@@ -16,6 +16,11 @@ export const downloadPage = {
     icon: 'info',
     text: `**Channels.** Releases from \`main\` are the stable channel shown above. Builds from other branches are published as [prereleases](${links.releases}) for testing. An installed PC follows its channel by itself, so you only download an ISO once.`,
   } satisfies Callout,
+  /** The same while GitHub has no release yet (the card says so above it). */
+  channelsNone: {
+    icon: 'info',
+    text: `**Channels.** Releases from \`main\` will be the stable channel. Builds from other branches are published as [prereleases](${links.releases}) for testing. An installed PC follows its channel by itself, so you only download an ISO once.`,
+  } satisfies Callout,
   channelsShort: 'An installed PC follows its channel by itself, so you only download an ISO once.' as Rich,
   next: { label: 'Next: the install guide', href: routes.install, icon: 'arrow' } satisfies LinkItem,
   /** In-page links under the card, to the two sections below it. */

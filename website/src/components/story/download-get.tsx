@@ -10,19 +10,40 @@
 // also holds `children` (the block's requirements line and its verify and
 // requirements links), so the card reads whole; its root is display:
 // contents, so the block's grid places both parts.
+//
+// With no release the block never talks about a download: the lead takes
+// its `none` wording and the links keep only the requirements; "Verify this
+// download" appears with a release (and when the lookup failed, since the
+// ISO is then one click away on GitHub).
 import type { ReactNode } from 'react';
 import { Icon } from '@/components/ui/icon';
 import { LinkButton } from '@/components/ui/button';
 import { Rich } from '@/components/ui/rich';
+import { TextLink } from '@/components/ui/text-link';
 import { downloadCard as copy } from '@/content/download';
 import { getStory } from '@/content/story';
+import type { LinkItem, Rich as RichText } from '@/content/types';
 import { formatDate, formatSize, type ReleaseLookup } from '@/lib/release-shape';
 import { useLatestRelease } from '@/lib/use-latest-release';
 
-export function DownloadGet({ initial, children }: { initial: ReleaseLookup; children?: ReactNode }) {
+interface Props {
+  initial: ReleaseLookup;
+  /** The block's lead: with a release (or an unknown one), and with none yet. */
+  lead: { ready: RichText; none: RichText };
+  /** The links under the requirements; `verify` shows only when there is something to verify. */
+  links: { verify: LinkItem; requirements: LinkItem };
+  /** The requirements line. */
+  children?: ReactNode;
+}
+
+export function DownloadGet({ initial, lead, links, children }: Props) {
   const { lookup, origin } = useLatestRelease(initial);
+  const none = lookup.state === 'none';
   return (
     <div className="get-card" data-download-card data-state={lookup.state} data-origin={origin}>
+      <p className="dl-lead">
+        <Rich text={none ? lead.none : lead.ready} />
+      </p>
       <div className="get">
         {lookup.state === 'ready' ? (
           <>
@@ -75,7 +96,16 @@ export function DownloadGet({ initial, children }: { initial: ReleaseLookup; chi
           </>
         )}
       </div>
-      {children}
+      <div className="dl-spec">
+        {children}
+        <p className="dl-links">
+          {(none ? [links.requirements] : [links.verify, links.requirements]).map((l) => (
+            <TextLink key={l.href} href={l.href}>
+              {l.label}
+            </TextLink>
+          ))}
+        </p>
+      </div>
     </div>
   );
 }

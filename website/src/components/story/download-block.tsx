@@ -3,8 +3,6 @@
 // PC needs, in one line, with the way to check the download right under it.
 // .surface-hot turns the fixed nav into a hard ash bar while it's under it.
 import { Headline } from '@/components/ui/headline';
-import { TextLink } from '@/components/ui/text-link';
-import { Rich } from '@/components/ui/rich';
 import { downloadCard } from '@/content/download';
 import { getBeat } from '@/content/home';
 import { requirements } from '@/content/requirements';
@@ -34,27 +32,19 @@ export function DownloadBlock({ release }: { release: ReleaseLookup }) {
           fitKNarrow={getBeat.title.fitKNarrow}
           className="dl-title"
         />
-        <p className="dl-lead">
-          <Rich text={getBeat.lead} />
-        </p>
-        <DownloadGet initial={release}>
-          <div className="dl-spec">
-            <ul className="dl-req telemetry" aria-label={getBeat.requirementsLabel}>
-              <li className="dl-req-k" aria-hidden="true">
-                {getBeat.needs}
-              </li>
-              {requirements.map((r) => (
-                <li key={r.id}>{r.label}</li>
-              ))}
-            </ul>
-            <p className="dl-links">
-              {downloadCard.ready.compactLinks.map((l) => (
-                <TextLink key={l.href} href={l.href}>
-                  {l.label}
-                </TextLink>
-              ))}
-            </p>
-          </div>
+        <DownloadGet
+          initial={release}
+          lead={{ ready: getBeat.lead, none: getBeat.leadNone }}
+          links={{ verify: downloadCard.ready.compactLinks[0], requirements: downloadCard.ready.compactLinks[1] }}
+        >
+          <ul className="dl-req telemetry" aria-label={getBeat.requirementsLabel}>
+            <li className="dl-req-k" aria-hidden="true">
+              {getBeat.needs}
+            </li>
+            {requirements.map((r) => (
+              <li key={r.id}>{r.label}</li>
+            ))}
+          </ul>
         </DownloadGet>
       </div>
     </section>

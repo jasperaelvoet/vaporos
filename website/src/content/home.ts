@@ -144,6 +144,8 @@ export const getBeat = {
   },
   /** downloadPage.lead plus downloadPage.channelsShort, in one breath. */
   lead: 'One ISO. Write it to a USB stick, boot the PC from it, and finish the setup on your phone. An installed PC updates itself, so you only download this once.' as Rich,
+  /** The lead while GitHub has no release yet (downloadCard.none): nothing to download. */
+  leadNone: "Once the first release is out, it's one ISO: write it to a USB stick, boot the PC from it, and finish the setup on your phone." as Rich,
   /** The chip before the requirements line. */
   needs: 'Needs',
   requirementsLabel: 'Requirements',
