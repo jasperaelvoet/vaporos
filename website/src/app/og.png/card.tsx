@@ -13,8 +13,11 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ImageResponse } from 'next/og';
+import { downloadPage } from '@/content/download';
+import { faqPage } from '@/content/faq';
 import { hero } from '@/content/home';
-import { pageMeta, site } from '@/content/site';
+import { installGuide, installStrip } from '@/content/install';
+import { site } from '@/content/site';
 import { logo, type LogoDrawing } from '@/lib/logo.gen';
 import { plain } from '@/lib/rich-text';
 import { tokens } from '@/lib/tokens.gen';
@@ -60,6 +63,9 @@ const CUT_FONT: Record<Cut, { fontFamily: string; fontWeight: 600 | 700 | 800 }>
 // ---------------------------------------------------------------- cards
 interface Card {
   ground: 'dark' | 'light';
+  /** The page's name in mono above the headline, with the heat's colour. */
+  eyebrow?: string;
+  /** The plain line above the headline. */
   kicker?: string;
   lines: string[];
   cut: Cut;
@@ -67,11 +73,13 @@ interface Card {
   max: number;
   column?: number;
   lead?: string;
+  /** A row of short facts, or numbered steps one per line. */
   facts?: string[];
+  steps?: string[];
   /** The page's address after the site's. */
   path: string;
-  /** The field around the V and the heat scale's reading. */
-  heat: { peak: number; reach: number; label: string; at: number };
+  /** The field around the V, and the heat scale's reading and colour. */
+  heat: { peak: number; reach: number; label: string; at: number; color: string };
 }
 
 /** Headline lines: the content's own breaks when it has them, else text and accent. */
@@ -93,37 +101,41 @@ function cardFor(name: CardName): Card {
         column: 610,
         facts: hero.facts.map((f) => f.label),
         path: '',
-        heat: { peak: s.streaming.peak, reach: 135, label: s.streaming.signage, at: s.streaming.heat },
+        heat: { peak: s.streaming.peak, reach: 135, label: s.streaming.signage, at: s.streaming.heat, color: s.streaming.color },
       };
     case 'download':
       return {
         ground: 'light',
-        lines: [pageMeta.download.title],
+        eyebrow: downloadPage.eyebrow,
+        lines: [...downloadPage.headline],
         cut: 'hot',
-        max: 150,
-        lead: pageMeta.download.description,
+        max: 120,
+        lead: downloadPage.lead,
         path: 'download/',
-        heat: { peak: 1, reach: 150, label: 'white-hot', at: 1 },
+        heat: { peak: 1, reach: 150, label: 'white-hot', at: 1, color: R[6] },
       };
     case 'install':
       return {
         ground: 'dark',
-        lines: pageMeta.install.title.split(' '),
+        eyebrow: installGuide.eyebrow,
+        lines: [...installGuide.headline],
         cut: 'cold',
-        max: 170,
-        lead: pageMeta.install.description,
+        max: 116,
+        steps: installStrip.steps.map((st) => st.title),
         path: 'install/',
-        heat: { peak: s.installing.peak, reach: s.installing.reach, label: s.installing.signage, at: s.installing.heat },
+        heat: { peak: s.installing.peak, reach: s.installing.reach, label: s.installing.signage, at: s.installing.heat, color: s.installing.color },
       };
     case 'faq':
       return {
         ground: 'dark',
-        lines: [pageMeta.faq.title],
+        eyebrow: faqPage.eyebrow,
+        // The H1's two halves, one per line: a poster, not a heading.
+        lines: headlineLines(faqPage.title),
         cut: 'warm',
-        max: 210,
-        lead: pageMeta.faq.description,
+        max: 120,
+        lead: faqPage.lead,
         path: 'faq/',
-        heat: { peak: s.ready.peak, reach: s.ready.reach, label: s.ready.signage, at: s.ready.heat },
+        heat: { peak: s.ready.peak, reach: s.ready.reach, label: s.ready.signage, at: s.ready.heat, color: s.ready.color },
       };
   }
 }
@@ -177,6 +189,8 @@ function Plate({ children, light, size = 16 }: { children: string; light: boolea
 const KICKER = 28;
 const LEAD = 25;
 const FACTS = 14;
+const STEPS = 19;
+const EYEBROW = 17;
 const BOTTOM = 62;
 /** The V's tip, low and right of centre, and its scale over the 512 icon. */
 const TIP = { x: 884, y: 452 } as const;
@@ -238,6 +252,7 @@ export async function cardLayout(name: CardName): Promise<Layout> {
     words.push({ left: EDGE, right: Math.round(EDGE + w), top: Math.round(y - h), bottom: Math.round(y) });
     y -= h + gapAbove;
   };
+  if (c.steps?.length) push(Math.max(...c.steps.map((st) => textWidth(mono, st, STEPS))) + STEPS * 2.6, c.steps.length * STEPS * 1.75, 28);
   if (c.facts?.length) push(c.facts.reduce((w, f) => w + textWidth(mono, f, FACTS), 0) + c.facts.length * 17 + (c.facts.length - 1) * 22, FACTS * 1.5, 30);
   if (c.lead) {
     const w = textWidth(ui, plain(c.lead), LEAD);
@@ -247,6 +262,10 @@ export async function cardLayout(name: CardName): Promise<Layout> {
   if (c.kicker) {
     y -= 16;
     push(textWidth(ui, c.kicker, KICKER), KICKER * 1.2, 0);
+  }
+  if (c.eyebrow) {
+    y -= 22;
+    push(textWidth(mono, c.eyebrow, EYEBROW) + 20, EYEBROW * 1.5, 0);
   }
   return { card: c, size, glyph, source, words };
 }
@@ -320,6 +339,12 @@ export async function renderCard(name: CardName): Promise<ImageResponse> {
         </div>
 
         <div style={{ position: 'absolute', left: EDGE, bottom: BOTTOM, width: (c.column ?? COLUMN) + 40, display: 'flex', flexDirection: 'column' }}>
+          {c.eyebrow ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 22, fontFamily: 'Martian Mono', fontSize: EYEBROW, lineHeight: 1.5, color: light ? P['hot-ink'] : P.smoke }}>
+              <div style={{ width: 9, height: 9, backgroundColor: light ? P.ash : c.heat.color }} />
+              {c.eyebrow}
+            </div>
+          ) : null}
           {c.kicker ? <div style={{ fontSize: KICKER, lineHeight: 1.2, marginBottom: 16, color: ink }}>{c.kicker}</div> : null}
           <div style={{ display: 'flex', flexDirection: 'column', ...CUT_FONT[c.cut], fontSize: size, lineHeight: 0.96, letterSpacing: `${TRACKING}em`, color: ink }}>
             {c.lines.map((l) => (
@@ -329,6 +354,16 @@ export async function renderCard(name: CardName): Promise<ImageResponse> {
             ))}
           </div>
           {c.lead ? <div style={{ marginTop: 24, fontSize: LEAD, lineHeight: 1.4, color: light ? P['hot-ink'] : P.smoke, maxWidth: 560, textWrap: 'balance' }}>{plain(c.lead)}</div> : null}
+          {c.steps?.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', marginTop: 28, fontFamily: 'Martian Mono', fontSize: STEPS, lineHeight: 1.75, color: P.bone }}>
+              {c.steps.map((st, i) => (
+                <div key={st} style={{ display: 'flex', whiteSpace: 'nowrap' }}>
+                  <span style={{ color: tokens.palette['ink-ready'], width: STEPS * 2.6 }}>{String(i + 1).padStart(2, '0')}</span>
+                  {st}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {c.facts?.length ? (
             <div style={{ display: 'flex', gap: 22, marginTop: 30, fontFamily: 'Martian Mono', fontSize: FACTS, lineHeight: 1.5, color: P.smoke }}>
               {c.facts.map((f) => (
