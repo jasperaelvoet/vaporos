@@ -10,7 +10,7 @@ import { OpenFromHash } from './open-from-hash';
 
 function Answer({ item }: { item: QA }) {
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
       {item.a.map((p, i) => (
         <p key={i}>
           <Rich text={p} />
@@ -40,7 +40,7 @@ export function FaqList({ items, className = '' }: { items: readonly QA[]; class
 export function FaqTopics({ groups, items }: { groups: readonly FaqGroup[]; items: readonly QA[] }) {
   const byId = new Map(items.map((q) => [q.id, q]));
   return (
-    <div className="grid gap-[clamp(3.5rem,7vw,6rem)]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-[clamp(3.5rem,7vw,6rem)]">
       {groups.map((g) => {
         const qs = g.ids.map((id) => byId.get(id)).filter((q): q is QA => !!q);
         return (
@@ -48,14 +48,14 @@ export function FaqTopics({ groups, items }: { groups: readonly FaqGroup[]; item
             key={g.id}
             id={g.id}
             aria-labelledby={`${g.id}-title`}
-            className="grid gap-x-16 gap-y-6 desk:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]"
+            className="grid grid-cols-[minmax(0,1fr)] gap-x-16 gap-y-6 desk:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]"
           >
             <div className="desk:sticky desk:top-[calc(var(--nav-h)+1.5rem)] desk:self-start">
               <h2 id={`${g.id}-title`} className="cut-warm text-[clamp(2rem,3.4vw,2.875rem)] leading-[0.98] tracking-[-0.012em] text-bone">
                 {g.title}
               </h2>
             </div>
-            <div>
+            <div className="min-w-0">
               {qs.map((item) => (
                 <Disclosure key={item.id} id={item.id} summary={item.q}>
                   <Answer item={item} />

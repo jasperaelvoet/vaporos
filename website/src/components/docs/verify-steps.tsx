@@ -12,10 +12,10 @@ export function VerifySteps() {
   const steps = verifySteps(RELEASE_KEY);
   const key = releaseKeyCard(RELEASE_KEY);
   return (
-    <div className="grid gap-12 desk:gap-16">
-      <ol className="grid gap-12 desk:gap-14">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-12 desk:gap-16">
+      <ol className="grid grid-cols-[minmax(0,1fr)] gap-12 desk:gap-14">
         {steps.map((s) => (
-          <li key={s.num} className="grid gap-x-8 gap-y-4 desk:grid-cols-[4.5rem_minmax(0,1fr)]">
+          <li key={s.num} className="grid grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-4 desk:grid-cols-[4.5rem_minmax(0,1fr)]">
             <span aria-hidden className="cut-cold text-[4.25rem] leading-[0.78] text-ink-ready desk:text-[5.25rem]">
               {s.num}
             </span>
@@ -41,7 +41,7 @@ export function VerifySteps() {
 
       <section
         aria-labelledby="release-key-title"
-        className="grid gap-5 rounded-2xl bg-soot p-5 inset-ring-1 inset-ring-line desk:ml-[6.5rem] desk:p-7"
+        className="grid grid-cols-[minmax(0,1fr)] gap-5 rounded-2xl bg-soot p-5 inset-ring-1 inset-ring-line desk:ml-[6.5rem] desk:p-7"
       >
         <div className="flex items-start gap-3.5">
           <Icon name={key.icon} className="mt-0.5 size-5 shrink-0 text-smoke" />

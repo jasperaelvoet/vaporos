@@ -73,16 +73,16 @@ function Ready({ r, compact, H, id }: { r: Release; compact: boolean; H: H; id?:
   const assets = copy.ready.assets.filter((a) => urls[a.key]);
   const versionIcon = copy.ready.meta.find((m) => 'kind' in m)?.icon ?? 'tag';
   return (
-    <div className={`grid gap-x-12 gap-y-9 ${compact ? '' : 'desk:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]'}`}>
-      <div className="grid min-w-0 content-start justify-items-start gap-5">
-        <div className="grid gap-3">
+    <div className={`grid grid-cols-[minmax(0,1fr)] gap-x-12 gap-y-9 ${compact ? '' : 'desk:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]'}`}>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start justify-items-start gap-5">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
           <p className="telemetry text-meta text-hot-ink-2">{copy.ready.kicker}</p>
           <H id={id} className="cut-hot text-[clamp(2.125rem,4.6vw,3.75rem)] leading-[0.95] tracking-[-0.018em] text-ash">
             {copy.ready.heading}
             {date && (
               <>
-                {' '}
-                <span className="whitespace-nowrap">{date}</span>
+                {/* Chrome drops the space where the heading wraps; the comma keeps the name "VaporOS, Sep 29, 2026". */}
+                <span className="sr-only">,</span> <span className="desk:whitespace-nowrap">{date}</span>
               </>
             )}
           </H>
@@ -92,8 +92,8 @@ function Ready({ r, compact, H, id }: { r: Release; compact: boolean; H: H; id?:
           <Icon name={versionIcon} className="size-3.5 shrink-0" />
           {r.tag || `v${r.version}`}
         </Chip>
-        <div className="mt-2 grid w-full justify-items-start gap-3">
-          <a href={r.iso.url} className={buttonClass('ash', 'lg', 'max-desk:w-full')}>
+        <div className="mt-2 grid w-full grid-cols-[minmax(0,1fr)] justify-items-start gap-3">
+          <a href={r.iso.url} className={buttonClass('ash', 'lg', 'max-desk:w-full max-desk:whitespace-normal max-desk:text-balance')}>
             <Icon name={copy.ready.button.icon} className="size-6 shrink-0" />
             {copy.ready.button.label}
             {size ? ` (${size})` : ''}
