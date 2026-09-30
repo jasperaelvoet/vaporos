@@ -1241,7 +1241,6 @@ func TestLinksHonourBase(t *testing.T) {
 // pages build with. Remove a name once a page uses it (the test says so).
 var libraryModules = map[string]string{
 	"js/ui/controls.js": "switches, meters and steppers: C3, C4a, C4b",
-	"js/summary.js":     "Home's hero, cards and lines: C1",
 }
 
 var (
