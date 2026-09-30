@@ -5,7 +5,7 @@
       "name": "scripts-power-off-and-wake",
       "preset": "idle",
       "steps": [
-        {"script": "power-off", "expect": {"events": [["system.message", {"level": "info", "text": "Shutting down…"}]]}},
+        {"script": "power-off", "expect": {"events": [["power.idle", {"idle_seconds": 900, "shutdown_in": 0, "busy": null}], ["system.message", {"level": "info", "text": "Shutting down…"}]]}},
         {"req": "GET /ping", "expect": {"status": 0}},
         {"event": ["session.end", {}], "expect": {"events": []}},
         {"script": "wake", "expect": {"events": [["pairing.state", {"pairings": []}]]}},

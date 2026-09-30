@@ -1,4 +1,12 @@
 {
-  "description": "VaporOS powers off and stays off until the wake script (or POST /__dev/down {\"seconds\":0}).",
-  "steps": [{"events": [["system.message", {"level": "info", "text": "Shutting down…"}]]}, {"after": 1000, "down": -1}]
+  "description": "Nobody played for the idle time, so VaporOS powers off as internal/power does it (a last power.idle with no time left, then off) and stays off until the wake script (or POST /__dev/down {\"seconds\":0}). A page that saw the countdown run out shows the Off scene and its Wake card a few seconds after the stream drops (ui/shell.js).",
+  "steps": [
+    {
+      "events": [
+        ["power.idle", {"idle_seconds": 900, "shutdown_in": 0, "busy": null}],
+        ["system.message", {"level": "info", "text": "Shutting down…"}]
+      ]
+    },
+    {"after": 1000, "down": -1}
+  ]
 }
