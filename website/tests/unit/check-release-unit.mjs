@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Unit checks for src/lib/release.ts and release-shape.ts, run straight from
-// the TypeScript source (npm test):
+// the TypeScript source (npm test runs this file, which then runs the other
+// check-*.mjs files here):
 //
 //   node --conditions=react-server --import ./tests/unit/check-ts-hooks.mjs \
 //     tests/unit/check-release-unit.mjs [projectDir=.] [fixture=tests/fixtures/release-latest.json]
@@ -11,7 +12,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const [PROJECT = '.', FIXTURE = 'tests/fixtures/release-latest.json'] = process.argv.slice(2);
 const lib = pathToFileURL(resolve(PROJECT, 'src/lib') + '/');
@@ -165,4 +166,20 @@ try {
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL RELEASE UNIT CHECKS PASSED');
+
+// npm test runs this file; it then runs the folder's other checks, each in
+// its own process: check-labels.mjs ([[labels]], markup, content links) and
+// check-og.mjs (the share cards).
+if (!process.env.VAPOROS_UNIT_CHILD) {
+  const { spawnSync } = await import('node:child_process');
+  for (const f of ['check-labels.mjs', 'check-og.mjs']) {
+    console.log(`\n== ${f}`);
+    const r = spawnSync(process.execPath, ['--conditions=react-server', fileURLToPath(new URL(f, import.meta.url))], {
+      stdio: 'inherit',
+      env: { ...process.env, VAPOROS_UNIT_CHILD: '1' },
+    });
+    if (r.status !== 0) failures++;
+  }
+  console.log(failures ? `\nUNIT CHECKS FAILED` : '\nALL UNIT CHECKS PASSED');
+}
 process.exit(failures ? 1 : 0);

@@ -18,7 +18,7 @@ import { pageMeta, site } from '@/content/site';
 import { logo, type LogoDrawing } from '@/lib/logo.gen';
 import { plain } from '@/lib/rich-text';
 import { tokens } from '@/lib/tokens.gen';
-import { fitSize, fontMetrics, type FontMetrics } from './measure';
+import { fitSize, fontMetrics, textWidth, type FontMetrics } from './measure';
 import { samplePath, thermalDataURL, transformPath, type VSource } from './thermal';
 
 export const OG_SIZE = { width: site.ogImage.width, height: site.ogImage.height } as const;
@@ -90,7 +90,7 @@ function cardFor(name: CardName): Card {
         lines: headlineLines(hero.title as { text: string; accent?: string; lines?: readonly string[] }),
         cut: 'hot',
         max: 92,
-        column: 650,
+        column: 610,
         facts: hero.facts.map((f) => f.label),
         path: '',
         heat: { peak: s.streaming.peak, reach: 135, label: s.streaming.signage, at: s.streaming.heat },
@@ -173,23 +173,51 @@ function Plate({ children, light, size = 16 }: { children: string; light: boolea
 }
 
 // ---------------------------------------------------------------- the card
-export async function renderCard(name: CardName): Promise<ImageResponse> {
+// Text sizes the card sets (px): the kicker, the lead, the facts.
+const KICKER = 28;
+const LEAD = 25;
+const FACTS = 14;
+const BOTTOM = 62;
+/** The V's tip, low and right of centre, and its scale over the 512 icon. */
+const TIP = { x: 884, y: 452 } as const;
+const V_SCALE = 1.45;
+
+export interface Box {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface Layout {
+  card: Card;
+  /** The headline's fitted size. */
+  size: number;
+  /** The V's path in card px, and the heat field around it. */
+  glyph: string;
+  source: VSource;
+  /** Where the words are, line by line (from the fonts' advances), for the cool-side check. */
+  words: Box[];
+}
+
+/** Everything a card places, before drawing it. */
+export async function cardLayout(name: CardName): Promise<Layout> {
   const c = cardFor(name);
   const light = c.ground === 'light';
   const buf = await loadFonts();
   const metrics: Record<Cut, FontMetrics> = { cold: fontMetrics(buf.cold), warm: fontMetrics(buf.warm), hot: fontMetrics(buf.hot) };
+  const column = c.column ?? COLUMN;
   // 2% under the exact fit: the advances leave out kerning.
-  const size = Math.floor(fitSize(metrics[c.cut], c.lines, c.column ?? COLUMN, c.max, TRACKING) * 0.98);
+  const size = Math.floor(fitSize(metrics[c.cut], c.lines, column, c.max, TRACKING) * 0.98);
 
   // The V: the 512 icon's glyph, scaled up and set low on the right.
-  const glyph = logo.icon.paths.find((p) => p.group === 'glyph' && p.className === 'core')!;
-  const k = 1.45;
-  const tip = { x: 884, y: 452 };
-  const d = transformPath(glyph.d, k, tip.x - 256 * k, tip.y - 347 * k);
-  const core = (glyph.strokeWidth * k) / 2;
-  const v: VSource = {
-    line: samplePath(d, 16),
-    core,
+  const icon = logo.icon.paths.find((p) => p.group === 'glyph' && p.className === 'core')!;
+  const k = V_SCALE;
+  const tip = TIP;
+  const glyph = transformPath(icon.d, k, tip.x - 256 * k, tip.y - 347 * k);
+  const source: VSource = {
+    line: samplePath(glyph, 16),
+    core: (icon.strokeWidth * k) / 2,
     peak: c.heat.peak,
     reach: c.heat.reach,
     riseY: tip.y - 130,
@@ -197,9 +225,38 @@ export async function renderCard(name: CardName): Promise<ImageResponse> {
     nf: 1 / 150,
     warp: 64,
     ambient: light ? 0 : 0.08,
-    coolX: 700,
-    coolWidth: 150,
+    coolX: 720,
+    coolWidth: 70,
   };
+
+  // The words' boxes, bottom-anchored like the markup below.
+  const ui = fontMetrics(buf.ui);
+  const mono = fontMetrics(buf.mono);
+  const words: Box[] = [];
+  let y = H - BOTTOM;
+  const push = (w: number, h: number, gapAbove: number) => {
+    words.push({ left: EDGE, right: Math.round(EDGE + w), top: Math.round(y - h), bottom: Math.round(y) });
+    y -= h + gapAbove;
+  };
+  if (c.facts?.length) push(c.facts.reduce((w, f) => w + textWidth(mono, f, FACTS), 0) + c.facts.length * 17 + (c.facts.length - 1) * 22, FACTS * 1.5, 30);
+  if (c.lead) {
+    const w = textWidth(ui, plain(c.lead), LEAD);
+    push(Math.min(560, w), Math.ceil(w / 560) * LEAD * 1.4, 24);
+  }
+  for (const l of [...c.lines].reverse()) push(textWidth(metrics[c.cut], l, size, TRACKING), size * 0.96, 0);
+  if (c.kicker) {
+    y -= 16;
+    push(textWidth(ui, c.kicker, KICKER), KICKER * 1.2, 0);
+  }
+  return { card: c, size, glyph, source, words };
+}
+
+export async function renderCard(name: CardName): Promise<ImageResponse> {
+  const { card: c, size, glyph: d, source: v } = await cardLayout(name);
+  const light = c.ground === 'light';
+  const buf = await loadFonts();
+  const core = v.core;
+  const tip = TIP;
   const field = thermalDataURL(v, { width: W, height: H, bands: 12, mode: light ? 'rings' : 'field' });
   const ink = light ? P.ash : P.bone;
   const url = site.url.replace(/^https:\/\//, '') + c.path;
@@ -262,8 +319,8 @@ export async function renderCard(name: CardName): Promise<ImageResponse> {
           <Plate light={light}>{url}</Plate>
         </div>
 
-        <div style={{ position: 'absolute', left: EDGE, bottom: 62, width: (c.column ?? COLUMN) + 40, display: 'flex', flexDirection: 'column' }}>
-          {c.kicker ? <div style={{ fontSize: 30, marginBottom: 16, color: ink }}>{c.kicker}</div> : null}
+        <div style={{ position: 'absolute', left: EDGE, bottom: BOTTOM, width: (c.column ?? COLUMN) + 40, display: 'flex', flexDirection: 'column' }}>
+          {c.kicker ? <div style={{ fontSize: KICKER, lineHeight: 1.2, marginBottom: 16, color: ink }}>{c.kicker}</div> : null}
           <div style={{ display: 'flex', flexDirection: 'column', ...CUT_FONT[c.cut], fontSize: size, lineHeight: 0.96, letterSpacing: `${TRACKING}em`, color: ink }}>
             {c.lines.map((l) => (
               <div key={l} style={{ display: 'flex', whiteSpace: 'nowrap' }}>
@@ -271,9 +328,9 @@ export async function renderCard(name: CardName): Promise<ImageResponse> {
               </div>
             ))}
           </div>
-          {c.lead ? <div style={{ marginTop: 24, fontSize: 25, lineHeight: 1.4, color: light ? P['hot-ink'] : P.smoke, maxWidth: 560, textWrap: 'balance' }}>{plain(c.lead)}</div> : null}
+          {c.lead ? <div style={{ marginTop: 24, fontSize: LEAD, lineHeight: 1.4, color: light ? P['hot-ink'] : P.smoke, maxWidth: 560, textWrap: 'balance' }}>{plain(c.lead)}</div> : null}
           {c.facts?.length ? (
-            <div style={{ display: 'flex', gap: 24, marginTop: 30, fontFamily: 'Martian Mono', fontSize: 15, color: P.smoke }}>
+            <div style={{ display: 'flex', gap: 22, marginTop: 30, fontFamily: 'Martian Mono', fontSize: FACTS, lineHeight: 1.5, color: P.smoke }}>
               {c.facts.map((f) => (
                 <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 9, whiteSpace: 'nowrap' }}>
                   <div style={{ width: 8, height: 8, backgroundColor: R[7] }} />
