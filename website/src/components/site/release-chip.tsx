@@ -20,15 +20,17 @@ export function ReleaseChip({
   const { lookup } = useLatestRelease(initial);
   if (lookup.state !== 'ready') return null;
   const r = lookup.release;
+  // The name starts with the visible text (WCAG 2.5.3, label in name).
+  const label = r.tag || `v${r.version}`;
   const color = tone === 'nav' ? 'text-bone/78 hover:text-bone' : 'text-smoke hover:text-bone';
   return (
     <a
       href={r.url}
       className={`telemetry inline-flex min-h-11 items-center gap-2 rounded-md text-[0.75rem] no-underline transition-colors ${color} ${className}`}
-      aria-label={`Release notes for VaporOS ${r.version}`}
+      aria-label={`${label} release notes`}
     >
       <span aria-hidden className="size-1.5 rounded-[1px] bg-h7" />
-      {r.tag || `v${r.version}`}
+      {label}
     </a>
   );
 }
