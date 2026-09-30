@@ -273,12 +273,10 @@
 
   @media (forced-colors: active) {
     .scr-stage .screen-shape-frame, .scr-dot, .scr-chip, .scr-switch, .scr-rate, .scr-tag, .scr-badge, .scr-options, .scr-modes, .scr-extras,
-    .scr-now, .scr-card, .scr-disclosure, .scr-grid .input, .scr-grid .btn { border: 1px solid CanvasText; }
+    .scr-now, .scr-card, .scr-disclosure { border: 1px solid CanvasText; }
     .scr-chip[aria-pressed="true"], .scr-rate[data-kind="current"], .scr-tag[data-kind="virtual"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
     .scr-radio:checked + .scr-dot::before, .scr-switch-input:checked + .scr-switch::before { forced-color-adjust: none; background: Highlight; }
     .scr-art { forced-color-adjust: none; }
     .scr-badge { forced-color-adjust: none; background: Canvas; color: CanvasText; }
-    /* The shell's fields show focus with a box-shadow, which forced colours drop. */
-    .scr-grid .input:focus-visible, .scr-mode-fields .input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
   }
 }

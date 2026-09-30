@@ -469,7 +469,7 @@ export default [
     id: 'SCR-server-badge',
     ui: ['next'],
     preset: 'sunshine-stopped',
-    allow: [/status of 503/, /503 GET .*\/api\/v1\/sunshine$/],
+    allow: [/status of 50[23]/, /50[23] GET .*\/api\/v1\/sunshine(\/settings)?$/],
     async run(t) {
       const { page, server, step } = t;
       for (const [preset, words] of [['sunshine-stopped', 'Stopped'], ['sunshine-starting', 'Starting'], ['idle', 'Running']]) {
@@ -479,6 +479,13 @@ export default [
           await until(page, (w) => document.getElementById('server-badge').textContent === w, words);
         });
       }
+      await step('a stream server that runs but does not answer (502): the badge reads Not answering (§5.6)', async () => {
+        const body = JSON.stringify({ error: 'Sunshine is not answering: context deadline exceeded' });
+        await page.route('**/api/v1/sunshine', (r) => (r.request().method() === 'GET' ? r.fulfill({ status: 502, contentType: 'application/json', body }) : r.fallback()));
+        await open(t);
+        await until(page, (w) => document.getElementById('server-badge').textContent === w, 'Not answering');
+        await page.unrouteAll({ behavior: 'ignoreErrors' });
+      });
     },
   },
   {

@@ -1,21 +1,24 @@
 // pages/screen.js: Screen (spec-cc-screens §5). This paints Right now;
-// screen-more.js, fetched alongside, the cards below. After the first
-// reads, the shell's passive /status (GET /display whole) keeps it current.
+// screen-more.js, fetched alongside, the cards below. Right now comes from
+// the shell's GET /status (its display part is GET /display whole), which
+// also keeps it current: a page view asks /status, /sunshine and
+// /sunshine/settings, nothing more.
 
-import { api, errorText } from '../core/api.js';
+import { api, errorText, signedInBefore } from '../core/api.js';
 import { byId, cloneTpl, h, part, setText } from '../core/dom.js';
 import { modeLabel, parseMode } from '../fmt.js';
 import { settleMain } from '../ui/region.js';
 import { setShape } from '../ui/screen-shape.js';
 import { current, onStatus, shell } from '../ui/shell.js';
 
-// The reads start before boot (ARCH §7.4); a 401 is boot's to handle.
-export const early = {
-  display: api('GET', '/display', undefined, { share: true }),
-  sunshine: api('GET', '/sunshine'),
-  settings: api('GET', '/sunshine/settings'),
+// The reads start before boot (ARCH §7.4) in a tab that was signed in;
+// otherwise after it, so a signed-out visit makes no 401 before sign-in.
+const reads = () => {
+  const r = { sunshine: api('GET', '/sunshine'), settings: api('GET', '/sunshine/settings') };
+  for (const p of Object.values(r)) p.catch(() => {});
+  return r;
 };
-for (const p of Object.values(early)) p.catch(() => {});
+export let early = signedInBefore() ? reads() : null;
 const more = import('./screen-more.js');
 
 export const S = { display: null, sunshine: null, sunshineErr: null, settings: null };
@@ -131,9 +134,14 @@ export function renderDisplay(d) {
 
 async function start() {
   await shell('screen');
+  early = early || reads();
   (await more).start();
   byId('now-retry').addEventListener('click', () => api('GET', '/display').then(renderDisplay, displayFailed));
-  early.display.then(renderDisplay, (err) => S.display || displayFailed(err));
+  // The shell's GET /status is in flight: share it to learn if it fails.
+  api('GET', '/status', undefined, { share: true }).then(
+    (st) => st.display || S.display || displayFailed(new Error('')),
+    (err) => S.display || displayFailed(err),
+  );
   onStatus((snap) => {
     const gpu = snap.system && snap.system.gpu;
     if (gpu && gpu.name) setText('now-gpu', gpu.supported === false ? `${gpu.name} (not supported)` : gpu.name);
