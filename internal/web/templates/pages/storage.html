@@ -1,8 +1,89 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  System › Storage (spec-cc-screens §9): the system drive's space, the
+  drives that hold games, the ones that could, and why the rest can't.
+  The system drive reads the shell's GET /status (its system part is GET
+  /system); the drives are one slow GET /storage (it probes filesystems),
+  so the lists paint as skeletons with "Looking at your drives…" and fill
+  when it answers. Phones read top to bottom; from 64rem the drives take
+  the left column and the system drive, its disclosure and the help the
+  right. pages/storage.js fills it; styles/pages/storage.css is its look.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="sto-grid">
+  <section class="rack sto-area-system" aria-labelledby="sto-sys-title">
+    <h2 class="rack-title" id="sto-sys-title">System drive</h2>
+    <div class="sto-card sto-sysdrive" id="sysdrive" data-region="sysdrive" aria-busy="true">
+      <p class="sto-free"><span class="sto-free-num mono" id="sysdrive-free"><span class="skel skel-line"></span></span><span class="sto-free-of" id="sysdrive-of"></span></p>
+      <div class="meter sto-meter-big" id="sysdrive-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="System drive used"><span class="meter-fill" aria-hidden="true"></span></div>
+      <p class="sto-note" id="sysdrive-note" hidden></p>
+    </div>
+  </section>
+
+  <div class="sto-area-drives" id="drives" data-region="drives" aria-busy="true">
+    <p class="sto-looking" id="drives-looking">Looking at your drives…</p>
+    <div class="region-error" id="drives-error" role="alert" hidden><p class="region-error-text" id="drives-error-text"></p><button class="btn small" id="drives-retry" type="button">Try again</button></div>
+
+    <section class="rack" aria-labelledby="sto-games-title">
+      <div class="sto-head">
+        <h2 class="rack-title" id="sto-games-title" tabindex="-1">Game drives</h2>
+        <button class="btn small ghost" id="rescan" type="button" disabled>{{icon "refresh"}}<span id="rescan-label">Rescan</span></button>
+      </div>
+      <ul class="sto-drives" id="games" role="list">
+        <li class="sto-drive" aria-hidden="true"><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></li>
+      </ul>
+      <p class="region-empty" id="games-empty" hidden>No game drives yet. Add one below to keep games off the system drive.</p>
+    </section>
+
+    <section class="rack" aria-labelledby="sto-others-title">
+      <h2 class="rack-title" id="sto-others-title" tabindex="-1">Other drives</h2>
+      <ul class="sto-drives" id="others" role="list">
+        <li class="sto-drive" aria-hidden="true"><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></li>
+        <li class="sto-drive" aria-hidden="true"><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></li>
+      </ul>
+      <p class="region-empty" id="others-empty" hidden>No other drives found. Connect one, then press Rescan.</p>
+    </section>
+  </div>
+
+  <div class="sto-area-more">
+    <details class="sto-more" id="sysdisks-box">
+      <summary class="sto-summary">{{icon "drive"}}<span>System and other VaporOS drives</span></summary>
+      <ul class="sto-sysdisks" id="sysdisks" role="list"><li class="sto-sysdisk"><span class="skel skel-line skel-short"></span></li></ul>
+    </details>
+    <details class="sto-more" id="steam-help">
+      <summary class="sto-summary">{{icon "info"}}<span>Using a drive in Steam</span></summary>
+      <div class="sto-help">
+        <ol class="sto-steps">
+          <li>Add the drive here. VaporOS mounts it at <span class="mono">/var/mnt/&lt;name&gt;</span> on every start and adds it to Steam's libraries, right away or the next time Steam isn't running.</li>
+          <li>To use it before it shows <strong>In Steam</strong>, stream Steam with Moonlight and open <strong>Settings → Storage</strong>.</li>
+          <li>Choose <strong>Add Drive</strong> and pick the folder shown here. Games already on it appear after Steam scans it.</li>
+        </ol>
+        <p class="sto-note">Drives formatted as exFAT or FAT can't hold Steam games. Use ext4, btrfs, xfs, f2fs or NTFS.</p>
+        <p class="sto-note">Don't see a drive? A drive with no filesystem needs formatting first.</p>
+      </div>
+    </details>
+  </div>
+</div>
+
+<template id="tpl-drive">
+  <li class="sto-drive">
+    <div class="sto-drive-head">
+      <span class="sto-drive-icon" data-part="icon" aria-hidden="true"></span>
+      <div class="sto-drive-main">
+        <h3 class="sto-drive-name" data-part="name" tabindex="-1"></h3>
+        <p class="sto-drive-facts" data-part="facts"></p>
+      </div>
+    </div>
+    <ul class="sto-badges" data-part="badges" role="list"></ul>
+    <div class="sto-usage" data-part="usage" hidden>
+      <div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-part="meter"><span class="meter-fill" aria-hidden="true"></span></div>
+      <p class="sto-usage-text mono" data-part="usage-text"></p>
+    </div>
+    <div class="sto-folder" data-part="folder" hidden>
+      <code class="sto-path" data-part="path"></code>
+      <button class="copy" type="button" data-part="copy">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only" data-part="copy-name"></span></button>
+    </div>
+    <p class="sto-line" data-part="line" hidden></p>
+    <div class="sto-actions" data-part="actions" hidden></div>
+  </li>
+</template>
 {{end}}

@@ -1,0 +1,100 @@
+/* System › Storage (spec-cc-screens §9) in REDLINE. Used space is heat: the
+   system drive is a tall meter on the heat ramp with a tick every tenth,
+   white-hot as it fills and cold (a fault) past 95 %, beside its free
+   space as a mono readout. The drives are one soot list each; badges are
+   words in an outline that takes the heat of what they say (in Steam, soon,
+   not connected), never colour alone. Classes start with sto-, so none can
+   be a Tailwind utility (TestNoUtilityCollisions). */
+@layer components {
+  .sto-grid { display: grid; gap: 1.75rem; align-items: start; }
+  .sto-grid .rack { padding-top: 0; }
+  .sto-area-drives { display: grid; gap: 1.75rem; }
+  .sto-area-more { display: grid; gap: 0.625rem; }
+  .sto-card { display: grid; gap: 0.75rem; padding: 1.125rem 1.25rem 1.25rem; border-radius: var(--radius-3xl); background: var(--color-surface); }
+  .sto-note { margin: 0; color: var(--color-ink-2); font-size: var(--text-md); }
+  .sto-looking { margin: 0 0 -0.75rem; color: var(--color-ink-2); font-size: var(--text-md); }
+  .sto-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: -0.625rem 0 -0.25rem; }
+
+  /* ---------------------------------------------------- the system drive */
+  .sto-free { display: flex; flex-wrap: wrap; align-items: baseline; margin: 0; color: var(--color-ink-2); }
+  .sto-free-num { color: var(--color-ink); font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.03em; }
+  .sto-free-num .skel { width: 8rem; height: 1.5rem; }
+  .sto-free-unit { font-family: var(--font-ui); font-size: var(--text-xl); letter-spacing: 0; white-space: pre; }
+  .sto-free-of { white-space: pre; }
+  .sto-meter-big { height: 0.75rem; }
+  .sto-meter-big::after {
+    content: ""; position: absolute; inset: 0;
+    background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgb(0 0 4 / 0.55) calc(10% - 1px) 10%);
+  }
+
+  /* ------------------------------------------------------------- drives */
+  .sto-drives { display: grid; margin: 0; padding: 0; list-style: none; border-radius: var(--radius-2xl); background: var(--color-surface); overflow: hidden; }
+  .sto-drive { display: grid; gap: 0.75rem; padding: 1rem; }
+  .sto-drive + .sto-drive { border-top: 1px solid var(--color-line); }
+  .sto-drive > .skel-short { width: 40%; }
+  .sto-drive-head { display: flex; align-items: flex-start; gap: 0.75rem; }
+  .sto-drive-icon { display: grid; padding-top: 0.125rem; color: var(--color-ink-2); }
+  .sto-drive-icon .icon { width: 1.375rem; height: 1.375rem; }
+  .sto-drive-main { display: grid; gap: 0.125rem; min-width: 0; }
+  .sto-drive-name { margin: 0; font-size: var(--text-lg); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+  .sto-drive-name:focus-visible { outline-offset: 2px; }
+  .sto-drive-facts { margin: 0; color: var(--color-ink-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .sto-badges { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
+  .sto-badge {
+    display: inline-flex; align-items: center; min-height: 1.625rem; padding: 0 0.5625rem; border-radius: var(--radius-sm);
+    box-shadow: inset 0 0 0 1px var(--color-line-strong); font-size: var(--text-xs); font-weight: 600;
+  }
+  .sto-badge[data-tone="ok"] { box-shadow: inset 0 0 0 1.5px var(--color-ink-ready); }
+  .sto-badge[data-tone="hot"] { box-shadow: inset 0 0 0 1.5px var(--color-h8); }
+  .sto-badge[data-tone="cold"] { box-shadow: inset 0 0 0 1.5px var(--color-cold); }
+  .sto-usage { display: grid; gap: 0.375rem; }
+  .sto-usage-text { margin: 0; color: var(--color-ink-2); font-size: var(--text-xs); }
+  .sto-folder { display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.25rem 0.25rem 0.75rem; border-radius: var(--radius-lg); background: var(--color-canvas-2); }
+  .sto-path { flex: 1; min-width: 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .sto-line { margin: 0; color: var(--color-ink-2); font-size: var(--text-md); }
+  .sto-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+
+  /* -------------------------------------------------------- disclosures */
+  .sto-more { border-radius: var(--radius-2xl); background: var(--color-surface); }
+  .sto-summary {
+    display: flex; align-items: center; gap: 0.625rem; min-height: 3.25rem; padding: 0 1rem;
+    font-weight: 600; list-style: none; cursor: pointer;
+  }
+  .sto-summary::-webkit-details-marker { display: none; }
+  .sto-summary > .icon { color: var(--color-ink-2); }
+  .sto-summary > span { flex: 1; }
+  .sto-summary::after {
+    content: ""; width: 0.4375rem; height: 0.4375rem; margin-right: 0.25rem; flex: none;
+    border: solid var(--color-ink-3); border-width: 0 1.5px 1.5px 0; rotate: 45deg; translate: 0 -0.125rem;
+    transition: rotate var(--vos-dur-fast) var(--ease-out);
+  }
+  .sto-more[open] > .sto-summary::after { rotate: 225deg; translate: 0 0.125rem; }
+  .sto-help { display: grid; gap: 0.75rem; padding: 0 1rem 1.125rem; }
+  .sto-steps { display: grid; gap: 0.5rem; margin: 0; padding-left: 1.25rem; }
+  .sto-steps li::marker { color: var(--color-ink-ready); font-weight: 600; }
+  .sto-sysdisks { display: grid; margin: 0; padding: 0 1rem 1rem; list-style: none; }
+  .sto-sysdisk { display: grid; gap: 0.25rem; padding: 0.75rem 0; }
+  .sto-sysdisk + .sto-sysdisk { border-top: 1px solid var(--color-line); }
+  .sto-sysdisk-name { margin: 0; font-size: var(--text-base); font-weight: 650; }
+  .sto-parts { display: grid; gap: 0.25rem; margin: 0.25rem 0 0; padding: 0; list-style: none; }
+  .sto-part { color: var(--color-ink-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+
+  /* From the rail breakpoint: the drives on the left, the system drive,
+     its disclosure and the help on the right. */
+  @media (min-width: 64rem) {
+    .sto-grid { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); grid-template-rows: auto 1fr; grid-template-areas: "drives system" "drives more"; gap: 1.75rem 2rem; }
+    .sto-area-system { grid-area: system; }
+    .sto-area-drives { grid-area: drives; grid-row: 1 / span 2; }
+    .sto-area-more { grid-area: more; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sto-summary::after { transition: none; }
+  }
+
+  @media (forced-colors: active) {
+    .sto-card, .sto-drives, .sto-more, .sto-folder { border: 1px solid CanvasText; }
+    .sto-badge { border: 1px solid CanvasText; }
+    .sto-meter-big::after { display: none; }
+  }
+}
