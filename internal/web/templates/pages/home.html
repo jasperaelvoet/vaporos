@@ -1,8 +1,75 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  Home (spec-cc-screens §3, MASTER-PLAN §3.5 C1): what the box is doing, and
+  the one thing it needs next under the thumb. The server paints the hero as
+  "Checking…" in the cold cut; pages/home.js fills everything from GET
+  /status (through the shell) and the event stream. The hero is REDLINE's
+  thermal viewfinder: the heat field and the scale are decoration
+  (aria-hidden); the eyebrow, the title, the detail and the tags carry the
+  words. At most one context card shows, then "Show <n> more"; a device
+  waiting for its PIN goes above the hero, because the PIN is timed.
+*/ -}}
 {{define "content"}}
-<section class="stub" id="hero" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="home" id="home" data-region="home" aria-busy="true">
+  <div class="home-lead">
+    <div class="home-pair" id="home-pair" hidden></div>
+    <section class="hero" id="hero" data-state="" aria-labelledby="hero-title">
+      <div class="vf">
+        <svg class="heat-field" viewBox="0 0 400 360" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="480" fill="#000"/><ellipse class="src src-floor" cx="200" cy="420" rx="330" ry="150"/><ellipse class="src src-plume" cx="232" cy="64" rx="126" ry="178"/><circle class="src src-aux" cx="96" cy="110" r="104"/><circle class="src src-core" cx="214" cy="150" r="168"/></g></svg>
+        <div class="vf-scrim" aria-hidden="true"></div>
+        <span class="vf-tape" aria-hidden="true"></span>
+        <span class="vf-corner" data-corner="tl" aria-hidden="true"></span><span class="vf-corner" data-corner="tr" aria-hidden="true"></span>
+        <span class="vf-corner" data-corner="bl" aria-hidden="true"></span><span class="vf-corner" data-corner="br" aria-hidden="true"></span>
+        <p class="vf-hud" id="hero-eyebrow"><span class="vf-plate" id="hero-host">{{.Hostname}}.local</span><span class="vf-plate" id="hero-gpu" hidden></span></p>
+        {{template "screen-shape"}}
+        <div class="vf-scale" aria-hidden="true"><span class="vf-needle"><span class="vf-needle-label" id="hero-needle">checking</span></span></div>
+        <h2 class="hero-word" id="hero-title"><span class="hero-word-lead">Checking…</span></h2>
+      </div>
+      <div class="hero-lede">
+        <p class="hero-detail" id="hero-detail"><span class="skel skel-line" aria-hidden="true"></span></p>
+        <ul class="hero-tags" id="hero-chips" role="list"></ul>
+        <div class="hero-progress" id="hero-progress" hidden>
+          <div class="hero-progress-row" aria-hidden="true"><span class="hero-progress-phase" id="hero-phase"></span><b class="hero-pct" id="hero-pct"></b></div>
+          <div class="heat-bar" id="hero-bar" role="progressbar" aria-labelledby="hero-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i class="heat-bar-fill"></i></div>
+        </div>
+        <div class="hero-actions" id="hero-actions"></div>
+        <p class="hold-hint hero-hint" id="hero-hold-hint" aria-live="polite"></p>
+      </div>
+    </section>
+  </div>
+  <div class="home-side">
+    <section class="rack" aria-labelledby="home-controls-title">
+      <h2 class="rack-title" id="home-controls-title">Controls</h2>
+      <div class="keys-strip home-keys">
+        <a class="key-tile" id="home-pair-key" href="{{.Base}}/devices#pair">{{icon "pair"}}<b>Pair</b></a>
+        <button class="key-tile" id="home-awake" type="button" aria-pressed="false" disabled>{{icon "eye"}}<b id="home-awake-label">Stay awake 1 h</b> <span class="key-sub" id="home-awake-sub" hidden></span></button>
+        <button class="key-tile" id="home-power" type="button" aria-haspopup="dialog" aria-controls="power-sheet" disabled>{{icon "power"}}<b>Power</b></button>
+      </div>
+      <p class="home-line" id="home-power-line"><span class="skel skel-line" aria-hidden="true"></span></p>
+    </section>
+    <section class="home-cards" id="cards" aria-labelledby="cards-h" hidden>
+      <h2 class="sr-only" id="cards-h" tabindex="-1">Needs your attention</h2>
+      <ul class="home-card-list" id="cards-list" role="list"></ul>
+      <button class="btn ghost small home-more" id="cards-more" type="button" aria-expanded="false" aria-controls="cards-list" hidden>Show more</button>
+    </section>
+    <a class="home-status" id="home-status" href="{{.Base}}/system/updates"><span class="skel skel-line" aria-hidden="true"></span></a>
+  </div>
+</div>
+<dialog class="sheet" id="power-sheet" aria-labelledby="power-sheet-title" data-snap="medium">
+  <div class="sheet-handle" data-part="handle" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <h2 class="sheet-title" id="power-sheet-title" tabindex="-1">Power</h2>
+    <button class="sheet-close" type="button" data-close aria-label="Close">{{icon "close"}}</button>
+  </header>
+  <div class="sheet-body">
+    <div class="keys-strip keys-two">
+      <button class="key-tile hold" id="home-reboot" type="button" data-hold="reboot" aria-describedby="home-hold-hint">{{icon "restart"}}<b>Restart</b><span class="hold-fill" aria-hidden="true"></span></button>
+      <button class="key-tile hold" id="home-poweroff" type="button" data-hold="poweroff" aria-describedby="home-hold-hint">{{icon "power"}}<b>Power off</b><span class="hold-fill" aria-hidden="true"></span></button>
+    </div>
+    <p class="hold-hint" id="home-hold-hint" aria-live="polite">Hold to confirm, or tap to be asked first.</p>
+    <p class="sheet-note" id="power-sheet-line"></p>
+  </div>
+  <footer class="sheet-actions">
+    <a class="btn ghost" href="{{.Base}}/system/power">Power settings</a>
+  </footer>
+</dialog>
 {{end}}
