@@ -1701,6 +1701,14 @@ export class Engine {
     const w = this.w;
     const steps = this.installSteps(data.dev, data.mode, data.hostname);
     const [step, pct, msg] = steps[data.i];
+    // An image the probe could not trust fails the install once it is read
+    // (install.Service.runJob).
+    const badImage = asStr(this.doc('install-probe').source_error);
+    if (badImage && pct === 2) {
+      w.installing = false;
+      this.setInstall('failed', step, 1, 'Installation failed: ' + badImage, badImage);
+      return;
+    }
     if (w.installFail && step === 'write') {
       w.installing = false;
       this.setInstall('failed', step, pct, 'Installation failed: ' + w.installFail, w.installFail);

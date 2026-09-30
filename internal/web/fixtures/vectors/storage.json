@@ -1,0 +1,61 @@
+{
+  "description": "Storage: adopting drives as Steam libraries (what each filesystem allows, a library that exists or is made), releasing them, and adoption while Steam is busy with a stream.",
+  "vectors": [
+    {
+      "name": "storage-adopt",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /storage", "passive": true},
+        {"req": "POST /storage/libraries", "body": {"uuid": "-x"}, "expect": {"status": 400, "body": {"error": "invalid filesystem uuid"}}},
+        {"req": "POST /storage/libraries", "body": {}, "expect": {"status": 400}},
+        {"req": "POST /storage/libraries", "body": {"uuid": "11112222"}, "expect": {"status": 404, "body": {"error": "no filesystem with uuid 11112222 is attached"}, "copy": "That drive isn't connected any more. Press Rescan."}},
+        {"req": "POST /storage/libraries", "body": {"uuid": "8c1f5a2e-3b7d-4e90-a6c4-1d2e3f4a5b6c"}, "expect": {"status": 400, "body": {"error": "/dev/nvme0n1p4 is part of the VaporOS system disk"}}},
+        {"req": "POST /storage/libraries", "body": {"uuid": "6A1B-2C3D"}, "expect": {"status": 400, "body": {"error": "exfat filesystems cannot hold a Steam library (use ext4, btrfs, xfs, f2fs or NTFS)"}}},
+        {"req": "POST /storage/libraries", "body": {"uuid": "77b2c9d0-1e2f-4a5b-8c6d-7e8f9a0b1c2d"}, "expect": {"status": 200, "body": {"mountpoint": "/var/mnt/Library2", "library": "/var/mnt/Library2/SteamLibrary", "registered": true, "registration_pending": false, "hint": "/var/mnt/Library2/SteamLibrary is one of Steam's game libraries. Its installed games appear in Steam without downloading."}}},
+        {"req": "POST /storage/libraries", "body": {"uuid": "E0A133F2B4C5D6E7"}, "expect": {"status": 200, "body": {"library": "/var/mnt/WINDATA/SteamLibrary", "hint": "/var/mnt/WINDATA/SteamLibrary is one of Steam's game libraries."}}},
+        {"req": "POST /storage/libraries", "body": {"uuid": "5e1daa01-7c2b-4f3a-9d8e-0a1b2c3d4e5f"}, "expect": {"status": 200, "body": {"library": "/var/mnt/Games"}}},
+        {"req": "GET /storage", "passive": true}
+      ]
+    },
+    {
+      "name": "storage-release",
+      "preset": "idle",
+      "steps": [
+        {"req": "DELETE /storage/libraries/-x", "expect": {"status": 400}},
+        {"req": "DELETE /storage/libraries/77b2c9d0-1e2f-4a5b-8c6d-7e8f9a0b1c2d", "expect": {"status": 404, "body": {"error": "no adopted library with uuid 77b2c9d0-1e2f-4a5b-8c6d-7e8f9a0b1c2d"}}},
+        {"req": "DELETE /storage/libraries/5e1daa01-7c2b-4f3a-9d8e-0a1b2c3d4e5f", "expect": {"status": 200}},
+        {"req": "DELETE /storage/libraries/5e1daa01-7c2b-4f3a-9d8e-0a1b2c3d4e5f", "expect": {"status": 404}},
+        {"req": "GET /storage", "passive": true}
+      ]
+    },
+    {
+      "name": "storage-while-streaming",
+      "preset": "streaming",
+      "steps": [
+        {"req": "POST /storage/libraries", "passive": true, "body": {"uuid": "77b2c9d0-1e2f-4a5b-8c6d-7e8f9a0b1c2d"}, "expect": {"body": {"registered": false, "registration_pending": true}}},
+        {"req": "POST /storage/libraries", "passive": true, "body": {"uuid": "E0A133F2B4C5D6E7"}},
+        {"req": "GET /storage", "passive": true},
+        {"script": "stream-end"},
+        {"req": "POST /storage/libraries", "passive": true, "body": {"uuid": "77b2c9d0-1e2f-4a5b-8c6d-7e8f9a0b1c2d"}, "expect": {"body": {"registered": true, "registration_pending": false}}},
+        {"req": "GET /storage", "passive": true}
+      ]
+    },
+    {
+      "name": "storage-missing",
+      "preset": "storage-missing",
+      "steps": [
+        {"req": "GET /storage", "passive": true},
+        {"req": "DELETE /storage/libraries/5e1daa01-7c2b-4f3a-9d8e-0a1b2c3d4e5f"},
+        {"req": "GET /storage", "passive": true}
+      ]
+    },
+    {
+      "name": "storage-pending",
+      "preset": "storage-pending",
+      "steps": [
+        {"req": "GET /storage", "passive": true},
+        {"req": "GET /status", "passive": true}
+      ]
+    }
+  ]
+}

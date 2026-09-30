@@ -1,0 +1,141 @@
+{
+  "description": "The live ISO's installer: the setup code (asked for, wrong, waived without a monitor), the disk probe, the install request's checks, a whole install with its steps and messages, a failed one, and the restart into the installed system.",
+  "vectors": [
+    {
+      "name": "installer-setup-code",
+      "preset": "installer-code",
+      "signed_in": false,
+      "steps": [
+        {"req": "GET /ping", "expect": {"body": {"ok": true, "mode": "installer"}}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": false, "installer": true}}},
+        {"req": "GET /install/probe", "expect": {"status": 403, "body": {"error": "setup code required"}}},
+        {"req": "GET /install/probe", "setup": "WXYZ-2345", "expect": {"status": 403, "body": {"error": "wrong or expired setup code"}}},
+        {"req": "GET /install/probe", "setup": "abcd efgh", "expect": {"status": 200, "body": {"source": "", "version": "20260929.101500"}}},
+        {"req": "GET /install/probe?source=oci://ghcr.io/jasperaelvoet/vaporos&channel=beta", "setup": "ABCD-EFGH", "expect": {"body": {"source": "oci://ghcr.io/jasperaelvoet/vaporos", "channel": "beta"}}},
+        {"req": "GET /install/status", "setup": "ABCD-EFGH", "expect": {"body": {"state": "idle"}}},
+        {"stream": {}, "expect": {"status": 403}},
+        {"stream": {"setup": "ABCDEFGH"}, "expect": {"status": 200}},
+        {"req": "GET /status", "setup": "ABCD-EFGH", "expect": {"status": 404}},
+        {"req": "GET /update", "expect": {"status": 404}},
+        {"req": "POST /auth/setup", "setup": "ABCD-EFGH", "body": {"password": "a fine password"}, "expect": {"status": 409, "body": {"error": "the installer sets the admin password of the installed system"}}},
+        {"req": "GET /display", "expect": {"status": 401}}
+      ]
+    },
+    {
+      "name": "installer-setup-code-limit",
+      "preset": "installer-code",
+      "signed_in": false,
+      "steps": [
+        {"req": "GET /install/status", "setup": "WRONG-1"},
+        {"req": "GET /install/status", "setup": "WRONG-2"},
+        {"req": "GET /install/status", "setup": "WRONG-3"},
+        {"req": "GET /install/status", "setup": "WRONG-4"},
+        {"req": "GET /install/status", "setup": "WRONG-5", "expect": {"status": 403}},
+        {"req": "GET /install/status", "setup": "ABCD-EFGH", "expect": {"status": 429, "body": {"error": "too many failed attempts; try again in 15s"}}}
+      ]
+    },
+    {
+      "name": "installer-waived",
+      "preset": "installer-waived",
+      "signed_in": false,
+      "steps": [
+        {"req": "GET /install/probe", "expect": {"status": 200}},
+        {"req": "GET /install/probe", "setup": "anything", "expect": {"status": 200}},
+        {"stream": {}, "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "installer-probes",
+      "preset": "installer-two-vaporos",
+      "signed_in": false,
+      "steps": [
+        {"req": "GET /install/probe", "setup": "ABCD-EFGH"},
+        {"preset": "installer-no-disk"},
+        {"req": "GET /install/probe", "setup": "ABCD-EFGH"},
+        {"preset": "installer-source-error"},
+        {"req": "GET /install/probe?source=oci://example.com/nope", "setup": "ABCD-EFGH"},
+        {"preset": "installer-one-disk"},
+        {"req": "GET /install/probe", "setup": "ABCD-EFGH"}
+      ]
+    },
+    {
+      "name": "installer-request-checks",
+      "preset": "installer-code",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": ""}, "expect": {"status": 400, "body": {"error": "no disk given"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "mode": "wipe"}, "expect": {"status": 400, "body": {"error": "mode must be \"erase\" or \"repair\", not \"wipe\""}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "hostname": "Vapor_1"}, "expect": {"status": 400, "body": {"error": "invalid hostname \"vapor_1\": use 1-63 letters, digits and hyphens"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "hostname": "localhost"}, "expect": {"status": 400, "body": {"error": "invalid hostname: \"localhost\" is reserved"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "password": "short"}, "expect": {"status": 400, "body": {"error": "the admin password needs at least 8 characters"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "password": "ünïcödé!"}, "expect": {"status": 400, "body": {"error": "/dev/sdz is not a disk VaporOS can be installed on"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "timezone": "../etc"}, "expect": {"status": 400, "body": {"error": "invalid timezone \"../etc\""}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sdz", "libraries": ["bad uuid"]}, "expect": {"status": 400, "body": {"error": "invalid filesystem UUID \"bad uuid\""}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "/dev/sdb"}, "expect": {"status": 400, "body": {"error": "/dev/sdb holds the VaporOS installer itself; choose another disk"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "nvme0n1", "mode": " REPAIR "}, "expect": {"status": 400, "body": {"error": "/dev/nvme0n1 holds no VaporOS installation to repair"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "nvme0n1", "libraries": 5}, "expect": {"status": 400}},
+        {"req": "POST /install", "body": {"disk": "nvme0n1"}, "expect": {"status": 403}}
+      ]
+    },
+    {
+      "name": "installer-start",
+      "slow": true,
+      "preset": "installer-code",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sda", "hostname": "Den", "password": "correct horse", "timezone": "Europe/Brussels", "libraries": ["5e1daa01-7c2b-4f3a-9d8e-0a1b2c3d4e5f"]}, "expect": {"status": 202, "body": {}, "events": [["install.progress", {"step": "probe", "percent": 0, "message": "Starting the installation", "state": "running"}]]}},
+        {"req": "GET /install/status", "setup": "ABCD-EFGH", "expect": {"body": {"state": "running", "step": "probe"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "sda"}, "expect": {"status": 409, "body": {"error": "an installation is already running"}}},
+        {"req": "POST /install/reboot", "setup": "ABCD-EFGH", "expect": {"status": 409, "body": {"error": "an installation is running"}, "copy": "The install is still running."}},
+        {"wait": {"topic": "install.progress"}, "expect": {"events": [["install.progress", {"step": "probe", "percent": 0, "message": "Checking the system", "state": "running"}]]}}
+      ]
+    },
+    {
+      "name": "installer-whole-install",
+      "note": "About 17 s of steps on the Go side, then the restart into the installed system with the wizard's name and password.",
+      "slow": true,
+      "preset": "installer-code",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "/dev/nvme0n1", "hostname": " Den ", "password": "correct horse"}, "expect": {"status": 202}},
+        {"wait": {"topic": "install.progress", "data": {"state": "done"}}, "expect": {"matched": true}},
+        {"req": "GET /install/status", "setup": "ABCD-EFGH", "expect": {"body": {"state": "done", "step": "done", "percent": 100, "message": "VaporOS 20260929.101500 is installed on /dev/nvme0n1", "error": ""}}},
+        {"req": "POST /install/reboot", "setup": "ABCD-EFGH", "expect": {"status": 200}},
+        {"wait": {"until": "down"}},
+        {"req": "GET /ping", "expect": {"status": 0}},
+        {"wake": true},
+        {"req": "GET /ping", "expect": {"body": {"mode": "os"}}},
+        {"req": "GET /auth/me", "expect": {"body": {"authenticated": false, "needs_setup": false, "installer": false}}},
+        {"req": "POST /auth/login", "body": {"password": "vaporvapor"}, "expect": {"status": 401}},
+        {"req": "POST /auth/login", "body": {"password": "correct horse"}, "expect": {"status": 200}},
+        {"req": "GET /system", "passive": true, "expect": {"body": {"hostname": "den", "mdns": "den.local"}}},
+        {"req": "GET /storage", "passive": true}
+      ]
+    },
+    {
+      "name": "installer-source-error",
+      "note": "An image the probe rejected fails the install once it is read.",
+      "slow": true,
+      "preset": "installer-source-error",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "/dev/nvme0n1", "hostname": "vapor", "password": "correct horse", "timezone": "UTC", "libraries": [], "source": ""}, "expect": {"status": 202}},
+        {"wait": {"topic": "install.progress", "data": {"state": "failed"}}, "expect": {"events": [["install.progress", {"step": "probe", "percent": 0}], ["install.progress", {"step": "probe", "percent": 1}], ["install.progress", {"step": "probe", "percent": 1, "state": "failed"}]]}},
+        {"req": "GET /install/status", "setup": "ABCD-EFGH", "expect": {"body": {"state": "failed", "step": "probe"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "/dev/nvme0n1"}, "expect": {"status": 202}}
+      ]
+    },
+    {
+      "name": "installer-failed",
+      "slow": true,
+      "preset": "installer-failed",
+      "signed_in": false,
+      "steps": [
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "nvme0n1"}},
+        {"wait": {"topic": "install.progress", "data": {"state": "failed"}}, "expect": {"events": [["install.progress", {"step": "probe"}], ["install.progress", {"step": "probe"}], ["install.progress", {"step": "probe", "message": "Ready to install VaporOS 20260929.101500 on /dev/nvme0n1"}], ["install.progress", {"step": "partition", "message": "Erasing /dev/nvme0n1"}], ["install.progress", {}], ["install.progress", {}], ["install.progress", {"step": "partition", "percent": 10}], ["install.progress", {"step": "write", "percent": 10, "state": "failed", "message": "Installation failed: writing /dev/nvme0n1p2: input/output error"}]]}},
+        {"req": "GET /install/status", "setup": "ABCD-EFGH", "expect": {"body": {"state": "failed", "error": "writing /dev/nvme0n1p2: input/output error"}}},
+        {"req": "POST /install", "setup": "ABCD-EFGH", "body": {"disk": "nvme0n1"}, "expect": {"status": 202}}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "description": "The timed scripts the dev server and the demo run (fixtures/scripts), step by step: power off and wake, back to the preset, and a check that finds an update.",
+  "vectors": [
+    {
+      "name": "scripts-power-off-and-wake",
+      "preset": "idle",
+      "steps": [
+        {"script": "power-off", "expect": {"events": [["system.message", {"level": "info", "text": "Shutting down…"}]]}},
+        {"req": "GET /ping", "expect": {"status": 0}},
+        {"event": ["session.end", {}], "expect": {"events": []}},
+        {"script": "wake", "expect": {"events": [["pairing.state", {"pairings": []}]]}},
+        {"req": "GET /system", "passive": true, "expect": {"body": {"uptime_s": 0}}},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "scripts-restart-by-hand",
+      "preset": "update-staged",
+      "steps": [
+        {"down": 8, "expect": {}},
+        {"req": "GET /auth/me", "expect": {"status": 0}},
+        {"down": 0},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"booted": "20260929.143000"}}}
+      ]
+    },
+    {
+      "name": "scripts-reset",
+      "preset": "streaming",
+      "steps": [
+        {"script": "stream-end"},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"streaming": false}}},
+        {"script": "reset", "expect": {"events": []}},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"streaming": true}}},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "scripts-patch-while-down",
+      "preset": "idle",
+      "steps": [
+        {"down": -1},
+        {"step": {"patch": {"sunshine": {"running": false}}, "events": [["display.changed", {}]]}, "expect": {"events": []}},
+        {"event": ["display.changed", {}], "expect": {}},
+        {"wake": true},
+        {"req": "GET /sunshine", "passive": true, "expect": {"body": {"running": true}}}
+      ]
+    }
+  ]
+}

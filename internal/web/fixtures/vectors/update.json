@@ -1,0 +1,223 @@
+{
+  "description": "Updates: checking, staging with the real phases and their refusals, cancelling, restarting into the staged version, going back, and the channel and automatic-update settings.",
+  "vectors": [
+    {
+      "name": "update-check",
+      "preset": "update-available",
+      "steps": [
+        {"req": "GET /update", "passive": true, "expect": {"body": {"busy": false, "progress": null, "available": {"version": "20260929.143000"}}}},
+        {"req": "POST /update/check", "passive": true, "expect": {"status": 200, "body": {"available": {"version": "20260929.143000", "size": 1420000000}}, "events": [["update.state", {"booted": "20260929.101500"}]]}},
+        {"req": "GET /update", "passive": true},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "update-check-idle",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /update/check", "passive": true, "expect": {"body": {"available": null}}},
+        {"req": "GET /update", "passive": true}
+      ]
+    },
+    {
+      "name": "update-check-failed",
+      "preset": "update-check-failed",
+      "steps": [
+        {"req": "GET /update", "passive": true},
+        {"req": "POST /update/check", "expect": {"status": 502, "copy": "Couldn't reach the update server. Check the PC's internet connection."}},
+        {"step": {"patch": {"update": {"available": {"version": "20261001.090000", "size": 1420000000, "checked": "@now"}}}}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"available": {"version": "20261001.090000"}}}}
+      ]
+    },
+    {
+      "name": "update-check-clears-check-error",
+      "preset": "idle",
+      "steps": [
+        {"step": {"patch": {"update": {"last_error": "check: the registry answered 503", "held": null, "checked": null}}}},
+        {"req": "POST /update/check", "passive": true, "expect": {"events": [["update.state", {"last_error": ""}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"last_error": ""}}},
+        {"step": {"patch": {"update": {"last_error": "root.erofs: sha256 mismatch (the download was damaged)"}}}},
+        {"req": "POST /update/check", "passive": true, "expect": {"events": [["update.state", {"last_error": "root.erofs: sha256 mismatch (the download was damaged)"}]]}}
+      ]
+    },
+    {
+      "name": "update-stage-refused-on-trial",
+      "preset": "update-trial",
+      "steps": [
+        {"req": "POST /update/stage", "raw": "", "expect": {"status": 200, "events": [["power.idle", {"busy": {"web": true}}], ["update.progress", {"phase": "check"}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"busy": true, "progress": {"phase": "check"}}}},
+        {"req": "POST /update/stage", "body": {}, "expect": {"status": 409, "body": {"error": "another update is in progress"}, "copy": "An update is already running."}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "error"}}, "expect": {"matched": true, "events": [["update.progress", {"phase": "error", "error": "the running version is still on trial; try again once it has fully started (20260929.101500, 2 tries left)"}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"busy": false, "progress": null}}}
+      ]
+    },
+    {
+      "name": "update-stage-refused-rollback-pending",
+      "slow": true,
+      "preset": "rollback-pending",
+      "steps": [
+        {"req": "POST /update/stage", "body": {"version": "20260929.143000"}, "passive": true},
+        {"wait": {"topic": "update.progress", "data": {"phase": "error"}}, "expect": {"events": [["update.progress", {"error": "the other slot starts next; restart first"}]]}}
+      ]
+    },
+    {
+      "name": "update-stage-nothing-to-do",
+      "slow": true,
+      "preset": "update-staged",
+      "steps": [
+        {"req": "POST /update/stage", "body": {"version": "-1"}, "expect": {"status": 400, "body": {"error": "invalid version \"-1\""}}},
+        {"req": "POST /update/stage", "raw": "{", "expect": {"status": 400}},
+        {"req": "POST /update/stage", "raw": "{\"version\": 7}", "expect": {"status": 400}},
+        {"req": "POST /update/stage", "passive": true, "raw": "  "},
+        {"wait": {"topic": "update.progress", "data": {"phase": "idle"}}, "expect": {"matched": true}},
+        {"req": "POST /update/stage", "passive": true, "body": {"version": "20260929.101500"}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "idle"}}, "expect": {"matched": true}}
+      ]
+    },
+    {
+      "name": "update-cancel-downloading",
+      "slow": true,
+      "preset": "update-available",
+      "steps": [
+        {"req": "POST /update/cancel", "passive": true, "expect": {"status": 409, "body": {"error": "no update is running"}, "copy": "The update can't be stopped now."}},
+        {"req": "POST /update/stage", "passive": true, "body": {}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "download"}}, "expect": {"matched": true}},
+        {"req": "POST /update/cancel", "passive": true, "expect": {"status": 200}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "cancelled"}}, "expect": {"events": [["update.progress", {"phase": "cancelled", "percent": 0, "version": "20260929.143000"}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"busy": false, "other_slot": {"version": "20260927.190000"}, "next_boot": null}}}
+      ]
+    },
+    {
+      "name": "update-cancel-writing",
+      "note": "A stage that began writing leaves no version to go back to.",
+      "slow": true,
+      "preset": "update-available",
+      "steps": [
+        {"req": "POST /update/stage", "passive": true, "body": {}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "download", "percent": 2}}},
+        {"req": "POST /update/cancel", "passive": true, "expect": {"status": 200}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "cancelled"}}, "expect": {"events": [["update.progress", {"phase": "cancelled", "percent": 2}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"busy": false, "other_slot": null, "next_boot": null}}},
+        {"req": "POST /update/rollback", "passive": true, "expect": {"status": 409, "body": {"error": "slot b has nothing bootable"}}}
+      ]
+    },
+    {
+      "name": "update-staging-preset",
+      "note": "The preset's stage starts with the boot on the Go side's clock, so the percent is left out.",
+      "preset": "update-staging",
+      "ignore_topics": ["update.progress", "power.idle"],
+      "steps": [
+        {"req": "GET /update", "passive": true, "ignore": ["body.progress.percent", "body.progress.bytes"], "expect": {"body": {"busy": true, "progress": {"phase": "write", "version": "20260929.143000"}}}},
+        {"req": "POST /update/stage", "passive": true, "expect": {"status": 409}},
+        {"req": "POST /update/activate", "passive": true, "expect": {"status": 409, "body": {"error": "an update is still being installed"}, "copy": "Wait for the update to finish."}},
+        {"req": "GET /power", "passive": true, "ignore": ["body.busy.reason"], "expect": {"body": {"busy": {}}}}
+      ]
+    },
+    {
+      "name": "update-activate",
+      "slow": true,
+      "preset": "update-staged",
+      "steps": [
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "update", "version": "20260929.143000"}]}}}},
+        {"req": "POST /update/activate", "expect": {"status": 200}},
+        {"wait": {"until": "down"}, "expect": {"matched": true}},
+        {"wake": true},
+        {"req": "GET /ping", "expect": {"body": {"version": "20260929.143000"}}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"booted": "20260929.143000", "booted_slot": "b", "staged": null, "next_boot": null, "available": null, "other_slot": {"version": "20260929.101500", "bootable": true}}}},
+        {"req": "GET /system", "passive": true, "expect": {"body": {"version": "20260929.143000", "booted_slot": "b"}}},
+        {"req": "POST /update/activate", "passive": true, "expect": {"status": 409, "body": {"error": "no update is staged"}, "copy": "There's no update waiting. Check again."}}
+      ]
+    },
+    {
+      "name": "update-rollback",
+      "slow": true,
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /update/rollback", "passive": true, "expect": {"status": 200, "events": [["update.state", {"held": {"version": "20260929.101500"}}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"next_boot": {"slot": "b", "version": "20260927.190000"}}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "rollback", "version": "20260927.190000"}]}}}},
+        {"req": "POST /update/stage", "passive": true, "body": {"version": "20260929.143000"}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "error"}}},
+        {"req": "POST /system/reboot", "passive": true},
+        {"wait": {"until": "down"}},
+        {"wake": true},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"booted": "20260927.190000", "other_slot": {"version": "20260929.101500", "bootable": false, "counting": true, "tries_done": 1, "entry": "vos-20260929.101500+0-1.conf"}}}},
+        {"req": "POST /update/rollback", "passive": true}
+      ]
+    },
+    {
+      "name": "update-rollback-refused",
+      "preset": "update-failed-newer",
+      "steps": [
+        {"req": "POST /update/rollback", "passive": true, "expect": {"status": 409, "body": {"error": "this version failed to start before: 20260929.143000 in slot b"}}},
+        {"step": {"patch": {"update": {"failed": [], "other_slot": {"tries_done": 3}}}}},
+        {"req": "POST /update/rollback", "passive": true, "expect": {"status": 409, "body": {"error": "slot b (20260929.143000) used up its boot attempts without starting"}}},
+        {"step": {"patch": {"update": {"other_slot": null}}}},
+        {"req": "POST /update/rollback", "passive": true, "expect": {"status": 409, "body": {"error": "slot b has nothing bootable"}, "copy": "There's no earlier version to go back to."}}
+      ]
+    },
+    {
+      "name": "update-held",
+      "preset": "update-held",
+      "steps": [
+        {"req": "GET /update", "passive": true, "expect": {"body": {"held": {"version": "20260929.143000"}}}},
+        {"stream": {"passive": true}},
+        {"req": "POST /update/rollback", "passive": true, "expect": {"status": 200}},
+        {"req": "GET /update", "passive": true}
+      ]
+    },
+    {
+      "name": "update-settings",
+      "preset": "update-available",
+      "steps": [
+        {"req": "PUT /update/settings", "body": {"channel": "a/b"}, "expect": {"status": 400, "body": {"error": "invalid channel \"a/b\""}}},
+        {"req": "PUT /update/settings", "body": {"auto": "always"}, "expect": {"status": 400, "body": {"error": "auto must be \"stage\" or \"off\""}}},
+        {"req": "PUT /update/settings", "body": {"channel": "main"}, "expect": {"status": 200, "events": []}},
+        {"req": "PUT /update/settings", "body": {"channel": "beta", "auto": "off"}, "expect": {"status": 200, "events": [["update.state", {"available": null}]]}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"config": {"channel": "beta", "auto": "off"}, "available": null}}},
+        {"req": "PUT /update/settings", "body": {"channel": ""}, "expect": {"status": 200}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"config": {"channel": "main"}}}},
+        {"req": "PUT /update/settings", "body": {"channel": null, "auto": null}, "expect": {"status": 200, "events": []}}
+      ]
+    },
+    {
+      "name": "update-script",
+      "preset": "idle",
+      "steps": [
+        {"script": "update", "expect": {"events": [["update.state", {"available": {"version": "20261001.090000"}}]]}},
+        {"req": "GET /status", "passive": true},
+        {"stream": {"passive": true}}
+      ]
+    },
+    {
+      "name": "update-stage-full",
+      "note": "A whole stage (about 13 s on the Go side), then the restart into it.",
+      "slow": true,
+      "preset": "update-available",
+      "ignore_topics": ["power.idle"],
+      "steps": [
+        {"req": "POST /update/stage", "passive": true, "body": {"version": ""}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "done"}}, "expect": {"matched": true}},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"busy": false, "staged": {"version": "20260929.143000", "slot": "b"}, "next_boot": {"slot": "b", "version": "20260929.143000"}, "other_slot": {"counting": true, "tries_left": 3}}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "update"}]}}}},
+        {"stream": {"passive": true}},
+        {"req": "POST /update/activate", "passive": true},
+        {"wait": {"until": "down"}},
+        {"wake": true},
+        {"req": "GET /update", "passive": true, "expect": {"body": {"booted": "20260929.143000"}}}
+      ]
+    },
+    {
+      "name": "update-stage-held-cleared",
+      "note": "Staging the held version or a newer one lifts the hold.",
+      "slow": true,
+      "preset": "update-held",
+      "ignore_topics": ["power.idle"],
+      "steps": [
+        {"req": "POST /update/stage", "passive": true, "body": {"version": "20260929.143000"}},
+        {"wait": {"topic": "update.progress", "data": {"phase": "done"}}, "collapse": true},
+        {"req": "GET /update", "passive": true}
+      ]
+    }
+  ]
+}

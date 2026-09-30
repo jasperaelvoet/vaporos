@@ -1,0 +1,81 @@
+{
+  "description": "The virtual display: adding and removing modes (the EDID's limits and the words for each refusal), learned modes, HDR and the virtual connector.",
+  "vectors": [
+    {
+      "name": "display-modes-refused",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /display/modes", "body": {"mode": "100x100@60"}, "expect": {"status": 400, "body": {"error": "100x100@60: too small"}, "copy": "Too small: use at least 320 × 200."}},
+        {"req": "POST /display/modes", "body": {"mode": "9000x1000@60"}, "expect": {"status": 400, "body": {"error": "9000x1000@60: too large"}, "copy": "Too large: use at most 8192 wide or high."}},
+        {"req": "POST /display/modes", "body": {"mode": "1920x1080@300"}, "expect": {"status": 400, "body": {"error": "1920x1080@300: refresh outside 24-240 Hz"}, "copy": "Use 24 to 240 Hz."}},
+        {"req": "POST /display/modes", "body": {"mode": "4096x2160@60"}, "expect": {"status": 400, "body": {"error": "4096x2160@60: 4096x2160 is never offered"}, "copy": "4096 × 2160 can't be used; try 3840 × 2160."}},
+        {"req": "POST /display/modes", "body": {"mode": "8192x8192@240"}, "expect": {"status": 400, "copy": "Too much for the virtual screen: try a lower refresh rate."}},
+        {"req": "POST /display/modes", "body": {"mode": "3000x2000@120"}, "expect": {"status": 400}},
+        {"req": "POST /display/modes", "body": {"mode": "7680x320@24"}, "expect": {"status": 400}},
+        {"req": "POST /display/modes", "body": {"mode": "320x8192@24"}, "expect": {"status": 200}},
+        {"req": "POST /display/modes", "body": {"mode": "wide"}, "expect": {"status": 400, "body": {"error": "mode \"wide\": want WxH@R"}}},
+        {"req": "POST /display/modes", "body": {"mode": " 0x1080@60"}, "expect": {"status": 400, "body": {"error": "mode \"0x1080@60\": bad size"}}},
+        {"req": "POST /display/modes", "body": {"mode": "1920x1080@fast"}, "expect": {"status": 400, "body": {"error": "mode \"1920x1080@fast\": bad refresh rate"}}},
+        {"req": "POST /display/modes", "body": {"mode": "1920X1080@0"}, "expect": {"status": 400}},
+        {"req": "POST /display/modes", "raw": "{\"mode\": [1]}", "expect": {"status": 400}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"added": ["320x8192@24"], "learned": ["2360x1640@120", "320x8192@24"], "reboot_needed": true}}}
+      ]
+    },
+    {
+      "name": "display-modes-add-remove",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /display/modes", "body": {"mode": "1920x1080@60"}, "expect": {"status": 200, "body": {"reboot_needed": false}, "events": [["power.idle", {}], ["display.changed", {}]]}},
+        {"req": "POST /display/modes", "body": {"mode": "2560x1440"}, "expect": {"body": {"reboot_needed": false}}},
+        {"req": "POST /display/modes", "body": {"mode": "2560x1080@143.6"}, "expect": {"body": {"reboot_needed": true}}},
+        {"req": "POST /display/modes", "body": {"mode": "2560X1080@144"}, "expect": {"body": {"reboot_needed": true}}},
+        {"req": "POST /display/modes", "body": {"mode": "3440x1440@144"}, "expect": {"status": 400, "copy": "Too much for the virtual screen: try a lower refresh rate."}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"added": ["2560x1080@144"], "learned": ["2360x1640@120", "2560x1080@144"], "reboot_needed": true}}},
+        {"req": "DELETE /display/modes/2360x1640@120", "expect": {"status": 200, "body": {"reboot_needed": true}}},
+        {"req": "DELETE /display/modes/3840x2160%4060", "expect": {"status": 200}},
+        {"req": "DELETE /display/modes/1234x567@60", "expect": {"status": 404, "body": {"error": "1234x567@60 is neither an added nor a learned mode"}}},
+        {"req": "DELETE /display/modes/wide", "expect": {"status": 400}},
+        {"req": "DELETE /display/modes/2560x1080@144", "expect": {"status": 200}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"added": [], "learned": [], "devices": [{"name": "Sam's iPhone"}, {"name": "MacBook Pro"}]}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"reasons": [{"kind": "display"}]}}}}
+      ]
+    },
+    {
+      "name": "display-reboot-needed",
+      "note": "The preset's added mode needs a 720 MHz clock, which the EDID refuses (displayFixtureGaps).",
+      "preset": "reboot-needed",
+      "steps": [
+        {"req": "GET /status", "passive": true},
+        {"req": "GET /display", "passive": true},
+        {"req": "DELETE /display/modes/3000x2000@120", "expect": {"status": 200}},
+        {"req": "GET /display", "passive": true}
+      ]
+    },
+    {
+      "name": "display-settings",
+      "preset": "idle",
+      "steps": [
+        {"req": "PUT /display/settings", "body": {"hdr": false}, "expect": {"status": 200, "events": [["power.idle", {}], ["display.changed", {}]]}},
+        {"req": "PUT /display/settings", "body": {"virtual_connector": "DP-1"}, "expect": {"status": 200}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"hdr": false, "virtual_connector": "DP-1", "reboot_needed": false}}},
+        {"req": "PUT /display/settings", "body": {"virtual_connector": "eDP-1"}, "expect": {"status": 400, "body": {"error": "\"eDP-1\" is not a DP or HDMI connector of AMD Radeon RX 9070 XT"}, "copy": "That port can't be used."}},
+        {"req": "PUT /display/settings", "body": {"virtual_connector": ""}, "expect": {"status": 400}},
+        {"req": "PUT /display/settings", "body": {"virtual_connector": "DP-3", "hdr": true}, "expect": {"status": 200}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"virtual_connector": "DP-3", "available_connectors": ["DP-1", "DP-2"], "reboot_needed": true, "hdr": true}}},
+        {"req": "PUT /display/settings", "body": {"virtual_connector": "HDMI-A-1"}, "expect": {"status": 200}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"available_connectors": ["DP-1", "DP-2", "DP-3"]}}},
+        {"req": "PUT /display/settings", "body": {"hdr": "yes"}, "expect": {"status": 400}}
+      ]
+    },
+    {
+      "name": "display-no-gpu",
+      "preset": "no-gpu",
+      "steps": [
+        {"req": "GET /display", "passive": true},
+        {"req": "PUT /display/settings", "body": {"virtual_connector": "DP-2"}, "expect": {"status": 409, "body": {"error": "no supported GPU for a virtual display"}, "copy": "Needs a supported graphics card."}},
+        {"req": "PUT /display/settings", "body": {"hdr": true}, "expect": {"status": 200}},
+        {"req": "GET /status", "passive": true}
+      ]
+    }
+  ]
+}

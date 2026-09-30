@@ -1,0 +1,78 @@
+{
+  "description": "Power: why the box stays awake (the page's own activity, keep-awake, a stream), the idle countdown, the settings and Wake-on-LAN.",
+  "vectors": [
+    {
+      "name": "power-busy-web",
+      "preset": "busy-web",
+      "steps": [
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": null, "idle_seconds": 0, "shutdown_in": 900}}},
+        {"req": "GET /power", "expect": {"body": {"busy": {"reason": "web UI in use", "web": true}, "shutdown_in": null}, "events": [["power.idle", {"idle_seconds": 0, "shutdown_in": null, "busy": {"reason": "web UI in use", "web": true}}]]}},
+        {"req": "GET /power", "expect": {"events": []}},
+        {"stream": {"passive": true}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"power": {"busy": {"web": true}}}}}
+      ]
+    },
+    {
+      "name": "power-keep-awake",
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /power/keep-awake", "passive": true, "body": {}, "expect": {"status": 400, "body": {"error": "minutes must be between 0 and 10080"}}},
+        {"req": "POST /power/keep-awake", "passive": true, "body": {"minutes": -1}, "expect": {"status": 400}},
+        {"req": "POST /power/keep-awake", "passive": true, "body": {"minutes": 10081}, "expect": {"status": 400}},
+        {"req": "POST /power/keep-awake", "passive": true, "body": {"minutes": 60}, "expect": {"status": 200, "events": [["power.idle", {"busy": {"reason": "keep-awake"}}]]}},
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": {"reason": "keep-awake"}}}},
+        {"req": "GET /power", "expect": {"events": []}},
+        {"req": "POST /power/keep-awake", "passive": true, "body": {"minutes": 0}, "expect": {"events": [["power.idle", {"busy": {"reason": "web UI in use", "web": true}}]]}},
+        {"req": "GET /power", "passive": true}
+      ]
+    },
+    {
+      "name": "power-keep-awake-preset",
+      "preset": "keep-awake",
+      "steps": [
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": {"reason": "keep-awake"}}}},
+        {"req": "POST /power/keep-awake", "passive": true, "body": {"minutes": 0}, "expect": {"events": [["power.idle", {"busy": null, "shutdown_in": 900}]]}}
+      ]
+    },
+    {
+      "name": "power-countdown",
+      "preset": "idle-countdown",
+      "steps": [
+        {"req": "GET /power", "passive": true, "expect": {"body": {"busy": null, "idle_seconds": 600, "shutdown_in": 300}}},
+        {"req": "GET /power", "expect": {"body": {"busy": null}, "events": []}},
+        {"req": "PUT /power", "body": {"idle_minutes": 20}, "expect": {"body": {"idle_minutes": 20, "shutdown_in": 600}}},
+        {"req": "PUT /power", "body": {"idle_shutdown": false}, "expect": {"body": {"idle_shutdown": false, "shutdown_in": null, "idle_seconds": 600}}},
+        {"stream": {}}
+      ]
+    },
+    {
+      "name": "power-settings",
+      "preset": "idle",
+      "steps": [
+        {"req": "PUT /power", "body": {"idle_minutes": 0}, "expect": {"status": 400, "body": {"error": "idle_minutes must be between 1 and 1440"}}},
+        {"req": "PUT /power", "body": {"idle_minutes": 1441}, "expect": {"status": 400}},
+        {"req": "PUT /power", "body": {"idle_minutes": "15"}, "expect": {"status": 400}},
+        {"req": "PUT /power", "body": {"idle_minutes": 1440}, "expect": {"body": {"idle_minutes": 1440, "idle_shutdown": true}}},
+        {"req": "PUT /power", "body": {}, "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "power-no-wol",
+      "preset": "no-wol",
+      "steps": [
+        {"req": "GET /power", "passive": true},
+        {"req": "GET /status", "passive": true}
+      ]
+    },
+    {
+      "name": "power-streaming",
+      "preset": "streaming",
+      "steps": [
+        {"req": "GET /power", "expect": {"body": {"busy": {"reason": "streaming to Living room TV"}}}},
+        {"req": "POST /power/keep-awake", "body": {"minutes": 30}, "expect": {"events": [["power.idle", {"busy": {"reason": "keep-awake"}}]]}},
+        {"event": ["session.end", {}], "expect": {"events": [["session.end", {}]]}},
+        {"req": "POST /power/keep-awake", "body": {"minutes": 0}, "expect": {"events": [["power.idle", {"busy": {"reason": "web UI in use"}}]]}}
+      ]
+    }
+  ]
+}
