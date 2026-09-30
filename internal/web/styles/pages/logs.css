@@ -1,0 +1,47 @@
+/* System › Logs (spec-cc-screens §11) in REDLINE: the log is a trace on the
+   field's floor (h0), in mono, as tall as the phone allows. Times step back
+   into the smoke so each message reads first; a line Sunshine calls an
+   error gets the fault's cold mark in the gutter, a warning the hot one,
+   beside the word that already says it. Wrapped lines hang under their
+   first. Classes start with log-, so none can be a Tailwind utility. */
+@layer components {
+  .log { display: grid; gap: 0.75rem; }
+  /* two by two on a phone, one row from 40rem */
+  .log-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+  .log-bar > * { justify-content: center; }
+  .log-follow {
+    position: relative; display: inline-flex; align-items: center; gap: 0.625rem; min-height: 2.75rem; padding: 0 0.875rem 0 0.4375rem;
+    border-radius: var(--radius-lg); box-shadow: inset 0 0 0 1px var(--color-line); font-size: var(--text-md); font-weight: 600; cursor: pointer;
+  }
+  .log-follow .sys-switch { width: 2.75rem; height: 1.75rem; }
+  .log-follow .sys-switch::before { top: 0.25rem; left: 0.25rem; width: 1.25rem; height: 1.25rem; }
+  .log-follow .sys-switch-input:checked + .sys-switch::before { translate: 1rem 0; }
+  .log-status { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: 0; color: var(--color-ink-2); font-size: var(--text-md); }
+
+  .log-frame { border-radius: var(--radius-2xl); background: var(--color-canvas-2); box-shadow: inset 0 0 0 1px var(--color-line); overflow: hidden; }
+  .log-error { margin: 0.75rem; }
+  .log-pre {
+    height: max(16rem, calc(100dvh - 27rem)); margin: 0; padding: 0.75rem 0; overflow: auto; overscroll-behavior: contain;
+    color: var(--color-ink-2); font: 500 var(--text-2xs) / 1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .log-pre:focus-visible { outline-offset: -2px; border-radius: var(--radius-2xl); }
+  .log-pre[data-empty="true"] { padding: 1rem; font-family: var(--font-ui); font-size: var(--text-md); }
+  .log-line { display: block; padding: 0 0.875rem 0 1.75rem; text-indent: -0.875rem; }
+  .log-line[data-level] { color: var(--color-ink); }
+  .log-line[data-level="error"] { box-shadow: inset 3px 0 0 var(--color-cold); background: color-mix(in oklab, var(--color-cold) 8%, transparent); }
+  .log-line[data-level="warn"] { box-shadow: inset 3px 0 0 var(--color-h8); }
+  .log-time { color: var(--color-ink-3); }
+  .log-meta { margin: 0; color: var(--color-ink-3); font-size: var(--text-xs); }
+
+  @media (min-width: 40rem) {
+    .log-bar { display: flex; flex-wrap: wrap; align-items: center; }
+    .log-pre { height: max(20rem, calc(100dvh - 22rem)); }
+  }
+  @media (min-width: 64rem) {
+    .log-pre { height: max(24rem, calc(100dvh - 21rem)); font-size: var(--text-xs); }
+  }
+
+  @media (forced-colors: active) {
+    .log-frame, .log-follow { border: 1px solid CanvasText; }
+  }
+}

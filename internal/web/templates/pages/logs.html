@@ -1,8 +1,30 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  System › Logs (spec-cc-screens §11): the stream server's last 2000 lines
+  as a trace, newest at the end. Refresh reads it again; Follow re-reads it
+  every 5 s while the tab is visible, for at most 10 minutes (one of R2's
+  bounded polls, passive so it keeps nobody's PC awake); Copy takes the
+  whole log; Download fetches it in this tab with the session, as a file.
+  pages/logs.js fills it; styles/pages/logs.css is its look.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
+<section class="log" aria-labelledby="log-title">
+  <h2 class="sr-only" id="log-title">Stream server log</h2>
+  <div class="log-bar">
+    <button class="btn small ghost" id="log-refresh" type="button" disabled>{{icon "refresh"}}Refresh</button>
+    <label class="log-follow" for="log-follow">
+      <input class="sys-switch-input" type="checkbox" role="switch" id="log-follow" aria-describedby="log-follow-status" disabled>
+      <span class="sys-switch" aria-hidden="true"></span>
+      <span>Follow</span>
+    </label>
+    <button class="btn small ghost" id="log-copy" type="button" disabled>{{icon "copy"}}Copy</button>
+    <a class="btn small ghost" id="log-download" href="{{.Base}}/api/v1/sunshine/logs" download="sunshine.log">{{icon "download"}}Download</a>
+  </div>
+  <p class="log-status" id="log-follow-status" aria-live="polite"><span id="log-follow-text"></span> <button class="btn small ghost" id="log-resume" type="button" hidden>Resume</button></p>
+
+  <div class="log-frame" id="log-box" data-region="log" aria-busy="true">
+    <div class="region-error log-error" id="log-error" role="alert" hidden><p class="region-error-text" id="log-error-text"></p><button class="btn small" id="log-retry" type="button">Try again</button></div>
+    <pre class="log-pre" id="log-text" tabindex="0" aria-label="Stream server log">Loading the log…</pre>
+  </div>
+  <p class="log-meta" id="log-meta"></p>
 </section>
 {{end}}
