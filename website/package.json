@@ -11,6 +11,7 @@
     "predev": "node scripts/copy-assets.mjs",
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/drop-demo.mjs",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --conditions=react-server --import ./tests/unit/check-ts-hooks.mjs tests/unit/check-release-unit.mjs",
