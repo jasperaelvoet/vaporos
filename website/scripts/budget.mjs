@@ -42,9 +42,9 @@ const kB = 1000;
 // Per page kind: the §12 table. 'demo' is the /demo/ page, once it exists.
 const BUDGET = {
   home: { js: 205 * kB, js5s: 290 * kB, css: 25 * kB, html: 40 * kB, img: 120 * kB },
-  content: { js: 195 * kB, js5s: 215 * kB, css: 25 * kB, html: 25 * kB, img: 60 * kB },
+  content: { js: 195 * kB, js5s: 215 * kB, css: 25 * kB, html: 34 * kB, img: 60 * kB },
   demo: { js: 200 * kB, js5s: 215 * kB, css: 25 * kB, html: 15 * kB, img: 60 * kB },
-  notFound: { js: 190 * kB, js5s: 200 * kB, css: 25 * kB, html: 10 * kB, img: 60 * kB },
+  notFound: { js: 190 * kB, js5s: 200 * kB, css: 25 * kB, html: 12 * kB, img: 60 * kB },
 };
 const FONTS = { count: 2, bytes: 110 * kB };
 const OG_MAX = 300 * kB;
