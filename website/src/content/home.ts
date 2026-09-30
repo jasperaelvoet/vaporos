@@ -132,8 +132,6 @@ export const getBeat = {
   /** The chip before the requirements line. */
   needs: 'Needs',
   requirementsLabel: 'Requirements',
-  verify: { label: 'Verify your download', href: routes.verify },
-  requirementsLink: { label: 'All the requirements', href: routes.requirements },
 };
 
 /** B8: a few questions. */

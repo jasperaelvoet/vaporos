@@ -124,16 +124,16 @@ export function AbSlots({ children }: { children?: ReactNode }) {
         </p>
       </div>
       <div className="slots" role="group" aria-label={copy.slotsLabel}>
-        <SlotCard letter="A" slot={a} />
-        <SlotCard letter="B" slot={b} />
+        <SlotCard id="slot-a" letter="A" slot={a} />
+        <SlotCard id="slot-b" letter="B" slot={b} />
       </div>
     </div>
   );
 }
 
-function SlotCard({ letter, slot }: { letter: string; slot: Slot }) {
+function SlotCard({ id, letter, slot }: { id: string; letter: string; slot: Slot }) {
   return (
-    <div className="slot" data-heat-state={slot.heat} style={{ '--fill': (slot.fill ?? 0) * 0.62 } as CSSProperties}>
+    <div id={id} className="slot" data-heat-state={slot.heat} style={{ '--fill': (slot.fill ?? 0) * 0.62 } as CSSProperties}>
       <span className="slot-cool" aria-hidden="true" />
       <span className="slot-heat" aria-hidden="true" />
       <span className="slot-cold" aria-hidden="true" />

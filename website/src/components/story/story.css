@@ -97,6 +97,9 @@
   line-height: 1.55;
   color: var(--color-hot-ink);
 }
+.get-card {
+  display: contents;
+}
 .get {
   display: grid;
   gap: 1rem;
