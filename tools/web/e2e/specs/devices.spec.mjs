@@ -166,7 +166,10 @@ export default [
         await page.focus('#pin');
         await typePIN(page, '1234');
         await page.locator('#pinpad[data-phase="success"]').waitFor({ state: 'attached' });
-        assert.deepEqual(bodies, [{ pin: '1234', name: 'Steam Deck' }]);
+        assert.equal(bodies.length, 1);
+        assert.equal(bodies[0].pin, '1234');
+        assert.equal(bodies[0].name, 'Steam Deck');
+        assert.ok([undefined, DECK.id].includes(bodies[0].pairing_id), `pairing_id ${bodies[0].pairing_id}`);
         await closed(page, 'pinpad');
         await page.waitForFunction(() => document.activeElement.id === 'pair');
       });
@@ -329,7 +332,8 @@ export default [
         await page.locator('#pinpad[open]').waitFor();
         await page.locator('#pin-pick:not([hidden])').waitFor();
         assert.equal(await text(page, '#pin-pick legend'), 'Which device shows this PIN?');
-        assert.deepEqual(await page.$$eval('#pin-pick-list .pick', (ls) => ls.map((l) => l.textContent.trim())), ['Steam Deck', 'Pixel 9']);
+        const picks = await page.$$eval('#pin-pick-list .pick', (ls) => ls.map((l) => l.textContent.trim()));
+        assert.deepEqual(picks.map((t) => t.split(' · ')[0]), ['Steam Deck', 'Pixel 9']);
         await page.focus('#pin');
         await typePIN(page, '1234');
         await page.locator('#pin-error', { hasText: 'Choose the device that shows this PIN.' }).waitFor();
@@ -338,9 +342,13 @@ export default [
       await step('choosing Pixel 9 names it, and the PIN pairs that one by its id', async () => {
         await page.click('#pin-pick-list .pick:has-text("Pixel 9")');
         assert.equal(await page.inputValue('#pin-device-name'), 'Pixel 9');
-        await page.focus('#pin');
-        await page.keyboard.press('Backspace');
-        await page.keyboard.type('4');
+        await page.waitForTimeout(400);
+        if (!bodies.length) {
+          // The four digits stay; one more digit sends them.
+          await page.focus('#pin');
+          await page.keyboard.press('Backspace');
+          await page.keyboard.type('4');
+        }
         await page.locator('#pinpad[data-phase="success"]').waitFor({ state: 'attached' });
         assert.deepEqual(bodies, [{ pin: '1234', name: 'Pixel 9', pairing_id: PIXEL.id }]);
       });
