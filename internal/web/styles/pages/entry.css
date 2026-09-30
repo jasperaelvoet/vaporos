@@ -57,7 +57,8 @@
     width: 100%; min-height: 3.25rem; padding: 0; border: 0; background: transparent; color: var(--color-ink);
     font: 500 clamp(1.625rem, 8.5vw, 2.25rem) / 1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase;
   }
-  .ent-code-input:focus-visible { outline: none; box-shadow: inset 0 -2px 0 var(--color-accent); }
+  /* The ring is a transparent outline too, which forced colours draw. */
+  .ent-code-input:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: inset 0 -2px 0 var(--color-accent); }
   .ent-code-input::placeholder { color: var(--color-ink-3); text-transform: none; }
 
   /* ------------------------------------------- password, help, errors */
@@ -108,9 +109,20 @@
     .evf-addr { font-size: var(--text-base); }
   }
 
+  /* A phone on its side: the viewfinder gives way to its address plate, so
+     the brand, the title and the field fit above the keyboard. */
+  @media (max-height: 29.99rem) and (max-width: 63.99rem) {
+    html:is([data-page="login"], [data-page="setup"]) .bare { gap: 0.625rem; padding-top: calc(1rem + env(safe-area-inset-top)); }
+    html:is([data-page="login"], [data-page="setup"]) .bare-brand { margin-bottom: 0; }
+    html:is([data-page="login"], [data-page="setup"]) .bare-title { font-size: var(--text-2xl); }
+    .evf { min-height: 0; padding: 0; background: none; }
+    .evf .heat-field, .evf-corner { display: none; }
+    .evf-id { margin: 0; }
+  }
+
   @media (forced-colors: active) {
     .evf, .evf-id, .ent-code, .ent-help { border: 1px solid CanvasText; }
-    .bare .btn { border: 1px solid ButtonText; }
     .evf .heat-field { forced-color-adjust: none; }
+    .ent-code:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
   }
 }

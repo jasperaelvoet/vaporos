@@ -62,7 +62,10 @@ func (f *devFake) installRoutes(add fakeAdder) {
 		}
 		f.installing = true
 		f.setInstallLocked("running", "probe", 0, "Starting the installation", "")
-		go f.runInstall(disk, req.Mode, req.Hostname, req.Password)
+		// The probe's answer is read here, under f.mu: the install runs
+		// without the lock between its steps.
+		probe := f.doc("install-probe")
+		go f.runInstall(disk, req.Mode, req.Hostname, req.Password, asStr(probe["version"]), asStr(probe["source_error"]))
 		b := make([]byte, 8)
 		rand.Read(b)
 		return fakeStatus{http.StatusAccepted, map[string]string{"job": hex.EncodeToString(b)}}
@@ -148,13 +151,13 @@ func (f *devFake) setInstallLocked(state, step string, pct int, msg, errText str
 // runInstall walks the real steps and messages (install/install.go,
 // image.go, target.go), then waits for POST /install/reboot, which boots
 // the installed system with the name and password the wizard chose.
-func (f *devFake) runInstall(disk map[string]any, mode, hostname, password string) {
+// version and badImage are the probe's, read by the caller under f.mu.
+func (f *devFake) runInstall(disk map[string]any, mode, hostname, password, version, badImage string) {
 	dev := asStr(disk["path"])
 	part := dev + "2"
 	if strings.Contains(dev, "nvme") {
 		part = dev + "p2"
 	}
-	version := asStr(f.doc("install-probe")["version"])
 	type step struct {
 		step string
 		pct  int
@@ -165,10 +168,9 @@ func (f *devFake) runInstall(disk map[string]any, mode, hostname, password strin
 		{"probe", 1, "Reading the VaporOS image from /run/vos/medium/vos"},
 		{"probe", 2, fmt.Sprintf("Ready to install VaporOS %s on %s", version, dev)},
 	}
-	// An image the probe could not trust fails the install the same way,
-	// once it is read (install.Service.runJob): the wizard's early stop
-	// only saves the visitor the wait.
-	badImage := asStr(f.doc("install-probe")["source_error"])
+	// An image the probe could not trust (badImage) fails the install the
+	// same way, once it is read (install.Service.runJob): the wizard's early
+	// stop only saves the visitor the wait.
 	if mode == "repair" {
 		steps = append(steps, step{"partition", 3, "Checking the data partition"},
 			step{"partition", 6, "Formatting the boot partition"}, step{"partition", 10, "Disk prepared"})
@@ -238,10 +240,14 @@ func TestFakeInstallSourceError(t *testing.T) {
 	ch, cancel := f.hub.Subscribe()
 	defer cancel()
 	body := `{"disk":"/dev/nvme0n1","mode":"erase","hostname":"vapor","password":"correct horse","timezone":"UTC","libraries":[],"source":""}`
+	// The fake's documents are f.mu's: read them under it, never beside a
+	// running install.
+	f.mu.Lock()
+	bad := asStr(f.doc("install-probe")["source_error"])
+	f.mu.Unlock()
 	if code, ans := f.fakeDo(t, hs, "POST", "/install", body); code != 200 {
 		t.Fatalf("POST /install: %d %v", code, ans)
 	}
-	bad := asStr(f.doc("install-probe")["source_error"])
 	ev := waitEvent(t, ch, "install.progress", 5*time.Second, func(m map[string]any) bool { return m["state"] != "running" })
 	if ev["state"] != "failed" || ev["step"] != "probe" || ev["message"] != "Installation failed: "+bad {
 		t.Errorf("install.progress = %v, want failed at probe with the probe's error", ev)

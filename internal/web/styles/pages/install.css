@@ -179,6 +179,8 @@
   @media (prefers-reduced-motion: reduce) {
     .wiz-pane { transition: none; }
     .wiz-run .heat-bar[data-indeterminate] .heat-bar-fill { animation: none; }
+    /* the needle's overshoot is motion too */
+    .evf-ramp::before { transition: none; }
   }
 
   @media (forced-colors: active) {
