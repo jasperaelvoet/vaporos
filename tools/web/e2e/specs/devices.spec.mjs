@@ -165,7 +165,7 @@ export default [
       await step('an emptied name still pairs, as the device calls itself', async () => {
         await page.focus('#pin');
         await typePIN(page, '1234');
-        await page.locator('#pinpad[data-phase="success"]').waitFor();
+        await page.locator('#pinpad[data-phase="success"]').waitFor({ state: 'attached' });
         assert.deepEqual(bodies, [{ pin: '1234', name: 'Steam Deck' }]);
         await closed(page, 'pinpad');
         await page.waitForFunction(() => document.activeElement.id === 'pair');
@@ -341,7 +341,7 @@ export default [
         await page.focus('#pin');
         await page.keyboard.press('Backspace');
         await page.keyboard.type('4');
-        await page.locator('#pinpad[data-phase="success"]').waitFor();
+        await page.locator('#pinpad[data-phase="success"]').waitFor({ state: 'attached' });
         assert.deepEqual(bodies, [{ pin: '1234', name: 'Pixel 9', pairing_id: PIXEL.id }]);
       });
       await step('the other device still waits, on the card', async () => {
