@@ -139,7 +139,7 @@ try {
   step('shoot fixture 390 reduced motion', 'node', ['scripts/shoot.mjs', fx, join(OUT, 'shots-rm'), '--widths=390', '--reduced-motion', `--release=${FIXTURE}`, '--strict']);
   step('shoot none 390', 'node', ['scripts/shoot.mjs', url(byName.none.port), join(OUT, 'shots-none'), '--widths=390', '--pages=/,/download/', '--strict']);
   if (opt.live) step('shoot live 1440/390', 'node', ['scripts/shoot.mjs', url(byName.live.port), join(OUT, 'shots-live'), '--widths=1440,390', '--release=live', '--strict']);
-  step('axe 1440/768/390', 'node', ['tests/e2e/axe.mjs', fx, `--out=${join(OUT, 'axe')}`, `--release=${FIXTURE}`]);
+  step('axe 1440/1024/768/390/320', 'node', ['tests/e2e/axe.mjs', fx, `--out=${join(OUT, 'axe')}`, `--release=${FIXTURE}`]);
   step('axe 390 reduced motion', 'node', ['tests/e2e/axe.mjs', fx, `--out=${join(OUT, 'axe-rm')}`, '--widths=390', '--reduced-motion', `--release=${FIXTURE}`]);
   if (opt.lighthouse) step('lighthouse', 'node', ['tests/e2e/lighthouse.mjs', fx, `--out=${join(OUT, 'lh')}`, `--runs=${opt.runs ?? 3}`]);
   if (opt.astro) step('parity with the Astro site', 'node', ['tests/e2e/check-parity.mjs', fx, 'src/content', 'http://127.0.0.1:4331/vaporos/']);
