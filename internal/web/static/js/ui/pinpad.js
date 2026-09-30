@@ -92,15 +92,23 @@ function device() {
   return waiting.find((p) => p.id === chosen) || waiting[0] || null;
 }
 
-function renderWho() {
+function renderTitle() {
   const d = device();
   byId('pin-title').textContent = waiting.length > 1 && !chosen ? pairPrompt(waiting) : `${d?.name || 'A device'} wants to pair`;
   byId('pin-lead-name').textContent = d?.name || 'it';
+}
+
+// renderWho redraws the picker only when the list changes, so choosing a
+// device keeps focus on its radio.
+let pickedFor = '';
+function renderWho() {
+  renderTitle();
   const pick = byId('pin-pick');
   pick.hidden = waiting.length < 2;
-  if (waiting.length < 2) return;
-  const list = byId('pin-pick-list');
-  list.replaceChildren(...waiting.map((p) => {
+  const key = waiting.map((p) => p.id).join(' ');
+  if (waiting.length < 2 || key === pickedFor) return;
+  pickedFor = key;
+  byId('pin-pick-list').replaceChildren(...waiting.map((p) => {
     const el = cloneTpl('tpl-pin-device');
     const r = part(el, 'radio');
     r.value = p.id;
@@ -108,7 +116,7 @@ function renderWho() {
     r.addEventListener('change', () => {
       chosen = p.id;
       byId('pin-device-name').value = p.name || '';
-      renderWho();
+      renderTitle();
     });
     part(el, 'name').textContent = p.name || p.address || 'A device';
     return el;
@@ -163,6 +171,7 @@ export function openPinpad({ id = '', from = document.activeElement } = {}) {
   byId('pin-device-name').value = device()?.name || '';
   dlg.dataset.phase = 'idle';
   paint();
+  pickedFor = '';
   renderWho();
   if (!dlg.open) dlg.showModal();
   // With a mouse the PIN takes focus; on touch the heading does, so the

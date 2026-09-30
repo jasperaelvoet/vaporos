@@ -277,7 +277,7 @@
   .recent-empty { margin: 0; color: var(--color-ink-2); }
 
   /* -------------------------------------------------- the heat field (art) */
-  .field { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .heat-field { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .field-heat { filter: url(#f-heat); }
   .src {
     fill: url(#g-heat); mix-blend-mode: screen; transform-box: fill-box; transform-origin: 50% 50%;
@@ -404,10 +404,15 @@
   .pin-cell[data-on="true"]:nth-child(3) { background: var(--color-h4); box-shadow: none; }
   .pin-cell[data-on="true"]:nth-child(4) { background: var(--color-accent); color: var(--color-accent-ink); box-shadow: none; }
   .pin-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; font-size: 1rem; caret-color: transparent; }
-  .pin-hint { margin: -0.25rem 0 0; color: var(--color-ink-2); font-size: var(--text-md); }
-  .pin-error { margin: 0; color: var(--color-cold); font-size: var(--text-md); font-weight: 600; }
+  /* Words over the heat field sit on an ash plate, whatever the field does. */
+  .pin-hint, .pin-error, .pin-status {
+    align-self: flex-start; margin: -0.25rem 0 0; padding: 0.25rem 0.5rem; border-radius: var(--radius-md);
+    background: rgb(0 0 4 / 0.8); font-size: var(--text-md);
+  }
+  .pin-hint { color: var(--color-ink-2); }
+  .pin-error { color: var(--color-cold); font-weight: 600; }
   .pin-error:empty, .pin-status:empty { display: none; }
-  .pin-status { margin: 0; color: var(--color-ink); font-size: var(--text-md); }
+  .pin-status { color: var(--color-ink); }
   .pin-more { border-radius: var(--radius-2xl); background: rgb(11 10 12 / 0.88); }
   .pin-more summary { display: flex; align-items: center; min-height: 2.75rem; padding: 0 1rem; font-size: var(--text-md); font-weight: 600; cursor: pointer; }
   .pin-more[open] { display: grid; gap: 0.5rem; padding-bottom: 0.75rem; }
