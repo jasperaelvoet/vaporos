@@ -12,6 +12,7 @@ type cssOpts struct {
 	header    string
 	modes     []string // the first is the default
 	fontFaces bool     // @font-face rules (the site loads fonts with next/font instead)
+	heatVars  bool     // the control center's heat-field painter tokens
 }
 
 // genericFamilies are CSS keywords, written without quotes.
@@ -185,6 +186,13 @@ func cssTokens(tf *tokensFile, sha string, o cssOpts) (string, error) {
 		}
 	}
 	w("  --vos-scene-cool-ms: %dms;\n  --vos-scene-heat-ms: %dms;\n", tf.Motion.Scene.CoolMs, tf.Motion.Scene.HeatMs)
+	// The heat fields' painter (static/js/ui/thermal.js): the noise as
+	// "fx fy octaves seed scale", and the isotherms as "bands sub line".
+	if o.heatVars && len(tf.Filter.Maps.Keys) > 0 {
+		tu := tf.Filter.Turbulence
+		m := tf.Filter.Maps.Vals[tf.Filter.Maps.Keys[0]]
+		w("  --vos-heat-air: %s %d %d %s;\n  --vos-heat-bands: %d %d %s;\n", tu.BaseFrequency, tu.Octaves, tu.Seed, fmtNum(tu.Scale), m.Bands, m.Sub, cssNum(m.Line))
+	}
 	display, _ := tf.Font.get("display")
 	for _, k := range display.Faces.Keys {
 		fc := display.Faces.Vals[k]

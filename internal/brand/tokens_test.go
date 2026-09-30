@@ -219,6 +219,10 @@ func checkSchema(tf *tokensFile, raw []byte) []error {
 		if fm.Bands < 2 || fm.Bands > 64 || fm.Sub < 1 || fm.Sub > 32 || fm.Line <= 0 || fm.Line > 1 {
 			bad("filter.maps.%s: bands 2..64, sub 1..32, line within (0, 1]", id)
 		}
+		// The painter takes one --vos-heat-bands for every map.
+		if first := tf.Filter.Maps.Vals[tf.Filter.Maps.Keys[0]]; fm.Bands != first.Bands || fm.Sub != first.Sub || fm.Line != first.Line {
+			bad("filter.maps.%s: every map needs the same bands, sub and line", id)
+		}
 	}
 	tu := tf.Filter.Turbulence
 	if tu.BaseFrequency == "" || tu.Octaves < 1 || tu.Octaves > 4 || tu.Scale <= 0 || tu.Blur < 0 {

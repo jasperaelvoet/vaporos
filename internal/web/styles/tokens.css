@@ -166,6 +166,8 @@
   --vos-pattern-steps-ms: 180ms;
   --vos-scene-cool-ms: 2600ms;
   --vos-scene-heat-ms: 2600ms;
+  --vos-heat-air: .011 .015 2 11 34;
+  --vos-heat-bands: 12 10 .66;
   --cut-cold-w: 72%;
   --cut-cold-g: 560;
   --cut-warm-w: 100%;

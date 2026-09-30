@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"go/format"
 	"math"
@@ -116,11 +117,17 @@ func generate(tf *tokensFile, raw []byte) ([]output, error) {
 				"   The control center's Tailwind v4 input: styles/app.css imports it. Direction: " + tf.Direction + ". */",
 			modes:     modeDefaults(tf.Modes.Web, tf.Theme.Default),
 			fontFaces: true,
+			heatVars:  true,
 		})
 		if err != nil {
 			return nil, err
 		}
 		outs = append(outs, output{"web", "internal/web/styles/tokens.css", []byte(css)})
+		vec, err := heatVectors(tf)
+		if err != nil {
+			return nil, err
+		}
+		outs = append(outs, output{"web", "design/heat-vectors.json", vec})
 	}
 	if tf.targetOn("site") {
 		site, err := siteOutputs(tf, sha)
@@ -362,6 +369,39 @@ func filterTables(stops []string, bands, sub int, line float64) [3]string {
 		}
 	}
 	return [3]string{strings.Join(ch[0], " "), strings.Join(ch[1], " "), strings.Join(ch[2], " ")}
+}
+
+// heatVectors writes design/heat-vectors.json: each map's ramp and its
+// discrete table (r, g and b, as feFuncR/G/B tableValues had them), so the
+// painter's tables (static/js/heatmap.js, checked by
+// internal/web/jstest/heatmap.test.mjs) cannot drift from these.
+func heatVectors(tf *tokensFile) ([]byte, error) {
+	type mapVec struct {
+		Stops []string  `json:"stops"`
+		Table [3]string `json:"table"`
+	}
+	tu := tf.Filter.Turbulence
+	doc := struct {
+		Note  string            `json:"note"`
+		Air   string            `json:"air"`
+		Bands string            `json:"bands"`
+		Maps  map[string]mapVec `json:"maps"`
+	}{
+		Note: "Generated from design/tokens.json by go test ./internal/brand (VOS_GEN_DESIGN=1). DO NOT EDIT.",
+		Air:  fmt.Sprintf("%s %d %d %s", tu.BaseFrequency, tu.Octaves, tu.Seed, fmtNum(tu.Scale)),
+		Maps: map[string]mapVec{},
+	}
+	for _, id := range tf.Filter.Maps.Keys {
+		m := tf.Filter.Maps.Vals[id]
+		r, _ := tf.Ramp.get(m.Ramp)
+		doc.Bands = fmt.Sprintf("%d %d %s", m.Bands, m.Sub, cssNum(m.Line))
+		doc.Maps[m.Ramp] = mapVec{Stops: r.Stops, Table: filterTables(r.Stops, m.Bands, m.Sub, m.Line)}
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 // filterSVGs renders one <filter> per map: turbulence warps the grey heat,
