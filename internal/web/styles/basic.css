@@ -8,7 +8,6 @@
   .input { border: 1px solid #8a808e; }
   :focus-visible { outline: 2px solid #fcffa4; outline-offset: 2px; }
   .strip, .restart-row, .offline, .rows, .skel-card { border: 1px solid #2e2730; }
-  .field-heat { filter: none; }
   .main::before {
     content: "This browser is too old for the full VaporOS look. Everything still works.";
     display: block; margin: 0 0 12px; padding: 8px 12px; border: 1px solid #8a808e; font-size: 13px;

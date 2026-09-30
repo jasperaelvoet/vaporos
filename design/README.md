@@ -8,7 +8,7 @@ temperature, and faults are the only cold colour.
 
 | File | What | Owner |
 |---|---|---|
-| `tokens.json` | Every token: palette, ramps, colour roles, the state vocabulary, type, radii, motion, the SVG filter maps, the handshake palette, the TV's type and look | redesign F1 |
+| `tokens.json` | Every token: palette, ramps, colour roles, the state vocabulary, type, radii, motion, the heat fields' noise and isotherm maps, the handshake palette, the TV's type and look | redesign F1 |
 | `voice.md` | What the copy may say in the REDLINE voice, and what always stays plain | redesign F1 |
 | `screen-shape-vectors.json` | The screen shape's readout (`2560 × 1440 · 120 Hz`) and aspect, shared by Go and `fmt.js` | redesign F1 |
 | `handshake-vectors.json` | The TV-to-phone handshake mark for a set of hostnames | redesign F1 |
@@ -29,8 +29,8 @@ targets listed in `targets`:
 
 | Target | Output | Read by |
 |---|---|---|
-| `tv` | `internal/brand/tokens_gen.go` | the TV renderer (`brand.StyleOf`, `brand.TV*`, `brand.HeatRamp`), `internal/web` (theme colours, `brand.FilterSVG`) |
-| `web` | `internal/web/styles/tokens.css` | the control center's Tailwind entry, `styles/app.css` |
+| `tv` | `internal/brand/tokens_gen.go` | the TV renderer (`brand.StyleOf`, `brand.TV*`, `brand.HeatRamp`), `internal/web` (theme colours) |
+| `web` | `internal/web/styles/tokens.css`, `design/heat-vectors.json` | the control center's Tailwind entry, `styles/app.css`; the heat fields' tables, which `internal/web/jstest/heatmap.test.mjs` holds the painter to |
 | `site` | `website/src/styles/tokens.gen.css`, `website/src/lib/tokens.gen.ts` | the website's `globals.css`; canvas, WebGL, GSAP and the TV mock |
 | `web-icons` | (F4) the app icons, manifest and logo partials | |
 
@@ -58,13 +58,16 @@ colours and fonts are reset, so only these exist.
 | `--state-cut-w`, `--state-cut-g` | the state word's cut: `font-stretch` and `font-weight` |
 | `--state-from` | the `scaleX` the state word stretches from |
 
-`data-attention="pair"` overrides them while a device waits for its PIN. The fault's
-cold map is a selector in the direction's CSS (`[data-state="fault"] .field { filter:
-url(#f-cold) }`); the filters themselves come from `brand.FilterSVG`.
+`data-attention="pair"` overrides them while a device waits for its PIN. The heat fields
+are canvases that `internal/web/static/js/ui/thermal.js` paints (in a Worker, with
+`heatmap.js`) from the ramps, `--vos-heat-air` and `--vos-heat-bands`; the fault's cold
+map is the `c` ramp.
 
 **Plain `:root` values** that scripts read: `--vos-dur-*` (every duration), `--hold-ms`
 (1200 ms) with `--hold-release-ms`, `--hold-fire-ms` and `--hold-nudge-ms`,
-`--vos-pattern-pip-ms`, `--vos-scene-cool-ms` and `--vos-scene-heat-ms`, the cuts
+`--vos-pattern-pip-ms`, `--vos-scene-cool-ms` and `--vos-scene-heat-ms`, the heat
+fields' `--vos-heat-air` (`fx fy octaves seed scale`) and `--vos-heat-bands` (`bands sub
+line`), the cuts
 `--cut-{cold,warm,hot}-{w,g}`, and `--vos-tokens` (the tokens hash).
 
 **Go.** `brand.StyleOf(state)` gives the label, colours, motion pattern, heat, cut and the
@@ -103,7 +106,9 @@ Keys are exact: an unknown or misspelled key fails. Colours are lowercase `#rrgg
 - `motion`: `duration` (0–2000 ms), `ease` (`cubic-bezier()` or `linear()`), `spring`
   (checked against its `linear()` ease), `pattern` (flash rate ≤ 3 Hz), `hold`, `scene`.
   Heat changes are asymmetric: 600 ms to heat, 1400 ms to cool.
-- `filter`: the turbulence and the discrete isotherm tables for `f-heat` and `f-cold`.
+- `filter`: the heat fields' noise (the SVG spec's `feTurbulence`, which the painter ports;
+  `blur` is unused since the fields became canvases) and the discrete isotherm tables for
+  the heat and cold maps. Every map shares one `bands`, `sub` and `line`.
 - `handshake`: the `on` and `ground` colours of the handshake mark (every pair ≥ 3:1).
 - `tv`: reference canvases, title-safe inset, the type scale in reference pixels, the
   QR card (luma and ≥ 12:1 checked), the look and its parameters. `labels.tv`: the

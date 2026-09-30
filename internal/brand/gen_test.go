@@ -322,17 +322,7 @@ func goTokens(tf *tokensFile, sha string) ([]byte, error) {
 		}
 		w("%s", goColor(tf.mustHex(v)))
 	}
-	w("}\n)\n\n")
-
-	w("// FilterSVG holds the <filter> elements the control center inlines once per\n")
-	w("// page: grey heat in, posterised isotherms out, one per map.\nconst FilterSVG = ")
-	for i, f := range filterSVGs(tf) {
-		if i > 0 {
-			w(" +\n\t")
-		}
-		w("`%s`", f)
-	}
-	w("\n")
+	w("}\n)\n")
 
 	return format.Source([]byte(b.String()))
 }
@@ -351,9 +341,10 @@ func rampAt(stops []string, t float64) [3]float64 {
 	return [3]float64{lerp(a.r, c.r), lerp(a.g, c.g), lerp(a.b, c.b)}
 }
 
-// filterTables builds feComponentTransfer discrete tables: bands isotherms,
-// each sub entries wide; the first entry of every band but the coolest is
-// darkened by line, which draws a contour on the band's cool edge.
+// filterTables builds the heat fields' discrete tables (the painter's, and
+// once feComponentTransfer's): bands isotherms, each sub entries wide; the
+// first entry of every band but the coolest is darkened by line, which
+// draws a contour on the band's cool edge.
 func filterTables(stops []string, bands, sub int, line float64) [3]string {
 	var ch [3][]string
 	for b := 0; b < bands; b++ {
@@ -402,25 +393,6 @@ func heatVectors(tf *tokensFile) ([]byte, error) {
 		return nil, err
 	}
 	return append(b, '\n'), nil
-}
-
-// filterSVGs renders one <filter> per map: turbulence warps the grey heat,
-// a light blur anti-aliases band edges, the discrete tables colour it.
-func filterSVGs(tf *tokensFile) []string {
-	tu := tf.Filter.Turbulence
-	var out []string
-	for _, id := range tf.Filter.Maps.Keys {
-		m := tf.Filter.Maps.Vals[id]
-		r, _ := tf.Ramp.get(m.Ramp)
-		t := filterTables(r.Stops, m.Bands, m.Sub, m.Line)
-		out = append(out, fmt.Sprintf(`<filter id="%s" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">`+
-			`<feTurbulence type="fractalNoise" baseFrequency="%s" numOctaves="%d" seed="%d" result="air"/>`+
-			`<feDisplacementMap in="SourceGraphic" in2="air" scale="%s" xChannelSelector="R" yChannelSelector="G" result="warp"/>`+
-			`<feGaussianBlur in="warp" stdDeviation="%s" result="soft"/>`+
-			`<feComponentTransfer in="soft"><feFuncR type="discrete" tableValues="%s"/><feFuncG type="discrete" tableValues="%s"/><feFuncB type="discrete" tableValues="%s"/></feComponentTransfer>`+
-			`</filter>`, id, tu.BaseFrequency, tu.Octaves, tu.Seed, fmtNum(tu.Scale), cssNum(tu.Blur), t[0], t[1], t[2]))
-	}
-	return out
 }
 
 // cssNum prints a number without a leading zero before the point (".7").

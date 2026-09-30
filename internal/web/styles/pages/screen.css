@@ -59,20 +59,8 @@
     border-radius: var(--radius-sm); background: rgb(0 0 4 / 0.78); color: var(--color-ink);
     font-size: var(--text-2xs); font-weight: 600; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  /* The picture's heat follows the state: dark while loading, cool at
-     idle, warm while a game runs, hot while streaming, cold for a fault.
-     Heating takes --vos-dur-heat, cooling the shell's slower .src default. */
-  .scr-now .src-core { opacity: 0.1; transform: scale(0.72); }
-  .scr-now .src-plume { opacity: 0; }
-  .scr-now[data-state=""]:not([data-phase="loading"]) .src-core { opacity: 0.3; transform: scale(0.84); }
-  .scr-now[data-state=""]:not([data-phase="loading"]) .src-plume { opacity: 0.08; }
-  .scr-now[data-state="ready"] .src-core { opacity: 0.46; transform: scale(0.96); }
-  .scr-now[data-state="ready"] .src-plume { opacity: 0.16; }
-  .scr-now[data-state="streaming"] .src { transition-duration: var(--vos-dur-heat); }
-  .scr-now[data-state="streaming"] .src-core { opacity: 0.72; transform: scale(1.12); }
-  .scr-now[data-state="streaming"] .src-plume { opacity: 0.32; }
-  .scr-now[data-state="fault"] .field-heat { filter: url(#f-cold); }
-  .scr-now[data-state="fault"] .src-core { opacity: 0.42; transform: scale(0.9); }
+  /* The picture's heat follows the state (pages/screen.js paints it): cool
+     at idle, warm while a game runs, hot while streaming, cold for a fault. */
 
   .scr-now-text { display: grid; gap: 0.375rem; padding: 1.125rem 1rem 0.25rem; }
   .scr-now-title {

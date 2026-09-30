@@ -43,7 +43,7 @@
     transition: left var(--vos-dur-needle) var(--ease-tach);
   }
   .evf-ends { display: flex; justify-content: space-between; gap: 1rem; color: var(--color-ink-2); }
-  .evf[data-size="hero"] :is(.src-core, .src-plume) { translate: 24px 0; }
+  .evf[data-size="hero"] { --heat-dx: 24; --heat-dy: 0; }
 
   /* ------------------------------------------------------------ the wizard */
   .wiz { display: grid; gap: 1.25rem; min-width: 0; }
@@ -165,7 +165,7 @@
   @media (min-width: 64rem) {
     html[data-installer] .bare { max-width: min(40rem, calc(50vw - 5rem)); margin-left: max(2.5rem, calc(25vw - 20rem)); }
     .evf[data-size="hero"] { position: fixed; min-height: 0; padding: 2rem; align-content: space-between; }
-    .evf[data-size="hero"] :is(.src-core, .src-plume) { translate: -60px 0; }
+    .evf[data-size="hero"] { --heat-dx: -60; }
     .evf-plates { margin: 0; padding-right: 19rem; font-size: var(--text-xs); }
     .evf-big { font-size: 5.5rem; }
     .evf-scale {

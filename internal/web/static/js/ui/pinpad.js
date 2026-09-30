@@ -18,6 +18,8 @@ const KEYPAD = '(pointer: coarse) and (min-height: 480px)';
 
 const pad = () => byId('pinpad');
 const input = () => byId('pin');
+const thermal = () => import('./thermal.js');
+const field = () => pad().querySelector('.heat-field');
 
 // initPinpad wires the takeover. notice: raise the Enter PIN notice on this
 // page (Home and Devices have their own pairing surface).
@@ -87,6 +89,11 @@ function paint() {
     input().removeAttribute('aria-invalid');
     if (pad().dataset.phase === 'error') pad().dataset.phase = 'idle';
   }
+  // Each digit heats the field a step (painted ahead); a wrong PIN is cold.
+  thermal().then((t) => {
+    t.heat(field(), String(v.length), { map: pad().dataset.phase === 'error' ? 'cold' : 'heat' });
+    if (v.length < 4 && pad().open) t.prime(field(), String(v.length + 1));
+  });
   if (v.length === 4) setTimeout(() => input().value.length === 4 && submit(), 150);
 }
 
@@ -216,6 +223,8 @@ export function updatePairings(list) {
   }
   if (!waiting.length) dismiss('pair');
   else if (waiting.length !== before && !pad().open) raise();
+  // The takeover opens on a field painted ahead.
+  if (waiting.length && !pad().open) thermal().then((t) => t.prime(field(), '0'));
   return waiting;
 }
 

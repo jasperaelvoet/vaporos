@@ -56,7 +56,7 @@
   ::view-transition-new(*) { animation-name: vos-fade-in; }
   @layer components {
     .skel, .strip-tally::after, .pinpad-pip, .link-state[data-link="connecting"] .link-dot { animation: none; }
-    .src { transition: none; }
+    .heat-field { transition: none; }
     .dialog, .sheet { transition-duration: var(--vos-dur-instant); }
     .notice { transition-duration: var(--vos-dur-instant); }
     /* The hold's fill is the confirmation, not decoration: it still shows,

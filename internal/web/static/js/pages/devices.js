@@ -14,6 +14,7 @@ import { notify, onStatus, refresh, shell } from '../ui/shell.js';
 
 const listing = import('./devices-list.js');
 const pinpad = () => import('../ui/pinpad.js');
+const thermal = () => import('../ui/thermal.js');
 
 let snap = {};
 let have = false; // a whole GET /status arrived
@@ -128,6 +129,8 @@ function render() {
   box.dataset.pair = mode;
   if (mode === 'waiting') box.dataset.attention = 'pair';
   else delete box.dataset.attention;
+  // Painted once a device waits; the card's wrapper fades it.
+  if (mode === 'waiting') thermal().then((t) => t.heat(box.querySelector('.heat-field'), 'waiting'));
   fold(known.list);
   byId('dev-pair-title').textContent = mode === 'waiting' ? prompt(waiting) : 'Pair a device';
   lead({

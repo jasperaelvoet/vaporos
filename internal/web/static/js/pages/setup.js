@@ -24,6 +24,7 @@ boot('setup', { auth: false, events: false }).then((me) => {
   const btn = byId('setup-submit');
   const error = byId('setup-error');
   const vf = byId('setup-vf');
+  heat(vf, 'standby');
   form.addEventListener('input', (e) => {
     if (e.target.id) fieldError(e.target, '');
     heat(vf, 'standby');

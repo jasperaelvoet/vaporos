@@ -20,6 +20,7 @@ const reads = () => {
 };
 export let early = signedInBefore() ? reads() : null;
 const more = import('./screen-more.js');
+const thermal = () => import('../ui/thermal.js');
 
 export const S = { display: null, sunshine: null, sunshineErr: null, settings: null };
 
@@ -68,6 +69,7 @@ export function renderNow(d) {
   if (!art) part(fig, 'frame').append((art = cloneTpl('tpl-scr-art')));
   card.dataset.state = m.state;
   delete card.dataset.phase;
+  thermal().then((t) => t.heat(art.querySelector('.heat-field'), m.state));
   setShape(fig, m.mode, { hdr: m.hdr, state: m.state });
   if (!parseMode(m.mode)) part(fig, 'readout').textContent = m.state === 'fault' ? 'No virtual screen' : 'No picture';
   const label = part(art, 'label');

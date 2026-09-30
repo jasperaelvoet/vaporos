@@ -32,13 +32,9 @@
     content: ""; position: absolute; inset: 0;
     background: linear-gradient(100deg, rgb(21 18 23 / 0.96) 0 56%, rgb(21 18 23 / 0.7) 72%, rgb(21 18 23 / 0) 92%);
   }
-  .dev-pair .src { transition-duration: var(--vos-dur-cool); }
-  .dev-pair .src-core { opacity: 0.08; transform: scale(0.6); }
-  .dev-pair .src-plume { opacity: 0; }
+  /* The field is painted while a device waits (pages/devices.js); this
+     wrapper's fade brings it in and out. */
   .dev-pair[data-pair="waiting"] .dev-pair-heat { opacity: 1; transition-duration: var(--vos-dur-heat); }
-  .dev-pair[data-pair="waiting"] .src { transition-duration: var(--vos-dur-heat); }
-  .dev-pair[data-pair="waiting"] .src-core { opacity: 0.6; transform: scale(1); }
-  .dev-pair[data-pair="waiting"] .src-plume { opacity: 0.2; }
   /* faults are the only cold thing; a stream server that is starting is not one */
   .dev-pair[data-pair="stopped"], .dev-pair[data-pair="error"] { box-shadow: inset 3px 0 0 var(--color-cold); }
 
@@ -185,7 +181,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .dev-pair-pip, .dev-listen-dot, .dev-refresh[aria-busy="true"] .icon, .dev-row[data-fresh="true"], .dev-row[data-fresh="true"] .dev-glyph { animation: none; }
-    .dev-pair-heat, .dev-pair .src, .dev-glyph { transition: none; }
+    .dev-pair-heat, .dev-glyph { transition: none; }
   }
 }
 

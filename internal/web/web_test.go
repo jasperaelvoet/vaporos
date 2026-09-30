@@ -625,7 +625,7 @@ const (
 	budgetCSSGz      = 14_000 // app.css as served: the shell, the tokens and the font faces
 	budgetPageCSSGz  = 4_000  // each static/pages/<page>.css as served
 	budgetModuleRaw  = 24_000 // any single module, before gzip
-	budgetLazyGz     = 30_000 // a page's on-demand import() modules together
+	budgetLazyGz     = 37_000 // a page's on-demand import() modules together: 30,000 until the heat fields became canvases, whose painter (ui/thermal.js and heatmap.js, 6.5 kB) the PIN pad and the scene can load on any page
 )
 
 func TestAssetBudget(t *testing.T) {
@@ -1158,7 +1158,7 @@ func TestHeadScript(t *testing.T) {
 
 // pureModules touch no DOM, storage, location or network, and import only
 // each other, so jstest runs them under Node.
-var pureModules = []string{"js/fmt.js", "js/validate.js", "js/state.js", "js/summary.js", "js/copy.js", "js/confirms.js", "js/messages.js"}
+var pureModules = []string{"js/fmt.js", "js/validate.js", "js/state.js", "js/summary.js", "js/copy.js", "js/confirms.js", "js/messages.js", "js/heatmap.js"}
 
 func TestPureModules(t *testing.T) {
 	impure := regexp.MustCompile(`\b(?:document|window|localStorage|sessionStorage|location|navigator|EventSource)\b|\bfetch\(`)
@@ -1202,7 +1202,7 @@ func TestTransportSeam(t *testing.T) {
 
 // TestCSSURLsResolve: every url() in the next set's stylesheet is a
 // relative path to an embedded asset, or a reference to an element every
-// page carries (the heat filters and gradient from {{filters}}).
+// page carries.
 func TestCSSURLsResolve(t *testing.T) {
 	set := nextSet
 	u := testUI(t, set)
@@ -1282,6 +1282,7 @@ var (
 	jsRefOptional = regexp.MustCompile(`\boptionalById\(\s*'([^']+)'`)
 	jsTplRef      = regexp.MustCompile(`\bcloneTpl\(\s*'([^']+)'`)
 	jsIconRef     = regexp.MustCompile(`\bicon\(\s*'([^']+)'`)
+	jsWorker      = regexp.MustCompile(`\bnew Worker\(\s*new URL\(\s*'([^']+)',\s*import\.meta\.url\)`)
 	templateBlock = regexp.MustCompile(`(?s)<template\b[^>]*>(.*?)</template>`)
 	templateID    = regexp.MustCompile(`<template\b[^>]*\sid="([^"]+)"`)
 )
@@ -1323,6 +1324,16 @@ func testScriptsMatchMarkupNext(t *testing.T, set uiSet) {
 		}
 		for _, mod := range append(static, lazy...) {
 			reached[mod] = true
+			// A module Worker it starts is reached too, with what it imports.
+			for _, m := range jsWorker.FindAllStringSubmatch(string(u.assets.files[mod].body), -1) {
+				w, _, err := importGraph(u.assets.files, path.Join(path.Dir(mod), m[1]))
+				if err != nil {
+					t.Errorf("%s: %s starts a Worker: %v", script, mod, err)
+				}
+				for _, x := range w {
+					reached[x] = true
+				}
+			}
 			src := jsBlank(string(u.assets.files[mod].body), true)
 			for _, m := range jsRefStrict.FindAllStringSubmatch(src, -1) {
 				if id := m[1] + m[2]; !ids[id] {

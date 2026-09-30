@@ -14,10 +14,7 @@
   /* the art clips itself to the card's corners; the card never clips words */
   .pwr-vf { position: relative; height: 8.75rem; border-radius: var(--radius-3xl) var(--radius-3xl) 0 0; background: var(--color-h0); isolation: isolate; overflow: hidden; }
   .pwr-vf .heat-field { z-index: -1; }
-  .pwr-state .src-core { opacity: calc(0.1 + var(--p-heat, 0.3) * 0.88); transform: scale(calc(0.6 + var(--p-heat, 0.3) * 0.62)); }
-  .pwr-state .src-plume { opacity: calc(var(--p-heat, 0.3) * 0.6); transform: scale(calc(0.7 + var(--p-heat, 0.3) * 0.5)); }
-  /* heating is the quick curve; cooling keeps the slow one */
-  .pwr-state:is([data-level="awake"], [data-level="manual"], [data-level="busy"]) .src { transition-duration: var(--vos-dur-heat); }
+  /* the field is painted at --p-heat by pages/power.js: it heats fast and cools slowly */
   .pwr-count:empty { display: none; }
   .pwr-count {
     position: absolute; left: 0.875rem; top: 0.75rem; padding: 0.25rem 0.4375rem; border-radius: var(--radius-sm);
@@ -150,7 +147,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .pwr-needle, .pwr-switch, .pwr-switch::before, .pwr-state .src { transition: none; }
+    .pwr-needle, .pwr-switch, .pwr-switch::before { transition: none; }
     .pwr-pip { animation: none; }
   }
 

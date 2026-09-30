@@ -16,6 +16,7 @@ const pure = Promise.all([import('../summary.js'), import('../state.js'), import
   .then((mods) => Object.assign({}, ...mods));
 const sheets = () => import('../ui/sheet.js');
 const dialog = () => import('../ui/dialog.js');
+const thermal = () => import('../ui/thermal.js');
 
 const DISMISSED = 'vos-dismissed-failed';
 const HOLD = 'Hold to confirm, or tap to be asked first.';
@@ -121,6 +122,8 @@ function renderHero(m, snap) {
   // field cools and dims and the needle says so (NEW-1).
   const stale = !asleep && painted && link.state !== 'live';
   hero.toggleAttribute('data-stale', stale);
+  // The field is painted off this thread; the stale dim is CSS.
+  thermal().then((t) => t.heat(hero.querySelector('.heat-field'), pair ? 'pair' : m.state, { idle: !!m.idle }));
   put(byId('hero-needle'), stale ? 'last seen' : pair ? 'pairing' : m.idle ? 'idle' : NEEDLE[m.state] || m.reason || 'checking');
   renderTitle(m.title);
   put(byId('hero-host'), shortHost(snap));

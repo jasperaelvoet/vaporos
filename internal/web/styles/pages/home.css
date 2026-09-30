@@ -27,32 +27,10 @@
     overflow: hidden; isolation: isolate; background: var(--color-h0); container-type: size;
   }
   .vf .heat-field { z-index: -1; }
-  .src-aux { opacity: 0.14; }
-  /* Heating is the quick curve; cooling keeps the slow one (components.css). */
-  .hero:is([data-state="streaming"], [data-state="updating"], [data-state="restart-needed"], [data-attention="pair"]) .src { transition-duration: var(--vos-dur-heat); }
-  .hero[data-state=""] .src-core { opacity: 0.3; transform: scale(0.9); }
-  .hero[data-state=""] .src-plume { opacity: 0.1; }
-  .hero[data-state=""] .src-aux, .hero[data-state=""] .src-floor { opacity: 0.02; }
-  .hero[data-state="asleep"] .src-core { opacity: 0.2; transform: scale(0.8); }
-  .hero[data-state="asleep"] :is(.src-plume, .src-aux) { opacity: 0; }
-  .hero[data-state="asleep"] .src-floor { opacity: 0.02; }
-  .hero[data-state="updating"] .src-core { opacity: 0.57; transform: scale(1.04); }
-  .hero[data-state="updating"] .src-plume { opacity: 0.3; }
-  .hero[data-state="restart-needed"] .src-core { opacity: 0.66; transform: scale(1.06); }
-  .hero[data-state="restart-needed"] .src-plume { opacity: 0.3; }
-  .hero[data-attention="pair"] .src-core { opacity: 0.6; transform: scale(1.03); }
-  .hero[data-attention="pair"] .src-plume { opacity: 0.28; }
-  .hero[data-state="streaming"] .src-core { opacity: 0.98; transform: scale(1.2); }
-  .hero[data-state="streaming"] .src-plume { opacity: 0.62; transform: scale(1.15); }
-  .hero[data-state="streaming"] .src-aux { opacity: 0.42; }
-  .hero[data-state="streaming"] .src-floor { opacity: 0.26; }
-  /* A fault is below the scale: the cold map, hazard tape and words. */
-  .hero[data-state="fault"] .field-heat { filter: url(#f-cold); }
-  .hero[data-state="fault"] .src-core { opacity: 0.7; }
-  /* Idle power-off is minutes away: the field cools and the needle drops. */
+  /* The field's level follows the state (ui/thermal.js, from pages/home.js):
+     it heats fast and cools slowly, turns to the cold map for a fault and
+     cools when idle power-off is close. */
   .hero[data-idle] { --state-heat: 0.16; }
-  .hero[data-idle] .src-core { opacity: 0.24; transform: scale(0.86); }
-  .hero[data-idle] :is(.src-plume, .src-aux) { opacity: 0.06; }
   /* Not live yet not asleep: the last known state, cooled and dimmed, so it
      never reads as a live Ready (NEW-1). */
   .hero[data-stale] .heat-field { opacity: 0.35; transition: opacity var(--vos-dur-cool) var(--ease-out); }
@@ -262,7 +240,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     /* the needle's overshoot is motion too */
-    .vf-needle { transition: none; }
+    .vf-needle, .hero[data-stale] .heat-field { transition: none; }
   }
 
   @media (forced-colors: active) {

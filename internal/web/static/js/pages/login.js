@@ -30,6 +30,7 @@ boot('login', { auth: false }).then((me) => {
   const btn = byId('login-submit');
   const error = byId('login-error');
   const vf = byId('login-vf');
+  heat(vf, 'standby');
   pw.addEventListener('input', () => {
     pw.removeAttribute('aria-invalid');
     heat(vf, 'standby');

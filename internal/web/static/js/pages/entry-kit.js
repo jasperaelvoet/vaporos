@@ -4,6 +4,8 @@
 
 import { setVar } from '../core/dom.js';
 
+const thermal = () => import('../ui/thermal.js');
+
 // The viewfinder's heat on the Inferno ramp (0-1) per moment: the sign-in
 // and the setup code wait standby-cool; the install heats step by step and
 // is white-hot when done; a restarting PC is an ember. cold and failed
@@ -27,16 +29,16 @@ const HEAT = {
   back: 0.6,
 };
 
-// heat sets the viewfinder's temperature. Heating is quick and cooling
-// slow (REDLINE), so a rise marks the element data-warming.
+// heat sets the viewfinder's temperature and paints its field there; a
+// page calls it as it starts too, for the level the server drew.
 export function heat(vf, level) {
-  if (!vf || vf.dataset.heat === level) return;
+  if (!vf) return;
   const to = HEAT[level] ?? HEAT.standby;
-  const from = HEAT[vf.dataset.heat] ?? HEAT.standby;
-  if (to > from) vf.dataset.warming = '';
-  else delete vf.dataset.warming;
-  vf.dataset.heat = level;
-  setVar(vf, '--heat', to);
+  if (vf.dataset.heat !== level) {
+    vf.dataset.heat = level;
+    setVar(vf, '--heat', to);
+  }
+  thermal().then((t) => t.heat(vf.querySelector('.heat-field'), to, { map: level === 'cold' || level === 'failed' ? 'cold' : 'heat' }));
 }
 
 // bindReveal wires every show-password toggle ([data-reveal], its input

@@ -27,6 +27,7 @@ const SCENE = {
 };
 
 const scene = () => byId('scene');
+const thermal = () => import('./thermal.js');
 let tick = 0;
 let since = 0;
 let dismissible = false;
@@ -86,6 +87,7 @@ export function setPhase(phase, vars = {}) {
   const c = SCENE[phase] || {};
   s.dataset.phase = phase;
   s.dataset.state = phase === 'off' || phase === 'asleep' ? 'asleep' : '';
+  thermal().then((t) => t.heat(s.querySelector('.heat-field'), s.dataset.state || phase));
   if (c.title) byId('scene-title').textContent = fill(c.title, vars);
   if (c.text) byId('scene-text').textContent = fill(c.text, vars);
   const wake = byId('scene-wake');

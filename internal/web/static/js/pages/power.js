@@ -17,6 +17,7 @@ const read = () => api('GET', '/power');
 const early = signedInBefore() ? read() : null;
 early?.catch(() => {});
 const more = import('./power-more.js');
+const thermal = () => import('../ui/thermal.js');
 
 // p: GET /power (wol kept from the last full answer); at: when shutdown_in
 // and idle_seconds were true, so the countdown runs between events.
@@ -61,6 +62,7 @@ export function render() {
   card.dataset.level = v.key;
   card.dataset.needle = v.needle;
   setVar(card, '--p-heat', v.heat.toFixed(3));
+  thermal().then((t) => t.heat(card.querySelector('.heat-field'), v.heat));
   setText('pwr-needle', v.needle);
   setText('pwr-count', v.left ? `${two(Math.floor(v.left / 60))}:${two(v.left % 60)}` : '');
   setText('pwr-title', v.title);
