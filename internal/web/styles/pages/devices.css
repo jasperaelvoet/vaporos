@@ -90,6 +90,9 @@
   .dev-layout .rows { grid-template-columns: minmax(0, 1fr); }
   .dev-stores { background: var(--color-surface-2); }
   .dev-stores .row { min-height: 3.5rem; }
+  /* The step's indent leaves little room at 200 % text: names break before
+     they are cut off. */
+  .dev-stores :is(.row-name, .row-sub) { overflow-wrap: anywhere; }
   .dev-stores .row-link:hover { background: var(--color-char); }
   .dev-addrs { display: grid; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
   .dev-addr {
