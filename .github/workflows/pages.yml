@@ -1,40 +1,60 @@
-# Check, build and (by hand only) deploy the website (website/, Next.js
-# static export) to GitHub Pages at https://jasperaelvoet.github.io/vaporos/.
+# Build, check and deploy the website (website/, Next.js static export) to
+# GitHub Pages at https://jasperaelvoet.github.io/vaporos/.
 #
-# Pre-launch shape: the Next.js site replaces the Astro one while the redesign
-# is under way, so nothing here deploys by itself.
+# When it runs (main only: the github-pages environment allows only main):
 #
-#   check     every push and pull request that touches website/**: npm ci,
-#             then lint, typecheck and unit tests (npm run check)
-#   build     main only: the static export in website/out, uploaded as the
-#             Pages artifact; the download card reads the latest release from
-#             the GitHub API at build time
-#   deploy    only a manual run (workflow_dispatch) on main publishes it
+#   push           a push to main that touches the site or what it is built
+#                  from (the site, the release key, the design tokens and
+#                  fonts, the control center it describes, the TV screen)
+#   workflow_run   after every successful `build` run on main: the OS release
+#                  it published is what the download card shows
+#   schedule       daily, so the download card follows releases published by
+#                  hand or by a re-run
+#   dispatch       by hand
 #
-# There is no schedule and no deploy on push until the site launches. Only
-# main deploys (the github-pages environment allows only the default branch);
-# a manual run from another branch checks but neither builds nor deploys.
+# The deploy gate: a push whose changes are all ones build.yml ignores
+# (website/**, **.md, .claude/**, tools/**, pages.yml, web.yml: keep the list
+# in step with build.yml's paths-ignore) deploys straight away. A push that
+# also changes the OS, or whose range can't be read (a new branch, a forced
+# push), only checks: the site deploys from the workflow_run once build.yml
+# has passed and released, so the site never describes an OS that isn't out.
+# A workflow_run for a commit that is no longer main's tip leaves the deploy to
+# the newer run. Never use [skip ci] for website commits: it skips this too.
 #
-# One-time setup: Pages must be enabled with the Actions source before the
-# first deploy, or configure-pages fails:
+# The build job: generated files are fresh (tokens, fonts), the control
+# center's UI strings for the [[label]] check, lint, typecheck and unit tests,
+# the static export with a strict release lookup (a failed lookup fails the
+# build, so a degraded download card is never deployed and the last good
+# deploy stays live), the size budgets, and the headless e2e gate
+# (tests/e2e/ci.mjs: static checks, metadata, screenshots at 1440/768/390
+# and reduced motion with zero console errors and no overflow, axe).
+#
+# One-time setup: Pages must use the Actions source before the first deploy:
 #   gh api -X POST repos/jasperaelvoet/vaporos/pages -f build_type=workflow
 name: pages
 
 on:
   push:
+    branches: [main]
     paths:
       - 'website/**'
+      - 'keys/release.pub'
+      - 'design/**'
+      - 'internal/web/**'
+      - 'internal/display/welcome/**'
       - '.github/workflows/pages.yml'
-  pull_request:
-    paths:
-      - 'website/**'
-      - '.github/workflows/pages.yml'
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * *'
   workflow_dispatch:
 
-# One run per ref at a time; a newer pull request push replaces an older check.
+# One run at a time, in order; a deployment is never cut off halfway.
 concurrency:
-  group: pages-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: pages
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -45,17 +65,76 @@ defaults:
     working-directory: website
 
 jobs:
-  check:
+  build:
+    # A failed OS build deploys nothing.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    outputs:
+      deploy: ${{ steps.gate.outputs.deploy }}
+    env:
+      SITE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Deploy gate
+        id: gate
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          deploy=true
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            deploy=false; echo "::notice::Only main deploys; this run only checks."
+          fi
+          if [ "$EVENT" = push ]; then
+            # Changes build.yml ignores; anything else builds and releases the OS first.
+            site_only='^(website/|\.claude/|tools/|\.github/workflows/(pages|web)\.yml$)|\.md$'
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ] \
+               || ! changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null); then
+              deploy=false; echo "::notice::The push range can't be read; the site deploys after build.yml passes."
+            elif printf '%s\n' "$changed" | grep -vqE "$site_only"; then
+              deploy=false; echo "::notice::This push changes the OS too; the site deploys after build.yml passes."
+            fi
+          fi
+          if [ "$EVENT" = workflow_run ] && [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            deploy=false; echo "::notice::main moved on; the newer run deploys."
+          fi
+          echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
+          echo "deploy=$deploy"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Generated design files are fresh
+        working-directory: .
+        run: go test -count=1 ./internal/brand -run 'TestDesignOutputsFresh|TestTokens'
+
+      - name: The control center's UI strings (for the [[label]] check)
+        working-directory: .
+        run: VOS_WEB_EXPORT_STRINGS="$PWD/website/tests/fixtures" go test -count=1 ./internal/web -run TestExportStrings
 
       - uses: actions/setup-node@v7
         with:
           node-version-file: website/.nvmrc
           cache: npm
           cache-dependency-path: website/package-lock.json
+
+      - uses: actions/cache@v6
+        with:
+          path: website/.next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('website/package-lock.json') }}-${{ hashFiles('website/src/**', 'website/public/**') }}
+          restore-keys: next-${{ runner.os }}-${{ hashFiles('website/package-lock.json') }}-
 
       - name: Install
         run: npm ci
@@ -63,53 +142,46 @@ jobs:
       - name: Lint, typecheck and unit tests
         run: npm run check
 
-  build:
-    needs: check
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: website/.nvmrc
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-
-      - name: Install
-        run: npm ci
-
       - name: Build
         env:
-          # For the release lookup: authenticated requests are not rate-limited
-          # like anonymous ones.
+          # Authenticated release lookups are not rate-limited like anonymous ones.
           GITHUB_TOKEN: ${{ github.token }}
-          # A lookup that fails fails the build, so a degraded download card
-          # is never uploaded.
+          # A lookup that fails fails the build: never deploy a degraded download card.
           VAPOROS_RELEASE_REQUIRED: '1'
-          VAPOROS_SITE_COMMIT: ${{ github.sha }}
+          # <meta name="vaporos-commit">: what the live site was built from.
+          VAPOROS_SITE_COMMIT: ${{ env.SITE_SHA }}
         run: npm run build
 
+      - name: Size budgets
+        run: node scripts/budget.mjs out
+
+      - name: Headless browser
+        run: npx --no-install playwright-core install --with-deps --only-shell chromium
+
+      - name: e2e (static checks, metadata, screenshots, axe)
+        run: node tests/e2e/ci.mjs out --report="$RUNNER_TEMP/site-e2e" --commit="$SITE_SHA"
+
+      - name: Keep the e2e report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-e2e
+          path: ${{ runner.temp }}/site-e2e
+          retention-days: 7
+
       - uses: actions/configure-pages@v6
+        if: steps.gate.outputs.deploy == 'true'
 
       - uses: actions/upload-pages-artifact@v5
+        if: steps.gate.outputs.deploy == 'true'
         with:
           path: website/out
 
   deploy:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: needs.build.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # One deployment at a time; a running deployment is never cut off halfway.
-    concurrency:
-      group: pages-deploy
-      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write
