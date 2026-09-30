@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"testing"
 	"time"
 	"unicode/utf8"
 
@@ -164,6 +165,10 @@ func (f *devFake) runInstall(disk map[string]any, mode, hostname, password strin
 		{"probe", 1, "Reading the VaporOS image from /run/vos/medium/vos"},
 		{"probe", 2, fmt.Sprintf("Ready to install VaporOS %s on %s", version, dev)},
 	}
+	// An image the probe could not trust fails the install the same way,
+	// once it is read (install.Service.runJob): the wizard's early stop
+	// only saves the visitor the wait.
+	badImage := asStr(f.doc("install-probe")["source_error"])
 	if mode == "repair" {
 		steps = append(steps, step{"partition", 3, "Checking the data partition"},
 			step{"partition", 6, "Formatting the boot partition"}, step{"partition", 10, "Disk prepared"})
@@ -186,6 +191,12 @@ func (f *devFake) runInstall(disk map[string]any, mode, hostname, password strin
 		case <-time.After(700 * time.Millisecond):
 		}
 		f.mu.Lock()
+		if badImage != "" && s.pct == 2 {
+			f.installing = false
+			f.setInstallLocked("failed", s.step, 1, "Installation failed: "+badImage, badImage)
+			f.mu.Unlock()
+			return
+		}
 		if fail := f.preset.Sim.InstallFail; fail != "" && s.step == "write" {
 			f.installing = false
 			f.setInstallLocked("failed", s.step, s.pct, "Installation failed: "+fail, fail)
@@ -217,4 +228,28 @@ func (f *devFake) runInstall(disk map[string]any, mode, hostname, password strin
 	sys := asObj(docs["system"])
 	sys["hostname"], sys["mdns"], sys["uptime_s"] = hostname, hostname+".local", 0
 	f.installed = &devBoot{docs: docs, errs: map[string]fakeError{}, preset: "empty", password: password}
+}
+
+// The fake's install fails as install.Service.runJob does: an image the
+// probe already rejected stops it at the probe step, with the probe's words
+// as the error and "Installation failed: " before them in the message.
+func TestFakeInstallSourceError(t *testing.T) {
+	f, hs := fakeWorld(t, "installer-source-error", (*devFake).installRoutes)
+	ch, cancel := f.hub.Subscribe()
+	defer cancel()
+	body := `{"disk":"/dev/nvme0n1","mode":"erase","hostname":"vapor","password":"correct horse","timezone":"UTC","libraries":[],"source":""}`
+	if code, ans := f.fakeDo(t, hs, "POST", "/install", body); code != 200 {
+		t.Fatalf("POST /install: %d %v", code, ans)
+	}
+	bad := asStr(f.doc("install-probe")["source_error"])
+	ev := waitEvent(t, ch, "install.progress", 5*time.Second, func(m map[string]any) bool { return m["state"] != "running" })
+	if ev["state"] != "failed" || ev["step"] != "probe" || ev["message"] != "Installation failed: "+bad {
+		t.Errorf("install.progress = %v, want failed at probe with the probe's error", ev)
+	}
+	if _, st := f.fakeDo(t, hs, "GET", "/install/status", ""); st["state"] != "failed" || st["error"] != bad {
+		t.Errorf("GET /install/status = %v, want failed with error %q", st, bad)
+	}
+	if code, _ := f.fakeDo(t, hs, "POST", "/install", body); code != 200 {
+		t.Errorf("a new install after a failure: %d, want it accepted", code)
+	}
 }
