@@ -9,6 +9,7 @@
 //
 // fixture: built with VAPOROS_RELEASE_FIXTURE=<--release>; none: with /dev/null;
 // unknown: with a failing answer; live: from the real API (ready or none).
+// At least one of --fixture and --live (CI checks its one real build with --live).
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
@@ -18,14 +19,14 @@ const opt = Object.fromEntries(
     return i < 0 ? [a.replace(/^--/, ''), true] : [a.slice(2, i), a.slice(i + 1)];
   }),
 );
-if (!opt.fixture) {
+if (!opt.fixture && !opt.live) {
   console.error('usage: node tests/e2e/static-checks.mjs --fixture=<out> [--none=<out>] [--unknown=<out>] [--live=<out>] [--release=<json>] [--key=<release.pub>]');
   process.exit(2);
 }
 const SITE = 'https://jasperaelvoet.github.io/vaporos/';
 const BASE = '/vaporos';
-const release = JSON.parse(readFileSync(resolve(opt.release ?? 'tests/fixtures/release-latest.json'), 'utf8'));
-const ISO = release.assets.find((a) => a.name.endsWith('.iso')).name;
+const release = opt.fixture ? JSON.parse(readFileSync(resolve(opt.release ?? 'tests/fixtures/release-latest.json'), 'utf8')) : null;
+const ISO = release?.assets.find((a) => a.name.endsWith('.iso')).name;
 const KEY = resolve(opt.key ?? '../keys/release.pub');
 
 let failures = 0;
@@ -80,9 +81,9 @@ function common(name, dir) {
   check(`${name}: release.pub is keys/release.pub`, existsSync(join(dir, 'release.pub')) && read(join(dir, 'release.pub')) === read(KEY));
 }
 
-const fixture = resolve(opt.fixture);
-common('fixture', fixture);
-{
+if (opt.fixture) {
+  const fixture = resolve(opt.fixture);
+  common('fixture', fixture);
   const dl = read(join(fixture, 'download/index.html'));
   const home = read(join(fixture, 'index.html'));
   check('fixture: download and home cards are ready', states(dl).includes('ready') && states(home).includes('ready'), `${states(dl)} ${states(home)}`);
@@ -110,6 +111,10 @@ if (opt.live) {
   common('live', dir);
   const s = states(read(join(dir, 'download/index.html')));
   check('live: the card is ready or none (the lookup worked)', s.includes('ready') || s.includes('none'), s.join(' '));
+  if (s.includes('ready')) {
+    const iso = /href="(https:\/\/github\.com\/jasperaelvoet\/vaporos\/releases\/download\/[^"]+\/vaporos-[0-9.]+\.iso)"/.exec(read(join(dir, 'download/index.html')))?.[1];
+    check('live: the download page links the release ISO on GitHub', !!iso, iso);
+  }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL STATIC CHECKS PASSED');
