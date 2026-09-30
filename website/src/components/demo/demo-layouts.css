@@ -1,0 +1,234 @@
+/* The live demo's layouts (demo.css has the pieces): /demo/ as a phone
+   beside its title and panel, or, on phones, touch screens and short
+   windows, the control center filling the screen under a 48 px bar with
+   the panel in a bottom sheet; and the home page's #demo, a phone beside
+   the panel or, on phones and touch screens, a card that opens /demo/. */
+
+/* ------------------------------------------------------------ /demo/ */
+/* The phone on the left, just under the nav, so all of it fits the window;
+   the title, then the panel, beside it. */
+.demo-page {
+  width: min(100% - 2 * var(--spacing-page), var(--container-page));
+  margin-inline: auto;
+  padding-top: calc(var(--nav-h) + 1.5rem);
+  padding-bottom: clamp(4rem, 8vw, 7rem);
+}
+.demo-page.demo-stage {
+  grid-template-rows: auto 1fr;
+}
+.demo-page .demo-phone {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.demo-page .demo-side {
+  grid-column: 2;
+  grid-row: 2;
+}
+.demo-head {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  gap: 1rem;
+  max-width: 32rem;
+  padding-top: 0.75rem;
+}
+.demo-title {
+  font-family: var(--font-display);
+  font-size: clamp(2.75rem, 5.2vw, 4.5rem);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.012em;
+  color: var(--color-bone);
+}
+.demo-lead {
+  font-size: var(--text-lead);
+  line-height: 1.5;
+  color: var(--color-smoke);
+}
+
+/* The bottom sheet (full layout only: the button that opens it only shows there). */
+.demo-sheet {
+  width: 100%;
+  max-width: 100%;
+  max-height: 88dvh;
+  margin: auto 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 1.25rem 1.25rem 0 0;
+  background: var(--color-soot);
+  color: var(--color-bone);
+  box-shadow: 0 -1px 0 var(--color-line);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.demo-sheet::backdrop {
+  background: color-mix(in srgb, var(--color-h0) 72%, transparent);
+}
+.demo-sheet-in {
+  position: relative;
+  display: grid;
+  gap: 1.75rem;
+  padding: 1.25rem 1rem calc(1.5rem + env(safe-area-inset-bottom));
+}
+/* Top right, beside the panel's title. */
+.demo-sheet-close {
+  position: absolute;
+  top: 0.875rem;
+  right: 1rem;
+  display: inline-flex;
+  padding: 0 0.875rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  border-radius: 0.75rem;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-bone) 35%, transparent);
+  font-weight: 600;
+}
+
+@media (max-width: 47.99rem), (pointer: coarse), (max-height: 45.5rem) {
+  .demo-page {
+    width: 100%;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .demo-page.demo-stage {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .demo-page .demo-head {
+    display: flex;
+    max-width: none;
+    align-items: center;
+    gap: 0.75rem;
+    height: 3rem;
+    margin-top: var(--nav-h);
+    padding: 0 max(1rem, env(safe-area-inset-right)) 0 max(1rem, env(safe-area-inset-left));
+    border-bottom: 1px solid var(--color-line);
+    background: var(--color-ash);
+  }
+  .demo-page .demo-title {
+    font-family: var(--font-ui);
+    font-size: 1.0625rem;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: 0;
+  }
+  .demo-page .demo-lead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .demo-page .demo-open-sheet {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    margin-left: auto;
+    padding: 0 0.875rem;
+    border-radius: 0.625rem;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-bone) 35%, transparent);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--color-bone);
+  }
+  .demo-page .demo-pinbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    height: 2.25rem;
+    padding: 0 1rem;
+    background: var(--color-char);
+    font-size: 0.875rem;
+    color: var(--color-smoke);
+  }
+  .demo-pinbar-pin {
+    font-size: 1.0625rem;
+    letter-spacing: 0.2em;
+    color: var(--color-h8);
+  }
+  .demo-page .demo-phone {
+    padding: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+  }
+  .demo-page .demo-screen {
+    width: 100%;
+    height: calc(100dvh - var(--nav-h) - 3rem);
+    border-radius: 0;
+  }
+  .demo-page[data-pin] .demo-screen {
+    height: calc(100dvh - var(--nav-h) - 5.25rem);
+  }
+  .demo-page .demo-frame {
+    width: 100%;
+    height: 100%;
+    transform: none;
+  }
+  .demo-page .demo-side,
+  .demo-page .demo-skip-panel {
+    display: none;
+  }
+  .demo-page .demo-skip-end {
+    display: block;
+  }
+}
+
+/* ------------------------------------------------------------ the home page's #demo */
+.demo-home {
+  margin-top: clamp(3rem, 6vw, 4.5rem);
+}
+.demo-home .demo-phone,
+.demo-home .demo-side {
+  grid-row: 1;
+}
+.demo-card {
+  display: none;
+}
+@media (max-width: 47.99rem), (pointer: coarse) {
+  .demo-home {
+    display: none;
+  }
+  .demo-card {
+    display: grid;
+    gap: 1rem;
+    justify-items: start;
+    margin-top: 2.5rem;
+    padding: 1.5rem 1.25rem;
+    border-radius: 1.125rem;
+    background:
+      radial-gradient(ellipse 80% 70% at 85% 0%, color-mix(in srgb, var(--color-h3) 40%, transparent), transparent 70%),
+      var(--color-soot);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+}
+.demo-card-title {
+  font-family: var(--font-display);
+  font-size: 1.625rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-bone);
+}
+.demo-card-text {
+  font-size: var(--text-fine);
+  color: var(--color-smoke);
+}
+.demo-missing {
+  margin-top: 2rem;
+  font-size: var(--text-fine);
+  color: var(--color-smoke);
+}
+
+.demo-sheet .demo-panel-title {
+  padding-right: 6.5rem;
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+}
