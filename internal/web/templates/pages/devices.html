@@ -1,8 +1,110 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  Devices (spec-cc-screens §4): pair a Moonlight device, see who is playing,
+  and the paired list with each device's last mode (GET /display devices[]).
+  The pair card is the three steps while nobody waits and turns into the
+  pairing prompt when Moonlight waits for a PIN; the PIN pad itself is the
+  shell's takeover (partials/overlays.html, ui/pinpad.js). REDLINE: a
+  waiting device is heat, and the device that plays is the hot row.
+  pages/devices.js fills it; styles/pages/devices.css is its look.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="dev-layout">
+  <section class="dev-pair" id="pair" data-region="pair" data-pair="loading" aria-busy="true" aria-labelledby="dev-pair-title" tabindex="-1">
+    <div class="dev-pair-heat" aria-hidden="true">
+      <svg class="heat-field" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="420" fill="#000"/><ellipse class="src src-plume" cx="390" cy="150" rx="300" ry="250"/><ellipse class="src src-core" cx="380" cy="215" rx="215" ry="175"/></g></svg>
+    </div>
+    <div class="dev-pair-in">
+      <p class="dev-pair-who mono" id="dev-pair-who"><span class="dev-pair-pip" aria-hidden="true"></span>Moonlight is waiting · <span id="dev-pair-host">{{.Hostname}}.local</span></p>
+      <h2 class="dev-pair-title" id="dev-pair-title">Pair a device</h2>
+      <p class="dev-pair-lead" id="dev-pair-lead" hidden></p>
+      <ul class="dev-pair-waiting" id="dev-waiting" role="list" hidden></ul>
+      <div class="dev-pair-actions" id="dev-pair-actions" hidden>
+        <button class="btn primary wide" id="dev-enter-pin" type="button" aria-haspopup="dialog" aria-controls="pinpad" hidden>{{icon "pair"}}Enter PIN</button>
+        <button class="btn wide" id="dev-sun-restart" type="button" hidden>{{icon "restart"}}Restart streaming</button>
+        <button class="btn wide" id="dev-pair-retry" type="button" hidden>{{icon "refresh"}}Try again</button>
+      </div>
+      <p class="dev-pair-done" id="dev-pair-done" role="status"></p>
+      <div class="dev-pair-skel" aria-hidden="true">
+        <span class="skel skel-line"></span><span class="skel skel-line skel-short"></span>
+        <span class="skel skel-line"></span><span class="skel skel-line skel-short"></span>
+        <span class="skel skel-line"></span><span class="skel skel-line skel-short"></span>
+      </div>
+      <ol class="dev-steps" id="dev-steps" role="list">
+        <li>
+          <details class="dev-step" id="dev-step-get" open>
+            <summary class="dev-step-head"><span class="dev-step-n mono" aria-hidden="true">1</span><h3 class="dev-step-title">Get Moonlight</h3></summary>
+            <div class="dev-step-body">
+              <p class="dev-step-text">Moonlight is the free app that plays your games from this PC.</p>
+              <ul class="rows dev-stores" role="list">
+                <li><a class="row row-link" href="https://apps.apple.com/app/moonlight-game-streaming/id1000551566" target="_blank" rel="noopener noreferrer"><span class="row-main"><span class="row-name">iPhone, iPad, Apple TV</span><span class="row-sub">App Store<span class="sr-only"> (opens in a new tab)</span></span></span></a></li>
+                <li><a class="row row-link" href="https://play.google.com/store/apps/details?id=com.limelight" target="_blank" rel="noopener noreferrer"><span class="row-main"><span class="row-name">Android, Google TV</span><span class="row-sub">Google Play<span class="sr-only"> (opens in a new tab)</span></span></span></a></li>
+                <li><a class="row row-link" href="https://moonlight-stream.org/" target="_blank" rel="noopener noreferrer"><span class="row-main"><span class="row-name">Windows, Mac, Linux</span><span class="row-sub">moonlight-stream.org<span class="sr-only"> (opens in a new tab)</span></span></span></a></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+        <li>
+          <details class="dev-step" id="dev-step-add" open>
+            <summary class="dev-step-head"><span class="dev-step-n mono" aria-hidden="true">2</span><h3 class="dev-step-title">Add this PC</h3></summary>
+            <div class="dev-step-body">
+              <p class="dev-step-text">Open Moonlight on the same network. It usually finds <b class="mono" id="dev-host">{{.Hostname}}</b> by itself.</p>
+              <p class="dev-step-text">If it doesn't, tap + and enter one of these addresses:</p>
+              <ul class="dev-addrs" id="dev-addrs" role="list">
+                <li class="dev-addr"><code class="dev-addr-value" id="dev-addr-mdns">{{.Hostname}}.local</code><button class="copy" type="button" data-copy-target="dev-addr-mdns">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only"> {{.Hostname}}.local</span></button></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+        <li>
+          <div class="dev-step">
+            <div class="dev-step-head"><span class="dev-step-n mono" aria-hidden="true">3</span><h3 class="dev-step-title">Enter the PIN</h3></div>
+            <div class="dev-step-body">
+              <p class="dev-step-text">Moonlight on this phone? Note the PIN, come back here, and this page asks for it.</p>
+              <p class="dev-listen" id="dev-listen" data-link="connecting"><span class="dev-listen-dot" aria-hidden="true"></span><span id="dev-listen-text">Not listening: reconnecting…</span></p>
+              <button class="btn ghost small" id="dev-have-pin" type="button" aria-haspopup="dialog" aria-controls="pinpad" hidden>I have a PIN</button>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <div class="dev-side">
+    <section class="rack" id="dev-playing" aria-labelledby="dev-playing-title" hidden>
+      <h2 class="rack-title" id="dev-playing-title"><span><span class="dev-tally" aria-hidden="true"></span>Playing now</span></h2>
+      <dl class="facts dev-play-facts">
+        <div class="fact"><dt>Started by</dt><dd id="dev-play-by"></dd></div>
+        <div class="fact" id="dev-play-app-row" hidden><dt>Game</dt><dd id="dev-play-app"></dd></div>
+        <div class="fact"><dt>Resolution</dt><dd class="mono" id="dev-play-mode"></dd></div>
+        <div class="fact"><dt>HDR</dt><dd id="dev-play-hdr"></dd></div>
+        <div class="fact" id="dev-play-since-row" hidden><dt>Since</dt><dd class="mono" id="dev-play-since"></dd></div>
+      </dl>
+      <p class="dev-note" id="dev-resume-hint">Switching devices or changing the resolution? Quit the game in Moonlight, then start it on the other device.</p>
+      <div class="dev-actions"><button class="btn ghost" id="dev-end-stream" type="button">End stream</button></div>
+    </section>
+
+    <section class="rack" aria-labelledby="dev-paired-title">
+      <div class="dev-head">
+        <h2 class="rack-title" id="dev-paired-title" tabindex="-1">Paired devices<span id="dev-paired-count"></span></h2>
+        <button class="dev-refresh" id="dev-refresh" type="button" aria-label="Refresh list" disabled>{{icon "refresh"}}</button>
+      </div>
+      <div id="dev-paired" data-region="paired" aria-busy="true">
+        <ul class="rows" role="list" aria-hidden="true">
+          <li class="dev-row"><span class="dev-glyph"></span><span class="row-main"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></span></li>
+          <li class="dev-row"><span class="dev-glyph"></span><span class="row-main"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></span></li>
+          <li class="dev-row"><span class="dev-glyph"></span><span class="row-main"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></span></li>
+        </ul>
+      </div>
+      <details class="dev-seen" id="dev-seen" hidden>
+        <summary class="dev-seen-sum"><span>Seen before<span id="dev-seen-count"></span></span></summary>
+        <p class="dev-note">These names streamed from this PC but aren't paired under that name now.</p>
+        <ul class="rows" id="dev-seen-list" role="list"></ul>
+      </details>
+    </section>
+  </div>
+</div>
+<template id="tpl-dev-row"><li class="dev-row" data-playing="false"><span class="dev-glyph" data-part="glyph" aria-hidden="true"></span><span class="row-main"><span class="row-name" data-part="name"></span><span class="row-sub" data-part="sub" hidden></span></span><span class="dev-badge" data-part="playing" data-tone="hot" hidden>Playing</span><span class="dev-badge" data-part="disabled" hidden>Disabled</span><button class="btn ghost small" type="button" data-part="unpair">Unpair<span class="sr-only" data-part="unpair-name"></span></button></li></template>
+<template id="tpl-dev-seen"><li class="dev-row"><span class="dev-glyph" data-part="glyph" aria-hidden="true"></span><span class="row-main"><span class="row-name" data-part="name"></span><span class="row-sub" data-part="sub"></span></span></li></template>
+<template id="tpl-dev-waiting"><li class="dev-pair-dev"><span class="dev-pair-dev-name" data-part="name"></span><span class="dev-pair-dev-addr mono" data-part="addr"></span></li></template>
+<template id="tpl-dev-addr"><li class="dev-addr"><code class="dev-addr-value" data-part="value"></code><button class="copy" type="button" data-part="copy">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only" data-part="copy-name"></span></button></li></template>
 {{end}}
