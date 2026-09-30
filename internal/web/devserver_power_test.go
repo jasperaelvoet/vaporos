@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"testing"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
@@ -188,4 +189,69 @@ func (f *devFake) powerCheckLocked(now time.Time, tick bool) {
 			"Nothing has happened for %d minutes, so VaporOS is switching off. Wake it with Wake-on-LAN (Moonlight does this for you).", minutes)})
 		f.restartLocked(-1, nil)
 	}
+}
+
+// GET /power follows power.snapshot (CONTRACTS.md): the viewer's own
+// activity is busy.web with web_until, keep-awake is a reason with its
+// time, and idle it counts down; PUT answers the whole document.
+func TestFakePower(t *testing.T) {
+	near := func(iso any, want time.Time) bool {
+		at, err := time.Parse(time.RFC3339, asStr(iso))
+		return err == nil && at.Sub(want).Abs() < 5*time.Second
+	}
+	t.Run("the page keeps it on", func(t *testing.T) {
+		f, hs := fakeWorld(t, "busy-web", (*devFake).powerRoutes)
+		f.touch()
+		_, p := f.fakeDo(t, hs, "GET", "/power", "")
+		b := asObj(p["busy"])
+		if b["reason"] != fakeWebReason || b["web"] != true || !near(p["web_until"], time.Now().Add(fakeWebWindow)) || p["shutdown_in"] != nil {
+			t.Errorf("busy-web: busy %v web_until %v shutdown_in %v", p["busy"], p["web_until"], p["shutdown_in"])
+		}
+		for _, w := range asList(p["wol"]) {
+			w := asObj(w)
+			if w["mac"] == "" || w["ipv4"] == nil || w["prefix"] == nil || w["broadcast"] == nil || w["supported"] == nil {
+				t.Errorf("wol entry %v lacks a CONTRACTS field", w)
+			}
+		}
+	})
+	t.Run("keep-awake", func(t *testing.T) {
+		f, hs := fakeWorld(t, "keep-awake", (*devFake).powerRoutes)
+		_, p := f.fakeDo(t, hs, "GET", "/power", "")
+		if asObj(p["busy"])["reason"] != "keep-awake" || !near(p["keep_awake_until"], time.Now().Add(2*time.Hour)) {
+			t.Errorf("keep-awake: busy %v until %v", p["busy"], p["keep_awake_until"])
+		}
+		ch, cancel := f.hub.Subscribe()
+		defer cancel()
+		if code, _ := f.fakeDo(t, hs, "POST", "/power/keep-awake", `{"minutes":0}`); code != 200 {
+			t.Fatalf("stop: %d", code)
+		}
+		ev := waitEvent(t, ch, "power.idle", time.Second, func(map[string]any) bool { return true })
+		if ev["busy"] != nil || ev["shutdown_in"] == nil {
+			t.Errorf("power.idle after stopping keep-awake: %v, want idle with a countdown", ev)
+		}
+	})
+	t.Run("counting down", func(t *testing.T) {
+		f, hs := fakeWorld(t, "idle-countdown", (*devFake).powerRoutes)
+		f.touch() // sim.web_activity false: the page is passive
+		_, p := f.fakeDo(t, hs, "GET", "/power", "")
+		if p["busy"] != nil || asNum(p["idle_seconds"]) < 600 || asNum(p["shutdown_in"]) > 300 || asNum(p["shutdown_in"]) < 290 {
+			t.Errorf("idle-countdown: busy %v idle_seconds %v shutdown_in %v", p["busy"], p["idle_seconds"], p["shutdown_in"])
+		}
+	})
+	t.Run("PUT", func(t *testing.T) {
+		f, hs := fakeWorld(t, "idle", (*devFake).powerRoutes)
+		for _, bad := range []string{`{"idle_minutes":0}`, `{"idle_minutes":1441}`} {
+			if code, _ := f.fakeDo(t, hs, "PUT", "/power", bad); code != 400 {
+				t.Errorf("PUT %s: %d, want 400", bad, code)
+			}
+		}
+		code, p := f.fakeDo(t, hs, "PUT", "/power", `{"idle_minutes":1440}`)
+		if code != 200 || p["idle_minutes"] != float64(1440) || p["idle_shutdown"] != true || len(asList(p["wol"])) == 0 {
+			t.Errorf("PUT idle_minutes 1440: %d %v", code, p)
+		}
+		code, p = f.fakeDo(t, hs, "PUT", "/power", `{"idle_shutdown":false}`)
+		if code != 200 || p["idle_shutdown"] != false || p["idle_minutes"] != float64(1440) || p["shutdown_in"] != nil {
+			t.Errorf("PUT idle_shutdown false: %d %v", code, p)
+		}
+	})
 }

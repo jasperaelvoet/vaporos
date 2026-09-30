@@ -1,8 +1,96 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  System › Power (spec-cc-screens §8, DECISIONS NEW-1): when VaporOS
+  sleeps, how to keep it on, and whether anything can wake it. The server
+  paints every card at its final size with its controls disabled;
+  pages/power.js fills the state from GET /power and power.idle, and
+  power-more.js wires the controls and the Wake card. REDLINE: the state
+  is a heat level (⟦cc-power-state⟧): a strip of the heat field over the
+  Inferno scale, its needle at the box's temperature; an idle countdown
+  cools it toward asleep. The art is aria-hidden; the words carry it all.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="pwr" id="pwr">
+  <section class="rack pwr-state-rack" aria-labelledby="pwr-state-h">
+    <h2 class="rack-title" id="pwr-state-h">Right now</h2>
+    <div class="pwr-state" id="pwr-state" data-region="pwr-state" data-level="" aria-busy="true">
+      <div class="pwr-vf" aria-hidden="true">
+        <svg class="heat-field" viewBox="0 0 400 150" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="270" fill="#000"/><ellipse class="src src-plume" cx="270" cy="30" rx="170" ry="120"/><circle class="src src-core" cx="250" cy="110" r="150"/></g></svg>
+        <span class="pwr-count mono" id="pwr-count"></span>
+        <span class="pwr-scale"><span class="pwr-needle"><span class="pwr-needle-label mono" id="pwr-needle">…</span></span></span>
+        <span class="pwr-scale-end mono">asleep</span>
+      </div>
+      <div class="pwr-state-text">
+        <p class="pwr-title" id="pwr-title"><span class="skel skel-line skel-short" aria-hidden="true"></span></p>
+        <p class="pwr-detail" id="pwr-detail"><span class="skel skel-line" aria-hidden="true"></span></p>
+        <div class="pwr-actions">
+          <button class="btn" id="pwr-state-stop" type="button" hidden>Stop<span class="sr-only"> staying awake</span></button>
+          <button class="btn primary" id="pwr-state-awake" type="button" hidden>{{icon "eye"}}Stay awake 1 h</button>
+        </div>
+        <p class="pwr-banner" id="pwr-cantwake" hidden></p>
+        <div class="region-error" id="pwr-error" role="alert" hidden><p class="region-error-text" id="pwr-error-text"></p><button class="btn small" id="pwr-retry" type="button">Try again</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rack pwr-idle-rack" aria-labelledby="pwr-idle-h">
+    <h2 class="rack-title" id="pwr-idle-h">Power off when idle</h2>
+    <div class="pwr-card" id="pwr-idle" data-region="pwr-idle" aria-busy="true">
+      <div class="pwr-switch-row">
+        <div class="pwr-switch-text">
+          <label class="pwr-switch-label" for="pwr-auto">Power off when nobody plays</label>
+          <p class="field-hint" id="pwr-auto-hint">Not while streaming, playing, downloading or updating.</p>
+        </div>
+        <input class="pwr-switch-input" type="checkbox" role="switch" id="pwr-auto" aria-describedby="pwr-auto-hint" disabled>
+        <span class="pwr-switch" aria-hidden="true"></span>
+      </div>
+      <form class="pwr-form" id="pwr-idle-form" novalidate>
+        <fieldset class="pwr-after" id="pwr-after" disabled>
+          <legend class="field-label pwr-legend">After</legend>
+          <div class="pwr-presets">
+            <label class="pwr-preset"><input class="pwr-radio" type="radio" name="after" value="15"><span class="pwr-preset-text">15 min</span></label>
+            <label class="pwr-preset"><input class="pwr-radio" type="radio" name="after" value="30"><span class="pwr-preset-text">30 min</span></label>
+            <label class="pwr-preset"><input class="pwr-radio" type="radio" name="after" value="60"><span class="pwr-preset-text">1 h</span></label>
+            <label class="pwr-preset"><input class="pwr-radio" type="radio" name="after" value="120"><span class="pwr-preset-text">2 h</span></label>
+            <label class="pwr-preset"><input class="pwr-radio" type="radio" name="after" value="custom"><span class="pwr-preset-text">Custom</span></label>
+          </div>
+          <div class="field pwr-custom" id="pwr-custom" hidden>
+            <label class="field-label" for="pwr-minutes">Minutes</label>
+            <div class="pwr-unit">
+              <input class="input mono" id="pwr-minutes" name="minutes" type="number" inputmode="numeric" min="1" max="1440" step="1" autocomplete="off" aria-describedby="pwr-minutes-hint pwr-minutes-error">
+              <span class="pwr-unit-suffix" aria-hidden="true">min</span>
+            </div>
+            <p class="field-hint" id="pwr-minutes-hint">From 1 minute to 1440 (a day).</p>
+            <p class="field-error" id="pwr-minutes-error" hidden></p>
+          </div>
+        </fieldset>
+        <p class="form-error" id="pwr-idle-form-error" role="alert"></p>
+        <div class="pwr-form-actions"><button class="btn primary" id="pwr-save" type="submit" disabled>Save</button></div>
+      </form>
+    </div>
+  </section>
+
+  <section class="rack pwr-awake-rack" aria-labelledby="pwr-awake-h">
+    <h2 class="rack-title" id="pwr-awake-h">Stay awake</h2>
+    <div class="pwr-card" id="pwr-awake" data-region="pwr-awake" aria-busy="true">
+      <p class="pwr-awake-line" id="pwr-awake-line">Keep VaporOS on for a while, for example during a long download.</p>
+      <div class="pwr-keys" role="group" aria-labelledby="pwr-awake-h" aria-describedby="pwr-awake-off">
+        <button class="btn" id="pwr-1h" type="button" disabled><span class="sr-only">Stay awake </span>1 hour</button>
+        <button class="btn" id="pwr-4h" type="button" disabled><span class="sr-only">Stay awake </span>4 hours</button>
+        <button class="btn ghost" id="pwr-stop" type="button" hidden>Stop<span class="sr-only"> staying awake</span></button>
+      </div>
+      <p class="field-hint" id="pwr-awake-off" hidden>Idle power-off is off, so VaporOS stays on anyway.</p>
+    </div>
+  </section>
+
+  <section class="rack pwr-wol-rack" aria-labelledby="pwr-wol-h">
+    <h2 class="rack-title" id="pwr-wol-h">Wake-on-LAN</h2>
+    <div class="pwr-wol" id="pwr-wol" data-region="pwr-wol" aria-busy="true">
+      <p class="pwr-wait" id="pwr-wol-wait"><span class="pwr-pip" aria-hidden="true"></span>Checking network adapters…</p>
+      <div class="pwr-wake" id="pwr-wake" hidden>{{template "wake" "power"}}</div>
+      <ul class="pwr-nics" id="pwr-nics" role="list" aria-label="Wired network adapters"></ul>
+      <p class="region-empty" id="pwr-nics-empty" hidden>No wired network adapter found. Wake-on-LAN needs a network cable.</p>
+    </div>
+  </section>
+</div>
+<template id="tpl-pwr-nic"><li class="pwr-nic" data-status=""><p class="pwr-nic-head"><span class="pwr-nic-name mono" data-part="name"></span><span class="pwr-tag" data-part="tag"></span></p><p class="pwr-nic-mac" data-part="mac-row" hidden><code class="pwr-nic-value" data-part="mac"></code><button class="copy" type="button" data-part="copy">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only" data-part="copy-name"></span></button></p><p class="pwr-nic-addr mono" data-part="addr" hidden></p><p class="pwr-nic-fix" data-part="fix" hidden></p></li></template>
 {{end}}
