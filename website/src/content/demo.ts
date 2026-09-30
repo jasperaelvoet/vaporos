@@ -6,8 +6,9 @@
 // `enabled` turns it on. pages.yml then exports the demo before the build
 // (VAPOROS_DEMO_REQUIRED=1 fails a build without it), the /demo/ page is
 // built, the nav, the footer, the 404 page and the sitemap link to it, the
-// home page gets its beat and its hero button, and the TV stills' QR codes
-// open it. Off, nothing links to it and scripts/drop-demo.mjs removes the
+// home page gets its beat and its hero button, and the QR codes on the TV
+// stills of the installed system open it (the installer's open the install
+// guide). Off, nothing links to it and scripts/drop-demo.mjs removes the
 // /demo/ page from the export, so turning it back off is this one line.
 //
 // `uiLabels` is the control center the site describes: 'legacy' (the eight
@@ -127,18 +128,16 @@ export const demoStage = {
     notice: '{text}',
   },
 
-  /** /demo/ on phones and touch screens: the frame fills the screen under a bar. */
+  /** /demo/ on phones and touch screens: the frame fills the screen under a bar (its title is demoPage.headline). */
   mobile: {
-    title: 'Live demo',
     scenarios: 'Scenarios',
-    exit: 'Exit',
     close: 'Close',
   },
 
   /** B4 on phones and touch screens: a card instead of the frame. */
   card: {
     title: 'Try the live demo',
-    text: 'The real control center on made-up data. It opens full screen.',
+    text: 'The real control center on made-up data. It fills your screen.',
     cta: 'Open the live demo',
   },
 };
