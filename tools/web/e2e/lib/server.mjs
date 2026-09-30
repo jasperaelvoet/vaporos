@@ -30,16 +30,30 @@ export function buildTestBinary(dir) {
   return bin;
 }
 
-export function freePort() {
+function listenOn(want) {
   return new Promise((resolve, reject) => {
     const s = createServer();
     s.unref();
     s.on('error', reject);
-    s.listen(0, '127.0.0.1', () => {
+    s.listen(want, '127.0.0.1', () => {
       const { port } = s.address();
       s.close(() => resolve(port));
     });
   });
+}
+
+// freePort is any free port, or with VOS_E2E_PORTS=first-last the next free
+// one in that range (a machine that reserves ports for such runs).
+let nextInRange = 0;
+export async function freePort(env = process.env) {
+  const m = /^(\d+)-(\d+)$/.exec(env.VOS_E2E_PORTS || '');
+  if (!m) return listenOn(0);
+  const [lo, hi] = [Number(m[1]), Number(m[2])];
+  for (let i = 0; i <= hi - lo; i++) {
+    const port = lo + ((nextInRange++) % (hi - lo + 1));
+    if (await listenOn(port).then(() => true, () => false)) return port;
+  }
+  throw new Error(`no free port in VOS_E2E_PORTS=${env.VOS_E2E_PORTS}`);
 }
 
 // get sends one GET to 127.0.0.1:port with the given Host header and
