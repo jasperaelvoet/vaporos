@@ -304,7 +304,12 @@ try {
       await page.addScriptTag({ content: AXE });
       const res = await page.evaluate(
         async (tags) => {
-          const r = await window.axe.run({ exclude: [['iframe']] }, { runOnly: { type: 'tag', values: tags }, resultTypes: ['violations', 'incomplete'] });
+          // label-content-name-mismatch (WCAG 2.5.3, level A) is still marked
+          // experimental in axe, so it is off unless asked for.
+          const r = await window.axe.run(
+            { exclude: [['iframe']] },
+            { runOnly: { type: 'tag', values: tags }, rules: { 'label-content-name-mismatch': { enabled: true } }, resultTypes: ['violations', 'incomplete'] },
+          );
           const pick = (v) => ({
             id: v.id,
             impact: v.impact,
