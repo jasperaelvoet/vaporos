@@ -53,7 +53,8 @@ export default [
   {
     id: 'HOME-hero-ready',
     ui: ['next'],
-    async run({ page, url, ready, step }) {
+    allow: DOWN,
+    async run({ page, url, ready, server, step }) {
       await step('the server paints the hero as Checking… in the neutral state', async () => {
         await page.route('**/api/v1/status', (r) => setTimeout(() => r.continue().catch(() => {}), 1500));
         await page.goto(url('/'), { waitUntil: 'domcontentloaded' });
@@ -79,6 +80,18 @@ export default [
         assert.equal(await page.evaluate(() => document.getElementById('hero-title').tagName), 'H2');
         assert.equal(await page.getAttribute('#hero .heat-field', 'aria-hidden'), 'true');
         assert.equal(await page.getAttribute('#hero .screen-shape', 'aria-hidden'), 'true');
+      });
+      await step('the box stops answering: the last known Ready cools at once, and the needle says last seen', async () => {
+        await page.locator('#link[data-link="live"]').waitFor();
+        await dev(server, 'down', { seconds: -1 });
+        await page.locator('#hero[data-stale]').waitFor({ timeout: 15000 });
+        assert.equal(await text(page, '#hero-needle'), 'last seen');
+        assert.equal(await text(page, '#hero-title'), 'Ready to stream');
+      });
+      await step('back, it is live and warm again', async () => {
+        await dev(server, 'down', { seconds: 0 });
+        await page.locator('#link[data-link="live"]').waitFor({ timeout: 40000 });
+        await page.waitForFunction(() => !document.getElementById('hero').hasAttribute('data-stale'));
       });
     },
   },
@@ -107,16 +120,18 @@ export default [
     async run({ page, url, ready, step }) {
       await page.goto(url('/'));
       await ready();
-      await step('the eyebrow names the address and the graphics card', async () => {
+      await step('the eyebrow names the machine (the app bar has its address) and the graphics card, on one line', async () => {
         await hero(page, 'ready');
-        assert.equal(await text(page, '#hero-host'), 'vapor.local');
+        assert.equal(await text(page, '#hero-host'), 'vapor');
         assert.equal(await text(page, '#hero-gpu'), 'AMD Radeon RX 9070 XT');
+        const tops = await page.$$eval('#hero-eyebrow .vf-plate:not([hidden])', (els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+        assert.equal(new Set(tops).size, 1, `plates on ${tops.join(', ')}`);
       });
-      await step('without mDNS it falls back to <hostname>.local', async () => {
+      await step('without mDNS it falls back to the hostname', async () => {
         await patchStatus(page, (s) => ({ ...s, system: { ...s.system, mdns: '', hostname: 'den' } }));
         await page.reload();
         await ready();
-        await page.locator('#hero-host', { hasText: 'den.local' }).waitFor();
+        await page.locator('#hero-host', { hasText: /^den$/ }).waitFor();
       });
       await unroute(page);
     },
@@ -127,11 +142,12 @@ export default [
     async run({ page, url, ready, step }) {
       await page.goto(url('/'));
       await ready();
-      await step('the current mode is the readout, and in words for screen readers', async () => {
+      await step('idle, the mode is a tag: no virtual screen is drawn, as none exists until a game starts', async () => {
         await hero(page, 'ready');
-        assert.equal(await text(page, '#hero [data-part="readout"]'), '1920 × 1080 · 60 Hz');
+        assert.equal(await page.getAttribute('#hero .screen-shape', 'data-shown'), null);
         assert.equal(await text(page, '#hero-chips'), '1920 × 1080 · 60 Hz');
-        assert.equal(await page.locator('#hero-chips li.sr-only').count(), 1);
+        assert.equal(await page.locator('#hero-chips li.hero-tag[data-kind="mode"]').count(), 1);
+        assert.equal(await page.locator('#hero-chips li.sr-only').count(), 0);
       });
       await step('without a current mode there is no shape and no chip', async () => {
         await patchStatus(page, (s) => ({ ...s, display: { ...s.display, current: '' } }));
@@ -188,6 +204,31 @@ export default [
         assert.equal(await text(page, '#hero-needle'), 'streaming');
         assert.deepEqual(await page.locator('#hero-chips li').allTextContents(), ['3840 × 2160 · 60 Hz', 'HDR']);
         assert.equal(await page.getAttribute('#hero-chips li:nth-child(2)', 'data-tone'), 'hot');
+      });
+      await step('the word Streaming never breaks, down to 320 px and at 200 % text', async () => {
+        const oneLine = () => page.evaluate(() => {
+          const el = document.querySelector('#hero .hero-word-lead');
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          const lines = new Set([...r.getClientRects()].map((x) => Math.round(x.top)));
+          const vf = el.closest('.vf').getBoundingClientRect();
+          const b = el.getBoundingClientRect();
+          return { lines: lines.size, inside: b.right <= vf.right + 1 && b.left >= vf.left - 1 };
+        });
+        const size = page.viewportSize();
+        for (const width of [size.width, 320]) {
+          await page.setViewportSize({ width, height: size.height });
+          await page.waitForTimeout(150);
+          assert.deepEqual(await oneLine(), { lines: 1, inside: true }, `at ${width} px`);
+        }
+        await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+        await page.waitForTimeout(150);
+        assert.deepEqual(await oneLine(), { lines: 1, inside: true }, 'at 200 % text');
+        await page.evaluate(() => document.documentElement.style.removeProperty('font-size'));
+        await page.setViewportSize(size);
+      });
+      await step('Details is a way to the stream sheet, not the thing to act on: a ghost key', async () => {
+        assert.equal(await page.getAttribute('#hero-actions button', 'class'), 'btn ghost');
       });
       await step('Details opens the stream sheet, and Esc gives focus back', async () => {
         await page.click('#hero-actions button');
@@ -353,14 +394,19 @@ export default [
     async run({ page, url, ready, step }) {
       await page.goto(url('/'));
       await ready();
-      await step('Stay awake 1 h is a toggle that says until when', async () => {
+      await step('Stay awake 1 h is a toggle: its name stays, pressed says it is on, the line under it until when', async () => {
         await hero(page, 'ready');
         assert.equal(await page.getAttribute('#home-awake', 'aria-pressed'), 'false');
         assert.equal(await text(page, '#home-awake'), 'Stay awake 1 h');
-        await page.click('#home-awake');
+        await page.focus('#home-awake');
+        await page.keyboard.press('Enter');
         await page.locator('#home-awake[aria-pressed="true"]').waitFor();
-        assert.match(await text(page, '#home-awake'), /^Awake until .+$/);
+        assert.equal(await text(page, '#home-awake b'), 'Stay awake 1 h');
+        assert.match(await text(page, '#home-awake-sub'), /^Awake until .+$/);
+        assert.equal(await page.getAttribute('#home-awake', 'aria-describedby'), 'home-awake-sub');
         await page.locator('#home-power-line', { hasText: /^Staying awake until .+\.$/ }).waitFor();
+        // Focus stayed on the key while it worked (WCAG 2.4.3).
+        assert.equal(await focused(page), 'home-awake');
       });
       await step('pressed again, it stops', async () => {
         await page.click('#home-awake');
@@ -393,7 +439,7 @@ export default [
         assert.equal(await page.isVisible('#home-reboot'), true);
         assert.equal(await page.isVisible('#home-poweroff'), true);
         assert.equal(await text(page, '#home-hold-hint'), 'Hold to confirm, or tap to be asked first.');
-        assert.match(await text(page, '#power-sheet-line'), /powers off/);
+        assert.match(await text(page, '#power-sheet-line'), /power-off|powers off/i);
       });
       await step('Esc closes it and focus goes back to Power', async () => {
         await page.keyboard.press('Escape');
@@ -412,15 +458,20 @@ export default [
       await page.locator('#home-power:enabled').waitFor();
       await page.click('#home-power');
       await page.locator('#power-sheet[open]').waitFor();
-      await step('a tap on Restart asks first, and Cancel keeps things as they are', async () => {
+      await step('a tap on Restart asks first, one layer at a time, and Cancel keeps things as they are', async () => {
         await page.click('#home-reboot');
         await page.locator('#confirm[open]').waitFor();
         assert.equal(await text(page, '#confirm-title'), 'Restart VaporOS?');
+        // The sheet steps aside for the question: never two bottom layers.
+        await closed(page, 'power-sheet');
         await page.click('#confirm-cancel');
         await closed(page, 'confirm');
         assert.equal(await page.locator('#scene[open]').count(), 0);
+        assert.equal(await focused(page), 'home-power');
       });
       await step('letting go early nudges: keep holding', async () => {
+        await page.click('#home-power');
+        await page.locator('#power-sheet[open]').waitFor();
         await hold(page, '#home-reboot', 500);
         assert.equal(await text(page, '#home-hold-hint'), 'Keep holding Restart until the key fills.');
       });
@@ -470,8 +521,8 @@ export default [
       await page.goto(url('/'));
       await ready();
       await live(page);
-      await step('only this page keeps it on: the line says so, with a time', async () => {
-        await page.locator('#home-power-line', { hasText: /^Only this page keeps it on\. It powers off about .+ if nobody plays\.$/ }).waitFor();
+      await step('only this page keeps it on: the line says until when the PC stays on', async () => {
+        await page.locator('#home-power-line', { hasText: /^On until about .+\. Idle power-off starts 15 min after this page closes\.$/ }).waitFor();
       });
       await step('a live countdown takes over; a new kind of line is announced, a tick is not', async () => {
         await dev(server, 'event', { topic: 'power.idle', data: { idle_seconds: 660, shutdown_in: 240, busy: null } });
@@ -506,25 +557,34 @@ export default [
       await page.goto(url('/'));
       await ready();
       await live(page);
-      await step('a waiting device is the card above the hero, which heats up', async () => {
-        const card = page.locator('#home-pair .ctx-card');
-        await card.waitFor();
-        assert.equal(await text(page, '#home-pair .ctx-title'), 'Steam Deck wants to pair');
-        assert.equal(await page.evaluate(() => document.querySelector('#home-pair .ctx-title').tagName), 'H2');
-        assert.equal(await page.getAttribute('#hero', 'data-attention'), 'pair');
+      await step('a waiting device is the hero: its words, a warmer field and Enter PIN in white-hot', async () => {
+        await page.locator('#hero[data-attention="pair"]').waitFor();
+        assert.equal(await text(page, '#hero-title'), 'Steam Deck wants to pair');
         assert.equal(await text(page, '#hero-needle'), 'pairing');
+        assert.equal(await text(page, '#hero-actions button'), 'Enter PIN');
+        assert.equal(await page.getAttribute('#hero-actions button', 'class'), 'btn primary');
+        assert.equal(await page.isVisible('#home-pair'), false);
         assert.equal(await page.locator('#notices-polite .notice', { hasText: 'wants to pair' }).count(), 0);
       });
       await step('Enter PIN opens the PIN pad for it', async () => {
-        await page.click('#home-pair button:has-text("Enter PIN for Steam Deck")');
+        await page.click('#hero-actions button');
         await page.locator('#pinpad[open]').waitFor();
         assert.equal(await text(page, '#pin-title'), 'Steam Deck wants to pair');
         await page.click('#pin-close');
         await closed(page, 'pinpad');
       });
-      await step('when Moonlight stops waiting, the card goes and the hero cools', async () => {
+      await step('while streaming, the prompt is the card above the hero', async () => {
+        await dev(server, 'event', { topic: 'session.begin', data: { client: 'Living room TV', mode: '3840x2160@60', hdr: false, since: new Date().toISOString() } });
+        await hero(page, 'streaming');
+        await page.locator('#home-pair .ctx-card').waitFor();
+        assert.equal(await text(page, '#home-pair .ctx-title'), 'Steam Deck wants to pair');
+        assert.equal(await page.evaluate(() => document.querySelector('#home-pair .ctx-title').tagName), 'H2');
+        await dev(server, 'event', { topic: 'session.end', data: {} });
+        await page.locator('#hero[data-attention="pair"]').waitFor();
+      });
+      await step('when Moonlight stops waiting, the prompt goes and the hero cools to Ready', async () => {
         await dev(server, 'event', { topic: 'pairing.state', data: { pairings: [] } });
-        await page.locator('#home-pair .ctx-card').waitFor({ state: 'detached' });
+        await page.locator('#hero-title', { hasText: 'Ready to stream' }).waitFor();
         assert.equal(await page.isVisible('#home-pair'), false);
         assert.equal(await page.getAttribute('#hero', 'data-attention'), null);
       });
@@ -582,22 +642,25 @@ export default [
     async run({ page, url, ready, step }) {
       await page.goto(url('/'));
       await ready();
-      await step('a staged update is ready, not updating: Restart to update', async () => {
-        await hero(page, 'restart-needed');
-        assert.equal(await text(page, '#hero-title'), 'Restart to update');
-        assert.equal(await text(page, '#hero-detail'), 'Version 20260929.143000 is ready.');
-        assert.equal(await text(page, '#hero-needle'), 'restart');
-        assert.equal(await page.isVisible('#hero-progress'), false);
-        assert.equal(await text(page, '#hero-actions button'), 'Restart to update');
-        assert.equal(await text(page, '#hero-hold-hint'), 'Hold to confirm, or tap to be asked first.');
+      await step('a staged update leaves VaporOS ready (MASTER-PLAN §1.3): the hero says so, and the card offers it', async () => {
+        await hero(page, 'ready');
+        assert.equal(await text(page, '#hero-title'), 'Ready to stream');
+        assert.equal(await text(page, '#hero-needle'), 'ready');
+        assert.equal(await page.getAttribute('html', 'data-state'), 'ready');
+        const card = page.locator('#cards-list .ctx-card', { hasText: 'Version 20260929.143000 is ready' });
+        await card.waitFor();
+        assert.equal(await card.locator('button').first().textContent(), 'Restart to update');
       });
-      await step('a tap asks with the update confirm', async () => {
-        await page.click('#hero-actions button');
+      await step('its Restart to update asks with the update confirm', async () => {
+        await page.click('#cards-list .ctx-card button:has-text("Restart to update")');
         await page.locator('#confirm[open]').waitFor();
         assert.equal(await text(page, '#confirm-title'), 'Restart to update?');
         assert.match(await text(page, '#confirm-body'), /If version 20260929\.143000 doesn't start, VaporOS goes back by itself\./);
         await page.keyboard.press('Escape');
         await closed(page, 'confirm');
+      });
+      await step('the System tab carries no restart badge for it', async () => {
+        assert.equal(await page.locator('.tab[data-tab="system"] [data-part="badge"]').isVisible(), false);
       });
     },
   },

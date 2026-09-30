@@ -49,6 +49,15 @@
   /* A fault is below the scale: the cold map, hazard tape and words. */
   .hero[data-state="fault"] .field-heat { filter: url(#f-cold); }
   .hero[data-state="fault"] .src-core { opacity: 0.7; }
+  /* Idle power-off is minutes away: the field cools and the needle drops. */
+  .hero[data-idle] { --state-heat: 0.16; }
+  .hero[data-idle] .src-core { opacity: 0.24; transform: scale(0.86); }
+  .hero[data-idle] :is(.src-plume, .src-aux) { opacity: 0.06; }
+  /* Not live yet not asleep: the last known state, cooled and dimmed, so it
+     never reads as a live Ready (NEW-1). */
+  .hero[data-stale] .heat-field { opacity: 0.35; transition: opacity var(--vos-dur-cool) var(--ease-out); }
+  .hero[data-stale] :is(.vf-hud, .vf-scale, .vf-corner) { opacity: 0.55; }
+  .hero[data-stale] .vf-needle-label { color: var(--color-ink-2); }
 
   .vf-scrim {
     position: absolute; inset: auto 0 0 0; height: 64%; pointer-events: none;
@@ -65,12 +74,14 @@
   .vf-corner[data-corner="bl"] { left: 0.625rem; bottom: 0.625rem; border-left-width: 1.5px; border-bottom-width: 1.5px; }
   .vf-corner[data-corner="br"] { right: 0.625rem; bottom: 0.625rem; border-right-width: 1.5px; border-bottom-width: 1.5px; }
 
-  /* the eyebrow: the address and the graphics card, on ash plates */
+  /* the eyebrow: the machine's name and its graphics card, on ash plates,
+     on one line (the card's name gives way first) */
   .vf-hud {
-    position: absolute; left: 2rem; right: 3.5rem; top: 0.6875rem; display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0;
+    position: absolute; left: 2rem; right: 3.5rem; top: 0.6875rem; display: flex; gap: 0.375rem; margin: 0; min-width: 0;
     font: 500 var(--text-2xs) / 1 var(--font-mono); color: var(--color-ink);
   }
-  .vf-plate { padding: 0.25rem 0.3125rem; border-radius: var(--radius-xs); background: rgb(0 0 4 / 0.82); max-width: 100%; overflow-wrap: anywhere; line-height: 1.2; }
+  .vf-plate { flex: none; padding: 0.25rem 0.3125rem; border-radius: var(--radius-xs); background: rgb(0 0 4 / 0.82); max-width: 100%; line-height: 1.2; white-space: nowrap; }
+  .vf-plate-gpu { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .vf-plate[hidden] { display: none; }
   .hero[data-state="fault"] .vf-hud { top: 1.125rem; }
 
@@ -115,27 +126,32 @@
     transition: width var(--vos-dur-base) var(--ease-standard), height var(--vos-dur-base) var(--ease-standard);
   }
   .vf .screen-shape-readout {
-    position: absolute; left: 0.3125rem; top: 0.3125rem; max-width: calc(100% - 0.625rem);
+    position: absolute; left: 0.3125rem; top: 0.3125rem; width: max-content; max-width: 62cqw;
     padding: 0.25rem 0.3125rem; border-radius: var(--radius-xs); background: rgb(0 0 4 / 0.78);
-    color: var(--color-ink); font-size: 0.65625rem; font-size: clamp(0.5625rem, 2.9cqw, 0.65625rem); font-weight: 600; line-height: 1;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--color-ink); font-size: 0.65625rem; font-size: clamp(0.5625rem, 2.9cqw, 0.65625rem); font-weight: 600; line-height: 1.15;
+    white-space: normal; overflow-wrap: anywhere;
   }
   .vf .screen-shape-readout:empty { display: none; }
-  .hero[data-state="asleep"] .screen-shape-frame { opacity: 0.4; }
 
   /* the state word, in the state's cut: hot states expand into place,
      cold ones contract (transform only, so nothing reflows) */
+  /* The word is sized to the viewfinder and never breaks inside itself:
+     "Streaming" stays one word at 320 px. Each size is also capped in the
+     viewfinder's own units, so larger text makes the rest of the page grow
+     while the word still fits. Only the rest of the line and long titles
+     wrap, between words. */
   .hero-word {
     position: absolute; left: 1.25rem; right: 2.25rem; bottom: 1.25rem; margin: 0;
     font-family: var(--font-display); font-stretch: var(--state-cut-w); font-weight: var(--state-cut-g);
-    font-size: clamp(2.75rem, 14cqw, 3.75rem); line-height: 0.9; letter-spacing: -0.018em; color: var(--color-ink);
-    text-wrap: balance; overflow-wrap: break-word;
+    font-size: min(clamp(2.75rem, 14cqw, 5.5rem), 17cqw); line-height: 0.9; letter-spacing: -0.018em; color: var(--color-ink);
+    text-wrap: balance; overflow-wrap: normal; hyphens: manual;
   }
   .hero-word-lead, .hero-word-rest { display: block; transform-origin: 0 100%; }
-  .hero-word-rest { font-size: 0.52em; line-height: 1.05; margin-top: 0.14em; letter-spacing: -0.01em; }
-  .hero[data-state="streaming"] .hero-word { font-size: clamp(2.25rem, 12.5cqw, 3.5rem); }
-  .hero[data-state="asleep"] .hero-word { font-size: clamp(3.5rem, 19cqw, 4.75rem); }
-  .hero-word[data-long] { font-size: clamp(1.9375rem, 10cqw, 2.875rem); line-height: 0.96; }
+  .hero-word:not([data-long]) .hero-word-lead { white-space: nowrap; }
+  .hero-word-rest { font-size: 0.52em; line-height: 1.05; margin-top: 0.14em; letter-spacing: -0.01em; overflow-wrap: break-word; }
+  .hero[data-state="streaming"] .hero-word { font-size: min(clamp(1.75rem, 10.5cqw, 5rem), 11cqw); }
+  .hero[data-state="asleep"] .hero-word { font-size: min(clamp(3.5rem, 19cqw, 6.25rem), 21cqw); }
+  .hero-word[data-long] { font-size: min(clamp(1.9375rem, 10cqw, 3.5rem), 11cqw); line-height: 0.96; overflow-wrap: break-word; }
   .hero-word[data-long] .hero-word-lead { display: inline; }
   @media (prefers-reduced-motion: no-preference) {
     .hero-word > span { transition: transform var(--vos-dur-stretch) var(--ease-width), opacity var(--vos-dur-base) ease-out; }
@@ -166,10 +182,12 @@
   .hero-pct::after { content: " %"; font-size: var(--text-base); color: var(--color-ink-2); }
   @media (prefers-reduced-motion: no-preference) { .hero-pct { transition: --pct var(--vos-dur-pct) var(--ease-out); } }
 
-  /* the state's own action: white-hot, the thing you touch */
+  /* the state's own action: white-hot, the thing you touch; a way to
+     somewhere (Details) is a ghost key */
   .hero-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; padding-top: 0.25rem; }
   .hero-actions:empty, .hero-hint:empty { display: none; }
   .hero-actions .btn { flex: 1 1 auto; }
+  .hero-actions .btn.ghost { flex: 0 1 auto; min-width: 8rem; }
   .hero-actions .btn.primary { flex: 1 1 100%; }
   .btn.primary.hold .hold-fill { height: 0.25rem; background: linear-gradient(90deg, var(--color-h3), var(--color-h5), var(--color-h6)); }
 
@@ -220,17 +238,18 @@
   .home-status:hover { background: var(--color-surface-2); color: var(--color-ink); }
   .home-status .skel { flex: 1; max-width: 16rem; }
 
+  /* This PC: the facts beside the viewfinder, from the rail up */
+  .home-pc { display: none; }
+  .home-facts .fact dd { min-width: 0; }
+
   /* ------------------------------------------------ layouts */
   @media (min-width: 40rem) { .vf { height: clamp(18.75rem, 46svh, 28rem); } }
   @media (min-width: 64rem) {
     .home { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0 1.75rem; align-items: start; padding-top: 0.5rem; }
     .home-lead { position: sticky; top: 4.5rem; }
-    .vf { height: 30rem; }
-    .hero-word { font-size: 4.5rem; }
-    .hero[data-state="streaming"] .hero-word { font-size: 4rem; }
-    .hero[data-state="asleep"] .hero-word { font-size: 5.25rem; }
-    .hero-word[data-long] { font-size: 3.625rem; }
+    .vf { height: min(70svh, 42rem); min-height: 26rem; }
     .hero-actions .btn.primary { flex: 0 1 auto; min-width: 15rem; }
+    .home-pc { display: grid; gap: 0.75rem; }
   }
   /* A phone on its side: the viewfinder and the rest side by side. */
   @media (max-height: 29.99rem) and (min-width: 40rem) and (max-width: 63.99rem) {
@@ -238,6 +257,11 @@
     .vf { height: 15.5rem; }
     .hero-word { font-size: 2.5rem; }
     .hero[data-state="streaming"] .hero-word, .hero-word[data-long] { font-size: 2rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* the needle's overshoot is motion too */
+    .vf-needle { transition: none; }
   }
 
   @media (forced-colors: active) {

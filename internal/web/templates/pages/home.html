@@ -5,8 +5,12 @@
   /status (through the shell) and the event stream. The hero is REDLINE's
   thermal viewfinder: the heat field and the scale are decoration
   (aria-hidden); the eyebrow, the title, the detail and the tags carry the
-  words. At most one context card shows, then "Show <n> more"; a device
-  waiting for its PIN goes above the hero, because the PIN is timed.
+  words. At most one context card shows, then "Show <n> more". A device
+  waiting for its PIN is the hero itself when VaporOS is ready (its words,
+  a warmer field and Enter PIN); in any other state its card goes above the
+  hero, because the PIN is timed. The virtual screen is drawn only while it
+  exists, during a stream; otherwise the idle mode is a tag. From the rail
+  breakpoint up, This PC's facts fill the side column.
 */ -}}
 {{define "content"}}
 <div class="home" id="home" data-region="home" aria-busy="true">
@@ -19,7 +23,7 @@
         <span class="vf-tape" aria-hidden="true"></span>
         <span class="vf-corner" data-corner="tl" aria-hidden="true"></span><span class="vf-corner" data-corner="tr" aria-hidden="true"></span>
         <span class="vf-corner" data-corner="bl" aria-hidden="true"></span><span class="vf-corner" data-corner="br" aria-hidden="true"></span>
-        <p class="vf-hud" id="hero-eyebrow"><span class="vf-plate" id="hero-host">{{.Hostname}}.local</span><span class="vf-plate" id="hero-gpu" hidden></span></p>
+        <p class="vf-hud" id="hero-eyebrow"><span class="vf-plate" id="hero-host">{{.Hostname}}</span><span class="vf-plate vf-plate-gpu" id="hero-gpu" hidden></span></p>
         {{template "screen-shape"}}
         <div class="vf-scale" aria-hidden="true"><span class="vf-needle"><span class="vf-needle-label" id="hero-needle">checking</span></span></div>
         <h2 class="hero-word" id="hero-title"><span class="hero-word-lead">Checking…</span></h2>
@@ -41,7 +45,7 @@
       <h2 class="rack-title" id="home-controls-title">Controls</h2>
       <div class="keys-strip home-keys">
         <a class="key-tile" id="home-pair-key" href="{{.Base}}/devices#pair">{{icon "pair"}}<b>Pair</b></a>
-        <button class="key-tile" id="home-awake" type="button" aria-pressed="false" disabled>{{icon "eye"}}<b id="home-awake-label">Stay awake 1 h</b> <span class="key-sub" id="home-awake-sub" hidden></span></button>
+        <button class="key-tile" id="home-awake" type="button" aria-pressed="false" aria-describedby="home-awake-sub" disabled>{{icon "eye"}}<b>Stay awake 1 h</b> <span class="key-sub" id="home-awake-sub" hidden></span></button>
         <button class="key-tile" id="home-power" type="button" aria-haspopup="dialog" aria-controls="power-sheet" disabled>{{icon "power"}}<b>Power</b></button>
       </div>
       <p class="home-line" id="home-power-line"><span class="skel skel-line" aria-hidden="true"></span></p>
@@ -52,6 +56,16 @@
       <button class="btn ghost small home-more" id="cards-more" type="button" aria-expanded="false" aria-controls="cards-list" hidden>Show more</button>
     </section>
     <a class="home-status" id="home-status" href="{{.Base}}/system/updates"><span class="skel skel-line" aria-hidden="true"></span></a>
+    <section class="home-pc" id="home-pc" aria-labelledby="home-pc-title">
+      <h2 class="rack-title" id="home-pc-title">This PC</h2>
+      <dl class="facts home-facts">
+        <div class="fact"><dt>Address</dt><dd class="mono" id="pc-addr">{{.Hostname}}.local</dd></div>
+        <div class="fact"><dt>IP</dt><dd class="mono" id="pc-ip">…</dd></div>
+        <div class="fact"><dt>Graphics</dt><dd id="pc-gpu">…</dd></div>
+        <div class="fact"><dt>Processor</dt><dd id="pc-cpu">…</dd></div>
+        <div class="fact"><dt>Up for</dt><dd class="mono" id="pc-up">…</dd></div>
+      </dl>
+    </section>
   </div>
 </div>
 <dialog class="sheet" id="power-sheet" aria-labelledby="power-sheet-title" data-snap="medium">

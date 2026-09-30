@@ -6,7 +6,7 @@
 import { api, errorText, serverNow, url } from '../core/api.js';
 import { announce } from '../core/announce.js';
 import { byId, h, icon, part, setVar } from '../core/dom.js';
-import { on, onLink } from '../core/live.js';
+import { link, on, onLink } from '../core/live.js';
 import { getString, remove, setString } from '../core/store.js';
 import { holdButton } from '../ui/hold.js';
 import { settleMain } from '../ui/region.js';
@@ -44,6 +44,9 @@ const again = () => {
   refresh(true);
 };
 const host = (snap) => M.hostOf(snap, byId('hero-host').textContent.replace(/\.local$/, ''));
+// The viewfinder names the machine as the prototype does: vapor, not
+// vapor.local, which the app bar already says.
+const shortHost = (snap) => host(snap).replace(/\.local$/, '');
 
 // The shell's /status with Home's live events. When its sunshine part
 // failed, one GET /sunshine says why: 503 starting, 502 not answering (T1).
@@ -86,7 +89,8 @@ function heroOf(snap) {
     return {
       key: 'asleep', state: 'asleep', reason: '', title: 'Asleep', progress: null,
       detail: 'VaporOS stopped answering. Wake it from Moonlight, or press its power button. This page reconnects by itself.',
-      chips: [`Waiting for ${host(snap)}`], actions: [], // the offline banner has How to wake it
+      // Home hides the offline banner that says the same: the hero offers its key.
+      chips: [`Waiting for ${host(snap)}`], actions: [{ id: 'wake', label: 'How to wake it', quiet: true }],
     };
   }
   if (failure) return { ...M.heroModel({ display: {}, update: {}, sunshineError: { status: 0 } }), detail: failure, actions: [{ id: 'retry', label: 'Try again' }] };
@@ -108,30 +112,40 @@ function renderHero(m, snap) {
   const hero = byId('hero');
   hero.dataset.state = m.state;
   hero.dataset.reason = m.reason;
-  const pair = M.pairings(snap).length > 0 && (m.state === 'ready' || m.state === '');
+  const pair = m.attention === 'pair';
   if (pair) hero.dataset.attention = 'pair';
   else delete hero.dataset.attention;
-  put(byId('hero-needle'), pair ? 'pairing' : NEEDLE[m.state] || m.reason || 'checking');
+  // Idle power-off is close: the field cools and the needle says idle.
+  hero.toggleAttribute('data-idle', !!m.idle);
+  // Not live, not yet asleep: the words are the last known ones, so the
+  // field cools and dims and the needle says so (NEW-1).
+  const stale = !asleep && painted && link.state !== 'live';
+  hero.toggleAttribute('data-stale', stale);
+  put(byId('hero-needle'), stale ? 'last seen' : pair ? 'pairing' : m.idle ? 'idle' : NEEDLE[m.state] || m.reason || 'checking');
   renderTitle(m.title);
-  put(byId('hero-host'), host(snap));
+  put(byId('hero-host'), shortHost(snap));
   const gpu = byId('hero-gpu');
   put(gpu, snap.system?.gpu?.name || '');
   gpu.hidden = !gpu.textContent;
 
-  // The virtual screen at the client's mode while streaming, else its own.
-  const mode = (m.state === 'streaming' && M.session(snap)?.mode) || snap.display?.current || '';
+  // The virtual screen exists only while a stream runs: drawn then, at the
+  // client's mode. Otherwise its mode is a tag under the word.
+  const streaming = m.state === 'streaming';
+  const mode = (streaming && M.session(snap)?.mode) || snap.display?.current || '';
   const shape = part(hero, 'shape');
   M.setShape(shape, mode, { state: m.state });
-  shape.toggleAttribute('data-shown', !!mode && m.state !== 'fault');
+  shape.toggleAttribute('data-shown', streaming && !!mode);
 
   const prog = m.progress != null ? M.updateProgress(snap) : null;
   put(byId('hero-detail'), prog ? m.detail.replace(/^.*?%\.\s*/, '') : m.detail);
   const label = mode ? M.modeLabel(mode) : '';
   const ul = byId('hero-chips');
-  if (ul.dataset.chips !== m.chips.join('|')) {
-    ul.dataset.chips = m.chips.join('|');
-    // The mode is the viewfinder's readout; the list says it in words.
-    ul.replaceChildren(...m.chips.map((c) => h('li', { class: c === label ? 'sr-only' : 'hero-tag', 'data-tone': c === 'HDR' ? 'hot' : null, text: c })));
+  const sig = `${streaming}|${m.chips.join('|')}`;
+  if (ul.dataset.chips !== sig) {
+    ul.dataset.chips = sig;
+    // While streaming the viewfinder's readout shows the mode (the list
+    // still says it in words); otherwise the tag does.
+    ul.replaceChildren(...m.chips.map((c) => h('li', { class: streaming && c === label ? 'sr-only' : 'hero-tag', 'data-tone': c === 'HDR' ? 'hot' : null, 'data-kind': c === label ? 'mode' : null, text: c })));
   }
   const box = byId('hero-progress');
   box.hidden = !prog;
@@ -163,7 +177,9 @@ function renderActions(m, snap) {
   }
 }
 
-function heroAction(a, primary) {
+function heroAction(a, first) {
+  // White-hot is for the thing to act on, never a way somewhere (quiet).
+  const primary = first && !a.quiet;
   if (a.href) return h('a', { class: primary ? BTN.primary : BTN.ghost, href: url(a.href), text: a.label });
   if (a.id === 'activate' || a.id === 'reboot') {
     const btn = h('button', { class: primary ? BTN.holdPrimary : BTN.holdGhost, type: 'button', 'data-hold': a.id, 'aria-describedby': 'hero-hold-hint' },
@@ -180,6 +196,8 @@ function heroAction(a, primary) {
   const btn = h('button', { class: primary ? BTN.primary : BTN.ghost, type: 'button', text: a.label });
   btn.addEventListener('click', async () => {
     if (a.id === 'stream-details') (await sheets()).openSheet(byId('stream-sheet'), { invoker: btn });
+    else if (a.id === 'pin') (await import('../ui/pinpad.js')).openPinpad({ from: btn });
+    else if (a.id === 'wake') (await scene()).asleep({ from: link.since });
     else if (a.id === 'retry') load();
     else if (a.id === 'sunrestart') {
       await write(btn, () => api('POST', '/sunshine/restart', {}), 'Streaming is restarting.');
@@ -190,9 +208,12 @@ function heroAction(a, primary) {
 }
 
 // write runs one request from a button: busy while it runs, a notice after.
+// The button stays focusable (disabled would drop focus to <body>); presses
+// while it is busy do nothing.
 async function write(btn, call, done) {
-  btn.disabled = true;
+  if (btn.getAttribute('aria-busy') === 'true') return null;
   btn.setAttribute('aria-busy', 'true');
+  btn.setAttribute('aria-disabled', 'true');
   try {
     const r = await call();
     notify(typeof done === 'function' ? done(r) : done, { kind: 'ok' });
@@ -201,8 +222,8 @@ async function write(btn, call, done) {
     notify(await errorText(err), { kind: 'error' });
     return null;
   } finally {
-    btn.disabled = false;
     btn.removeAttribute('aria-busy');
+    btn.removeAttribute('aria-disabled');
   }
 }
 
@@ -212,10 +233,11 @@ function renderKeys(snap) {
   const off = !!p && !p.idle_shutdown && !until;
   const awake = byId('home-awake');
   awakeOn = !!until;
+  // A toggle keeps its name (Stay awake 1 h); pressed says it is on, and
+  // the line under it says until when (APG button pattern).
   awake.setAttribute('aria-pressed', String(awakeOn));
-  put(byId('home-awake-label'), until ? 'Awake' : 'Stay awake 1 h');
   const sub = byId('home-awake-sub');
-  put(sub, until ? `until ${M.clock(until, new Date(serverNow()))}` : off ? 'Idle power-off is off' : '');
+  put(sub, until ? `Awake until ${M.clock(until, new Date(serverNow()))}` : off ? 'Idle power-off is off' : '');
   sub.hidden = !sub.textContent;
   awake.disabled = asleep || !p || off;
   const plans = ['reboot', 'poweroff'].map((k) => M.powerPlan(k, snap));
@@ -240,7 +262,27 @@ function renderLines(snap) {
   const kind = line.replace(/\d+/g, '#');
   if (painted && kind !== said.power) announce(line);
   said.power = kind;
-  put(byId('home-status'), snap.update ? M.statusLine(snap.update, serverNow()) : "Couldn't read the update status.");
+  const status = byId('home-status');
+  const words = snap.update ? M.statusLine(snap.update, serverNow()) : "Couldn't read the update status.";
+  if (status.dataset.line !== words) {
+    status.dataset.line = words;
+    // The version is set in the mono face, as everywhere else.
+    const v = snap.update?.booted;
+    const at = v ? words.indexOf(v) : -1;
+    status.replaceChildren(h('span', {}, ...(at < 0 ? [words] : [words.slice(0, at), h('span', { class: 'mono', text: v }), words.slice(at + v.length)])));
+  }
+  renderFacts(snap);
+}
+
+// This PC's facts, from GET /status (the side column from the rail up).
+function renderFacts(snap) {
+  const sys = snap.system;
+  if (!sys) return;
+  put(byId('pc-addr'), host(snap));
+  put(byId('pc-ip'), (sys.ips || []).find((ip) => !ip.includes(':')) || (sys.ips || [])[0] || 'Unknown');
+  put(byId('pc-gpu'), sys.gpu?.name || 'None found');
+  put(byId('pc-cpu'), sys.cpu || 'Unknown');
+  put(byId('pc-up'), sys.uptime_s != null ? M.duration(sys.uptime_s) : 'Unknown');
 }
 
 // One context card, then "Show <n> more" (MASTER-PLAN §3.5). A device
@@ -318,6 +360,10 @@ async function cardDo(c, id, btn) {
   const avail = snap.update?.available?.version;
   if (id === 'pin') (await import('../ui/pinpad.js')).openPinpad({ from: btn });
   else if (id === 'activate') (await scene()).powerAction('activate', { snap, version: c.version });
+  else if (id === 'awake1h') {
+    const r = await write(btn, () => api('POST', '/power/keep-awake', { minutes: 60 }), 'VaporOS stays awake for the next hour.');
+    if (r) refresh(true);
+  }
   else if (id === 'dismiss-failed') {
     setString('local', DISMISSED, c.version);
     render();
@@ -380,7 +426,13 @@ function wire() {
     byId(id).vosHold = holdButton(byId(id), {
       hint: byId('home-hold-hint'),
       key,
-      confirm: () => dialog().then((d) => d.confirmDialog(M.powerPlan(kind, snapshot()).confirm)),
+      // One layer at a time: the sheet steps aside for the question, and
+      // focus waits on Power, where it comes back after a Cancel.
+      confirm: () => {
+        byId('power-sheet').close();
+        byId('home-power').focus({ preventScroll: true });
+        return dialog().then((d) => d.confirmDialog(M.powerPlan(kind, snapshot()).confirm));
+      },
       run: () => {
         byId('power-sheet').close();
         scene().then((s) => s.powerAction(kind, { confirmed: true, snap: snapshot() }));
@@ -410,6 +462,7 @@ function wire() {
   let timer = 0;
   onLink((l) => {
     clearTimeout(timer);
+    if (painted) render(); // the hero goes stale, or fresh again
     if (l.state === 'live') {
       wasLive = true;
       if (asleep) {
