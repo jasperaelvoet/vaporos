@@ -11,7 +11,7 @@ export const metadata = pageMetadata(pageMeta.faq);
 export default function FaqPage() {
   return (
     <>
-      <PageHead cut="warm" lines={faqPage.headline} lead={faqPage.lead} heat={HEAT.ready} heatLabel="ready">
+      <PageHead cut="warm" lines={faqPage.headline} fitK={11.859} lead={faqPage.lead} heat={HEAT.ready} heatLabel="ready">
         <nav aria-label={faqPage.topicsLabel}>
           <ul className="flex flex-wrap gap-x-6 gap-y-2 text-fine">
             {faqGroups.map((g) => (

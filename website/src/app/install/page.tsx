@@ -32,7 +32,7 @@ export default function InstallPage() {
   });
   return (
     <>
-      <PageHead cut="cold" lines={installGuide.headline} lead={installGuide.lead} heat={HEAT.asleep} heatLabel="asleep" />
+      <PageHead cut="cold" lines={installGuide.headline} fitK={5.109} lead={installGuide.lead} heat={HEAT.asleep} heatLabel="asleep" />
 
       <div className="wrap grid gap-x-16 gap-y-8 pb-[clamp(5rem,10vw,8rem)] desk:grid-cols-[15.5rem_minmax(0,1fr)]">
         <GuideToc items={toc} label={installGuide.tocLabel} unit={installGuide.tocUnit} />

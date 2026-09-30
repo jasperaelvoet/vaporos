@@ -16,6 +16,7 @@ export function PageHead({
   lines,
   narrow,
   cut,
+  fitK,
   lead,
   heat,
   heatLabel,
@@ -25,6 +26,8 @@ export function PageHead({
   lines: readonly string[];
   narrow?: readonly string[];
   cut: CutName;
+  /** The measured fit of `lines` (the H1's data-fit-k), so the first paint is already fitted. */
+  fitK?: number;
   lead?: RichText;
   heat?: number;
   heatLabel?: string;
@@ -38,7 +41,7 @@ export function PageHead({
       data-heat={heat}
       data-heat-label={heatLabel}
     >
-      <Headline as="h1" cut={cut} size="page" lines={lines} narrow={narrow} />
+      <Headline as="h1" cut={cut} size="page" lines={lines} narrow={narrow} fitK={fitK} />
       {(lead || children) && (
         <div className="grid gap-5 desk:pb-2">
           {lead && (

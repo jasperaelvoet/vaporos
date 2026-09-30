@@ -10,19 +10,43 @@ import { PageHead, RequirementList, SectionTitle } from '@/components/docs';
 import { VerifySteps } from '@/components/docs/verify-steps';
 import { DownloadCard, RequirementSummary } from '@/components/release';
 import { Notice, Rich, TextLink } from '@/components/ui';
-import { anchors, downloadPage, pageMeta, requirements, requirementsSection, verifySection } from '@/content';
+import { anchors, downloadPage, pageMeta, requirements, requirementsSection, routes, site, verifySection } from '@/content';
 import { HEAT } from '@/direction';
+import { absoluteUrl } from '@/lib/base-path';
 import { pageMetadata } from '@/lib/metadata';
 import { getLatestRelease } from '@/lib/release';
+import { formatSize, type Release } from '@/lib/release-shape';
 
 export const metadata = pageMetadata(pageMeta.download);
+
+// Structured data for the release the build found: only fields the card
+// itself shows (no category, price or rating). A newer release found live
+// in the browser updates the card, not this.
+function releaseJsonLd(r: Release): string {
+  const data = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: site.name,
+    description: site.description,
+    url: absoluteUrl(routes.download),
+    softwareVersion: r.version,
+    downloadUrl: r.iso.url,
+    ...(r.iso.size ? { fileSize: formatSize(r.iso.size) } : {}),
+    ...(r.published ? { datePublished: r.published } : {}),
+  };
+  // In a <script>, '<' must not start a tag.
+  return JSON.stringify(data).replace(/</g, '\\u003c');
+}
 
 export default async function DownloadPage() {
   const release = await getLatestRelease();
   const ready = release.state === 'ready';
   return (
     <>
-      <PageHead cut="hot" lines={downloadPage.headline} lead={downloadPage.lead} heat={HEAT.ready} heatLabel="ready" />
+      {release.state === 'ready' && (
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: releaseJsonLd(release.release) }} />
+      )}
+      <PageHead cut="hot" lines={downloadPage.headline} fitK={9.306} lead={downloadPage.lead} heat={HEAT.ready} heatLabel="ready" />
 
       <section
         aria-labelledby="release-title"

@@ -23,7 +23,7 @@ export default function NotFound() {
       data-heat-label="no signal"
     >
       <div className="grid gap-6 desk:order-2">
-        <Headline as="h1" cut="cold" size="page" lines={notFound.headline} />
+        <Headline as="h1" cut="cold" size="page" lines={notFound.headline} fitK={4.235} />
         <p className="max-w-read text-lead text-smoke">
           <Rich text={notFound.lead} />
         </p>
