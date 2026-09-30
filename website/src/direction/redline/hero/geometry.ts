@@ -56,3 +56,9 @@ export const LOAD_REST = 0.34;
 export const LOAD_SPAN = 0.62;
 /** The scroll progress at which the spot meter says a game started. */
 export const HOT_AT = 0.3;
+/**
+ * The same on phones (≤ NARROW_MAX), where the PC stands in the top half and
+ * would scroll under the nav by 0.3: about 50 px of scroll at 390 × 844, so
+ * the GPU heats and the meter changes while you can see them.
+ */
+export const HOT_AT_NARROW = 0.1;

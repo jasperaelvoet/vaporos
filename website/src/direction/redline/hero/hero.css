@@ -68,6 +68,33 @@
   transition: opacity 0.9s var(--ease-out);
 }
 
+/* Under load the poster's hotter drawing heats in fast and cools slowly. */
+.hero-poster-hot {
+  opacity: 0;
+  transition: opacity var(--vos-dur-cool) var(--ease-out);
+}
+.hero[data-hot="on"] .hero-poster-hot {
+  opacity: 1;
+  transition-duration: var(--vos-dur-heat);
+}
+
+/* A thermal camera's sensor grain over the poster (the live view draws its
+   own). A tiny tiled noise texture, low-entropy, so never a paint candidate. */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .9 -.3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.09;
+  mix-blend-mode: overlay;
+  transition: opacity 0.9s var(--ease-out);
+}
+.hero[data-gl="on"]::before {
+  opacity: 0;
+}
+
 .hero-canvas-slot {
   position: absolute;
   inset: 0;
@@ -89,13 +116,20 @@
   opacity: 0;
 }
 
-/* Text never sits on bare heat: a shade from the words' side and the bottom. */
+/* Text never sits on bare heat: a shade from the words' side, from the
+   bottom, and under the nav (the plumes and the pointer's heat rise there
+   before the scrim appears). The last layer melts the hero's floor into the
+   page's ash over its bottom sixth, so it has no hard edge. */
 .hero-shade {
+  --hero-melt: linear-gradient(0deg, var(--color-ash) 0%, color-mix(in srgb, var(--color-ash) 55%, transparent) 7%, transparent 16%);
+  --hero-top: linear-gradient(180deg, color-mix(in srgb, var(--color-h0) 70%, transparent) 0, transparent calc(var(--nav-h) + 3rem));
   position: absolute;
   inset: 0;
   z-index: 1;
   pointer-events: none;
   background:
+    var(--hero-melt),
+    var(--hero-top),
     linear-gradient(
       90deg,
       color-mix(in srgb, var(--color-h0) 80%, transparent) 0%,
@@ -328,18 +362,29 @@
     translate: -50% 0;
   }
   .hero-shade {
-    background: linear-gradient(
-      0deg,
-      color-mix(in srgb, var(--color-h0) 92%, transparent) 0%,
-      color-mix(in srgb, var(--color-h0) 74%, transparent) 42%,
-      transparent 70%
-    );
+    background:
+      var(--hero-melt),
+      var(--hero-top),
+      linear-gradient(
+        0deg,
+        color-mix(in srgb, var(--color-h0) 92%, transparent) 0%,
+        color-mix(in srgb, var(--color-h0) 74%, transparent) 42%,
+        transparent 70%
+      );
   }
   .hero-hud {
     display: none;
   }
+  /* The tag hangs under the crosshair, centred on it, so the longer
+     streaming reading stays on screen. */
+  .hero-spot {
+    flex-direction: column;
+    gap: 0.5rem;
+    translate: -50% -15px;
+  }
   .hero-spot-tag {
     font-size: 0.6875rem;
+    text-align: center;
   }
   .hero-copy {
     left: 1rem;

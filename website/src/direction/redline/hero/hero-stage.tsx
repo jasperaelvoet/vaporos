@@ -4,8 +4,9 @@
 //
 // 1. The scroll: over the first 62% of the hero the load goes 0.34 → 1
 //    (scroll-load.ts; the canvas heats the CPU and GPU with it), the spot
-//    meter reads "Streaming to Living room TV" past HOT_AT (data-hot on the
-//    hero; the CSS swaps the words), and, when motion is allowed, the
+//    meter reads "Streaming to Living room TV" past HOT_AT (HOT_AT_NARROW on
+//    phones; data-hot on the hero: the CSS swaps the words and heats the
+//    poster), and, when motion is allowed, the
 //    headline stretches from its warm cut toward the hot one (--stretch,
 //    --stretch-g: +24 and +100 on desktop, +8 on phones; the Headline is
 //    fitted for it, so nothing reflows).
@@ -19,7 +20,8 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
 import { motionAllowed, subscribeMotion } from '@/lib/motion/prefs';
-import { HOT_AT, LOAD_REST, LOAD_SPAN, NARROW_MAX } from './geometry';
+import { requestFrame, trackBox, whileNear } from '@/lib/motion/scroll-frame';
+import { HOT_AT, HOT_AT_NARROW, LOAD_REST, LOAD_SPAN, NARROW_MAX } from './geometry';
 import { heroLoad } from './scroll-load';
 
 const ThermalCanvas = dynamic(() => import('./thermal-canvas'), { ssr: false, loading: () => null });
@@ -43,34 +45,37 @@ export function HeroStage() {
   const ref = useRef<HTMLSpanElement>(null);
   const [live, setLive] = useState(false);
 
-  // 1. The scroll.
+  // 1. The scroll: a job in the page's scroll frame, only while the hero is
+  // within a screen of the viewport; progress from scrollY and the hero's
+  // cached box, never a layout read per frame.
   useEffect(() => {
     const hero = ref.current?.closest<HTMLElement>('[data-hero]');
     const h1 = hero?.querySelector<HTMLElement>('.hero-title');
     if (!hero) return;
-    let raf = 0;
+    const box = trackBox(hero);
     let stretch = motionAllowed();
+    let p = 0;
     let lastP = -1;
-    const run = () => {
-      raf = 0;
-      const r = hero.getBoundingClientRect();
-      const p = Math.min(1, Math.max(0, -r.top / Math.max(1, r.height * LOAD_SPAN)));
-      if (Math.abs(p - lastP) < 0.0005) return;
-      lastP = p;
-      heroLoad.set(LOAD_REST + (1 - LOAD_REST) * p);
-      const hot = p > HOT_AT;
-      if (hot !== (hero.dataset.hot === 'on')) {
-        if (hot) hero.dataset.hot = 'on';
-        else delete hero.dataset.hot;
-      }
-      if (h1 && stretch) {
-        const to = window.innerWidth <= NARROW_MAX ? 8 : 24;
-        h1.style.setProperty('--stretch', `${(to * p).toFixed(2)}%`);
-        h1.style.setProperty('--stretch-g', (100 * p).toFixed(1));
-      }
-    };
-    const queue = () => {
-      if (!raf) raf = requestAnimationFrame(run);
+    const job = {
+      read: () => {
+        p = Math.min(1, Math.max(0, (window.scrollY - box.top) / Math.max(1, box.height * LOAD_SPAN)));
+      },
+      write: () => {
+        if (Math.abs(p - lastP) < 0.0005) return;
+        lastP = p;
+        heroLoad.set(LOAD_REST + (1 - LOAD_REST) * p);
+        const narrow = window.innerWidth <= NARROW_MAX;
+        const hot = p > (narrow ? HOT_AT_NARROW : HOT_AT);
+        if (hot !== (hero.dataset.hot === 'on')) {
+          if (hot) hero.dataset.hot = 'on';
+          else delete hero.dataset.hot;
+        }
+        if (h1 && stretch) {
+          const to = narrow ? 8 : 24;
+          h1.style.setProperty('--stretch', `${(to * p).toFixed(2)}%`);
+          h1.style.setProperty('--stretch-g', (100 * p).toFixed(1));
+        }
+      },
     };
     const offMotion = subscribeMotion(() => {
       stretch = motionAllowed();
@@ -79,16 +84,13 @@ export function HeroStage() {
         h1.style.removeProperty('--stretch-g');
       }
       lastP = -1;
-      queue();
+      requestFrame();
     });
-    window.addEventListener('scroll', queue, { passive: true });
-    window.addEventListener('resize', queue);
-    queue();
+    const stop = whileNear(hero, job);
     return () => {
-      window.removeEventListener('scroll', queue);
-      window.removeEventListener('resize', queue);
+      stop();
+      box.dispose();
       offMotion();
-      if (raf) cancelAnimationFrame(raf);
     };
   }, []);
 

@@ -3,8 +3,12 @@
 // with next/dynamic (ssr: false) by HeroStage, after the page is idle, on
 // desktops only (hero-stage.tsx says which). It:
 //
-// - boots the PC (PSU, board, CPU, GPU) over 2.2 s and breathes one trail of
-//   steam across the headline, to show that the pointer does this too;
+// - takes over from the poster without a seam: the poster already shows the
+//   PC running, so the live view starts booted, with its plumes simulated
+//   ahead (WARM_S) before its first frame, and the one intro moment is a
+//   breath of steam dragged across the headline 0.2 s after it appears, to
+//   show that the pointer does this too. The breath is violet-magenta, cooler
+//   than the GPU, and stays above the lead paragraph;
 // - lets the pointer (mouse and pen, never touch) stir heat and air;
 // - follows the scroll's load (scroll-load.ts), heating the CPU and GPU;
 // - runs at 60 fps while the pointer stirs the air and 30 fps otherwise
@@ -21,9 +25,13 @@ import { createThermal, type Thermal } from './engine';
 import { EXHAUSTS, caseBox, caseToUv, NARROW_MAX } from './geometry';
 import { heroLoad } from './scroll-load';
 
-const BOOT_S = 2.2;
-const BREATH_FROM = 0.5;
+/** Seconds of air simulated before the first frame, so the plumes are already up. */
+const WARM_S = 1.4;
+/** The breath starts this long after the canvas appears, and takes BREATH_S. */
+const BREATH_FROM = 0.2;
 const BREATH_S = 1.6;
+/** The breath's heat: violet to magenta, cooler than the GPU at rest. */
+const BREATH_HEAT = 0.15;
 
 // power1.inOut
 const inOut = (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? 2 * x * x : 1 - 2 * (1 - x) * (1 - x));
@@ -47,6 +55,7 @@ export default function ThermalCanvas() {
     let visible = true;
     let running = false;
     let started = 0;
+    let shownAt = 0;
     let last = 0;
     let lastDraw = 0;
     let lastMove = -1e9;
@@ -57,6 +66,8 @@ export default function ThermalCanvas() {
     let bx = -1;
     let by = -1;
     let narrow = false;
+    // The breath's lowest point (uv, y up): above the lead paragraph.
+    let breathFloor = 0.36;
 
     const place = () => {
       if (!T) return;
@@ -69,6 +80,12 @@ export default function ThermalCanvas() {
       T.state.case = [box.x0 * dpr, box.y0 * dpr, box.ch * dpr];
       T.state.sources = EXHAUSTS.map((e) => [...caseToUv(box, cssW, cssH, e.q[0], e.q[1]), e.spread, 0]);
       T.state.dirs = EXHAUSTS.map((e) => e.dir);
+      const lead = hero.querySelector<HTMLElement>('.hero-lead');
+      if (lead) {
+        const hr = hero.getBoundingClientRect();
+        const top = lead.getBoundingClientRect().top - hr.top;
+        breathFloor = Math.min(0.7, Math.max(0.36, 1 - top / Math.max(1, hr.height) + 0.04));
+      }
     };
 
     // The rear fan always breathes a little, so the picture is never still.
@@ -94,17 +111,19 @@ export default function ThermalCanvas() {
       last = now;
       lastDraw = now;
       const t = (now - started) / 1000;
-      T.state.boot = inOut(t / BOOT_S);
       // Ease toward the scroll's load (a 0.6 s scrub).
       load += (heroLoad.get() - load) * Math.min(1, dt / 0.2);
       T.state.load = load;
-      // One breath of steam across the words.
-      if (breath >= 0 && t >= BREATH_FROM) {
-        const k = Math.min(1, (t - BREATH_FROM) / BREATH_S);
+      // One breath of steam across the headline, never through the lead.
+      const since = shownAt ? (now - shownAt) / 1000 : -1;
+      if (breath >= 0 && since >= BREATH_FROM) {
+        const k = Math.min(1, (since - BREATH_FROM) / BREATH_S);
         const e = inOut(k);
         const x = narrow ? 0.08 + 0.84 * e : 0.04 + 0.5 * e;
-        const y = narrow ? 0.34 + 0.12 * Math.sin(e * Math.PI * 1.5) : 0.2 + 0.26 * e + 0.08 * Math.sin(e * Math.PI * 2);
-        if (bx >= 0) T.splat(x, y, (x - bx) * 2600, (y - by) * 2600 + 30, 0.3);
+        const y = narrow
+          ? breathFloor + 0.06 + 0.06 * Math.sin(e * Math.PI * 1.5)
+          : breathFloor + 0.02 + 0.12 * e + 0.04 * Math.sin(e * Math.PI * 2);
+        if (bx >= 0) T.splat(x, y, (x - bx) * 2600, (y - by) * 2600 + 30, BREATH_HEAT);
         bx = x;
         by = y;
         if (k >= 1) breath = -1;
@@ -172,7 +191,12 @@ export default function ThermalCanvas() {
         place();
         started = performance.now();
         breath = 0;
+        // The poster already shows the PC running: start booted, and let the
+        // exhausts blow for WARM_S before the first frame so the plumes are up.
+        T.state.boot = 1;
         T.state.load = load;
+        feed();
+        for (let i = 0; i < Math.round(WARM_S * 30); i++) T.step(1 / 30);
         T.render(0);
         canvas.addEventListener('webglcontextlost', onLost);
         hero.addEventListener('pointermove', onMove, { passive: true });
@@ -181,7 +205,9 @@ export default function ThermalCanvas() {
         io.observe(hero);
         ro.observe(canvas);
         requestAnimationFrame(() => {
-          if (alive && T) hero.dataset.gl = 'on';
+          if (!alive || !T) return;
+          hero.dataset.gl = 'on';
+          shownAt = performance.now();
         });
         start();
       })
