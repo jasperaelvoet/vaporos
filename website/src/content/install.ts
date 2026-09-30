@@ -1,8 +1,17 @@
 // The install: the three-step strip on the home page, and the full guide at
 // /install/. Ported from components/InstallSteps.astro and pages/install.astro.
+import { ccCopy, demo, type DemoOpen } from './demo';
 import { requirements, type Requirement } from './requirements';
 import { links, routes } from './site';
 import type { Callout, Code, Headline, IconName, Item, LinkItem, Rich } from './types';
+
+/**
+ * A line that opens the live demo at `open` (content/demo.ts DEMO_OPEN), for
+ * the sections that describe the control center; nothing while the demo is
+ * off.
+ */
+const tryIt = (open: DemoOpen | ''): GuideBlock[] =>
+  demo.enabled ? [{ type: 'p', muted: true, text: `[See it in the live demo](${routes.demo}${open ? `?open=${open}` : ''})` }] : [];
 
 // ---------------------------------------------------------------------------
 // The strip: three steps, then a link to the guide.
@@ -287,12 +296,19 @@ export const installGuide = {
       blocks: [
         {
           type: 'p',
-          text: "Open `http://vapor.local` (or the name you chose, plus `.local`) and sign in with your admin password. The dashboard shows whether VaporOS is **Ready to stream**, what it's doing, and quick actions to pair a device, stay awake, restart or power off.",
+          text: ccCopy({
+            legacy:
+              "Open `http://vapor.local` (or the name you chose, plus `.local`) and sign in with your admin password. The dashboard shows whether VaporOS is **Ready to stream**, what it's doing, and quick actions to pair a device, stay awake, restart or power off.",
+            // templates/pages/home.html: the state, its detail, Controls
+            // (Pair, Stay awake 1 h, Power); the tab bar (layout.html).
+            next: "Open `http://vapor.local` (or the name you chose, plus `.local`) and sign in with your admin password. [[Home]] shows whether VaporOS is **Ready to stream** and what it's doing, with [[Pair]], [[Stay awake 1 h]] and [[Power]] under [[Controls]]. The other tabs are [[Devices]], [[Screen]] and [[System]].",
+          }),
         },
         {
           type: 'p',
           text: "If `.local` names don't work on your network, use the IP address from the welcome screen instead, or find it in your router's list of devices.",
         },
+        ...tryIt(''),
       ],
     },
     {
@@ -307,10 +323,17 @@ export const installGuide = {
           type: 'ol',
           items: [
             "Open Moonlight on the same network. It usually finds the PC by itself; tap it. If it doesn't, tap **+** (Add PC) and enter the PC's address.",
-            "Moonlight shows a 4-digit PIN. On the VaporOS page, open [[Pair a device]], type the PIN (the device's name is filled in), and press [[Pair]]. A connected monitor also says when a device wants to pair.",
+            ccCopy({
+              legacy:
+                "Moonlight shows a 4-digit PIN. On the VaporOS page, open [[Pair a device]], type the PIN (the device's name is filled in), and press [[Pair]]. A connected monitor also says when a device wants to pair.",
+              // Devices' pair card and Home's card both offer Enter PIN; the
+              // pad pairs on the last digit (partials/overlays.html).
+              next: "Moonlight shows a 4-digit PIN. On the VaporOS page, tap [[Enter PIN]] (on [[Home]] or under [[Devices]]) and type the PIN: it pairs as soon as you enter the last digit. A connected monitor also says when a device wants to pair.",
+            }),
             "Pick Steam, or one of your games, in Moonlight and play. The virtual display switches to that device's resolution, frame rate and HDR.",
           ],
         },
+        ...tryIt('devices'),
       ],
     },
     {
@@ -321,11 +344,20 @@ export const installGuide = {
       blocks: [
         {
           type: 'p',
-          text: 'VaporOS checks for new versions and, by default, downloads and prepares them in the background. A prepared update starts on the next restart; you can also restart right away from the [[Updates]] page. Turn off [[Download updates automatically]] to decide yourself.',
+          text: ccCopy({
+            legacy:
+              'VaporOS checks for new versions and, by default, downloads and prepares them in the background. A prepared update starts on the next restart; you can also restart right away from the [[Updates]] page. Turn off [[Download updates automatically]] to decide yourself.',
+            next: 'VaporOS checks for new versions and, by default, downloads and prepares them in the background. A prepared update starts on the next restart; you can also restart right away from [[System]] › [[Updates]]. Turn off [[Download updates automatically]] to decide yourself.',
+          }),
         },
         {
           type: 'p',
-          text: "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the [[Updates]] page lists the version that didn't start. To go back by hand, choose [[Roll back]] and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+          text: ccCopy({
+            legacy:
+              "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and the [[Updates]] page lists the version that didn't start. To go back by hand, choose [[Roll back]] and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+            // templates/pages/updates.html: Versions that didn't start; Go back.
+            next: "Each update is written to the copy of the system you aren't running. If the new version doesn't start cleanly, the PC returns to the previous version by itself, and [[System]] › [[Updates]] lists the version that didn't start. To go back by hand, choose [[Go back]] and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+          }),
         },
       ],
     },
@@ -339,11 +371,15 @@ export const installGuide = {
       blocks: [
         {
           type: 'p',
-          text: 'If the PC has a wired network adapter that can wake it (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing, VaporOS powers off, but never while it streams, runs a game, downloads or updates. Without one it stays on. Change this under [[Power]], or keep it awake for 1 or 4 hours with [[Stay awake]].',
+          text: `If the PC has a wired network adapter that can wake it (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing, VaporOS powers off, but never while it streams, runs a game, downloads or updates. Without one it stays on. Change this under ${ccCopy({ legacy: '[[Power]]', next: '[[System]] › [[Power]]' })}, or keep it awake for 1 or 4 hours with [[Stay awake]].`,
         },
         {
           type: 'p',
-          text: "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware. Any Wake-on-LAN app works too, with the MAC address shown under [[Power]].",
+          text: ccCopy({
+            legacy:
+              "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware. Any Wake-on-LAN app works too, with the MAC address shown under [[Power]].",
+            next: "To turn it back on, select the PC in Moonlight and choose **Wake**. Wake-on-LAN needs a wired connection, and may need to be enabled in the PC's firmware. Any Wake-on-LAN app works too, with the MAC address and the broadcast address on the [[Wake it]] card under [[System]] › [[Power]].",
+          }),
         },
         { type: 'done', ...done },
       ],

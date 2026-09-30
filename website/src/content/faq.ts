@@ -1,6 +1,7 @@
 // Frequently asked questions. Every answer follows from the code; see
 // docs/CONTRACTS.md in the repo for the underlying behaviour. Ported from the
 // Astro site's lib/faq.ts (its HTML turned into Rich paragraphs).
+import { ccCopy } from './demo';
 import { links, routes } from './site';
 import type { Headline, IconName, Rich } from './types';
 
@@ -41,7 +42,12 @@ export const faq: QA[] = [
     id: 'gpu',
     q: 'Does it work with NVIDIA or Intel graphics?',
     a: [
-      "Not yet. VaporOS streams with AMD Radeon GPUs on the `amdgpu` driver. On other graphics it still installs and runs, but the dashboard and the welcome screen say there's no supported graphics card, and it won't stream. Very old AMD cards that use the legacy `radeon` driver aren't supported either.",
+      ccCopy({
+        legacy:
+          "Not yet. VaporOS streams with AMD Radeon GPUs on the `amdgpu` driver. On other graphics it still installs and runs, but the dashboard and the welcome screen say there's no supported graphics card, and it won't stream. Very old AMD cards that use the legacy `radeon` driver aren't supported either.",
+        // Home's fault hero (internal/web/static/js/summary.js: "No supported graphics card").
+        next: "Not yet. VaporOS streams with AMD Radeon GPUs on the `amdgpu` driver. On other graphics it still installs and runs, but the control center's [[Home]] and the welcome screen say there's no supported graphics card, and it won't stream. Very old AMD cards that use the legacy `radeon` driver aren't supported either.",
+      }),
     ],
     short: 'Not yet. VaporOS streams with AMD Radeon GPUs on the `amdgpu` driver.',
   },
@@ -68,7 +74,7 @@ export const faq: QA[] = [
     id: 'dual-boot',
     q: 'Can I dual boot it with Windows?',
     a: [
-      'No. VaporOS installs to a whole drive and erases it. Other drives in the PC are left alone, and if they hold Steam libraries you can pick them during setup (or later, under [[Storage]]) and keep playing those games. Nothing on them is changed.',
+      `No. VaporOS installs to a whole drive and erases it. Other drives in the PC are left alone, and if they hold Steam libraries you can pick them during setup (or later, under ${ccCopy({ legacy: '[[Storage]]', next: '[[System]] › [[Storage]]' })}) and keep playing those games. Nothing on them is changed.`,
     ],
     short: 'No. VaporOS installs to a whole drive and erases it. Other drives are left alone.',
   },
@@ -101,7 +107,7 @@ export const faq: QA[] = [
     id: 'updates',
     q: 'Where do updates come from?',
     a: [
-      "From this project's GitHub container registry, `ghcr.io/jasperaelvoet/vaporos`. By default VaporOS downloads new versions in the background and prepares them; they start on the next restart. You can turn that off and update by hand under [[Updates]].",
+      `From this project's GitHub container registry, \`ghcr.io/jasperaelvoet/vaporos\`. By default VaporOS downloads new versions in the background and prepares them; they start on the next restart. You can turn that off and update by hand under ${ccCopy({ legacy: '[[Updates]]', next: '[[System]] › [[Updates]]' })}.`,
       'Every update has to carry a valid ed25519 signature from the release key, before VaporOS writes anything, and every file has to match its size and SHA-256 before the new version can start. The `main` channel is the stable one; other channels are test builds.',
     ],
     short: 'From `ghcr.io/jasperaelvoet/vaporos`, signed with the release key.',
@@ -111,7 +117,11 @@ export const faq: QA[] = [
     q: 'What if an update breaks something?',
     a: [
       "VaporOS keeps two copies of the system. An update goes to the one you aren't running, and the old one stays as it was. If the new version doesn't start cleanly, the PC goes back to the previous version by itself and won't install that version again.",
-      "You can also go back by hand: open [[Updates]], choose [[Roll back]], and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+      ccCopy({
+        legacy:
+          "You can also go back by hand: open [[Updates]], choose [[Roll back]], and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+        next: "You can also go back by hand: open [[System]] › [[Updates]], choose [[Go back]], and restart. VaporOS then holds back the version you left: it won't install it again by itself, only a newer one.",
+      }),
     ],
     short: "If a new version doesn't start cleanly, the PC goes back to the previous one by itself.",
   },
@@ -121,7 +131,7 @@ export const faq: QA[] = [
     id: 'power',
     q: 'Does it stay on all the time?',
     a: [
-      'It depends on the PC. When a wired network adapter can wake it from Moonlight (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing it powers off, but never while it streams, runs a game, downloads or updates. Otherwise it stays on. You can change this, or keep it awake for 1 or 4 hours, under [[Power]].',
+      `It depends on the PC. When a wired network adapter can wake it from Moonlight (Wake-on-LAN), the installer turns on idle power-off: after 15 minutes of nobody playing it powers off, but never while it streams, runs a game, downloads or updates. Otherwise it stays on. You can change this, or keep it awake for 1 or 4 hours, under ${ccCopy({ legacy: '[[Power]]', next: '[[System]] › [[Power]]' })}.`,
     ],
     short: 'It powers off when idle only if Moonlight can wake it again.',
   },
@@ -133,10 +143,22 @@ export const faq: QA[] = [
     q: 'Can I wake it from my phone?',
     a: [
       'Yes, when the PC is on a network cable and Wake-on-LAN works. In Moonlight, pick the PC and choose **Wake**; this works for a PC Moonlight has paired with.',
-      'Any Wake-on-LAN app on the same network works too, with the MAC address shown under [[Power]]. Note it down while the PC is on.',
-      "The VaporOS web page itself can't wake the PC: the PC serves that page, and a web page can't send the wake packet.",
+      ...ccCopy({
+        legacy: [
+          'Any Wake-on-LAN app on the same network works too, with the MAC address shown under [[Power]]. Note it down while the PC is on.',
+          "The VaporOS web page itself can't wake the PC: the PC serves that page, and a web page can't send the wake packet.",
+        ],
+        // The Wake it card (templates/partials/wake.html) on System › Power:
+        // the MAC and the broadcast address with Copy buttons, and "Save
+        // these now, while VaporOS is on". A page open when the PC goes to
+        // sleep says so and reconnects by itself (partials/overlays.html).
+        next: [
+          'Any Wake-on-LAN app on the same network works too, with the MAC address and the broadcast address on the [[Wake it]] card under [[System]] › [[Power]]. Save them while the PC is on.',
+          "The VaporOS web page itself can't wake the PC: the PC serves that page, and a web page can't send the wake packet. If the PC goes to sleep while the page is open, the page says how to wake it and reconnects by itself once it's back.",
+        ],
+      }),
     ],
-    short: 'Yes: Moonlight wakes it, and so does any Wake-on-LAN app with the MAC address shown under [[Power]].',
+    short: `Yes: Moonlight wakes it, and so does any Wake-on-LAN app with the MAC address shown under ${ccCopy({ legacy: '[[Power]]', next: '[[System]] › [[Power]]' })}.`,
   },
   {
     id: 'wifi',
@@ -158,7 +180,7 @@ export const faq: QA[] = [
     id: 'internet',
     q: 'Can other people on the internet reach it?',
     a: [
-      "The web page only answers devices on private networks, such as your home network, and asks for your admin password. Sunshine's own admin page is never reachable from other devices. SSH is off unless you turn it on under [[Advanced]], and then only with keys you add.",
+      `The web page only answers devices on private networks, such as your home network, and asks for your admin password. Sunshine's own admin page is never reachable from other devices. SSH is off unless you turn it on under ${ccCopy({ legacy: '[[Advanced]]', next: '[[System]] › [[Settings]]' })}, and then only with keys you add.`,
     ],
     short: 'The web page only answers devices on private networks, and asks for your admin password.',
   },

@@ -1,4 +1,5 @@
 // "What you get": the feature cards. Ported from components/FeatureGrid.astro.
+import { ccCopy } from './demo';
 import type { IconName, Item, SectionHead } from './types';
 
 export interface Feature extends Item {
@@ -78,7 +79,10 @@ export const features: Feature[] = [
     id: 'libraries',
     icon: 'drive',
     title: 'Bring your Steam libraries',
-    body: "Already have games on another drive? Pick it during setup, or later under Storage, and keep playing. VaporOS mounts it and adds it to Steam's library list; nothing on it is changed.",
+    body: ccCopy({
+      legacy: "Already have games on another drive? Pick it during setup, or later under Storage, and keep playing. VaporOS mounts it and adds it to Steam's library list; nothing on it is changed.",
+      next: "Already have games on another drive? Pick it during setup, or later under [[System]] › [[Storage]], and keep playing. VaporOS mounts it and adds it to Steam's library list; nothing on it is changed.",
+    }),
     short: 'Keep playing the games on your other drives: VaporOS adds them to Steam. Nothing on them is changed.',
     wide: true,
   },
