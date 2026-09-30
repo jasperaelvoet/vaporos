@@ -9,9 +9,11 @@
    hold); state lives in data-* attributes, numbers arrive as custom
    properties through the CSSOM. */
 
-/* The download's percent counts up (REDLINE: 800 ms, no overshoot). */
+/* The download's percent counts up (REDLINE: 800 ms, no overshoot). A
+   <number>, rounded by calc() in counter-reset: WebKit interpolates an
+   <integer> property as a fraction, which voids the counter (0 %). */
 @property --pct {
-  syntax: "<integer>";
+  syntax: "<number>";
   inherits: true;
   initial-value: 0;
 }
@@ -156,7 +158,7 @@
   .hero-progress[hidden] { display: none; }
   .hero-progress-row { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; }
   .hero-progress-phase { font-size: var(--text-lg); }
-  .hero-pct { font: 600 1.875rem / 1 var(--font-mono); letter-spacing: -0.03em; counter-reset: pct var(--pct); }
+  .hero-pct { font: 600 1.875rem / 1 var(--font-mono); letter-spacing: -0.03em; counter-reset: pct calc(var(--pct)); }
   .hero-pct::before { content: counter(pct); }
   .hero-pct::after { content: " %"; font-size: var(--text-base); color: var(--color-ink-2); }
   @media (prefers-reduced-motion: no-preference) { .hero-pct { transition: --pct var(--vos-dur-pct) var(--ease-out); } }
