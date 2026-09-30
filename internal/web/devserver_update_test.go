@@ -346,13 +346,14 @@ func bootNext(docs map[string]any) {
 	old := asStr(u["booted"])
 	u["booted"], u["booted_slot"], sys["version"], sys["booted_slot"] = version, slot, version, slot
 	u["staged"], u["next_boot"] = nil, nil
-	// Going back marks the version it leaves bad (boot.MarkBad).
-	bootable, entry := true, "vos-"+old+".conf"
+	// Going back marks the version it leaves bad (boot.MarkBad): +0-1, a
+	// counting entry with no tries left and one done.
+	other := map[string]any{"version": old, "running": false, "bootable": true, "counting": false,
+		"tries_left": 0, "tries_done": 0, "entry": "vos-" + old + ".conf"}
 	if asStr(asObj(u["held"])["version"]) == old {
-		bootable, entry = false, "vos-"+old+"+0-1.conf"
+		other["bootable"], other["counting"], other["tries_done"], other["entry"] = false, true, 1, "vos-"+old+"+0-1.conf"
 	}
-	u["other_slot"] = map[string]any{"version": old, "running": false, "bootable": bootable, "counting": false,
-		"tries_left": 0, "tries_done": 0, "entry": entry}
+	u["other_slot"] = other
 	if a := asObj(u["available"]); len(a) > 0 && boot.CompareVersions(asStr(a["version"]), version) <= 0 {
 		u["available"] = nil
 	}

@@ -7,9 +7,9 @@
         "version": "20260929.143000",
         "running": false,
         "bootable": false,
-        "counting": false,
+        "counting": true,
         "tries_left": 0,
-        "tries_done": 0,
+        "tries_done": 1,
         "entry": "vos-20260929.143000+0-1.conf"
       }
     }
