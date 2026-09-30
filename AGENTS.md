@@ -23,6 +23,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/api` | vosd's HTTP server: routing, access levels (Public/Authed/Setup/Local), sessions, CSRF, setup codes, Host and source-IP checks, rate limit, SSE. |
 | `internal/auth` | Web admin password (argon2id, PHC string) in `/var/lib/vos/auth.json`. |
 | `internal/boot` | ESP management: systemd-boot entries per slot with boot counting, kernels under `/vos/<ver>/`, loader.conf, cmdline assembly. |
+| `internal/brand` | The design tokens in Go (states, palette, heat ramps, the TV's type and look), the mark rasterizer for the TV and the PNG icons, the screen-shape readout and the TV-to-phone handshake mark. Its tests generate every file made from `design/` except the fonts; it imports nothing from this repo. |
 | `internal/config` | Paths (package variables so tests can redirect them), `config.json` schema and defaults, shared helpers. |
 | `internal/daemon` | vosd: wires every service to the HTTP server; web installer in live mode; VOS-READY announcer; setup code; config watcher. |
 | `internal/display` | GPU profiles, connector state, gamescope control, display policy (welcome vs gamescope, follow the client's mode), learned modes. |
@@ -40,7 +41,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/sysd` | Thin wrappers around `systemctl` and processes (no D-Bus). |
 | `internal/system` | `/system/*` and `/ssh`: machine info, hostname, reboot/poweroff, SSH toggle and keys. |
 | `internal/update` | `vos update/rollback/status/health/sign/keygen` and vosd's update service: OCI/HTTP/dir sources, streaming into the idle slot, update-state. |
-| `internal/web` | Embedded web UI (go:embed): server-rendered page shells in `templates/`, vanilla JS and CSS in `static/`, no external assets. |
+| `internal/web` | Embedded web UI, the control center (go:embed): server-rendered page shells in `templates/`; ES modules and a Tailwind-built CSS file in `static/`; CSS input in `styles/`; the dev server's fake API data in `fixtures/`; no external assets. The routes are the registry in `web.go`, and `activeSet` picks the UI vosd serves. The previous eight-page UI stays in `templates/legacy/` and `static/legacy/` until it is removed. |
 | `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, networkd. |
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
@@ -48,7 +49,10 @@ contract there first, then in code, and keep the two in sync.
 | `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`. |
 | `tests/` | `qemu-smoke.sh` (the CI install-and-boot test), `vm-checks.sh` (in-VM checks for `make test`), QMP helpers. |
 | `keys/` | `release.pub` only. See `keys/README.md`. |
-| `website/` | Project site (Astro, static), deployed to https://jasperaelvoet.github.io/vaporos/ with base `/vaporos`. |
+| `design/` | The one source for how VaporOS looks on the control center, the website and the TV: `tokens.json` (colours, the state vocabulary, type, motion), `logo.svg`, the UI icons in `icons/`, the font manifest and OFL licences in `fonts/`, the copy voice (`voice.md`) and test vectors (`*-vectors.json`). Everything made from it is generated (see Commands); `design/README.md` has the schema. |
+| `tools/web/` | Node tooling for the control center, never in the OS build: `css.mjs` (the pinned Tailwind CLI that builds `internal/web/static/app.css` and `static/pages/*.css`), `dev.mjs` (dev server and CSS watch) and `e2e/` (the headless browser harness, the no-poll check, runtime budgets and flow parity). A stub `go.mod` keeps it out of `./...`. |
+| `tools/fonts/` | Python (fontTools, hash-pinned in `requirements.txt`) that builds the committed fonts from `design/fonts/fonts.json`: WOFF2 for the control center, static TTF for the TV. |
+| `website/` | Project site (Next.js, static export), deployed to https://jasperaelvoet.github.io/vaporos/ with base `/vaporos`. |
 
 ## Commands
 
@@ -72,9 +76,26 @@ CI then fails unless `file` reports it as statically linked and `vos version` pr
 
 Other commands:
 - `make go-test` runs vet and test locally, with no VM and no builder.
-- `VOS_WEB_DEV=127.0.0.1:8080 go test ./internal/web -run TestDevServer -timeout 0` runs the web UI
-  against a fake API, with no machine. Flags are in `internal/web/devserver_test.go`.
-- `VOS_GEN_ICONS=1 go test ./internal/web -run TestGenerateIcons` regenerates the PNG icons from `static/icon.svg`.
+- `VOS_WEB_STRICT=1 go test ./internal/web/... ./internal/brand/...` also runs the checks plain `go test` skips
+  and `web.yml` runs in CI: the fake API against the contract, and the inactive UI set.
+- `VOS_GEN_DESIGN=1 go test ./internal/brand -run TestGenerateDesign` regenerates everything made from `design/`:
+  the Go tokens and mark, `internal/web/styles/tokens.css`, the app icons and manifest, the logo partials,
+  `internal/web/icons_gen.go`, and the website's `*.gen.*` files and icons. `TestDesignOutputsFresh` fails on a stale one.
+- `python3 tools/fonts/fonts.py` rebuilds the fonts from `design/fonts/fonts.json` (`--check` compares only).
+- Control center tooling needs Node 22 or newer and `npm ci --prefix tools/web` once:
+  - `npm --prefix tools/web run css` rebuilds `internal/web/static/app.css` and `static/pages/*.css`;
+    `run css:check` compares only. Commit the rebuilt CSS with the template, script or style change that
+    needs it: `TestAppCSSFresh` fails on a stale one.
+  - `npm --prefix tools/web run dev` runs the control center against a fake API with live reload and the CSS
+    watch (`-- --port=8081 --preset=streaming`). Without Node:
+    `VOS_WEB_DEV=127.0.0.1:8081 VOS_WEB_PRESET=idle go test ./internal/web -run '^TestDevServer$' -timeout 0`.
+    Presets are `internal/web/fixtures/presets/*.json`; flags are in `internal/web/devserver_test.go`.
+  - `node tools/web/e2e/run.mjs --matrix=smoke --out=DIR` is the headless browser check (every preset and page:
+    console, CSP, overflow, focus, axe, and the flows in `e2e/specs/`); `--matrix=full` for every viewport and
+    scheme, `--only=<spec>` for one page. `e2e/nopoll.mjs` checks that pages only keep the event stream open,
+    `npm --prefix tools/web run perf` the runtime budgets, and `e2e/parity.mjs --report=DIR/report.json --strict`
+    that every flow ID has a passing flow.
+  - `node --test tools/web/test/*.test.mjs` tests the tooling itself.
 - JS unit tests: `node --test internal/web/jstest/*.test.mjs`. They also run under `go test` when `node` is installed.
 - Website: `cd website && npm ci && npm run dev` (or `npm run build`).
 - `make` (the dev loop) and `make test` (end to end) drive Proxmox. Run them only when the user asks.
@@ -105,7 +126,10 @@ Other commands:
 - Keep the binary static: no cgo and no libraries that need it (DRM goes through raw ioctls in `internal/display/drm`).
 - Keep comments few: say why, not what. Package doc comments point to `docs/CONTRACTS.md`.
 - Paths go through `internal/config` variables so tests can redirect them. Never hard-code `/var/lib/vos` elsewhere.
-- Web UI: no external assets or CDNs (the CSP is `default-src 'self'`). Vanilla JS only.
+- Web UI: no external assets or CDNs (the CSP is `default-src 'self'`). Vanilla ES modules only (no framework,
+  no bundler). CSS is built by the pinned Tailwind CLI and committed; never edit `internal/web/static/app.css`
+  or `static/pages/*.css` by hand. The CSP also rules out inline `<script>` and `<style>`, `style=` and `on*=`
+  attributes; text goes into the page through `textContent` only (`TestCSPCompliance`).
 - Commit messages: one plain, imperative sentence that says what changed and why.
 
 ## Skills
@@ -129,6 +153,9 @@ and the security review are in `.claude/skills/SOURCES.md`.
   - `publish`: pushes only, and only with `VOS_SIGNING_KEY`. It signs the manifest, checks the signature
     against `keys/release.pub`, writes `SHA256SUMS`, and pushes to `ghcr.io/jasperaelvoet/vaporos:<version>,<channel>`.
     It also creates the GitHub release: `--latest` on `main`, a prerelease on other branches.
+- `.github/workflows/web.yml` runs the control center's Node checks on changes under `internal/**`, `design/**`,
+  `tools/web/**` or `docs/CONTRACTS.md`: `css:check`, the strict Go tests (`VOS_WEB_STRICT=1`), the tooling's
+  unit tests and the headless smoke matrix. It never blocks an OS release.
 - `.github/workflows/pages.yml` builds `website/` and deploys it to GitHub Pages. It runs on pushes to `main` that
   touch `website/**`, `keys/release.pub` or the workflow, daily, and on manual dispatch. Only runs on `main` deploy.
   Pages must be enabled once with the Actions source (`gh api -X POST repos/jasperaelvoet/vaporos/pages -f build_type=workflow`)

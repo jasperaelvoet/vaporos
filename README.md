@@ -36,9 +36,10 @@
 
 - **Streams at your device's exact resolution, frame rate and HDR.** VaporOS learns
   each device's mode and adds it to the virtual display.
-- **Phone-first web UI** at `http://vapor.local`: dashboard, pairing, stream
-  settings (encoder, bitrate, controller type), display, storage, updates,
-  power and SSH.
+- **Phone-first web UI** at `http://vapor.local`, in four tabs: **Home** (what
+  the PC is doing now), **Devices** (pairing and paired devices), **Screen**
+  (the virtual display and stream settings: encoder, bitrate, controller type)
+  and **System** (updates, power, storage, name and password, SSH, logs).
 - **A/B updates with automatic rollback.** A new version is written to the
   other system slot and starts on the next restart. If it fails its health
   check, the PC goes back to the previous version by itself and won't install
@@ -54,8 +55,8 @@
   drives and mounts them for Steam without changing anything on them. You can
   add more drives later.
 - **Powers off when nobody plays**, but not while you stream, download or
-  update, after a delay you choose. Moonlight's **Wake** wakes it again over
-  Wake-on-LAN.
+  update, after a delay you choose. Moonlight wakes it again over
+  Wake-on-LAN (see [Wake it](#wake-it)).
 
 ## Requirements
 
@@ -95,17 +96,27 @@ set a new password.
    (Android, Google TV), or [moonlight-stream.org](https://moonlight-stream.org)
    (Windows, Mac, Linux).
 2. Open Moonlight on the same network. It usually finds VaporOS by itself.
-   If it doesn't, add the PC by the address shown on the **Pair** page.
-3. Moonlight shows a 4-digit PIN. Enter it on the **Pair** page of the web UI
-   (the dashboard also asks when a device is waiting).
+   If it doesn't, add the PC by the address shown on the **Devices** tab.
+3. Moonlight shows a 4-digit PIN. Enter it on the **Devices** tab of the web UI
+   (every page asks when a device is waiting).
+
+## Wake it
+
+When VaporOS has powered itself off, Moonlight wakes it: open Moonlight and
+pick the PC. A browser can't send the Wake-on-LAN packet, so the web UI can't
+wake it. A page that is open when the PC powers off says so, shows how to wake
+it, and reconnects by itself once it's back. For another Wake-on-LAN app or a
+router that can wake devices, the **Wake it** card under **System › Power**
+lists the wired adapter's MAC address and the network's broadcast address,
+with Copy buttons. Note them while VaporOS is on.
 
 ## Updates and rollback
 
 - An install follows the channel of the ISO it came from: `main` for the latest release, the branch name for prereleases. By default VaporOS downloads new versions in
   the background and starts them on the next restart. You can turn that off
-  under **Updates** and install by hand.
-- **Roll back** on the Updates page starts the previous version on the next
-  restart.
+  under **System › Updates** and install by hand.
+- **Go back** under **System › Updates** starts the previous version on the
+  next restart.
 - If a new version doesn't start properly, VaporOS returns to the previous
   one by itself and lists it under "Versions that didn't start".
 - Other channels exist, but they carry test builds. They are published as prereleases.
@@ -214,7 +225,9 @@ The website (`website/`) deploys to GitHub Pages through `pages.yml`.
 | `scripts/` | `dev.sh` (the dev loop), `build.sh`, `serial.py` (drives the VM's serial console). |
 | `tests/` | The QEMU smoke test CI runs, and the in-VM checks. |
 | `keys/` | The public release key. |
-| `website/` | The project website (Astro). |
+| `design/` | The one source for the look: tokens, logo, icons and fonts, for the web UI, the website and the welcome screen. |
+| `tools/` | Development tooling for the web UI (Node) and the fonts (Python). None of it is in the OS image. |
+| `website/` | The project website (Next.js). |
 | `docs/CONTRACTS.md` | Interfaces between the pieces. |
 
 ## License
