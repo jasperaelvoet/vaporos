@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "prebuild": "node scripts/copy-assets.mjs",
+    "prebuild": "node scripts/copy-assets.mjs && node scripts/clear-fetch-cache.mjs",
     "predev": "node scripts/copy-assets.mjs",
     "dev": "next dev",
     "build": "next build",

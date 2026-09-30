@@ -11,6 +11,10 @@
 // The browser re-checks later (use-latest-release.ts), because a new release
 // doesn't rebuild the site.
 //
+// Every build asks GitHub afresh: npm run build empties Next's fetch cache
+// first (scripts/clear-fetch-cache.mjs), which would otherwise hand an
+// anonymous answer to later builds.
+//
 //   GITHUB_TOKEN=…                    authenticated request (pages.yml sets it)
 //   VAPOROS_RELEASE_REQUIRED=1        an `unknown` answer fails the build, so a
 //                                     degraded card is never deployed (pages.yml)
