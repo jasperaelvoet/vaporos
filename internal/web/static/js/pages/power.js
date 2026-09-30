@@ -77,7 +77,9 @@ export function render() {
   card.removeAttribute('aria-busy');
   byId('pwr-error').hidden = true;
   settleMain();
-  more.then((m) => m.update(p, v));
+  // The controls below redraw in a task of their own, after the state card
+  // has painted: one long boot task becomes two short ones (ARCH §11).
+  more.then((m) => setTimeout(() => m.update(P.p || p, v)));
 }
 
 // take merges an answer: /status's power part has no wol.

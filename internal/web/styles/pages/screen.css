@@ -85,6 +85,7 @@
   @starting-style { .scr-now-title[data-fresh] { transform: scaleX(var(--state-from)); opacity: 0; } }
   .scr-now-title .skel { height: 1.5rem; }
   .scr-now-detail { margin: 0; color: var(--color-ink-2); }
+  .scr-now-detail .skel { max-width: 16rem; margin-top: 0.3125rem; }
   .scr-now-detail:empty { display: none; }
   .scr-now-layers { display: flex; gap: 0.5rem; margin: 0.25rem 0 0; color: var(--color-ink); font-size: var(--text-md); }
   .scr-now-layers .icon { color: var(--color-h8); width: 1.125rem; height: 1.125rem; margin-top: 0.0625rem; }

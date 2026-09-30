@@ -64,12 +64,10 @@
   .dev-pair-actions { display: grid; gap: 0.5rem; padding-top: 0.5rem; }
   .dev-pair-done { margin: 0; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); background: var(--color-surface-2); font-size: var(--text-md); }
   .dev-pair-done:empty { display: none; }
-  .dev-pair-skel { display: none; gap: 0.625rem; padding-top: 0.5rem; }
-  .dev-pair[data-pair="loading"] .dev-pair-skel { display: grid; }
 
   /* the three steps while nobody waits */
   .dev-steps { display: none; grid-template-columns: minmax(0, 1fr); gap: 0.875rem; margin: 0.25rem 0 0; padding: 0; list-style: none; }
-  .dev-pair[data-pair="steps"] .dev-steps { display: grid; }
+  .dev-pair:is([data-pair="steps"], [data-pair="loading"]) .dev-steps { display: grid; }
   /* Steps 1 and 2 fold away once a device is paired: step 3 is what is
      left to do, and the paired list moves up. */
   .dev-step-head { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; list-style: none; }
@@ -117,10 +115,13 @@
   .dev-refresh:hover { color: var(--color-ink); background: var(--color-surface); }
   .dev-refresh:disabled { opacity: 0.45; cursor: not-allowed; }
   .dev-refresh[aria-busy="true"] .icon { animation: dev-spin 0.9s linear infinite; }
+  /* At large text the badge and Unpair move under the name instead of
+     being cut off. */
   .dev-row {
-    display: flex; align-items: center; gap: 0.875rem; min-height: 4.25rem; padding: 0.75rem 0.75rem 0.75rem 1rem;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.875rem; min-height: 4.25rem; padding: 0.75rem 0.75rem 0.75rem 1rem;
     border-top: 1px solid var(--color-line);
   }
+  .dev-row .row-main { flex: 1 1 9rem; }
   .rows > .dev-row:first-child { border-top: 0; }
   .dev-row .row-main .skel { height: 0.625rem; }
   .dev-glyph {
@@ -160,6 +161,12 @@
 
   /* Two columns from the rail breakpoint: the pair card stays in view on
      the left (5 of 12), who plays and the paired list on the right. */
+  /* The paired list's first paint holds a row's height (two lines of
+     facts on phones). */
+  @media (max-width: 39.99rem) {
+    #dev-paired .rows[aria-hidden="true"] > .dev-row { min-height: 5.5rem; }
+  }
+
   @media (min-width: 64rem) {
     .dev-layout { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2.5rem; align-items: start; }
     .dev-pair { position: sticky; top: 4.75rem; }

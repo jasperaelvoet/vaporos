@@ -8,11 +8,18 @@
 @layer components {
   .sto-grid { display: grid; gap: 1.75rem; align-items: start; }
   .sto-grid .rack { padding-top: 0; }
-  .sto-area-drives { display: grid; gap: 1.75rem; }
+  .sto-area-drives { position: relative; display: grid; gap: 1.75rem; }
   .sto-area-more { display: grid; gap: 0.625rem; }
   .sto-card { display: grid; gap: 0.75rem; padding: 1.125rem 1.25rem 1.25rem; border-radius: var(--radius-3xl); background: var(--color-surface); }
   .sto-note { margin: 0; color: var(--color-ink-2); font-size: var(--text-md); }
-  .sto-looking { margin: 0 0 -0.75rem; color: var(--color-ink-2); font-size: var(--text-md); }
+  /* The first paint holds the lists' final height (CLS ≤ 0.02 while GET
+     /storage probes the disks): a drive card's height per skeleton, and
+     the loading words lie inside the first one instead of above the lists. */
+  .sto-looking { position: absolute; top: 3.5rem; left: 1rem; right: 1rem; z-index: 1; margin: 0; color: var(--color-ink-2); font-size: var(--text-md); pointer-events: none; }
+  .sto-looking[hidden] { display: none; }
+  #games > .sto-drive[aria-hidden="true"] { align-content: start; min-height: 17rem; padding-top: 2.75rem; }
+  #others > .sto-drive[aria-hidden="true"] { align-content: start; min-height: 8.5rem; }
+  .sto-sysdrive[aria-busy="true"] { min-height: 6.625rem; }
   .sto-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: -0.625rem 0 -0.25rem; }
 
   /* ---------------------------------------------------- the system drive */

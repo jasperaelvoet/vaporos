@@ -24,14 +24,13 @@
         <button class="btn wide" id="dev-pair-retry" type="button" hidden>{{icon "refresh"}}Try again</button>
       </div>
       <p class="dev-pair-done" id="dev-pair-done"></p>
-      <div class="dev-pair-skel" aria-hidden="true">
-        <span class="skel skel-line"></span><span class="skel skel-line skel-short"></span>
-        <span class="skel skel-line"></span><span class="skel skel-line skel-short"></span>
-        <span class="skel skel-line"></span><span class="skel skel-line skel-short"></span>
-      </div>
+      {{- /* The steps are the pair card's first paint too: static words that
+         hold its final height while the answers come in. Steps 1 and 2
+         start folded, as they stay once a device is paired;
+         pages/devices.js opens them on a PC nothing is paired with. */}}
       <ol class="dev-steps" id="dev-steps" role="list">
         <li>
-          <details class="dev-step" id="dev-step-get" open>
+          <details class="dev-step" id="dev-step-get">
             <summary class="dev-step-head"><span class="dev-step-n mono" aria-hidden="true">1</span><h3 class="dev-step-title">Get Moonlight</h3></summary>
             <div class="dev-step-body">
               <p class="dev-step-text">Moonlight is the free app that plays your games from this PC.</p>
@@ -44,7 +43,7 @@
           </details>
         </li>
         <li>
-          <details class="dev-step" id="dev-step-add" open>
+          <details class="dev-step" id="dev-step-add">
             <summary class="dev-step-head"><span class="dev-step-n mono" aria-hidden="true">2</span><h3 class="dev-step-title">Add this PC</h3></summary>
             <div class="dev-step-body">
               <p class="dev-step-text">Open Moonlight on the same network. It usually finds <b class="mono" id="dev-host">{{.Hostname}}</b> by itself.</p>

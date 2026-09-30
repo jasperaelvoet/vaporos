@@ -73,7 +73,15 @@ export const PRESETS = [
   { name: 'no-wol', group: 'os', topics: ['home', 'power'] },
   { name: 'empty', group: 'os', topics: ALL },
   { name: 'ssh-on', group: 'os', topics: ['settings'] },
-  { name: 'signed-out', group: 'entry', pages: ['login', { topic: 'updates', note: 'redirects to sign-in' }], env: { VOS_WEB_SIGNED_OUT: '1' } },
+  // Signed out, every page goes to sign-in without a 401 of its own: the
+  // pages that read before boot (Updates, Power, Screen) wait for it in a
+  // tab that never signed in.
+  {
+    name: 'signed-out',
+    group: 'entry',
+    pages: ['login', ...['updates', 'power', 'screen', 'home'].map((topic) => ({ topic, note: 'redirects to sign-in' }))],
+    env: { VOS_WEB_SIGNED_OUT: '1' },
+  },
   { name: 'first-run', group: 'entry', pages: ['setup', { topic: 'home', note: 'redirects to setup' }], env: { VOS_WEB_SETUP: '1' } },
   { name: 'update-available', group: 'updates', topics: ['home', 'updates'] },
   { name: 'update-staging', group: 'updates', topics: ['home', 'updates'] },

@@ -53,6 +53,13 @@
   .pwr-state[data-level="countdown"] .pwr-title { font-stretch: var(--cut-cold-w); font-weight: var(--cut-cold-g); }
   .pwr-state[data-needle="streaming"] .pwr-title { font-stretch: var(--cut-hot-w); font-weight: var(--cut-hot-g); }
   .pwr-title .skel, .pwr-detail .skel { height: 1.25rem; }
+  /* The detail's first paint holds the two lines it takes on a phone. */
+  .pwr-skel-2 { display: none; margin-top: 0.25rem; }
+  @media (max-width: 39.99rem) {
+    .pwr-skel-2 { display: block; }
+    /* and the two lines its title takes there */
+    .pwr-state[aria-busy="true"] .pwr-title { min-height: 2.04em; }
+  }
   .pwr-detail { width: 100%; margin: 0; max-width: 34em; color: var(--color-ink-2); }
   .pwr-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .pwr-actions:not(:has(> :not([hidden]))) { display: none; }

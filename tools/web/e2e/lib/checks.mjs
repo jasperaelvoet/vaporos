@@ -260,14 +260,38 @@ export async function assertAxe(page, what) {
 
 // heatContrast measures text over the heat fields from pixels, which axe
 // leaves "incomplete": inside every element that holds an svg.heat-field,
-// each text run is hidden, the page is screenshot with animations settled,
-// and the text colour is compared with every background pixel under its
-// line boxes. A run fails when its worst pixel, or its 10th percentile,
-// is under 4.5:1 (3:1 for large text).
+// each text run is hidden, the page is screenshot with every transition
+// finished (so the boxes measured are where the pixels are), and the text
+// colour is compared with every background pixel under its line boxes that
+// no fixed or sticky chrome (the app bar, the tab bar) covers. A run fails
+// when its 5th-percentile pixel is under 4.5:1 (3:1 for large text), so a
+// few anti-aliased edge pixels do not, and a text run that sits on the
+// heat for any stretch does.
 export async function heatContrast(page) {
   const png = await pngReader();
   if (!png) return { ok: true, details: [], warnings: ['heat contrast skipped: no PNG decoder in playwright-core'] };
   const items = await page.evaluate(() => {
+    scrollTo(0, 0);
+    for (const a of document.getAnimations()) {
+      try {
+        if (a.effect?.getTiming().iterations !== Infinity) a.finish();
+      } catch {
+        /* an animation that cannot finish is left alone */
+      }
+    }
+    const pinned = (n) => {
+      for (let p = n; p && p !== document.body; p = p.parentElement) {
+        const pos = getComputedStyle(p).position;
+        if (pos === 'fixed' || pos === 'sticky') return p;
+      }
+      return null;
+    };
+    const covered = (el, r) =>
+      [[0.1, 0.5], [0.5, 0.5], [0.9, 0.5], [0.5, 0.1], [0.5, 0.9]].some(([fx, fy]) => {
+        const hit = document.elementFromPoint(r.x + r.width * fx, r.y + r.height * fy);
+        const chrome = hit && !el.contains(hit) && pinned(hit);
+        return !!chrome && !chrome.contains(el);
+      });
     const out = [];
     const cv = document.createElement('canvas');
     cv.width = cv.height = 1;
@@ -289,12 +313,13 @@ export async function heatContrast(page) {
       for (let t = walker.nextNode(); t; t = walker.nextNode()) {
         const el = t.parentElement;
         if (!t.textContent.trim() || !el || seen.has(el) || el.closest('svg, [hidden], .sr-only')) continue;
+        // Text nobody can see (an ancestor at opacity 0 or hidden) has no contrast to meet.
+        if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
         const cs = getComputedStyle(el);
-        if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
         const range = document.createRange();
         range.selectNodeContents(t);
         const rects = [...range.getClientRects()]
-          .filter((r) => r.width > 1 && r.height > 1 && r.bottom > 0 && r.top < innerHeight)
+          .filter((r) => r.width > 1 && r.height > 1 && r.top >= 0 && r.bottom <= innerHeight && !covered(el, r))
           .map((r) => ({ x: r.x, y: r.y, w: r.width, h: r.height }));
         if (!rects.length) continue;
         seen.add(el);
@@ -345,8 +370,8 @@ export async function heatContrast(page) {
     cs.sort((x, y) => x - y);
     const need = it.size >= 24 || (it.size >= 18.66 && it.weight >= 700) ? 3 : 4.5;
     const min = cs[0];
-    const p10 = cs[Math.floor(cs.length * 0.1)];
-    if (min < need || p10 < need) details.push(`${it.tag} "${it.text}" is ${min.toFixed(2)}:1 at its worst pixel (10th percentile ${p10.toFixed(2)}:1), under ${need}:1 on the heat field`);
+    const p5 = cs[Math.floor(cs.length * 0.05)];
+    if (p5 < need) details.push(`${it.tag} "${it.text}" is ${p5.toFixed(2)}:1 at its 5th-percentile pixel (worst ${min.toFixed(2)}:1), under ${need}:1 on the heat field`);
   }
   return { ok: details.length === 0, details, measured: items.length };
 }

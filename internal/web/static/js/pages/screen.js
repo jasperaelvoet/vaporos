@@ -94,6 +94,7 @@ export function renderNow(d) {
 export function displayFailed(err) {
   cardError('now', err, "Couldn't load the screen.");
   setText('now-title', 'Screen status unknown');
+  setText('now-detail', '');
   byId('now').dataset.phase = '';
   for (const id of ['now', 'virtual', 'modes-card']) settle(byId(id));
 }

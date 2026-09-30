@@ -12,6 +12,7 @@
     "css:watch": "node css.mjs --watch",
     "dev": "node dev.mjs",
     "e2e": "node e2e/run.mjs",
+    "perf": "node e2e/perf.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {

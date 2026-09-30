@@ -77,11 +77,12 @@
   /* the eyebrow: the machine's name and its graphics card, on ash plates,
      on one line (the card's name gives way first) */
   .vf-hud {
-    position: absolute; left: 2rem; right: 3.5rem; top: 0.6875rem; display: flex; gap: 0.375rem; margin: 0; min-width: 0;
+    position: absolute; left: 2rem; right: 3.5rem; top: 0.6875rem; display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; min-width: 0;
     font: 500 var(--text-2xs) / 1 var(--font-mono); color: var(--color-ink);
   }
   .vf-plate { flex: none; padding: 0.25rem 0.3125rem; border-radius: var(--radius-xs); background: rgb(0 0 4 / 0.82); max-width: 100%; line-height: 1.2; white-space: nowrap; }
-  .vf-plate-gpu { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* The card's name wraps rather than losing words (large text, 320 px). */
+  .vf-plate-gpu { flex: 0 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   .vf-plate[hidden] { display: none; }
   .hero[data-state="fault"] .vf-hud { top: 1.125rem; }
 
