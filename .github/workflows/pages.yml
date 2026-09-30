@@ -22,12 +22,19 @@
 # the newer run. Never use [skip ci] for website commits: it skips this too.
 #
 # The build job: generated files are fresh (tokens, fonts), the control
-# center's UI strings for the [[label]] check, lint, typecheck and unit tests,
-# the static export with a strict release lookup (a failed lookup fails the
-# build, so a degraded download card is never deployed and the last good
-# deploy stays live), the size budgets, and the headless e2e gate
-# (tests/e2e/ci.mjs: static checks, metadata, screenshots at 1440/768/390
-# and reduced motion with zero console errors and no overflow, axe).
+# center's UI strings for the [[label]] check, the files the site takes from
+# the code that makes them (neither is committed: the TV stills, rendered by
+# the welcome screen's own code, and, while src/content/demo.ts has
+# `enabled: true`, the live demo, the control center exported onto made-up
+# data), lint, typecheck and unit tests, the static export with a strict
+# release lookup (a failed lookup fails the build, so a degraded download
+# card is never deployed and the last good deploy stays live) that also
+# fails without the stills or the demo it should have, the size budgets, and
+# the headless e2e gates (tests/e2e/ci.mjs: static checks, metadata,
+# screenshots at 1440/768/390 and reduced motion with zero console errors
+# and no overflow, axe; and with the demo on, tests/e2e/demo.mjs: its
+# scenarios, no requests to /api/v1, no CSP violations, the phone layout,
+# the fallback, screenshots and axe on /demo/).
 #
 # One-time setup: Pages must use the Actions source before the first deploy:
 #   gh api -X POST repos/jasperaelvoet/vaporos/pages -f build_type=workflow
@@ -130,6 +137,28 @@ jobs:
           cache: npm
           cache-dependency-path: website/package-lock.json
 
+      # src/content/demo.ts `enabled` turns the live demo on: its export goes
+      # into public/demo/ui, the build must find it, its e2e gate runs, and
+      # the TV stills' QR codes open /demo/ instead of the site's home page.
+      - name: Demo flag
+        id: demo
+        run: |
+          enabled=$(node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --input-type=module \
+            -e "const { demo } = await import('./src/content/demo.ts'); console.log(demo.enabled === true)")
+          echo "enabled=$enabled" >>"$GITHUB_OUTPUT"
+          echo "live demo on: $enabled"
+
+      - name: The live demo (the control center on made-up data)
+        if: steps.demo.outputs.enabled == 'true'
+        working-directory: .
+        run: VOS_WEB_EXPORT="$PWD/website/public/demo/ui" go test -count=1 ./internal/web -run 'TestExportDemo$'
+
+      - name: The TV stills (the welcome screen, rendered by its own code)
+        working-directory: .
+        env:
+          QR: ${{ steps.demo.outputs.enabled == 'true' && 'https://jasperaelvoet.github.io/vaporos/demo/' || 'https://jasperaelvoet.github.io/vaporos/' }}
+        run: VOS_WELCOME_STILLS="$PWD/website/public/tv" VOS_WELCOME_STILLS_QR="$QR" go test -count=1 ./internal/display/welcome -run 'TestExportStills$'
+
       - uses: actions/cache@v6
         with:
           path: website/.next/cache
@@ -150,6 +179,10 @@ jobs:
           VAPOROS_RELEASE_REQUIRED: '1'
           # <meta name="vaporos-commit">: what the live site was built from.
           VAPOROS_SITE_COMMIT: ${{ env.SITE_SHA }}
+          # The steps above wrote them: a build without them fails instead of
+          # deploying the drawn screens or a demo page with no demo.
+          VAPOROS_STILLS_REQUIRED: '1'
+          VAPOROS_DEMO_REQUIRED: ${{ steps.demo.outputs.enabled == 'true' && '1' || '0' }}
         run: npm run build
 
       - name: Size budgets
@@ -160,6 +193,10 @@ jobs:
 
       - name: e2e (static checks, metadata, screenshots, axe)
         run: node tests/e2e/ci.mjs out --report="$RUNNER_TEMP/site-e2e" --commit="$SITE_SHA"
+
+      - name: e2e of the live demo (scenarios, no /api/v1 requests, CSP, phones, axe)
+        if: steps.demo.outputs.enabled == 'true'
+        run: node tests/e2e/demo.mjs out --report="$RUNNER_TEMP/site-e2e/demo"
 
       - name: Keep the e2e report
         if: failure()
