@@ -21,8 +21,17 @@ export const site = {
   tagline: 'Your gaming PC, as a streaming console.',
   /** The two lines under the headline on og.png. */
   ogTagline: ['Headless Steam streaming for PCs with an AMD GPU.', 'Play anywhere with Moonlight.'],
-  /** public/og.png: the Astro site's share card, 1200x630. Replace it if the look changes. */
-  ogImage: { path: '/og.png', width: 1200, height: 630, alt: 'VaporOS: your gaming PC, as a streaming console.' },
+  /**
+   * The home page's share card, out/og.png (1200×630, app/og.png/route.tsx),
+   * and the default for pages without their own. The alt says what the card
+   * says: the hero's kicker and headline.
+   */
+  ogImage: {
+    path: '/og.png',
+    width: 1200,
+    height: 630,
+    alt: 'VaporOS: Leave the heat in the other room. A Steam streaming OS for your gaming PC.',
+  },
   /** The browser's chrome colour: the page's ash (design/tokens.json, colour role canvas). */
   themeColor: tokens.color.dark.canvas,
   /**
@@ -78,18 +87,30 @@ export const pageMeta = {
     title: 'Download',
     description:
       'Download the latest VaporOS ISO, check the requirements, and verify the download with SHA256SUMS and the release signature.',
+    og: {
+      path: '/download/og.png',
+      alt: 'Get VaporOS. One ISO. Write it to a USB stick, boot the PC from it, and finish the setup on your phone.',
+    },
   },
   install: {
     path: routes.install,
     title: 'Install guide',
     description:
       'Install VaporOS step by step: write the USB stick, set the firmware, run the web installer from your phone and pair Moonlight.',
+    og: {
+      path: '/install/og.png',
+      alt: 'VaporOS install guide: From USB stick to first game. Flash a USB stick, boot the PC from it, finish on your phone.',
+    },
   },
   faq: {
     path: routes.faq,
     title: 'FAQ',
     description:
       'Answers about VaporOS: supported graphics cards, monitors, dual boot, Secure Boot, updates, rollback and power.',
+    og: {
+      path: '/faq/og.png',
+      alt: 'VaporOS FAQ: Questions, answered. What VaporOS runs on, what it does to your PC, and how it keeps itself up to date.',
+    },
   },
   demo: {
     path: routes.demo,

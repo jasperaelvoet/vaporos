@@ -36,7 +36,7 @@ src/components/ plain placeholder components (download card, code block, rich te
 src/app/       routes: /, /download/, /install/, /faq/, not-found (404.html), sitemap.xml
 scripts/       copy-key.mjs (prebuild/predev); serve.mjs, shoot.mjs, og.mjs, chrome.mjs (headless tools)
 tests/         unit/ (npm test), e2e/ (npm run verify), fixtures/
-public/        favicon.svg, icon.svg, apple-touch-icon.png, og.png, .nojekyll
+public/        favicon.svg, apple-touch-icon.png, icon-192/512 and maskable PNGs (generated from design/logo.svg), .nojekyll
 ```
 
 See AGENTS.md for the rules (facts, base path, static export, release state).

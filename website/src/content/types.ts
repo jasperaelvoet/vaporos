@@ -86,6 +86,11 @@ export interface PageMeta {
   title: string | null;
   description: string;
   noindex?: boolean;
+  /**
+   * The page's share card (app/<page>/og.png, drawn by app/og.png/card.tsx)
+   * and its alt text, which says what the card says. Default: the home card.
+   */
+  og?: { path: string; alt: string };
 }
 
 /** `${text} ${accent}`: a Headline as one plain string. */

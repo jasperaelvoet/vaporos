@@ -161,6 +161,12 @@ for (const page of pages) {
     }
     const alt = h.meta('property', 'og:image:alt');
     check(`${p} og:image:alt present`, alt.length === 1 && alt[0].length > 0);
+    // A page with its own card (out/<page>/og.png) shares that one, not the home card.
+    const own = !is404 && page !== '/' && existsSync(join(OUT, page, 'og.png'));
+    const want = own ? `${SITE}${page.slice(1)}og.png` : `${SITE}og.png`;
+    check(`${p} og:image is ${own ? "the page's own card" : 'the home card'}`, img === want, `${img} vs ${want}`);
+    const tAlt = h.meta('name', 'twitter:image:alt');
+    check(`${p} twitter:image:alt equals og:image:alt`, tAlt.length === 1 && tAlt[0] === alt[0], `${tAlt.join(' | ')} vs ${alt.join(' | ')}`);
   }
 
   // Twitter
@@ -214,6 +220,25 @@ for (const page of pages) {
     const c = h.meta('name', 'vaporos-commit');
     check(`${p} vaporos-commit is ${opt.commit}`, c.length === 1 && c[0] === opt.commit, c.join(' '));
   }
+}
+
+// Every icon the site ships is one a page or the manifest points at: no stale
+// or orphaned icon files in public/.
+{
+  const referenced = new Set();
+  for (const page of pages) {
+    const h = head(readFileSync(join(OUT, page.endsWith('/') ? `${page}index.html` : page), 'utf8'));
+    for (const l of h.links) if (/icon|manifest/.test(l.rel ?? '') && l.href) referenced.add(l.href.split(/[?#]/)[0]);
+    const man = h.links.find((l) => l.rel === 'manifest');
+    const mf = man && fileOf(man.href);
+    if (mf) {
+      try {
+        for (const i of JSON.parse(readFileSync(mf, 'utf8')).icons ?? []) referenced.add(new URL(i.src, SITE).pathname);
+      } catch {}
+    }
+  }
+  const shipped = readdirSync(OUT).filter((f) => /^(favicon|icon|apple-touch-icon)[\w.-]*\.(svg|png|ico)$/.test(f));
+  for (const f of shipped) check(`public icon /${f} is referenced`, referenced.has(`${BASE}/${f}`), [...referenced].join(' '));
 }
 
 for (const [t, where] of seenTitles) check(`title unique: ${t}`, where.length === 1, where.join(' '));
