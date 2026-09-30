@@ -1,8 +1,110 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  System › Settings (spec-cc-screens §10): the network name with the rename
+  hand-off, the admin password and remote access over SSH. Every form is
+  novalidate with its errors under the fields (R5); submit buttons render
+  disabled until boot() has asked /auth/me (R10). The name comes from the
+  shell's GET /status (its system part is GET /system); SSH from GET /ssh.
+  From 64rem, name and password on the left, SSH on the right.
+  pages/settings.js fills it; styles/pages/settings.css is its look, on the
+  System pages' shared pieces in system.css.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="set-grid">
+  <section class="rack set-area-name" aria-labelledby="set-name-title">
+    <h2 class="rack-title" id="set-name-title">Network name</h2>
+    <form class="sys-card" id="name-form" data-region="name" aria-busy="true" novalidate>
+      <div class="field">
+        <label class="field-label" for="hostname">Name</label>
+        <div class="set-affix">
+          <input class="input mono set-affix-input" id="hostname" name="hostname" type="text" maxlength="63" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="hostname-hint hostname-error" disabled>
+          <span class="set-suffix mono" aria-hidden="true">.local</span>
+        </div>
+        <p class="field-hint" id="hostname-hint">Moonlight and this page find VaporOS by this name.</p>
+        <p class="field-error" id="hostname-error" hidden></p>
+      </div>
+      <p class="form-error" id="name-form-error" role="alert"></p>
+      <div class="sys-actions">
+        <p class="sys-note" id="rename-note">That's the current name.</p>
+        <button class="btn primary" id="rename" type="submit" aria-describedby="rename-note" disabled>Rename</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="rack set-area-password" aria-labelledby="set-pw-title">
+    <h2 class="rack-title" id="set-pw-title">Admin password</h2>
+    <form class="sys-card" id="pw-form" novalidate>
+      <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
+      <div class="field">
+        <label class="field-label" for="pw-current">Current password</label>
+        <div class="set-reveal">
+          <input class="input set-reveal-input" id="pw-current" name="current" type="password" autocomplete="current-password" aria-describedby="pw-current-error">
+          <button class="set-eye" type="button" data-reveal="pw-current" aria-controls="pw-current" aria-pressed="false" aria-label="Show the current password">{{icon "eye"}}</button>
+        </div>
+        <p class="field-error" id="pw-current-error" hidden></p>
+      </div>
+      <div class="field">
+        <label class="field-label" for="pw-new">New password</label>
+        <div class="set-reveal">
+          <input class="input set-reveal-input" id="pw-new" name="new" type="password" autocomplete="new-password" aria-describedby="pw-new-hint pw-new-error">
+          <button class="set-eye" type="button" data-reveal="pw-new" aria-controls="pw-new" aria-pressed="false" aria-label="Show the new password">{{icon "eye"}}</button>
+        </div>
+        <p class="field-hint" id="pw-new-hint">At least 8 characters.</p>
+        <p class="field-error" id="pw-new-error" hidden></p>
+      </div>
+      <div class="field">
+        <label class="field-label" for="pw-again">Repeat new password</label>
+        <div class="set-reveal">
+          <input class="input set-reveal-input" id="pw-again" type="password" autocomplete="new-password" aria-describedby="pw-again-error">
+          <button class="set-eye" type="button" data-reveal="pw-again" aria-controls="pw-again" aria-pressed="false" aria-label="Show the repeated password">{{icon "eye"}}</button>
+        </div>
+        <p class="field-error" id="pw-again-error" hidden></p>
+      </div>
+      <p class="form-error" id="pw-form-error" role="alert"></p>
+      <div class="sys-actions">
+        <button class="btn primary" id="pw-save" type="submit" disabled>Change password</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="rack set-area-ssh" aria-labelledby="set-ssh-title">
+    <h2 class="rack-title" id="set-ssh-title">Remote access (SSH)</h2>
+    <div class="region-error" id="ssh-error" role="alert" hidden><p class="region-error-text" id="ssh-error-text"></p><button class="btn small" id="ssh-retry" type="button">Try again</button></div>
+    <form class="sys-card" id="ssh-form" data-region="ssh" aria-busy="true" novalidate>
+      <div class="sys-switch-row">
+        <div class="sys-switch-text">
+          <label class="sys-switch-label" for="ssh-on">Allow SSH</label>
+          <p class="field-hint" id="ssh-on-hint">For troubleshooting. Only the keys below can sign in; passwords never work.</p>
+        </div>
+        <input class="sys-switch-input" type="checkbox" role="switch" id="ssh-on" name="enabled" aria-describedby="ssh-on-hint" disabled>
+        <span class="sys-switch" aria-hidden="true"></span>
+      </div>
+      <div class="field">
+        <label class="field-label" for="ssh-keys">Authorized public keys</label>
+        <textarea class="input mono set-keys" id="ssh-keys" name="keys" rows="5" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop" aria-describedby="ssh-keys-hint ssh-keys-error" disabled></textarea>
+        <p class="field-hint" id="ssh-keys-hint">One key per line.</p>
+        <p class="field-error" id="ssh-keys-error" hidden></p>
+      </div>
+      <div class="set-connect" id="ssh-connect" hidden>
+        <p class="set-connect-label">Connect with</p>
+        <div class="set-copyrow"><code class="set-command" id="ssh-command"></code><button class="copy" type="button" data-copy-target="ssh-command">{{icon "copy"}}<span data-part="copy-label">Copy</span><span class="sr-only"> the SSH command</span></button></div>
+      </div>
+      <p class="form-error" id="ssh-form-error" role="alert"></p>
+      <div class="sys-actions">
+        <button class="btn primary" id="ssh-save" type="submit" disabled>Save</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<dialog class="dialog set-handoff" id="handoff" aria-labelledby="handoff-title" aria-describedby="handoff-text">
+  <div class="dialog-form">
+    <p class="set-handoff-trace mono" aria-hidden="true"><span class="set-handoff-old" id="handoff-old"></span><span class="set-handoff-arrow">→</span><span class="set-handoff-new" id="handoff-new"></span></p>
+    <h2 class="dialog-title" id="handoff-title" tabindex="-1">Renamed</h2>
+    <p class="dialog-body" id="handoff-text">This address stopped working. Open VaporOS at its new address and sign in again.</p>
+    <div class="set-handoff-links">
+      <a class="btn primary" id="handoff-name">Open the new address</a>
+      <a class="btn ghost" id="handoff-ip" hidden>Open the IP address</a>
+    </div>
+  </div>
+</dialog>
 {{end}}
