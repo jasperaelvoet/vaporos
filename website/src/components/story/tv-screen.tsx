@@ -24,21 +24,25 @@ export function TvScreen({ state, className = '' }: { state: 'installer' | 'read
           <LogoMark size={29} />
           <Wordmark height={20} />
         </div>
-        <p className={`tv-status ${state === 'installer' ? 'cut-cold' : 'cut-warm'}`}>{t.status}</p>
-        <p className="tv-detail">{t.detail}</p>
-        <p className="tv-url telemetry">
-          <span>{t.url.scheme}</span>
-          {t.url.host}
-        </p>
-        <p className="tv-ip">
-          {t.ipLead} <b className="telemetry">{t.ip}</b>
-        </p>
-        {code && (
-          <div className="tv-code">
-            <small>{code.label}</small>
-            <b className="telemetry">{code.value}</b>
-          </div>
-        )}
+        <div className="tv-text">
+          <p className={`tv-status ${state === 'installer' ? 'cut-cold' : 'cut-warm'}`}>
+            <Status text={t.status} split={state === 'ready'} />
+          </p>
+          <p className="tv-detail">{t.detail}</p>
+          <p className="tv-url telemetry">
+            <span>{t.url.scheme}</span>
+            {t.url.host}
+          </p>
+          <p className="tv-ip">
+            {t.ipLead} <b className="telemetry">{t.ip}</b>
+          </p>
+          {code && (
+            <div className="tv-code">
+              <small>{code.label}</small>
+              <b className="telemetry">{code.value}</b>
+            </div>
+          )}
+        </div>
         <div className="tv-qr">
           <i className="a" />
           <i className="b" />
@@ -54,5 +58,21 @@ export function TvScreen({ state, className = '' }: { state: 'installer' | 'read
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * The renderer's lead-verb rule: a status that leads with a verb and would
+ * shrink keeps the verb at full size over a half-size line ("Ready / to stream").
+ */
+function Status({ text, split }: { text: string; split: boolean }) {
+  if (!split) return text;
+  const i = text.indexOf(' ');
+  if (i < 0) return text;
+  return (
+    <>
+      <span className="tv-verb">{text.slice(0, i)}</span>
+      <span className="tv-rest">{text.slice(i + 1)}</span>
+    </>
   );
 }

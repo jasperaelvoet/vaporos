@@ -71,7 +71,7 @@ export const remoteBeat: BeatHead = {
   heatLabel: 'ready',
   title: {
     lines: ['Your console,', 'in your pocket.'],
-    fitK: 5.846,
+    fitK: 9.136,
   },
   lead: 'Open `vapor.local` on your phone and everything is there. The screen on the PC, if you have one, just tells you where to go.' as Rich,
 };
@@ -95,7 +95,7 @@ export const updatesBeat: BeatHead = {
   heatLabel: 'updating',
   title: {
     lines: ['Updates that', 'undo themselves.'],
-    fitK: 7.412,
+    fitK: 10.794,
   },
   lead: "VaporOS keeps two copies of the system. A new version goes to the copy you aren't running and starts on the next restart. **If it doesn't start cleanly, the PC goes back to the previous version by itself**, and won't install that version again." as Rich,
 };
@@ -107,7 +107,7 @@ export const powerBeat: BeatHead = {
   heatLabel: 'asleep',
   title: {
     lines: ['Off when nobody plays.', 'On when you do.'],
-    fitK: 5.694,
+    fitK: 9.58,
   },
   // Idle power-off is off by default; a new install turns it on only when a
   // wired network adapter wakes on a magic packet (internal/config/config.go
