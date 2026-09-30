@@ -108,7 +108,9 @@ type uiSet struct {
 // README and the welcome screen (/pair) still point at them.
 type oldURL struct{ From, To string }
 
-// legacySet is the eight-page UI. CONTRACTS.md "Pages".
+// legacySet is the eight-page UI vosd served before the four-tab one. It
+// stays, inactive, until it is deleted: VOS_WEB_UI=legacy serves it on the
+// dev server, and VOS_WEB_STRICT=1 keeps testing it.
 var legacySet = uiSet{
 	Name:      "legacy",
 	Templates: "templates/legacy",
@@ -118,8 +120,7 @@ var legacySet = uiSet{
 	Partials:  "templates/legacy/partials/*.html",
 }
 
-// nextSet is the four-tab UI (MASTER-PLAN §2.2). It is unreachable in
-// production until the switch commit makes it the active set.
+// nextSet is the four-tab UI (MASTER-PLAN §2.2), CONTRACTS.md "Pages".
 var nextSet = uiSet{
 	Name:      "next",
 	Templates: "templates",
@@ -178,7 +179,7 @@ var oldURLs = []oldURL{
 }
 
 // activeSet is the UI vosd serves. There is deliberately no runtime knob.
-var activeSet = legacySet
+var activeSet = nextSet
 
 // uiSets is every set, active or not.
 var uiSets = []uiSet{legacySet, nextSet}
