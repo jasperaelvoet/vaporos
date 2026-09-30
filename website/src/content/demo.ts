@@ -24,8 +24,8 @@ import type { BeatHead } from './home';
 export type UiLabels = 'legacy' | 'next';
 
 export const demo = {
-  enabled: false,
-  uiLabels: 'legacy' as UiLabels,
+  enabled: true,
+  uiLabels: 'next' as UiLabels,
 };
 
 /**
