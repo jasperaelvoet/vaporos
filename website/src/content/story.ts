@@ -220,7 +220,8 @@ export const powerFacts = [
   },
   {
     title: 'Stay awake',
-    body: 'Keep it on for 1 or 4 hours during a long download, or turn idle power-off off under Power.' as Rich,
+    // A Steam download already keeps it on (internal/power/power.go busyReason).
+    body: 'Keep it on for 1 or 4 hours whenever you want it on anyway, or turn idle power-off off under Power.' as Rich,
   },
 ];
 

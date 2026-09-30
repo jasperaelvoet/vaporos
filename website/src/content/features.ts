@@ -91,7 +91,7 @@ export const features: Feature[] = [
     id: 'power',
     icon: 'moon',
     title: 'Off when idle, awake on demand',
-    body: "When a wired network adapter can wake the PC, VaporOS powers off after 15 minutes of nobody playing, and Moonlight wakes it again. It never powers off while you stream, play, download or update. On a PC that can't be woken that way, it stays on until you turn this on.",
+    body: "When the PC's wired network adapter supports Wake-on-LAN, VaporOS powers off after 15 minutes of nobody playing, and Moonlight wakes it again (Wake-on-LAN may need turning on in the firmware). It never powers off while you stream, play, download or update. On a PC that can't be woken that way, it stays on until you turn this on.",
     short: 'Powers off when idle, if Moonlight can wake it again.',
     wide: true,
   },

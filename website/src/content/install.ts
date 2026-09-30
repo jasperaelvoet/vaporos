@@ -216,17 +216,22 @@ export const installGuide = {
       id: 'firmware',
       num: '03',
       title: 'Firmware settings',
-      summary: 'Boot mode UEFI, Secure Boot off.',
+      summary: 'Boot mode UEFI, Secure Boot off, Wake-on-LAN on.',
       blocks: [
         {
           type: 'p',
-          text: "Open the PC's firmware setup (usually ++Del++ or ++F2++ right after power on) and check two things:",
+          text: "Open the PC's firmware setup (usually ++Del++ or ++F2++ right after power on) and check three things:",
         },
         {
           type: 'ul',
           items: [
             "**Boot mode: UEFI.** Turn off CSM or legacy boot if it's on. The installer only boots in UEFI mode.",
             "**Secure Boot: off.** The VaporOS kernel isn't signed for Secure Boot.",
+            // The installer turns idle power-off on when the wired adapter's
+            // driver supports magic-packet wake (internal/power/wol.go
+            // WakeOnLANCapable); whether the board powers on from off is the
+            // firmware's call, and many ship with it off.
+            '**Wake-on-LAN: on.** Often called Power On By PCI-E or Resume by LAN; turn off ErP, EuP or deep sleep if the firmware has them. VaporOS powers off when nobody plays, and Moonlight wakes it this way.',
           ],
         },
         {

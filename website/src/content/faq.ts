@@ -166,9 +166,11 @@ export const faq: QA[] = [
     id: 'apps',
     q: 'Can I install other software on it?',
     a: [
-      'No. The system is one read-only image with no package manager, which is what makes updates and rollback reliable. Games come from Steam, as usual.',
+      // The root is a read-only erofs image (build/build.sh); pacman is in it
+      // (base pulls it in) but has nothing it could write to.
+      'No. The system is one read-only image: nothing can be installed on it, which is what makes updates and rollback reliable. Games come from Steam, as usual.',
     ],
-    short: 'No. The system is one read-only image with no package manager.',
+    short: 'No. The system is one read-only image: nothing can be installed on it.',
   },
   {
     id: 'verify',

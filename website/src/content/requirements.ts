@@ -60,7 +60,7 @@ export const requirements: Requirement[] = [
   {
     id: 'install-kit',
     icon: 'usb',
-    label: 'USB stick (and a screen)',
+    label: 'USB stick (screen optional)',
     title: 'A USB stick, and a screen if you have one',
     body: "Everything on the stick is erased when you write the ISO. A monitor or TV helps with the firmware settings and shows the setup code; with none connected, the installer skips the code. You don't need it afterwards.",
     short: "The screen is optional, and you don't need it afterwards.",

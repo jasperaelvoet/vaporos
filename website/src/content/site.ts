@@ -180,6 +180,7 @@ export const footer = {
       ],
     },
   ] satisfies { title: string; links: LinkItem[] }[],
-  license: 'License: TBD',
+  /** The licence line; null until the repository has a licence (no LICENSE file yet). */
+  license: null as string | null,
   disclaimer: 'Not affiliated with Valve, Moonlight or Sunshine. Steam is a trademark of Valve Corporation.',
 } as const;

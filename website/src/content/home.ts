@@ -126,7 +126,9 @@ export const powerBeat: BeatHead = {
   // wired network adapter wakes on a magic packet (internal/config/config.go
   // Defaults, internal/install/target.go writeConfig). Busy means a stream, a
   // game, a Steam download or an update (internal/power/power.go busyReason).
-  lead: "When a wired network adapter can wake the PC, VaporOS powers off after 15 minutes of nobody playing. Never while you stream, play, download or update. **In Moonlight, pick the PC and choose Wake**, and it's back." as Rich,
+  // Whether the board powers on from off is up to the firmware: the install
+  // guide's firmware step says to turn Wake-on-LAN on.
+  lead: `When the PC's wired network adapter supports Wake-on-LAN, VaporOS powers off after 15 minutes of nobody playing. Never while you stream, play, download or update. **In Moonlight, pick the PC and choose Wake**, and it's back. Some PCs need [Wake-on-LAN turned on in the firmware](${routes.install}#firmware) first.` as Rich,
 };
 
 /** B7: the white-hot download block. The hero's Download lands here. */

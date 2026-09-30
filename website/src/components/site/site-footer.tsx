@@ -40,7 +40,8 @@ export function SiteFooter({ release }: { release: ReleaseLookup }) {
         ))}
         <div className="col-span-full flex flex-wrap items-baseline justify-between gap-x-8 gap-y-3 border-t border-line pt-7 text-[0.8125rem] text-dim">
           <p>
-            {footer.disclaimer} {footer.license}
+            {footer.disclaimer}
+            {footer.license && ` ${footer.license}`}
           </p>
           <ReleaseChip initial={release} />
         </div>
