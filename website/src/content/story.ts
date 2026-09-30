@@ -4,8 +4,9 @@
 // faq.ts or the code named next to it.
 //
 // Import from '@/content/story' (not re-exported by '@/content').
+import { ccCopy } from './demo';
 import { links, routes } from './site';
-import type { LinkItem, Rich } from './types';
+import type { IconName, LinkItem, Rich } from './types';
 
 // ---------------------------------------------------------------------------
 // The hero's thermal view.
@@ -66,36 +67,86 @@ export const screenStory = {
 // buildWelcome, "Ready to stream"); the QR here opens this website.
 
 export const remoteStory = {
-  /** What the control center does, one line each (the current pages). */
   itemsLabel: 'What you do from your phone',
-  items: [
-    { label: 'Pair', text: 'Moonlight devices with a 4-digit PIN.' },
-    { label: 'Display', text: 'Modes and HDR, learned from each device.' },
-    { label: 'Storage', text: "Game drives you already have. VaporOS adds them to Steam's library list; nothing on them is changed." },
-    { label: 'Updates', text: 'Signed, in the background, with a rollback to the previous version.' },
-    { label: 'Power', text: 'Idle power-off, Stay awake and Wake-on-LAN.' },
-  ],
+  /** What the control center does, one line each: its pages (legacy) or its four tabs (next). */
+  items: ccCopy({
+    legacy: [
+      { label: 'Pair', text: 'Moonlight devices with a 4-digit PIN.' },
+      { label: 'Display', text: 'Modes and HDR, learned from each device.' },
+      { label: 'Storage', text: "Game drives you already have. VaporOS adds them to Steam's library list; nothing on them is changed." },
+      { label: 'Updates', text: 'Signed, in the background, with a rollback to the previous version.' },
+      { label: 'Power', text: 'Idle power-off, Stay awake and Wake-on-LAN.' },
+    ],
+    // The tabs (internal/web/templates/pages): Home's state and Controls,
+    // Devices' pairing and Playing now, Screen's resolutions, HDR and stream
+    // quality, and System's Updates, Power, Storage and Settings.
+    next: [
+      { label: 'Home', text: "Whether it's ready to stream and what it's doing, with Pair, Stay awake and Power one tap away." },
+      { label: 'Devices', text: 'Pair Moonlight with a 4-digit PIN, and see who is playing.' },
+      { label: 'Screen', text: 'Resolutions learned from each device, HDR and the stream quality.' },
+      { label: 'System', text: "Signed updates with a rollback to the previous version, idle power-off and Wake-on-LAN, and game drives VaporOS adds to Steam's library list." },
+    ],
+  }),
   /** The demo is off until the next release (content/demo.ts): a line under the picture instead of it. */
   demoLater: 'The live demo arrives with the next VaporOS release.',
   tvCaption:
     "A monitor is optional, even to install. If one is connected, it only ever shows this: the address and a QR code. Never a terminal, never a desktop.",
   figureLabel: 'The control center on a phone, ready to stream, and the screen connected to the PC showing its address',
   /**
-   * The phone: the control center's home page as it is today, ready to
-   * stream (internal/web/templates/legacy/pages/dashboard.html and
-   * static/legacy/js/pages/dashboard.js renderStatus: the host, "Ready to
-   * stream", its detail, the display's mode, the live pill and the quick
-   * actions). Drawn in the site's look; the words are the page's own.
+   * The phone: the control center's home page, ready to stream, drawn in the
+   * site's look with the page's own words. legacy: the dashboard
+   * (templates/legacy/pages/dashboard.html: the host, "Ready to stream", its
+   * detail, the display's mode and the quick actions). next: Home
+   * (templates/pages/home.html and static/js/summary.js: the thermal view
+   * with the PC's name and GPU, "Ready to stream", its detail with a monitor
+   * connected, the mode, Controls, and the tab bar).
    */
-  phone: {
-    host: 'vapor.local',
-    live: 'Live',
-    status: { verb: 'Ready', rest: 'to stream' },
-    detail: 'Open Moonlight on any device and pick this PC.',
-    mode: '3840 × 2160 · 60 Hz',
-    actionsLabel: 'Quick actions',
-    actions: ['Pair a device', 'Stay awake 1 h', 'Restart', 'Power off'],
-  },
+  phone: ccCopy<{
+    host: string;
+    live: string;
+    tags?: string[];
+    status: { verb: string; rest: string };
+    detail: string;
+    mode: string;
+    actionsLabel: string;
+    actions: { label: string; icon: IconName }[];
+    tabs?: { label: string; icon: IconName | 'logo' }[];
+  }>({
+    legacy: {
+      host: 'vapor.local',
+      live: 'Live',
+      status: { verb: 'Ready', rest: 'to stream' },
+      detail: 'Open Moonlight on any device and pick this PC.',
+      mode: '3840 × 2160 · 60 Hz',
+      actionsLabel: 'Quick actions',
+      actions: [
+        { label: 'Pair a device', icon: 'phone' },
+        { label: 'Stay awake 1 h', icon: 'coffee' },
+        { label: 'Restart', icon: 'restart' },
+        { label: 'Power off', icon: 'power' },
+      ],
+    },
+    next: {
+      host: 'vapor.local',
+      live: 'Live',
+      tags: ['vapor', 'AMD Radeon'],
+      status: { verb: 'Ready', rest: 'to stream' },
+      detail: 'The monitor shows the welcome screen until a game starts.',
+      mode: '3840 × 2160 · 60 Hz',
+      actionsLabel: 'Controls',
+      actions: [
+        { label: 'Pair', icon: 'phone' },
+        { label: 'Stay awake 1 h', icon: 'eye' },
+        { label: 'Power', icon: 'power' },
+      ],
+      tabs: [
+        { label: 'Home', icon: 'logo' },
+        { label: 'Devices', icon: 'laptop' },
+        { label: 'Screen', icon: 'monitor' },
+        { label: 'System', icon: 'sliders' },
+      ],
+    },
+  }),
 };
 
 /**
@@ -247,7 +298,11 @@ export const evening = {
 export const powerFacts = [
   {
     title: 'Moonlight wakes it',
-    body: 'In Moonlight, pick the PC and choose **Wake**. Any Wake-on-LAN app works too, with the MAC address shown under Power.' as Rich,
+    body: ccCopy({
+      legacy: 'In Moonlight, pick the PC and choose **Wake**. Any Wake-on-LAN app works too, with the MAC address shown under Power.',
+      // The Wake it card (templates/partials/wake.html) on System › Power.
+      next: 'In Moonlight, pick the PC and choose **Wake**. Any Wake-on-LAN app works too, with the MAC address on the [[Wake it]] card under [[System]] › [[Power]].',
+    }) as Rich,
   },
   {
     title: 'Never mid-game',
@@ -256,7 +311,10 @@ export const powerFacts = [
   {
     title: 'Stay awake',
     // A Steam download already keeps it on (internal/power/power.go busyReason).
-    body: 'Keep it on for 1 or 4 hours whenever you want it on anyway, or turn idle power-off off under Power.' as Rich,
+    body: ccCopy({
+      legacy: 'Keep it on for 1 or 4 hours whenever you want it on anyway, or turn idle power-off off under Power.',
+      next: 'Keep it on for 1 or 4 hours whenever you want it on anyway, or turn idle power-off off under [[System]] › [[Power]].',
+    }) as Rich,
   },
 ];
 

@@ -1227,6 +1227,72 @@
   }
 }
 
+/* The four-tab control center's Home (remote-phone.tsx, content/demo.ts
+   uiLabels 'next'): the PC's name and GPU on the field, three Controls in
+   one strip, and the tab bar along the bottom of the screen. */
+.phone-cc-next .phone-scr {
+  gap: calc(12 * var(--p));
+}
+.phone-tags {
+  position: absolute;
+  left: calc(14 * var(--p));
+  top: calc(14 * var(--p));
+  display: flex;
+  gap: calc(4 * var(--p));
+  font-size: calc(9 * var(--p));
+}
+.phone-tags span {
+  padding: calc(2 * var(--p)) calc(5 * var(--p));
+  background: color-mix(in srgb, var(--color-ash) 82%, transparent);
+  color: var(--color-bone);
+}
+.phone-cc-next .phone-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin-top: calc(-4 * var(--p));
+  border-radius: calc(12 * var(--p));
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--color-line);
+}
+.phone-cc-next .phone-act {
+  justify-items: center;
+  padding: calc(12 * var(--p)) calc(4 * var(--p));
+  border-radius: 0;
+  box-shadow: none;
+  text-align: center;
+  font-size: calc(11 * var(--p));
+}
+.phone-cc-next .phone-act + .phone-act {
+  box-shadow: inset 1px 0 0 var(--color-line);
+}
+.phone-cc-next .phone-act-icon {
+  color: var(--color-bone);
+}
+/* (.phone-scr p sets margin: 0, so this needs the extra class to win.) */
+.phone-scr .phone-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: auto calc(-18 * var(--p)) calc(-18 * var(--p));
+  padding: calc(9 * var(--p)) 0 calc(14 * var(--p));
+  border-top: 1px solid var(--color-line);
+  font-size: calc(10 * var(--p));
+  color: var(--color-smoke);
+}
+.phone-tab {
+  display: grid;
+  justify-items: center;
+  gap: calc(4 * var(--p));
+}
+.phone-tab svg,
+.phone-tab-icon {
+  width: calc(18 * var(--p));
+  height: calc(18 * var(--p));
+}
+.phone-tab.on {
+  color: var(--color-bone);
+  font-weight: 600;
+}
+
 /* ------------------------------------------------ B5: updates, two slots */
 .ab-text {
   display: grid;
