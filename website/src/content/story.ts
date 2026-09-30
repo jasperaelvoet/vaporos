@@ -159,7 +159,16 @@ export const updatesStory = {
     failed: 'Failed to start',
     back: 'Back by itself',
   },
-  more: { label: 'How rollback works', href: `${routes.faq}#rollback` } satisfies LinkItem,
+  /** What the log says at each step; {running}, {previous} and {next} are the versions, set in bold. */
+  log: {
+    rest: 'Slot A runs {running}. Slot B keeps {previous}.',
+    downloading: 'Downloading {next} into slot B. A keeps running.',
+    restart: 'Restart. The PC starts {next} from slot B.',
+    started: 'Running {next} · slot B. Slot A keeps {running} as the fallback.',
+    failed: '{next} didn’t start cleanly…',
+    back: 'Back on {running} · slot A, by itself. VaporOS won’t install {next} again.',
+  },
+  more: { label: 'What if an update breaks something?', href: `${routes.faq}#rollback` } satisfies LinkItem,
 };
 
 // ---------------------------------------------------------------------------
