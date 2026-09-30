@@ -9,6 +9,7 @@ import { remoteStory } from '@/content/story';
 import { Beat, BeatHead } from './beat';
 import { RemotePhone } from './remote-phone';
 import { TvScreen } from './tv-screen';
+import { TvStill } from './tv-still';
 
 export function RemoteBeat() {
   return (
@@ -26,7 +27,7 @@ export function RemoteBeat() {
           </dl>
         </div>
         <figure className="remote-fig" aria-label={remoteStory.figureLabel}>
-          <TvScreen state="ready" />
+          <TvStill name="ready" fallback={<TvScreen state="ready" />} />
           <RemotePhone />
           <figcaption className="beat-note">
             {remoteStory.tvCaption} <span className="remote-demo">{remoteStory.demoLater}</span>

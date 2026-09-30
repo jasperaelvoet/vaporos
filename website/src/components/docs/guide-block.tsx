@@ -3,6 +3,7 @@
 import { CodeBlock, Icon, Notice, Rich } from '@/components/ui';
 import { installGuide, type GuideBlock as Block } from '@/content/install';
 import { HEAT } from '@/direction';
+import { TvStill } from '@/components/story/tv-still';
 import { InstallerScreen } from './installer-screen';
 import { RequirementList } from './requirement-list';
 import { StoreLinks } from './store-links';
@@ -60,7 +61,7 @@ export function GuideBlock({ block }: { block: Block }) {
     case 'figure':
       return (
         <figure className="grid gap-3">
-          <InstallerScreen />
+          <TvStill name="installer-ready" frame="guide" fallback={<InstallerScreen />} />
           <figcaption className="text-fine text-dim">{block.caption}</figcaption>
         </figure>
       );

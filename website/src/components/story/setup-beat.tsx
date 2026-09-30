@@ -10,6 +10,7 @@ import { setupStory } from '@/content/story';
 import { Beat, BeatHead } from './beat';
 import { InstallerPhone } from './installer-phone';
 import { TvScreen } from './tv-screen';
+import { TvStill } from './tv-still';
 
 export function SetupBeat() {
   return (
@@ -36,7 +37,7 @@ export function SetupBeat() {
           </p>
         </div>
         <figure className="duo" aria-label={setupStory.tvLabel}>
-          <TvScreen state="installer" />
+          <TvStill name="installer-ready" fallback={<TvScreen state="installer" />} />
           <InstallerPhone />
           <figcaption className="duo-cap">
             {setupStory.caption} <Rich text={setupStory.headless} />
