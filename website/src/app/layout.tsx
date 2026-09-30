@@ -6,7 +6,7 @@ import { HeatScale } from '@/direction';
 import { chromeScript } from '@/lib/chrome-script';
 import { fontVariables } from '@/lib/fonts';
 import { rootMetadata, rootViewport } from '@/lib/metadata';
-import { MotionRuntime } from '@/lib/motion/runtime';
+import { MotionRuntimeLazy } from '@/lib/motion/runtime-lazy';
 import { getLatestRelease } from '@/lib/release';
 import './globals.css';
 
@@ -38,7 +38,7 @@ export default async function RootLayout({ children }: LayoutProps<'/'>) {
         </main>
         <SiteFooter release={release} />
         <HeatScale />
-        <MotionRuntime />
+        <MotionRuntimeLazy />
       </body>
     </html>
   );

@@ -11,6 +11,7 @@ import { paintIsotherms, smoothstep, valueNoise } from '@/direction/redline/pain
 import { useThermalCanvas } from '@/direction/redline/use-thermal-canvas';
 import { evening } from '@/content/story';
 import { motionAllowed, subscribeMotion } from '@/lib/motion/prefs';
+import { trackBox, whileNear } from '@/lib/motion/scroll-frame';
 
 const SPAN = evening.end - evening.start;
 const pct = (h: number) => `${(((h - evening.start) / SPAN) * 100).toFixed(2)}%`;
@@ -57,42 +58,50 @@ export function EveningRibbon() {
     );
   });
 
-  // The playhead follows the scroll while motion is allowed.
+  // The playhead follows the scroll while motion is allowed: a job in the
+  // page's scroll frame, only while the ribbon is within a screen of the
+  // viewport, reading scrollY against the ribbon's cached box.
   useEffect(() => {
     const el = fig.current;
     if (!el) return;
-    let raf = 0;
-    let on = false;
-    const set = (h: number) => {
-      el.style.setProperty('--at', pct(h));
-      if (time.current) time.current.textContent = clock(h);
-      if (state.current) state.current.textContent = stateAt(h);
+    const box = trackBox(el);
+    let h = evening.rest;
+    let shown = -1;
+    const set = (at: number) => {
+      el.style.setProperty('--at', pct(at));
+      if (time.current) time.current.textContent = clock(at);
+      if (state.current) state.current.textContent = stateAt(at);
     };
-    const run = () => {
-      raf = 0;
-      const r = el.getBoundingClientRect();
-      const vh = window.innerHeight;
-      // top at 80% of the screen → 18:18; bottom at 30% → 23:42
-      const p = Math.min(1, Math.max(0, (vh * 0.8 - r.top) / Math.max(1, r.height + vh * 0.5)));
-      set(evening.start + 0.3 + p * (SPAN - 0.6));
+    const job = {
+      read: () => {
+        const vh = window.innerHeight;
+        const top = box.top - window.scrollY;
+        // top at 80% of the screen → 18:18; bottom at 30% → 23:42
+        const p = Math.min(1, Math.max(0, (vh * 0.8 - top) / Math.max(1, box.height + vh * 0.5)));
+        h = evening.start + 0.3 + p * (SPAN - 0.6);
+      },
+      write: () => {
+        // A minute is the readout's finest step.
+        const at = Math.round(h * 60) / 60;
+        if (at === shown) return;
+        shown = at;
+        set(at);
+      },
     };
-    const queue = () => {
-      if (on && !raf) raf = requestAnimationFrame(run);
-    };
+    let stop: (() => void) | null = null;
     const apply = () => {
-      on = motionAllowed();
-      if (on) queue();
+      stop?.();
+      stop = null;
+      shown = -1;
+      if (motionAllowed()) stop = whileNear(el, job);
       else set(evening.rest);
     };
-    window.addEventListener('scroll', queue, { passive: true });
-    window.addEventListener('resize', queue);
     const off = subscribeMotion(apply);
     apply();
     return () => {
-      window.removeEventListener('scroll', queue);
-      window.removeEventListener('resize', queue);
+      stop?.();
+      box.dispose();
       off();
-      if (raf) cancelAnimationFrame(raf);
     };
   }, []);
 

@@ -10,9 +10,12 @@
 //   scrollToTarget(el)      Lenis's eased scroll when it runs, else native
 //
 // Lenis is imported on demand (5.4 kB gz), so pages that never start it
-// don't pay for it. ./gsap.ts ties ScrollTrigger to it when GSAP loads.
+// don't pay for it. It has no loop of its own: the page's one scroll frame
+// (./scroll-frame.ts) ticks it first, only while it moves, and runs every
+// scroll reader and writer after it.
 import type Lenis from 'lenis';
 import { isDesktopFine, motionAllowed } from './prefs';
+import { requestFrame, setFrameLenis } from './scroll-frame';
 
 let lenis: Lenis | null = null;
 let starting: Promise<void> | null = null;
@@ -48,10 +51,11 @@ export function startSmoothScroll(): Promise<void> {
       lenis = new LenisCtor({
         lerp: 0.11,
         wheelMultiplier: 0.9,
-        autoRaf: true,
+        autoRaf: false,
         anchors: { offset: navOffset() },
         stopInertiaOnNavigate: true,
       });
+      setFrameLenis(lenis);
       notify();
     })
     .catch(() => {})
@@ -65,6 +69,7 @@ export function stopSmoothScroll(): void {
   if (!lenis) return;
   lenis.destroy();
   lenis = null;
+  setFrameLenis(null);
   notify();
 }
 
@@ -73,6 +78,7 @@ export function scrollToTarget(target: HTMLElement | number, opts: { offset?: nu
   const offset = opts.offset ?? (typeof target === 'number' ? 0 : navOffset());
   if (lenis) {
     lenis.scrollTo(target, { offset });
+    requestFrame();
     return;
   }
   const y = typeof target === 'number' ? target : target.getBoundingClientRect().top + window.scrollY + offset;
