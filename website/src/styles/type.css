@@ -134,9 +134,11 @@
   }
   /* Each line is a block. At the page's own spacing the fit already keeps it
      on one line; it may still wrap (never clip) when a reader's text-spacing
-     settings widen it (WCAG 1.4.12). */
+     settings widen it (WCAG 1.4.12), inside a word if a single word no longer
+     fits the column. */
   .headline .ln {
     display: block;
+    overflow-wrap: break-word;
   }
 
   /* Two line sets: wide (≥ 600 px) and narrow (phones). On tablets the wide
