@@ -41,7 +41,8 @@ export const hero = {
   leadShort: 'A headless Steam box for a PC with an AMD GPU. Play on your TV, phone or laptop with Moonlight, and run it all from your phone.' as Rich,
   ctas: [
     { label: 'Download VaporOS', href: `#${anchors.get}`, icon: 'download', primary: true },
-    { label: 'How it works', href: `#${anchors.how}` },
+    // With the live demo off, the second button shows how it works (CRIT 33).
+    { label: 'See how it works', href: `#${anchors.how}` },
   ] satisfies ButtonItem[],
   /** aria-label of the facts list. */
   factsLabel: 'At a glance',
