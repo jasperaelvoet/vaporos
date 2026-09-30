@@ -2,25 +2,21 @@
    forms (the cards, actions and switch are system.css's sys- pieces). The
    one moment with heat is the rename hand-off: the old address goes cold
    and is struck through, the new one carries the streaming amber, and the
-   way on is the white-hot button. Fields join their suffix (.local) or
-   their show-password key in one box that takes the focus ring. Classes
-   start with set-, so none can be a Tailwind utility. */
+   way on is the white-hot button. A field's suffix (.local) or its
+   show-password key sits inside the field's own box. Classes start with
+   set-, so none can be a Tailwind utility. */
 @layer components {
   .set-grid { display: grid; gap: 1.75rem; align-items: start; }
   .set-grid .rack { padding-top: 0; }
 
-  /* one box: the field and its suffix or its key */
-  .set-affix, .set-reveal {
-    display: flex; align-items: center; border-radius: var(--radius-lg);
-    background: var(--color-surface-2); box-shadow: inset 0 0 0 1px var(--color-line);
-  }
-  .set-affix:focus-within, .set-reveal:focus-within { box-shadow: inset 0 0 0 2px var(--color-focus); }
-  .set-affix:has([aria-invalid="true"]), .set-reveal:has([aria-invalid="true"]) { box-shadow: inset 0 0 0 2px var(--color-cold); }
-  .set-affix-input, .set-reveal-input { flex: 1; min-width: 0; background: transparent; box-shadow: none; }
-  .set-affix-input:focus-visible, .set-reveal-input:focus-visible { box-shadow: none; }
-  .set-suffix { padding: 0 0.875rem 0 0; color: var(--color-ink-2); font-size: var(--text-sm); }
+  /* the suffix (.local) and the show-password key sit inside the field's
+     own box, so its focus ring and its error ring go round both */
+  .set-affix, .set-reveal { position: relative; }
+  .set-affix-input { padding-right: 4.25rem; }
+  .set-reveal-input { padding-right: 3.25rem; }
+  .set-suffix { position: absolute; right: 0.875rem; top: 50%; translate: 0 -50%; color: var(--color-ink-2); font-size: var(--text-sm); pointer-events: none; }
   .set-eye {
-    display: grid; place-items: center; width: 2.75rem; height: 2.75rem; flex: none; margin-right: 0.125rem;
+    position: absolute; right: 0.125rem; top: 50%; translate: 0 -50%; display: grid; place-items: center; width: 2.75rem; height: 2.75rem;
     border: 0; border-radius: var(--radius-md); background: none; color: var(--color-ink-3); cursor: pointer;
   }
   .set-eye:hover { color: var(--color-ink); }
@@ -53,8 +49,9 @@
   }
 
   @media (forced-colors: active) {
-    .set-affix, .set-reveal, .set-copyrow { border: 1px solid CanvasText; }
-    .set-affix:focus-within, .set-reveal:focus-within { outline: 2px solid Highlight; }
+    .set-copyrow { border: 1px solid CanvasText; }
+    /* the shell's field ring is a box-shadow, which these colours drop */
+    .set-affix-input:focus-visible, .set-reveal-input:focus-visible, .set-keys:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
     .set-eye[aria-pressed="true"] { outline: 1px solid CanvasText; }
   }
 }

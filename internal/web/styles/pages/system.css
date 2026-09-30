@@ -60,6 +60,9 @@
   .sys-rows [data-tone="cold"] .row-sub::before { background: var(--color-cold); }
 
   .sys-signout { justify-items: start; }
+  /* at large text sizes a key's word wraps under its icon instead of clipping */
+  .sys-power .key-tile { flex-wrap: wrap; row-gap: 0.25rem; }
+  .sys-power .key-tile b { white-space: normal; line-height: 1.15; text-wrap: balance; }
 
   /* ---------------------------------- shared by the System sub-pages */
   .sys-card { display: grid; gap: 1.125rem; padding: 1.25rem; border-radius: var(--radius-3xl); background: var(--color-surface); }
@@ -119,6 +122,11 @@
     .sys-needle { background: CanvasText; }
     .sys-rows [data-tone] .row-sub::before { background: CanvasText; }
     .sys-card, .sys-switch { border: 1px solid CanvasText; }
+    /* The System pages' buttons keep an edge, and their words and ground
+       in the button colours (the white-hot fill is gone in these colours). */
+    :is(.sys-actions, .sto-head, .sto-actions, .log-bar, .log-status, .abt-actions, .set-handoff-links, .sys-signout) .btn {
+      border: 1px solid ButtonText; background: ButtonFace; color: ButtonText;
+    }
     .sys-switch-input:checked + .sys-switch::before { forced-color-adjust: none; background: Highlight; }
     .sys-switch-input:focus-visible + .sys-switch { outline-color: Highlight; }
   }
