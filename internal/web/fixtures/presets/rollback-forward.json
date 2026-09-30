@@ -1,0 +1,19 @@
+{
+  "description": "Went back to 20260929.101500, then chose the newer copy again: it starts on the next restart, though nothing is staged (a forward rollback, which Restart to update cannot do).",
+  "patch": {
+    "update": {
+      "held": {"version": "20260929.101500", "rollback_index": 1790684100},
+      "other_slot": {
+        "version": "20260929.143000",
+        "running": false,
+        "bootable": true,
+        "counting": false,
+        "tries_left": 0,
+        "tries_done": 0,
+        "entry": "vos-20260929.143000.conf"
+      },
+      "next_boot": {"slot": "b", "version": "20260929.143000"}
+    }
+  },
+  "expect": {"hero": "restart-needed", "restart": ["next"], "cards": []}
+}

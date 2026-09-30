@@ -9,8 +9,8 @@
 
 {{define "notices"}}
 <div class="notices" id="notices">
-  <div class="notice-stack" id="notices-polite" role="status"></div>
-  <div class="notice-stack" id="notices-alert" role="alert"></div>
+  <div class="notice-stack" id="notices-polite"></div>
+  <div class="notice-stack" id="notices-alert"></div>
   <button class="notice-more" id="notices-more" type="button" aria-haspopup="dialog" aria-controls="recent" hidden></button>
 </div>
 <template id="tpl-notice"><div class="notice" data-kind="info"><span class="notice-mark" aria-hidden="true"></span><p class="notice-text" data-part="text"></p><button class="notice-action" type="button" data-part="action" hidden></button><a class="notice-action" data-part="link" hidden></a><button class="notice-close" type="button" data-part="close"><span class="sr-only" data-part="close-name">Dismiss</span>{{icon "close"}}</button></div></template>
@@ -96,7 +96,7 @@
     <p class="pin-error" id="pin-error" role="alert"></p>
     <p class="pin-status" id="pin-status" role="status"></p>
     <details class="pin-more">
-      <summary>Name on this PC</summary>
+      <summary><span class="pin-more-label">Name on this PC</span><span class="pin-more-hint">Optional</span>{{icon "chevron"}}</summary>
       <label class="field-label" for="pin-device-name">Name on this PC</label>
       <input class="input" id="pin-device-name" maxlength="128" autocomplete="off" aria-describedby="pin-device-hint">
       <p class="field-hint" id="pin-device-hint">How this device shows in Devices. Leave it for Moonlight's name.</p>
@@ -120,7 +120,7 @@
   <div class="scene-in">
     <p class="scene-elapsed mono" id="scene-elapsed" aria-hidden="true">00:00</p>
     <h2 class="scene-title" id="scene-title" tabindex="-1">Restarting</h2>
-    <p class="scene-text" id="scene-text" aria-live="polite"></p>
+    <p class="scene-text" id="scene-text"></p>
     <p class="scene-last" id="scene-last" hidden></p>
     <ol class="scene-ping mono" id="scene-ping" aria-hidden="true"></ol>
     <div class="scene-wake" id="scene-wake" hidden>{{template "wake" "scene"}}</div>

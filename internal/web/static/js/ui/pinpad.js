@@ -3,7 +3,6 @@
 // waiting. REDLINE: each digit heats the field one step; a wrong PIN is cold.
 
 import { api, errorText } from '../core/api.js';
-import { announce } from '../core/announce.js';
 import { byId, cloneTpl, part, parts, reducedMotion } from '../core/dom.js';
 import { pairPrompt } from '../copy.js';
 import { cleanDeviceName } from '../validate.js';
@@ -48,6 +47,8 @@ export function initPinpad({ notice = true } = {}) {
     else if (pin.value.length < 4) pin.value += key;
     if (!reducedMotion()) navigator.vibrate?.(10);
     paint();
+    // The cells are hidden from screen readers: say how far the PIN is.
+    if (pin.value.length < 4) byId('pin-status').textContent = `${pin.value.length} of 4 digits`;
   });
   // A hardware keyboard types into the PIN wherever focus is in the takeover.
   dlg.addEventListener('keydown', (e) => {
@@ -83,6 +84,7 @@ function paint() {
   pad().dataset.digits = String(v.length);
   if (v.length > 0) {
     byId('pin-error').textContent = '';
+    input().removeAttribute('aria-invalid');
     if (pad().dataset.phase === 'error') pad().dataset.phase = 'idle';
   }
   if (v.length === 4) setTimeout(() => input().value.length === 4 && submit(), 150);
@@ -92,10 +94,13 @@ function device() {
   return waiting.find((p) => p.id === chosen) || waiting[0] || null;
 }
 
+// renderTitle names the device only once it is the one: with several
+// waiting and none chosen, it names none (the picker asks).
 function renderTitle() {
   const d = device();
-  byId('pin-title').textContent = waiting.length > 1 && !chosen ? pairPrompt(waiting) : `${d?.name || 'A device'} wants to pair`;
-  byId('pin-lead-name').textContent = d?.name || 'it';
+  const open = waiting.length > 1 && !chosen;
+  byId('pin-title').textContent = open ? pairPrompt(waiting) : `${d?.name || 'A device'} wants to pair`;
+  byId('pin-lead-name').textContent = open ? "the device you're pairing" : d?.name || 'it';
 }
 
 // renderWho redraws the picker only when the list changes, so choosing a
@@ -117,6 +122,8 @@ function renderWho() {
       chosen = p.id;
       byId('pin-device-name').value = p.name || '';
       renderTitle();
+      // The PIN may already be complete: choosing the device pairs it.
+      if (input().value.length === 4) submit();
     });
     part(el, 'name').textContent = p.name || p.address || 'A device';
     return el;
@@ -141,21 +148,29 @@ async function submit() {
     succeeded = true;
     pad().dataset.phase = 'success';
     const name = body.name || d?.name || 'The device';
-    byId('pin-status').textContent = `${name} is paired.`;
-    announce(`${name} is paired.`);
+    // Said once, by the takeover's status line; the notice only shows it.
+    byId('pin-status').textContent = `${name} is paired. Pick Steam in Moonlight to play.`;
     setTimeout(() => closePinpad(), 900);
-    notify(`${name} is paired.`, { kind: 'ok' });
+    notify(`${name} is paired.`, { kind: 'ok', quiet: true });
   } catch (err) {
     pad().dataset.phase = 'error';
     byId('pin-status').textContent = '';
     byId('pin-error').textContent = await errorText(err, { name: d?.name || 'The device' });
     input().value = '';
     paint();
+    input().setAttribute('aria-invalid', 'true');
     if (!reducedMotion()) byId('pin-box').dataset.shake = 'true';
     input().focus({ preventScroll: true });
   } finally {
     submitting = false;
   }
+  // Moonlight stopped waiting while the PIN was on its way and it failed.
+  if (!succeeded && !waiting.length) stoppedWaiting();
+}
+
+function stoppedWaiting() {
+  closePinpad();
+  notify('Moonlight stopped waiting. Start pairing again in Moonlight.', { kind: 'info' });
 }
 
 // openPinpad shows the takeover for the waiting devices (id preselects one).
@@ -168,6 +183,7 @@ export function openPinpad({ id = '', from = document.activeElement } = {}) {
   input().value = '';
   byId('pin-error').textContent = '';
   byId('pin-status').textContent = '';
+  input().removeAttribute('aria-invalid');
   byId('pin-device-name').value = device()?.name || '';
   dlg.dataset.phase = 'idle';
   paint();
@@ -190,9 +206,10 @@ export function updatePairings(list) {
   waiting = Array.isArray(list) ? list : [];
   if (chosen && !waiting.some((p) => p.id === chosen)) chosen = '';
   if (pad().open) {
-    if (!waiting.length && !succeeded) {
-      closePinpad();
-      notify('Moonlight stopped waiting. Start pairing again in Moonlight.', { kind: 'info' });
+    // A pairing that succeeds ends Moonlight's wait too: while the PIN is on
+    // its way, an empty list is the answer arriving, not Moonlight giving up.
+    if (!waiting.length && !succeeded && !submitting) {
+      stoppedWaiting();
     } else if (waiting.length) {
       renderWho();
     }

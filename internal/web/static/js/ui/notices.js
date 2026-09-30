@@ -1,7 +1,10 @@
 // ui/notices.js: notices and Recent (spec-cc-screens §2.6). Errors and
 // notices with an action stay; the rest time out, paused while touched.
-// Both live regions exist from the first paint, so notices are announced.
+// The stacks are not live regions: a notice would be read with its Dismiss
+// button's name. The announcers (core/announce.js, there from the first
+// paint) speak each notice's words once instead.
 
+import { announce } from '../core/announce.js';
 import { byId, cloneTpl, part } from '../core/dom.js';
 import { getJSON, remove, setJSON } from '../core/store.js';
 import { url } from '../core/api.js';
@@ -15,7 +18,8 @@ let seq = 0;
 
 // notify shows text. kind: ok, info, warn or error. action: {label,
 // onClick} or {label, href}. id merges repeats and lets dismiss() find it.
-export function notify(text, { kind = 'info', action = null, id = '', sticky = false } = {}) {
+// quiet: shown, not spoken, because a status line on the page already said it.
+export function notify(text, { kind = 'info', action = null, id = '', sticky = false, quiet = false } = {}) {
   if (!text) return null;
   const key = id || `n${++seq}`;
   const old = shown.get(key);
@@ -57,6 +61,8 @@ export function notify(text, { kind = 'info', action = null, id = '', sticky = f
   el.addEventListener('pointerleave', run);
   el.addEventListener('focusout', run);
   byId(kind === 'error' ? 'notices-alert' : 'notices-polite').append(el);
+  if (!quiet && !(old && old.text === text)) announce(text, { assertive: kind === 'error' });
+  entry.text = text;
   shown.set(key, entry);
   run();
   keep({ text, kind });

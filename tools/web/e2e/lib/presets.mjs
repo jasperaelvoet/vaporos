@@ -85,6 +85,7 @@ export const PRESETS = [
   { name: 'update-held', group: 'updates', topics: ['home', 'updates'], env: { VOS_WEB_HELD: '1' } },
   { name: 'update-trial', group: 'updates', topics: ['home', 'updates'], env: { VOS_WEB_TRIAL: '1' } },
   { name: 'rollback-pending', group: 'updates', topics: ['home', 'updates'] },
+  { name: 'rollback-forward', group: 'updates', topics: ['home', 'updates', 'system'] },
   { name: 'no-gpu', group: 'faults', topics: ['home', 'screen'] },
   // /sunshine answers 503 while Sunshine is still being set up.
   { name: 'sunshine-starting', group: 'faults', pages: [{ topic: 'home', allow: SUNSHINE_STARTING }, { topic: 'stream', allow: SUNSHINE_STARTING }] },

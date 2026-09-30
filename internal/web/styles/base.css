@@ -10,6 +10,20 @@
     text-size-adjust: 100%;
     scrollbar-color: var(--color-line) transparent;
   }
+  /* WCAG 2.4.11: a control scrolled into view by Tab (or a fragment) stops
+     clear of the sticky app bar, the strip and the tab bar. */
+  html:has(#app) {
+    scroll-padding-top: calc(3.75rem + env(safe-area-inset-top));
+    scroll-padding-bottom: calc(5.25rem + env(safe-area-inset-bottom));
+  }
+  html:has(#strip:not([hidden])) { scroll-padding-top: calc(8rem + env(safe-area-inset-top)); }
+  @media (min-width: 64rem) {
+    html:has(#app) { scroll-padding-bottom: 1rem; }
+  }
+  @media (max-height: 29.99rem) and (max-width: 63.99rem) {
+    html:has(#app) { scroll-padding-top: 0.75rem; scroll-padding-bottom: calc(4rem + env(safe-area-inset-bottom)); }
+    html:has(#strip:not([hidden])) { scroll-padding-top: calc(4.75rem + env(safe-area-inset-top)); }
+  }
   body {
     min-height: 100dvh;
     background: var(--color-canvas);

@@ -922,6 +922,21 @@ func testScriptsMatchMarkup(t *testing.T, set uiSet) {
 	})
 }
 
+// TestLegacySpriteFrozen: the legacy set's pages carry its 37 icons, no
+// more, however many icons the new set adds.
+func TestLegacySpriteFrozen(t *testing.T) {
+	for script, body := range renderAll(t, legacySet) {
+		if n := strings.Count(body, `<symbol id="i-`); n != len(legacyIcons) {
+			t.Errorf("%s: %d icons inlined, want the legacy set's %d", script, n, len(legacyIcons))
+		}
+	}
+	for _, n := range legacyIcons {
+		if _, ok := iconPaths[n]; !ok {
+			t.Errorf("legacy icon %q is gone from design/icons", n)
+		}
+	}
+}
+
 func TestIconsRender(t *testing.T) {
 	for name := range iconPaths {
 		h, err := iconHTML(name)

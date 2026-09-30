@@ -10,10 +10,11 @@ import { findChrome } from '../e2e/lib/browser.mjs';
 import { APP_TOPICS, flowRuns, hasAlias, KEY_PRESETS, loads, pagesFor, PRESETS, preset, presetEnv, ROUTES } from '../e2e/lib/presets.mjs';
 import { parseArgs, slug } from '../e2e/lib/run-helpers.mjs';
 
-// MASTER-PLAN Appendix B, the one list of preset names.
+// MASTER-PLAN Appendix B, the one list of preset names, plus rollback-forward
+// (a newer next_boot with nothing staged; internal/web/contract_test.go).
 const APPENDIX_B = [
   'idle', 'headless', 'streaming', 'pairing-1', 'pairing-2', 'keep-awake', 'busy-web', 'idle-countdown', 'no-wol', 'empty', 'ssh-on', 'signed-out', 'first-run',
-  'update-available', 'update-staging', 'update-staged', 'update-stale-check', 'update-error', 'update-check-failed', 'update-failed-newer', 'update-held', 'update-trial', 'rollback-pending',
+  'update-available', 'update-staging', 'update-staged', 'update-stale-check', 'update-error', 'update-check-failed', 'update-failed-newer', 'update-held', 'update-trial', 'rollback-pending', 'rollback-forward',
   'no-gpu', 'sunshine-starting', 'sunshine-stopped', 'sunshine-unreachable', 'reboot-needed',
   'disk-low', 'storage-missing', 'storage-pending', 'logs-empty', 'logs-error',
   'installer-code', 'installer-waived', 'installer-one-disk', 'installer-no-disk', 'installer-source-error', 'installer-two-vaporos', 'installer-failed',

@@ -5,14 +5,25 @@
 
 import { busyReason, pairPrompt } from './copy.js';
 import { clock, compareVersions, duration, modeLabel, parseMode, percent, phaseLabel } from './fmt.js';
-import { isStreaming, pairings, restartReasons, session, stagedVersion, updateProgress } from './state.js';
+import { isStreaming, pairings, pendingReasons, session, stagedVersion, updateProgress } from './state.js';
 
-const REASON_TITLE = { update: 'Restart to update', rollback: 'Restart to go back', display: 'Restart to finish setup' };
+const REASON_TITLE = { rollback: 'Restart to go back', next: 'Restart to switch', display: 'Restart to finish setup' };
 const REASON_DETAIL = {
-  update: (r) => `Version ${r.version} is ready.`,
   rollback: (r) => `Version ${r.version} starts on the next restart.`,
+  next: (r) => `Version ${r.version} starts on the next restart.`,
   display: () => 'Display changes are waiting.',
 };
+
+// IDLE_SOON: from this many seconds before the idle power-off, Home warns.
+export const IDLE_SOON = 300;
+
+// idleSoon is the seconds left before an idle power-off when it is close and
+// nothing keeps VaporOS on, else 0. shutdown_in comes from power.idle.
+export function idleSoon(p) {
+  if (!p || !p.idle_shutdown || (p.busy && p.busy.reason)) return 0;
+  const left = p.shutdown_in;
+  return left > 0 && left <= IDLE_SOON ? left : 0;
+}
 
 // heroModel is Home's hero (spec-cc-screens §3.2), highest priority first.
 // key names the case (the presets' expect.hero); state is data-state.
@@ -34,7 +45,8 @@ export function heroModel(snap) {
       chips,
       mode,
       hdr: !!ss.hdr,
-      actions: [{ id: 'stream-details', label: 'Details' }],
+      // Navigation, not the thing to act on: never white-hot.
+      actions: [{ id: 'stream-details', label: 'Details', quiet: true }],
     });
   }
   const prog = updateProgress(snap);
@@ -42,7 +54,7 @@ export function heroModel(snap) {
     const v = prog.version || (u && u.available && u.available.version) || '';
     return hero('updating', 'updating', v ? `Updating to ${v}` : 'Updating', `${phaseLabel(prog.phase)} · ${percent(prog.percent)}%. Keep playing: it switches over when VaporOS restarts.`, {
       progress: percent(prog.percent) / 100,
-      actions: [{ id: 'updates', label: 'Details', href: '/system/updates' }],
+      actions: [{ id: 'updates', label: 'Details', href: '/system/updates', quiet: true }],
     });
   }
   if (d && d.profile === 'none') {
@@ -68,21 +80,34 @@ export function heroModel(snap) {
   if (err) {
     return hero('fault-unknown', 'fault', "Can't read the streaming status", 'VaporOS may still be starting. This page updates by itself.', { reason: 'unknown' });
   }
-  const reasons = restartReasons(snap);
+  // A staged update is not among these: the box is ready, and a card
+  // offers it (MASTER-PLAN §1.3).
+  const reasons = pendingReasons(snap);
   if (reasons.length) {
     const first = reasons[0];
-    const upd = reasons.find((r) => r.kind === 'update');
     return hero('restart-needed', 'restart-needed', reasons.length === 1 ? REASON_TITLE[first.kind] : 'Restart to finish',
       reasons.map((r) => REASON_DETAIL[r.kind](r)).join(' '), {
-        reason: upd ? 'staged' : first.kind === 'rollback' ? 'rollback' : 'display',
-        actions: [upd ? { id: 'activate', label: 'Restart to update' } : { id: 'reboot', label: 'Restart now' }],
+        reason: first.kind === 'display' ? 'display' : 'rollback',
+        actions: [{ id: 'reboot', label: 'Restart now' }],
       });
   }
+  // The idle mode is a tag: the virtual screen is off until a game starts.
   const chips = d && d.current ? [modeLabel(d.current)] : [];
+  const waiting = pairings(snap);
+  if (waiting.length) {
+    // The pair prompt is the state: the word, the heat and the white-hot key
+    // agree (the TV keeps its tone and marks the attention).
+    return hero('ready', 'ready', pairPrompt(waiting), 'Enter the PIN Moonlight shows. Pairing stops when Moonlight stops waiting.', {
+      attention: 'pair',
+      chips,
+      mode: (d && d.current) || '',
+      actions: [{ id: 'pin', label: 'Enter PIN' }],
+    });
+  }
   const detail = d && d.state === 'welcome'
     ? 'The monitor shows the welcome screen until a game starts.'
     : `Open Moonlight on any device and pick ${sys.hostname || 'this PC'}.`;
-  return hero('ready', 'ready', 'Ready to stream', detail, { chips, mode: (d && d.current) || '', hdr: !!(d && d.hdr) });
+  return hero('ready', 'ready', 'Ready to stream', detail, { chips, mode: (d && d.current) || '', hdr: !!(d && d.hdr), idle: idleSoon(snap.power) > 0 });
 }
 
 function hero(key, state, title, detail, extra = {}) {
@@ -90,6 +115,8 @@ function hero(key, state, title, detail, extra = {}) {
   return {
     key,
     state,
+    attention: extra.attention || '',
+    idle: !!extra.idle,
     reason: extra.reason || '',
     title,
     detail,
@@ -108,16 +135,21 @@ export function contextCards(snap, { dismissedFailed = '', liveError = null } = 
   const u = snap.update;
   const h = heroModel(snap);
   const waiting = pairings(snap);
-  if (waiting.length) {
+  if (waiting.length && h.attention !== 'pair') {
     out.push(card('pair', '', 'attention', pairPrompt(waiting), 'Enter the PIN Moonlight shows.', [{ id: 'pin', label: waiting.length === 1 ? `Enter PIN for ${waiting[0].name}` : 'Enter PIN' }]));
+  }
+  const left = idleSoon(snap.power);
+  if (left && h.state === 'ready') {
+    out.push(card('idle-soon', '', 'warn', `Powers off in ${duration(left)}`, 'Nobody is playing. Stay awake keeps it on for an hour.', [{ id: 'awake1h', label: 'Stay awake 1 h' }]));
   }
   if (u) {
     const prog = updateProgress(snap);
     if (prog && (h.state === 'streaming' || h.state === 'fault')) {
       out.push(card('update-progress', prog.version || '', 'updating', `Updating to ${prog.version || 'a new version'}`, `${phaseLabel(prog.phase)} · ${percent(prog.percent)}%`, [{ id: 'updates', label: 'Details', href: '/system/updates' }]));
     }
+    // H-C3: a staged update is ready, whatever else the hero says.
     const staged = stagedVersion(snap);
-    if (staged && (h.state === 'streaming' || h.state === 'updating')) {
+    if (staged && !u.busy) {
       out.push(card('update-ready', staged, 'ready', `Version ${staged} is ready`, 'It starts the next time VaporOS restarts.', [{ id: 'activate', label: 'Restart to update' }]));
     }
     const avail = u.available && u.available.version;
@@ -183,8 +215,15 @@ export function powerLine(p, { now = Date.now(), shutdownIn = null } = {}) {
   const sIn = shutdownIn ?? p.shutdown_in;
   if (sIn > 0) return `Powers off in ${duration(sIn)} if nobody plays.`;
   if (p.busy && p.busy.web && p.web_until) {
-    const at = new Date(Date.parse(p.web_until) + (p.idle_minutes || 0) * 60e3).toISOString();
-    return `Only this page keeps it on. It powers off about ${clock(at, new Date(now))} if nobody plays.`;
+    // Whoever reads this has the page open: say what the PC does, not
+    // what the page does (spec-cc-screens T2, B5).
+    return `On until about ${clock(webOffAt(p), new Date(now))}. Idle power-off starts ${p.idle_minutes} min after this page closes.`;
   }
   return `Powers off after ${p.idle_minutes} min without anyone playing.`;
+}
+
+// webOffAt is when idle power-off would switch the PC off if the only thing
+// keeping it on, an open control center page, closed now.
+export function webOffAt(p) {
+  return new Date(Date.parse(p.web_until) + (p.idle_minutes || 0) * 60e3).toISOString();
 }

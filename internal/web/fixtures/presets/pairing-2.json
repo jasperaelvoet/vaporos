@@ -20,5 +20,5 @@
       }
     ]
   ],
-  "expect": {"hero": "ready", "restart": [], "cards": ["pair"], "attention": "pair"}
+  "expect": {"hero": "ready", "restart": [], "cards": [], "attention": "pair"}
 }

@@ -336,7 +336,7 @@ func newUI(srv *api.Server, set uiSet, fsys fs.FS) (*ui, error) {
 			u.nav = append(u.nav, p)
 		}
 	}
-	sprite := spriteHTML()
+	sprite := spriteHTML(legacyIcons...)
 	if set.Current {
 		icons, err := iconsUsed(fsys, set, assets)
 		if err != nil {

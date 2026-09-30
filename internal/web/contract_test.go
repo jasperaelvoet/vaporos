@@ -131,12 +131,13 @@ func testFixtures(t *testing.T) *fixtureSet {
 	return fx
 }
 
-// appendixB is every preset of MASTER-PLAN Appendix B and every script.
+// appendixB is every preset of MASTER-PLAN Appendix B and every script,
+// plus rollback-forward (a newer next_boot with nothing staged).
 var appendixB = map[string][]string{
 	"presets": {"idle", "headless", "streaming", "pairing-1", "pairing-2", "keep-awake", "busy-web", "idle-countdown",
 		"no-wol", "empty", "ssh-on", "signed-out", "first-run",
 		"update-available", "update-staging", "update-staged", "update-stale-check", "update-error",
-		"update-check-failed", "update-failed-newer", "update-held", "update-trial", "rollback-pending",
+		"update-check-failed", "update-failed-newer", "update-held", "update-trial", "rollback-pending", "rollback-forward",
 		"no-gpu", "sunshine-starting", "sunshine-stopped", "sunshine-unreachable", "reboot-needed",
 		"disk-low", "storage-missing", "storage-pending", "logs-empty", "logs-error",
 		"installer-code", "installer-waived", "installer-one-disk", "installer-no-disk",
@@ -146,8 +147,8 @@ var appendixB = map[string][]string{
 
 var (
 	heroStates   = []string{"ready", "streaming", "updating", "fault-no-gpu", "starting", "fault-stopped", "fault-not-answering", "fault-unknown", "restart-needed"}
-	restartKinds = []string{"update", "rollback", "display"}
-	cardIDs      = []string{"pair", "update-progress", "update-ready", "update-available", "update-failed", "update-stopped", "cant-check", "low-space", "cant-wake"}
+	restartKinds = []string{"rollback", "next", "display"} // state.js pendingReasons: a staged update is not one
+	cardIDs      = []string{"pair", "idle-soon", "update-progress", "update-ready", "update-available", "update-failed", "update-stopped", "cant-check", "low-space", "cant-wake"}
 )
 
 // TestFixtureKeysKnown decodes every document, as base and after every

@@ -157,6 +157,11 @@ export function markSignedIn() {
   setString('session', SEEN, '1');
 }
 
+// signedInBefore reports whether boot succeeded in this tab before. A page
+// starts its reads ahead of boot (ARCH §7.4) only then: in a tab that never
+// signed in they would only log 401s before boot's redirect to sign-in.
+export const signedInBefore = () => getString('session', SEEN) === '1';
+
 export function goLogin({ ended = false } = {}) {
   if (document.documentElement.dataset.page === 'login') return;
   const q = new URLSearchParams({ next: here() });

@@ -59,7 +59,7 @@ export const INSTALL_STEPS = {
 // T2. null: never shown as a reason (web UI in use only means a page is open).
 const BUSY_EXACT = {
   'keep-awake': 'Staying awake until <until>',
-  'manual keep-awake': 'Staying awake: a keep-awake file is set.',
+  'manual keep-awake': 'a keep-awake file is set',
   'Moonlight stream': 'Someone is streaming',
   'Moonlight stream (waiting for the client to reconnect)': 'Waiting up to 10 min for Moonlight to reconnect',
   'checking for updates': 'Checking for updates',
@@ -92,11 +92,13 @@ export function restartRowText(reasons) {
   const one = {
     update: (r) => `Restart to update to ${r.version}.`,
     rollback: (r) => `Restart to go back to ${r.version}.`,
+    next: (r) => `Version ${r.version} starts on the next restart.`,
     display: () => 'Restart to apply screen changes.',
   };
   const part = {
     update: (r) => `version ${r.version} is ready`,
     rollback: (r) => `going back to ${r.version}`,
+    next: (r) => `starting version ${r.version}`,
     display: () => 'display changes are waiting',
   };
   const list = (reasons || []).filter((r) => one[r.kind]);

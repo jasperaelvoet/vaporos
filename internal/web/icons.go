@@ -10,6 +10,15 @@ import (
 	"strings"
 )
 
+// legacyIcons are the 37 icons the eight-page UI had when it was set aside
+// (3208d29). Its pages inline exactly these, so the frozen UI's HTML does
+// not grow with every icon the new one appends (the drawings moved to
+// design/icons unchanged).
+var legacyIcons = []string{"home", "phone", "gamepad", "monitor", "drive", "update", "power", "sliders", "logout", "menu",
+	"close", "check", "alert", "info", "external", "download", "key", "terminal", "restart", "coffee", "moon", "plus",
+	"trash", "globe", "zap", "cpu", "wifi", "shield", "hdr", "usb", "library", "clock", "sparkle", "eye", "file",
+	"chevron", "back"}
+
 // spriteHTML returns the named icons, or every icon when none is named, as
 // <symbol id="i-name"> in one hidden SVG.
 func spriteHTML(only ...string) template.HTML {

@@ -19,5 +19,5 @@
   "events": [
     ["update.progress", {"phase": "done", "percent": 100, "bytes": 0, "total": 0, "version": "20260929.143000"}]
   ],
-  "expect": {"hero": "restart-needed", "restart": ["update"], "cards": []}
+  "expect": {"hero": "ready", "restart": [], "cards": ["update-ready"]}
 }

@@ -35,6 +35,14 @@ const pinpad = () => import('./pinpad.js');
 // current: GET /status plus what events said since (state.js's shape).
 export const current = () => snap;
 
+// pending is what asks for a restart: /status's reasons without a staged
+// update, which leaves the box ready (state.js pendingReasons, MASTER-PLAN
+// §1.3), inline so every page's first paint does not load state.js.
+function pending(s) {
+  const staged = s.update && s.update.staged && s.update.staged.version;
+  return ((s.restart && s.restart.reasons) || []).filter((r) => !(r.kind === 'update' && staged && r.version === staged));
+}
+
 export function onStatus(fn) {
   watchers.add(fn);
   if (snap.update || snap.display) fn(snap);
@@ -95,7 +103,7 @@ function apply(next) {
   if (snap.power && snap.wol) snap.power = { ...snap.power, wol: snap.wol };
   const d = snap.display || {};
   const streaming = !!(snap.stream || snap.live.session || d.state === 'streaming');
-  const reasons = (snap.restart && snap.restart.reasons) || [];
+  const reasons = pending(snap);
   const waiting = (snap.sunshine && snap.sunshine.pairings) || [];
   if (streaming || loaded.strip) {
     loaded.strip = true;
@@ -221,12 +229,17 @@ function renderLink(l) {
   at(10000, () => banner(OFFLINE.stale, false));
   at(60000, () => {
     banner(OFFLINE.asleep, true);
-    scene().then((m) => m.asleep());
+    scene().then((m) => m.asleep({ from: downSince }));
   });
 }
 
 function banner(text, wake) {
   if (link.state === 'live') return;
+  // Home's hero says Asleep itself, with the same words: one is enough.
+  if (wake && document.documentElement.dataset.page === 'home') {
+    byId('offline').hidden = true;
+    return;
+  }
   byId('offline-text').textContent = text;
   byId('offline-wake').hidden = !wake;
   byId('offline').hidden = false;

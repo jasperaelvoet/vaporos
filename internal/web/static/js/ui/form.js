@@ -46,6 +46,7 @@ export function bindForm(form, { validate = () => ({}), submit, fieldFor = () =>
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (submitBtn?.getAttribute('aria-busy') === 'true') return;
     if (formError) formError.textContent = '';
     const errs = validate(form) || {};
     let first = null;
@@ -58,14 +59,19 @@ export function bindForm(form, { validate = () => ({}), submit, fieldFor = () =>
       first.focus();
       return;
     }
-    submitBtn?.setAttribute('aria-busy', 'true');
-    if (submitBtn) submitBtn.disabled = true;
+    const had = submitBtn && document.activeElement === submitBtn;
+    markBusy(submitBtn, true);
     try {
       await submit(form);
+      markBusy(submitBtn, false);
       setDirty(false);
       remove('session', `${DRAFTS}:${key}`);
       if (saved) announce(saved);
+      // Save is disabled again once the form is clean: keep focus in the
+      // form instead of losing it to <body> (WCAG 2.4.3).
+      if (had && submitBtn.disabled) focusForm(form);
     } catch (err) {
+      markBusy(submitBtn, false);
       const id = fieldFor(err);
       const el = id && document.getElementById(id);
       if (el) {
@@ -74,9 +80,6 @@ export function bindForm(form, { validate = () => ({}), submit, fieldFor = () =>
       } else if (formError) {
         formError.textContent = await errorText(err);
       }
-      if (submitBtn) submitBtn.disabled = false;
-    } finally {
-      submitBtn?.removeAttribute('aria-busy');
     }
   });
   if (draft) restoreDraft(form, key, setDirty);
@@ -103,12 +106,33 @@ function restoreDraft(form, key, setDirty) {
   setDirty(true);
 }
 
+// markBusy marks btn busy, or not. A busy button stays focusable (a disabled
+// one would drop focus to <body>, WCAG 2.4.3): aria-disabled and aria-busy
+// say it is working, and the callers ignore presses while aria-busy is set.
+export function markBusy(btn, on) {
+  if (!btn) return;
+  if (on) {
+    btn.setAttribute('aria-busy', 'true');
+    btn.setAttribute('aria-disabled', 'true');
+  } else {
+    btn.removeAttribute('aria-busy');
+    btn.removeAttribute('aria-disabled');
+  }
+}
+
+// focusForm moves focus to what names form (its heading), else the form.
+function focusForm(form) {
+  const by = form.getAttribute('aria-labelledby');
+  const target = (by && document.getElementById(by.split(' ')[0])) || form.closest('section')?.querySelector('h2, h3') || form;
+  if (!target.hasAttribute('tabindex') && !target.matches('a, button, input, select, textarea')) target.setAttribute('tabindex', '-1');
+  target.focus({ preventScroll: true });
+}
+
 // busy runs fn while btn is marked busy and cannot be pressed twice; an
 // error becomes a notice unless onError handles it.
 export async function busy(btn, fn, onError) {
   if (btn?.getAttribute('aria-busy') === 'true') return undefined;
-  btn?.setAttribute('aria-busy', 'true');
-  if (btn) btn.disabled = true;
+  markBusy(btn, true);
   try {
     return await fn();
   } catch (err) {
@@ -116,7 +140,6 @@ export async function busy(btn, fn, onError) {
     else throw err;
     return undefined;
   } finally {
-    btn?.removeAttribute('aria-busy');
-    if (btn) btn.disabled = false;
+    markBusy(btn, false);
   }
 }

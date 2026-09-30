@@ -12,5 +12,5 @@
       {"pairings": [{"id": "2e91a88f8967a1bd56be84a93e1fe055", "name": "Steam Deck", "address": "192.168.1.31"}]}
     ]
   ],
-  "expect": {"hero": "ready", "restart": [], "cards": ["pair"], "attention": "pair"}
+  "expect": {"hero": "ready", "restart": [], "cards": [], "attention": "pair"}
 }

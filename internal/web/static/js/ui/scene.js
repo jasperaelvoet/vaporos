@@ -44,17 +44,19 @@ function line(text, kind = '') {
 
 // openScene shows the scene in phase. vars fill the copy (<v>).
 // dismissible: the viewer may close it (an outage nobody asked for); a
-// restart or power off they started keeps it up (Esc does nothing).
-export function openScene(phase, { vars = {}, closable = false } = {}) {
+// restart or power off they started keeps it up (Esc does nothing). from:
+// when the box went away (the link's since), so the clock counts the outage,
+// not how long the scene has been open.
+export function openScene(phase, { vars = {}, closable = false, from = 0 } = {}) {
   const s = scene();
   dismissible = closable;
   byId('scene-ping').replaceChildren();
   byId('scene-actions').hidden = !closable;
   byId('scene-reload').hidden = true;
   byId('scene-close').hidden = !closable;
-  since = Date.now();
+  since = from && from <= Date.now() ? from : Date.now();
   clearInterval(tick);
-  byId('scene-elapsed').textContent = elapsed(0);
+  byId('scene-elapsed').textContent = elapsed((Date.now() - since) / 1000);
   tick = setInterval(() => {
     byId('scene-elapsed').textContent = elapsed((Date.now() - since) / 1000);
   }, 1000);
@@ -205,9 +207,9 @@ export async function powerAction(kind, { confirmed = false, snap = {}, version 
 // asleep shows the scene for an outage nobody asked for (DECISIONS NEW-1):
 // the box stopped answering, most likely an idle power-off. It closes by
 // itself once VaporOS answers again; the page then refreshes live.
-export async function asleep({ off = false } = {}) {
+export async function asleep({ off = false, from = 0 } = {}) {
   if (sceneOpen()) return;
-  openScene(off ? 'off' : 'asleep', { closable: !off });
+  openScene(off ? 'off' : 'asleep', { closable: !off, from });
   pause();
   const back = await waitForBack();
   if (!back) return;

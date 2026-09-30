@@ -13,7 +13,7 @@ test('fill and capitalize', () => {
 test('T2: every busy reason in the code has copy', () => {
   const cases = {
     'keep-awake': 'Staying awake until 21:30',
-    'manual keep-awake': 'Staying awake: a keep-awake file is set.',
+    'manual keep-awake': 'a keep-awake file is set',
     'streaming to Pixel 9': 'Streaming to Pixel 9',
     'Moonlight stream': 'Someone is streaming',
     'Moonlight stream (waiting for the client to reconnect)': 'Waiting up to 10 min for Moonlight to reconnect',
@@ -43,14 +43,15 @@ test('T7 labels', () => {
 });
 
 test('confirms: danger ones say so, placeholders fill', () => {
-  for (const id of ['poweroff', 'poweroff-nowol', 'busy-reboot', 'unpair', 'stop-using', 'sunrestart', 'endstream', 'cancel']) {
+  for (const id of ['poweroff', 'poweroff-nowol', 'poweroff-stream', 'poweroff-nowol-stream', 'busy-reboot', 'unpair', 'stop-using', 'sunrestart', 'endstream', 'cancel']) {
     assert.equal(confirmCopy(id, { name: 'x', label: 'x' }).tone, 'danger', id);
   }
   assert.equal(confirmCopy('reboot').tone, 'normal');
   const c = confirmCopy('reboot-staged', { v: '20260929.143000' });
   assert.equal(c.body, 'Version 20260929.143000 starts after the restart. Streams in progress stop.');
   assert.equal(confirmCopy('rollback-now', { v: '1' }).cancel, 'Later');
-  for (const id of Object.keys(CONFIRMS)) assert.ok(!/<\w+>/.test(confirmCopy(id, { v: 1, name: 1, label: 1, new: 1, port: 1, old: 1 }).body), id);
+  assert.equal(confirmCopy('reboot-stream', { client: 'Living room TV' }).body, 'The stream to Living room TV stops. VaporOS is back in about a minute.');
+  for (const id of Object.keys(CONFIRMS)) assert.ok(!/<\w+>/.test(confirmCopy(id, { v: 1, name: 1, label: 1, new: 1, port: 1, old: 1, client: 1 }).body), id);
   assert.throws(() => confirmCopy('nope'));
 });
 
@@ -63,4 +64,5 @@ test('pairing prompt and restart row', () => {
   assert.equal(restartRowText([{ kind: 'display' }]), 'Restart to apply screen changes.');
   assert.equal(restartRowText([{ kind: 'update', version: '2' }, { kind: 'display' }]), 'Restart to finish: version 2 is ready and display changes are waiting.');
   assert.equal(restartRowText([]), '');
+  assert.equal(restartRowText([{ kind: 'next', version: '3' }]), 'Version 3 starts on the next restart.');
 });

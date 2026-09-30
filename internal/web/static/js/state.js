@@ -58,11 +58,31 @@ export function restartReasons(snap) {
   return out;
 }
 
+// stagedVersion is the update a restart installs: the staged version, when a
+// restart starts it (next_boot names it, or an older API has no next_boot).
+// Only update.staged says so: a newer next_boot with nothing staged is a
+// forward rollback, which POST /update/activate refuses (409).
 export function stagedVersion(snap) {
   const u = snap.update || {};
-  const r = restartReasons(snap).find((x) => x.kind === 'update');
-  if (r) return r.version;
-  return u.staged && u.staged.version && u.staged.version !== u.booted ? u.staged.version : '';
+  const v = u.staged && u.staged.version;
+  if (!v || v === u.booted) return '';
+  if (u.next_boot && u.next_boot.version && u.next_boot.version !== v) return '';
+  return v;
+}
+
+// pendingReasons are why a restart is needed (T1 restart-needed): a
+// rollback waiting for it, another version it would start that is not the
+// staged update (kind "next": a forward rollback), and display changes. A
+// staged update is not one: VaporOS is ready, and Home offers it as a card
+// (MASTER-PLAN §1.3; the TV's tone agrees).
+export function pendingReasons(snap) {
+  const staged = stagedVersion(snap);
+  const out = [];
+  for (const r of restartReasons(snap)) {
+    if (r.kind !== 'update') out.push(r);
+    else if (!staged || r.version !== staged) out.push({ kind: 'next', version: r.version });
+  }
+  return out;
 }
 
 export function isStreaming(snap) {
@@ -97,7 +117,8 @@ export function stripModel(snap, now = Date.now()) {
   const mode = ss.mode || d.current || '';
   const m = parseMode(mode);
   const client = ss.client || 'a device';
-  const parts = [m ? `${m.w}×${m.h}` : '', m ? `${m.hz} Hz` : '', ss.hdr ? 'HDR' : ''].filter(Boolean);
+  // One way to write a mode everywhere (fmt.modeLabel): 3840 × 2160 · 60 Hz.
+  const parts = [m ? modeLabel(mode) : '', ss.hdr ? 'HDR' : ''].filter(Boolean);
   const name = [`Now streaming: ${client}`, m ? `, ${m.w} by ${m.h} at ${m.hz} hertz` : '', ss.hdr ? ', HDR' : '', '. Show details.'].join('');
   let sinceText = '';
   if (ss.since) {
@@ -132,27 +153,28 @@ export function powerPlan(kind, snap) {
   if (kind === 'poweroff') {
     const nowol = snap.power && Array.isArray(snap.power.wol) && !canWake(snap.power);
     const c = { id: nowol ? 'poweroff-nowol' : 'poweroff' };
-    if (streaming) return { confirm: c, hold: false, hint: `Ends the stream to ${ss.client || 'the device playing'}.` };
+    if (streaming) return { confirm: streamConfirm(c, ss), hold: false, hint: `Ends the stream to ${ss.client || 'the device playing'}.` };
     if (nowol) return { confirm: c, hold: false, hint: 'Wake-on-LAN is off: only the power button starts it again.' };
     return { confirm: c, hold: true, hint: '' };
   }
   const c = staged ? { id: 'reboot-staged', vars: { v: staged } } : { id: 'reboot' };
-  if (streaming) return { confirm: c, hold: false, hint: `Ends the stream to ${ss.client || 'the device playing'}.` };
+  if (streaming) return { confirm: streamConfirm(c, ss), hold: false, hint: `Ends the stream to ${ss.client || 'the device playing'}.` };
   return { confirm: c, hold: true, hint: staged ? `Restarting also installs version ${staged}.` : '' };
 }
 
+// streamConfirm names who is streaming in a restart or power-off confirm, as
+// the hint and the Power sheet already do.
+function streamConfirm(c, ss) {
+  return ss.client ? { id: `${c.id}-stream`, vars: { ...(c.vars || {}), client: ss.client } } : c;
+}
+
+// restartRow is "Restart to finish" (spec-cc-screens §2.10): only for a
+// pending rollback or display changes, never for a staged update alone. Its
+// Restart is a plain restart, which also starts a staged update.
 export function restartRow(snap) {
-  const reasons = restartReasons(snap);
+  const reasons = pendingReasons(snap);
   if (!reasons.length) return { show: false };
-  const upd = reasons.find((r) => r.kind === 'update');
-  const u = snap.update || {};
-  const staged = u.staged && u.staged.version;
-  return {
-    show: true,
-    text: restartRowText(reasons),
-    action: upd && (!staged || staged === upd.version) ? 'activate' : 'reboot',
-    version: upd ? upd.version : '',
-  };
+  return { show: true, text: restartRowText(reasons), action: 'reboot', version: '' };
 }
 
 export function hostOf(snap, fallback) {

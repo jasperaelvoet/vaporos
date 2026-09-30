@@ -46,6 +46,12 @@
   .btn[aria-busy="true"] { cursor: progress; }
   .btn.primary { background: var(--color-accent); color: var(--color-accent-ink); }
   .btn.primary:active { background: var(--color-h8); }
+  /* Not yet: a primary that cannot be pressed reads cold, never as a
+     spoiled white-hot (opacity over white-hot on ash turns olive). */
+  .btn.primary:disabled, .btn.primary[aria-disabled="true"]:not([aria-busy="true"]) {
+    opacity: 1; background: var(--color-surface-2); color: var(--color-ink-3); box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+  .btn[aria-busy="true"] { opacity: 0.8; }
   .btn.ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--color-line); }
   .btn.ghost:hover { box-shadow: inset 0 0 0 1px var(--color-line-strong); }
   .btn.danger { background: var(--color-danger); color: var(--color-danger-ink); }
@@ -62,7 +68,12 @@
     background: var(--color-canvas);
   }
   .appbar-host { display: flex; align-items: center; gap: 0.625rem; min-height: 2.75rem; min-width: 0; text-decoration: none; }
-  .appbar-name { font-size: var(--text-md); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Two lines at most, broken anywhere: a long hostname or 200 % text keeps
+     the whole name instead of "vapor.…". */
+  .appbar-name {
+    font-size: var(--text-md); font-weight: 500; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+  }
 
   /* the connection indicator (G8): the state's dot, words when not live */
   .link-state {
@@ -71,7 +82,7 @@
   }
   .link-text { white-space: nowrap; }
   .link-dot { width: 0.5rem; height: 0.5rem; border-radius: var(--radius-xs); background: var(--state); transition: background-color var(--vos-dur-heat) var(--ease-out); }
-  .link-state[data-link="connecting"] .link-dot { background: var(--color-ink-3); animation: vos-pulse 1.6s ease-in-out infinite alternate; }
+  .link-state[data-link="connecting"] .link-dot { background: var(--color-ink-3); animation: vos-pulse 1.6s ease-in-out 3 alternate; }
   .link-state[data-link="offline"] .link-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-ink-3); }
 
   /* the rail: on phones its pieces flow into the page, the tabs become the bottom bar */
@@ -133,16 +144,18 @@
   .offline-text { flex: 1 1 14rem; margin: 0; }
 
   /* ⟦cc-restart-row⟧ REDLINE: a hot edge */
+  /* It wraps instead of clipping: at 200 % text the Restart key moves under
+     the words (WCAG 1.4.4). The hot edge rounds itself. */
   .restart-row {
-    position: relative; display: flex; align-items: center; gap: 0.75rem; margin: 0 0 1rem; padding: 0.625rem 0.625rem 0.625rem 1rem;
-    border-radius: var(--radius-xl); background: var(--color-surface); overflow: hidden; isolation: isolate;
+    position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: 0 0 1rem; padding: 0.625rem 0.625rem 0.625rem 1rem;
+    border-radius: var(--radius-xl); background: var(--color-surface); isolation: isolate;
   }
   .restart-row::before {
-    content: ""; position: absolute; inset: 0 auto 0 0; width: 0.25rem;
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 0.25rem; border-radius: var(--radius-xl) 0 0 var(--radius-xl);
     background: linear-gradient(to bottom, var(--color-h5), var(--color-h7), var(--color-h8));
   }
   .restart-row > .icon { color: var(--color-h8); }
-  .restart-text { flex: 1; margin: 0; font-weight: 600; font-size: var(--text-md); }
+  .restart-text { flex: 1 1 12rem; min-width: 0; margin: 0; font-weight: 600; font-size: var(--text-md); }
 
   /* the fatal panel (G2) */
   .fatal { display: grid; gap: 0.875rem; justify-items: start; padding: 1.5rem 0 2rem; }
@@ -170,7 +183,7 @@
   .strip-tally { position: relative; width: 0.625rem; height: 0.625rem; border-radius: var(--radius-xs); background: var(--color-h7); flex: none; }
   .strip-tally::after {
     content: ""; position: absolute; inset: -0.25rem; border-radius: var(--radius-sm); box-shadow: 0 0 0 1.5px var(--color-h7);
-    opacity: 0; animation: vos-pip var(--vos-pattern-pip-ms) var(--ease-out) infinite;
+    opacity: 0; animation: vos-pip var(--vos-pattern-pip-ms) var(--ease-out) 2;
   }
   .strip-what { flex: 1; min-width: 0; display: grid; gap: 0.1875rem; white-space: nowrap; }
   .strip-client { overflow: hidden; text-overflow: ellipsis; font-size: var(--text-md); font-weight: 650; }
@@ -273,7 +286,7 @@
   .recent-item[data-kind="warn"] .recent-mark { background: var(--color-h8); }
   .recent-item[data-kind="error"] .recent-mark { background: var(--color-cold); }
   .recent-text { flex: 1; }
-  .recent-time { color: var(--color-ink-3); font-size: var(--text-xs); }
+  .recent-time { color: var(--color-ink-2); font-size: var(--text-xs); }
   .recent-empty { margin: 0; color: var(--color-ink-2); }
 
   /* -------------------------------------------------- the heat field (art) */
@@ -316,7 +329,10 @@
   }
   .scene[data-phase="back"] .scene-title { font-stretch: var(--cut-warm-w); font-weight: var(--cut-warm-g); }
   .scene-text { margin: 0; color: var(--color-ink-2); }
-  .scene-last { margin: 0; color: var(--color-ink-3); font-size: var(--text-sm); }
+  .scene-last {
+    justify-self: start; margin: 0; padding: 0.25rem 0.5rem; border-radius: var(--radius-md);
+    background: rgb(0 0 4 / 0.8); color: var(--color-ink-2); font-size: var(--text-sm);
+  }
   .scene-wake { margin-top: 0.5rem; }
   .scene-ping { display: grid; gap: 0.25rem; margin: 0.25rem 0 0; padding: 0; list-style: none; color: var(--color-ink-2); font-size: var(--text-xs); }
   .scene-ping-line[data-kind="ok"] { color: var(--color-h8); }
@@ -370,7 +386,7 @@
   .pinpad-top { display: flex; }
   .pinpad-head { display: grid; gap: 0.5rem; }
   .pinpad-who { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.25rem; color: var(--color-ink-2); font-size: var(--text-xs); }
-  .pinpad-pip { width: 0.5rem; height: 0.5rem; border-radius: var(--radius-xs); background: var(--color-h7); animation: vos-pulse 1.6s ease-in-out infinite alternate; }
+  .pinpad-pip { width: 0.5rem; height: 0.5rem; border-radius: var(--radius-xs); background: var(--color-h7); animation: vos-pulse 1.6s ease-in-out 3 alternate; }
   .pinpad-title {
     margin: 0; font-family: var(--font-display); font-stretch: var(--cut-warm-w); font-weight: var(--cut-warm-g);
     font-size: clamp(2rem, 9.5vw, 2.5rem); line-height: 0.95; letter-spacing: -0.015em;
@@ -414,7 +430,15 @@
   .pin-error:empty, .pin-status:empty { display: none; }
   .pin-status { color: var(--color-ink); }
   .pin-more { border-radius: var(--radius-2xl); background: rgb(11 10 12 / 0.88); }
-  .pin-more summary { display: flex; align-items: center; min-height: 2.75rem; padding: 0 1rem; font-size: var(--text-md); font-weight: 600; cursor: pointer; }
+  .pin-more summary {
+    display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0 1rem; list-style: none;
+    font-size: var(--text-md); font-weight: 600; cursor: pointer;
+  }
+  .pin-more summary::-webkit-details-marker { display: none; }
+  .pin-more-label { flex: 1; }
+  .pin-more-hint { color: var(--color-ink-2); font-size: var(--text-sm); font-weight: 400; }
+  .pin-more summary .icon { width: 1rem; height: 1rem; color: var(--color-ink-2); transition: rotate var(--vos-dur-fast) var(--ease-out); }
+  .pin-more[open] summary .icon { rotate: 90deg; }
   .pin-more[open] { display: grid; gap: 0.5rem; padding-bottom: 0.75rem; }
   .pin-more .field-label, .pin-more .input, .pin-more .field-hint { margin: 0 0.75rem; }
   .keypad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; margin-top: auto; padding-top: 0.5rem; }
@@ -509,13 +533,16 @@
   .field-error { margin: 0; color: var(--color-cold); font-size: var(--text-sm); font-weight: 600; }
   .form-error { margin: 0; color: var(--color-cold); font-weight: 600; }
   .form-error:empty { display: none; }
+  /* The edge is a box-shadow over a transparent border: forced colours drop
+     the shadow and draw the border, and the focus ring is a transparent
+     outline they draw too. */
   .input {
-    width: 100%; min-height: 3rem; padding: 0 0.875rem; border: 0; border-radius: var(--radius-lg);
+    width: 100%; min-height: 3rem; padding: 0 calc(0.875rem - 1px); border: 1px solid transparent; border-radius: var(--radius-lg);
     background: var(--color-surface-2); color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-line);
     font: 400 1rem / 1.2 var(--font-ui);
   }
   .input.mono { font-family: var(--font-mono); }
-  .input:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--color-focus); }
+  .input:focus-visible { outline: 2px solid transparent; outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--color-focus); }
   .input[aria-invalid="true"] { box-shadow: inset 0 0 0 2px var(--color-cold); }
   select.input { appearance: none; background-image: none; padding-right: 2rem; }
 
@@ -597,6 +624,12 @@
     .dialog, .sheet { max-height: 100dvh; }
     .keypad { display: none; }
     .pin-cell { height: 3.75rem; font-size: 1.875rem; }
+    /* The page, not its title, gets the little height there is. */
+    .appbar { position: static; }
+    .strip { top: 0; }
+    .page-head { padding: 0.25rem 0 0.75rem; }
+    .page-title { font-size: var(--text-2xl); }
+    .page-lead { display: none; }
   }
 
   /* While a text field has focus on a touch screen the tab bar steps aside for
@@ -613,5 +646,10 @@
     .pin-cell[data-on="true"] { background: Highlight; color: HighlightText; forced-color-adjust: none; }
     .scene-art, .pinpad-art, .handshake { forced-color-adjust: none; }
     .link-dot, .strip-tally, .tab-badge { forced-color-adjust: none; }
+    /* Buttons and panels drawn by their fill alone would be bare words. */
+    .btn, .copy, .notice-action, .sheet-close { border: 1px solid ButtonText; }
+    .dialog, .sheet { border: 1px solid CanvasText; }
+    /* The PIN's current cell shows where typing goes. */
+    .pin-box:focus-within .pin-cell[data-cur="true"], .pin-box:focus-within .pin-cell:last-child[data-on="true"] { outline: 2px solid Highlight; outline-offset: 2px; }
   }
 }

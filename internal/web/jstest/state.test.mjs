@@ -5,9 +5,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { presets } from './lib/fixtures.mjs';
 import {
-  canWake, powerPlan, restartReasons, restartRow, snapshotFromStatus, stripModel, updateProgress, wakeTarget,
+  canWake, pendingReasons, powerPlan, restartReasons, restartRow, snapshotFromStatus, stagedVersion, stripModel, updateProgress, wakeTarget,
 } from '../static/js/state.js';
-import { contextCards, heroModel, powerLine, statusLine } from '../static/js/summary.js';
+import { contextCards, heroModel, idleSoon, powerLine, statusLine } from '../static/js/summary.js';
 
 const NOW = Date.parse('2026-09-29T12:00:00Z');
 
@@ -17,9 +17,11 @@ test('every preset gives its expected hero, restart reasons and cards', () => {
     if (!want || want.hero === null) continue; // the page goes elsewhere (sign-in, setup)
     const h = heroModel(snap);
     assert.equal(h.key, want.hero, `${name}: hero`);
-    assert.deepEqual(restartReasons(snap).map((r) => r.kind), want.restart, `${name}: restart reasons`);
+    // restart: what the restart row and the restart-needed state show (a
+    // staged update is ready, not one of them).
+    assert.deepEqual(pendingReasons(snap).map((r) => r.kind), want.restart, `${name}: restart reasons`);
     assert.deepEqual(contextCards(snap).map((c) => c.id), want.cards, `${name}: cards`);
-    if (want.attention) assert.equal(contextCards(snap)[0].id, 'pair', `${name}: attention`);
+    assert.equal(h.attention, want.attention || '', `${name}: attention`);
   }
 });
 
@@ -39,10 +41,60 @@ test('restart reasons without next_boot fall back to staged and held', () => {
   assert.deepEqual(restartReasons({ restart: { needed: true, reasons: [{ kind: 'display' }] } }), [{ kind: 'display', version: '' }]);
 });
 
-test('the restart row picks activate only for the staged version', () => {
-  assert.deepEqual(restartRow({ update: { booted: '1', staged: { version: '2' }, next_boot: { version: '2' } } }), { show: true, text: 'Restart to update to 2.', action: 'activate', version: '2' });
+test('a staged update is ready: no restart row, a card instead (MASTER-PLAN §1.3)', () => {
+  const staged = { update: { booted: '1', staged: { version: '2' }, next_boot: { version: '2' } }, display: { state: 'welcome' }, sunshine: { running: true } };
+  assert.equal(stagedVersion(staged), '2');
+  assert.deepEqual(pendingReasons(staged), []);
+  assert.equal(restartRow(staged).show, false);
+  assert.equal(heroModel(staged).key, 'ready');
+  assert.deepEqual(contextCards(staged).map((c) => [c.id, c.actions[0].id]), [['update-ready', 'activate']]);
+  // Display changes still ask for a restart; a plain one also starts the update.
+  const both = { ...staged, display: { state: 'welcome', reboot_needed: true } };
+  assert.deepEqual(restartRow(both), { show: true, text: 'Restart to apply screen changes.', action: 'reboot', version: '' });
   assert.equal(restartRow({ update: { booted: '2', next_boot: { version: '1' } } }).action, 'reboot');
   assert.equal(restartRow({ update: { booted: '1', next_boot: null } }).show, false);
+});
+
+test('a forward rollback (a newer next_boot with nothing staged) is a plain restart, never activate', () => {
+  const snap = {
+    update: { booted: '20260929.101500', staged: null, next_boot: { slot: 'b', version: '20260929.143000' } },
+    display: { state: 'welcome' },
+    sunshine: { running: true },
+    restart: { needed: true, reasons: [{ kind: 'update', version: '20260929.143000' }] },
+  };
+  assert.equal(stagedVersion(snap), '');
+  assert.deepEqual(pendingReasons(snap), [{ kind: 'next', version: '20260929.143000' }]);
+  assert.deepEqual(restartRow(snap), { show: true, text: 'Version 20260929.143000 starts on the next restart.', action: 'reboot', version: '' });
+  const h = heroModel(snap);
+  assert.deepEqual([h.key, h.detail, h.actions.map((a) => a.id)], ['restart-needed', 'Version 20260929.143000 starts on the next restart.', ['reboot']]);
+  assert.equal(powerPlan('reboot', snap).confirm.id, 'reboot');
+  assert.deepEqual(contextCards(snap).map((c) => c.id), []);
+});
+
+test('pairing is the hero: its words, its key, and no second card', () => {
+  const snap = { update: { booted: '1' }, display: { state: 'welcome' }, sunshine: { running: true, pairings: [{ name: 'Steam Deck' }] } };
+  const h = heroModel(snap);
+  assert.deepEqual([h.key, h.attention, h.title, h.actions.map((a) => a.id)], ['ready', 'pair', 'Steam Deck wants to pair', ['pin']]);
+  assert.deepEqual(contextCards(snap).map((c) => c.id), []);
+  // While streaming the hero is the stream, so the prompt is a card.
+  const streaming = { ...snap, stream: { client: 'TV' }, display: { state: 'streaming' } };
+  assert.equal(heroModel(streaming).attention, '');
+  assert.deepEqual(contextCards(streaming).map((c) => c.id), ['pair']);
+});
+
+test('navigation is never the white-hot action', () => {
+  assert.equal(heroModel({ update: { booted: '1' }, display: { state: 'streaming' }, stream: { client: 'TV' } }).actions[0].quiet, true);
+  assert.equal(heroModel({ update: { booted: '1', busy: true, progress: { phase: 'write', percent: 10 } }, display: {} }).actions[0].quiet, true);
+});
+
+test('an idle power-off within 5 min is a card with Stay awake, unless something keeps it on', () => {
+  const snap = (power) => ({ update: { booted: '1' }, display: { state: 'welcome' }, sunshine: { running: true }, power: { idle_shutdown: true, idle_minutes: 15, wol: [{ enabled: true }], busy: null, ...power } });
+  assert.equal(idleSoon(snap({ shutdown_in: 240 }).power), 240);
+  assert.deepEqual(contextCards(snap({ shutdown_in: 240 })).map((c) => [c.id, c.title, c.actions[0].id]), [['idle-soon', 'Powers off in 4 min', 'awake1h']]);
+  assert.equal(heroModel(snap({ shutdown_in: 240 })).idle, true);
+  assert.deepEqual(contextCards(snap({ shutdown_in: 900 })).map((c) => c.id), []);
+  assert.deepEqual(contextCards(snap({ shutdown_in: 240, busy: { reason: 'Steam game' } })).map((c) => c.id), []);
+  assert.deepEqual(contextCards(snap({ shutdown_in: 240, idle_shutdown: false })).map((c) => c.id), []);
 });
 
 test('snapshotFromStatus keeps the stream as the session', () => {
@@ -50,7 +102,7 @@ test('snapshotFromStatus keeps the stream as the session', () => {
   assert.equal(snap.sunshine.session.client, 'TV');
   const s = stripModel(snap, NOW);
   assert.equal(s.show, true);
-  assert.equal(s.line, '3840×2160 · 60 Hz · HDR');
+  assert.equal(s.line, '3840 × 2160 · 60 Hz · HDR');
   assert.equal(s.sinceText, '38 min');
   assert.equal(s.name, 'Now streaming: TV, 3840 by 2160 at 60 hertz, HDR. Show details.');
   assert.equal(stripModel({ display: { state: 'welcome' } }).show, false);
@@ -68,8 +120,9 @@ test('power line: six variants', () => {
   assert.equal(powerLine(base, { now: NOW }), 'Powers off after 15 min without anyone playing.');
   assert.equal(powerLine({ ...base, busy: { reason: 'web UI in use' } }, { now: NOW }), 'Powers off after 15 min without anyone playing.');
   assert.equal(powerLine({ ...base, busy: { reason: 'Steam game' } }, { now: NOW }), 'Staying on: A game is running.');
+  assert.equal(powerLine({ ...base, busy: { reason: 'manual keep-awake' } }, { now: NOW }), 'Staying on: a keep-awake file is set.');
   assert.equal(powerLine(base, { now: NOW, shutdownIn: 300 }), 'Powers off in 5 min if nobody plays.');
-  assert.match(powerLine({ ...base, busy: { reason: 'web UI in use', web: true }, web_until: '2026-09-29T12:05:00Z' }, { now: NOW }), /^Only this page keeps it on\. It powers off about .+ if nobody plays\.$/);
+  assert.match(powerLine({ ...base, busy: { reason: 'web UI in use', web: true }, web_until: '2026-09-29T12:05:00Z' }, { now: NOW }), /^On until about .+\. Idle power-off starts \d+ min after this page closes\.$/);
   assert.match(powerLine({ ...base, keep_awake_until: '2026-09-29T13:00:00Z', busy: { reason: 'keep-awake' } }, { now: NOW }), /^Staying awake until .+\.$/);
 });
 
@@ -82,6 +135,9 @@ test('hold rule', () => {
   assert.equal(powerPlan('reboot', staged).hint, 'Restarting also installs version 2.');
   const streaming = { ...idle, display: { state: 'streaming' }, stream: { client: 'Pixel 9' } };
   assert.deepEqual([powerPlan('reboot', streaming).hold, powerPlan('reboot', streaming).hint], [false, 'Ends the stream to Pixel 9.']);
+  // The confirm names who is streaming, as the hint does.
+  assert.deepEqual(powerPlan('reboot', streaming).confirm, { id: 'reboot-stream', vars: { client: 'Pixel 9' } });
+  assert.deepEqual(powerPlan('poweroff', streaming).confirm, { id: 'poweroff-stream', vars: { client: 'Pixel 9' } });
   const nowol = { ...idle, power: { wol: [{ enabled: false }] } };
   assert.equal(powerPlan('poweroff', nowol).hold, false);
   assert.equal(powerPlan('poweroff', nowol).confirm.id, 'poweroff-nowol');
