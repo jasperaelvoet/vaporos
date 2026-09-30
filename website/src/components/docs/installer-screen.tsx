@@ -14,7 +14,9 @@
 import { useRef } from 'react';
 import { LogoMark, Wordmark } from '@/components/ui';
 import { around, paintIsotherms, smoothstep, useThermalCanvas } from '@/direction';
+import { TvHandshake } from '@/components/story/tv-handshake';
 import { installerScreen as s } from '@/content/install';
+import { tvInstaller } from '@/content/story';
 
 // A QR-like grid: three finder squares and pseudo-random cells. Deterministic,
 // so the server and the browser draw the same thing. Not a real code.
@@ -115,7 +117,9 @@ export function InstallerScreen({ className = '' }: { className?: string }) {
             </svg>
           </div>
         </div>
-        <p className="absolute top-[82%] left-[78.75%] -translate-x-1/2 rounded-full bg-h0/85 px-[1.3cqw] py-[0.55cqw] text-[1.55cqw] leading-none whitespace-nowrap text-bone">
+        <p className="absolute top-[82%] left-[78.75%] flex -translate-x-1/2 items-center gap-[0.8cqw] rounded-full bg-h0/85 px-[1.3cqw] py-[0.55cqw] text-[1.55cqw] leading-none whitespace-nowrap text-bone">
+          {/* the hostname's mark, which the TV draws before the caption */}
+          <TvHandshake mark={tvInstaller.handshake} className="size-[2.1cqw]" />
           {s.qrLabel}
         </p>
       </div>

@@ -761,9 +761,52 @@
   width: calc(29 * var(--u));
   height: calc(29 * var(--u));
 }
-.tv-brand svg:last-child {
+.tv-brand svg:nth-child(2) {
   width: auto;
   height: calc(20 * var(--u));
+}
+.tv-ver {
+  margin-left: calc(3 * var(--u));
+  font-size: calc(13 * var(--u));
+  color: var(--color-smoke);
+}
+/* The heat scale's plate, top right: the marker's word over the ramp, the
+   two ends under it (--t is the state's heat). */
+.tv-hud {
+  left: calc(665 * var(--u));
+  top: calc(38 * var(--u));
+  width: calc(246 * var(--u));
+  height: calc(50 * var(--u));
+  border-radius: calc(6 * var(--u));
+  background: color-mix(in srgb, var(--color-ash) 86%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-bone) 14%, transparent);
+  font-size: calc(11 * var(--u));
+  color: var(--color-smoke);
+}
+.tv-hud b {
+  position: absolute;
+  left: calc(14 * var(--u) + var(--t) * 218 * var(--u));
+  top: calc(9 * var(--u));
+  translate: -50% 0;
+  font-weight: 600;
+  color: var(--color-bone);
+}
+.tv-hud i {
+  position: absolute;
+  left: calc(14 * var(--u));
+  right: calc(14 * var(--u));
+  top: calc(28 * var(--u));
+  height: calc(6 * var(--u));
+  background: linear-gradient(90deg, var(--color-h0), var(--color-h2), var(--color-h4), var(--color-h6), var(--color-h8), var(--color-h9));
+}
+.tv-hud span {
+  position: absolute;
+  bottom: calc(4 * var(--u));
+  left: calc(14 * var(--u));
+}
+.tv-hud span:last-child {
+  left: auto;
+  right: calc(14 * var(--u));
 }
 .tv-text {
   left: calc(64 * var(--u));
@@ -782,13 +825,10 @@
   letter-spacing: -0.012em;
   white-space: nowrap;
 }
-.tv-verb,
-.tv-rest {
-  display: block;
-}
-.tv-rest {
-  margin-top: calc(6 * var(--u));
-  font-size: 0.5em;
+/* The renderer fits a status to its column before it would break it: at
+   1920 × 1080 "Ready to stream" is set at about 104 px on one line. */
+.tv[data-tv="ready"] .tv-status {
+  font-size: calc(52 * var(--u));
 }
 .tv-detail {
   width: calc(440 * var(--u));
@@ -879,11 +919,18 @@
   text-align: center;
 }
 .tv-cap span {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(8 * var(--u));
   padding: calc(7 * var(--u)) calc(12 * var(--u)) calc(8 * var(--u));
   border-radius: 99px;
   background: color-mix(in srgb, var(--color-ash) 86%, transparent);
   font-size: calc(16 * var(--u));
+}
+
+.tv-hs {
+  width: calc(21 * var(--u));
+  height: calc(21 * var(--u));
 }
 
 /* The installer on a phone, on a 300 × 633 screen. */

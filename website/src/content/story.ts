@@ -98,8 +98,23 @@ export const remoteStory = {
   },
 };
 
+/**
+ * A welcome screen's hostname mark (internal/brand HandshakeFor): the 5×5
+ * cells, '#' on, and its two colours as heat stops. The TV draws it before
+ * "Scan to open"; these are the marks of the hostnames drawn here.
+ */
+export interface TvHandshake {
+  rows: string[];
+  on: 'h6' | 'h7' | 'h8' | 'h9' | 'ink-ready';
+  ground: 'h0' | 'h1' | 'h2';
+}
+
 /** The welcome screen as the PC draws it once VaporOS is installed. */
 export const tvReady = {
+  /** The version beside the wordmark (a made-up one, as in the updates beat). */
+  version: '20260929.172712',
+  /** The mark of the hostname "vapor". */
+  handshake: { rows: ['#.#.#', '..#..', '##.##', '##.##', '#.#.#'], on: 'h8', ground: 'h0' } satisfies TvHandshake,
   status: 'Ready to stream',
   detail: 'Open this address on a phone or computer to pair Moonlight',
   url: { scheme: 'http://', host: 'vapor.local' },
@@ -110,6 +125,9 @@ export const tvReady = {
 
 /** The welcome screen while the installer waits (status.go: "Ready to install"). */
 export const tvInstaller = {
+  version: 'installer 20260929.172712',
+  /** The mark of the hostname "vaporos-setup". */
+  handshake: { rows: ['##.##', '#...#', '#####', '.....', '#####'], on: 'h6', ground: 'h0' } satisfies TvHandshake,
   status: 'Ready to install',
   detail: 'Open this address on a phone or computer to install VaporOS',
   url: { scheme: 'http://', host: 'vaporos-setup.local' },
