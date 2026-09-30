@@ -14,8 +14,9 @@
 //
 // Test hooks, kept on the root: data-download-card, data-state
 // (ready|none|unknown), data-origin (build|live), and the ISO as an <a>
-// whose href ends in .iso. `children` (a RequirementSummary, say) sits at
-// the card's foot in every state.
+// whose href ends in .iso. `children` sits at the card's foot in every
+// state: pass a RequirementSummary there, since the card itself shows only
+// the version, not what the PC needs.
 import type { ReactNode } from 'react';
 import { buttonClass, Chip, Icon, LinkButton, Rich, TextLink } from '@/components/ui';
 import { downloadCard as copy } from '@/content/download';
@@ -70,6 +71,7 @@ function Ready({ r, compact, H, id }: { r: Release; compact: boolean; H: H; id?:
     notes: r.url,
   };
   const assets = copy.ready.assets.filter((a) => urls[a.key]);
+  const versionIcon = copy.ready.meta.find((m) => 'kind' in m)?.icon ?? 'tag';
   return (
     <div className={`grid gap-x-12 gap-y-9 ${compact ? '' : 'desk:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]'}`}>
       <div className="grid min-w-0 content-start justify-items-start gap-5">
@@ -85,23 +87,11 @@ function Ready({ r, compact, H, id }: { r: Release; compact: boolean; H: H; id?:
             )}
           </H>
         </div>
-        <ul className="flex flex-wrap gap-2">
-          {copy.ready.meta.map((m) => (
-            <li key={m.icon}>
-              {'kind' in m ? (
-                <Chip tone="ash" className="gap-1.5">
-                  <Icon name={m.icon} className="size-3.5 shrink-0" />
-                  {r.tag || `v${r.version}`}
-                </Chip>
-              ) : (
-                <Chip tone="hot" className="gap-1.5 inset-ring-1 inset-ring-ash/35">
-                  <Icon name={m.icon} className="size-3.5 shrink-0" />
-                  {m.label}
-                </Chip>
-              )}
-            </li>
-          ))}
-        </ul>
+        {/* The version only: what the PC needs is the summary line at the card's foot. */}
+        <Chip tone="ash" className="gap-1.5">
+          <Icon name={versionIcon} className="size-3.5 shrink-0" />
+          {r.tag || `v${r.version}`}
+        </Chip>
         <div className="mt-2 grid w-full justify-items-start gap-3">
           <a href={r.iso.url} className={buttonClass('ash', 'lg', 'max-desk:w-full')}>
             <Icon name={copy.ready.button.icon} className="size-6 shrink-0" />
