@@ -48,7 +48,7 @@ export function FaqTopics({ groups, items }: { groups: readonly FaqGroup[]; item
             key={g.id}
             id={g.id}
             aria-labelledby={`${g.id}-title`}
-            className="grid scroll-mt-(--nav-h) gap-x-16 gap-y-6 desk:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]"
+            className="grid gap-x-16 gap-y-6 desk:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]"
           >
             <div className="desk:sticky desk:top-[calc(var(--nav-h)+1.5rem)] desk:self-start">
               <h2 id={`${g.id}-title`} className="cut-warm text-[clamp(2rem,3.4vw,2.875rem)] leading-[0.98] tracking-[-0.012em] text-bone">

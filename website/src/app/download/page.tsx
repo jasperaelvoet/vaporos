@@ -82,7 +82,7 @@ export default async function DownloadPage() {
       <section
         id={requirementsSection.id}
         aria-labelledby="requirements-title"
-        className="wrap mt-[clamp(5rem,10vw,8.5rem)] scroll-mt-(--nav-h)"
+        className="wrap mt-[clamp(5rem,10vw,8.5rem)]"
         data-heat={HEAT.asleep}
         data-heat-label="asleep"
       >
@@ -99,7 +99,7 @@ export default async function DownloadPage() {
       <section
         id={verifySection.id}
         aria-labelledby="verify-title"
-        className="wrap mt-[clamp(5rem,10vw,8.5rem)] mb-[clamp(5rem,10vw,8rem)] scroll-mt-(--nav-h)"
+        className="wrap mt-[clamp(5rem,10vw,8.5rem)] mb-[clamp(5rem,10vw,8rem)]"
         data-heat={HEAT.coldBoot}
         data-heat-label="cold boot"
       >

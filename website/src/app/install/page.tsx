@@ -46,7 +46,7 @@ export default function InstallPage() {
                 key={s.id}
                 id={s.id}
                 aria-labelledby={`${s.id}-title`}
-                className="grid min-w-0 scroll-mt-(--nav-h) content-start gap-6 border-t border-line pt-8"
+                className="grid min-w-0 content-start gap-6 border-t border-line pt-8"
                 data-heat={heat}
                 data-heat-label={label}
               >
