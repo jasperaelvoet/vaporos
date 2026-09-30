@@ -65,6 +65,22 @@
 }
 
 @layer components {
+  /* A code block's scroll hint: an amber edge on the right while a line runs
+     past it. Two backgrounds: the edge stays with the box (scroll), and an
+     ash cover rides at the end of the content (local), so it hides the edge
+     when nothing overflows or once scrolled to the end. No script. */
+  .code-scroll {
+    background:
+      linear-gradient(to left, var(--color-ash) 0.625rem, transparent) right / 1.5rem 100% no-repeat local,
+      linear-gradient(
+          to left,
+          color-mix(in srgb, var(--color-h7) 70%, transparent) 0 2px,
+          color-mix(in srgb, var(--color-h7) 16%, transparent) 2px,
+          transparent
+        )
+        right / 1.5rem 100% no-repeat scroll;
+  }
+
   /* Skip link: hidden until focused, then a white-hot tab above the nav. */
   .skip-link {
     position: fixed;
