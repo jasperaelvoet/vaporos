@@ -25,10 +25,13 @@ import (
 //	VOS_WELCOME_STILLS_QR=https://jasperaelvoet.github.io/vaporos/demo/ \
 //	go test -count=1 ./internal/display/welcome -run 'TestExportStills$'
 //
-// On a still the QR code opens the website (VOS_WELCOME_STILLS_QR, the
-// site's root when unset), not a PC, so scanning one on a screen goes
-// somewhere. The stills are JPEG: the renderer's grain makes a 1280×720 PNG
-// about 900 kB, six times the site's budget for a still.
+// On a still the QR code opens the website, not a PC, so scanning one on a
+// screen goes somewhere: the installed system's stills open
+// VOS_WELCOME_STILLS_QR (the site's root when unset, its live demo while that
+// is on), and the installer's open the site's install guide beside it, since
+// the demo leaves the installer out. The stills are JPEG: the renderer's
+// grain makes a 1280×720 PNG about 900 kB, six times the site's budget for a
+// still.
 
 // siteStills are the fixtures the website shows.
 var siteStills = []string{"installer-ready", "ready", "streaming", "pairing", "installer-running", "no-gpu"}
@@ -61,7 +64,7 @@ var (
 
 // stillsManifest is stills.json.
 type stillsManifest struct {
-	QR     string           `json:"qr"` // what every still's QR code opens
+	QR     string           `json:"qr"` // what the installed system's stills' QR codes open
 	Stills map[string]still `json:"stills"`
 }
 
@@ -76,7 +79,18 @@ type still struct {
 	URL    string `json:"url"`
 	IPURL  string `json:"ip_url"`
 	Code   string `json:"code,omitempty"`
+	QR     string `json:"qr"`  // what this still's QR code opens
 	Alt    string `json:"alt"` // the picture's text alternative
+}
+
+// stillQRFor is what still name's QR code opens, on the site whose
+// installed-system stills open qr: the installer's stills open the site's
+// install guide (qr's directory, without a trailing demo/, plus install/).
+func stillQRFor(name, qr string) string {
+	if strings.HasPrefix(name, "installer-") {
+		return strings.TrimSuffix(qr, "demo/") + "install/"
+	}
+	return qr
 }
 
 // siteStill is fixture st as the website shows it.
@@ -142,10 +156,10 @@ func exportStills(fx map[string]State, dir, qr string) (stillsManifest, error) {
 		if !ok {
 			return m, fmt.Errorf("%s: no such fixture", name)
 		}
-		st := siteStill(fixture, qr)
+		st := siteStill(fixture, stillQRFor(name, qr))
 		s := still{
 			File: name + ".jpg", W: stillW, H: stillH, Tone: string(st.Tone),
-			Status: st.Status, Detail: st.Detail, URL: st.URL, IPURL: st.IPURL, Code: st.Code, Alt: stillAlt(st),
+			Status: st.Status, Detail: st.Detail, URL: st.URL, IPURL: st.IPURL, Code: st.Code, QR: st.QR, Alt: stillAlt(st),
 		}
 		for _, who := range personalNames {
 			if strings.Contains(s.Status+s.Detail+s.URL+s.IPURL+s.Code+s.Alt, who) {
@@ -192,7 +206,7 @@ func TestExportStills(t *testing.T) {
 		t.Fatal(err)
 	}
 	abs, _ := filepath.Abs(dir)
-	t.Logf("wrote %d stills and stills.json to %s; their QR codes open %s", len(m.Stills), abs, qr)
+	t.Logf("wrote %d stills and stills.json to %s; their QR codes open %s (the installer's %s)", len(m.Stills), abs, qr, stillQRFor("installer-ready", qr))
 }
 
 // TestStills exports the stills into a scratch directory, so a change to the
@@ -245,6 +259,15 @@ func TestStills(t *testing.T) {
 	}
 	if s := got.Stills["installer-ready"]; s.Code == "" || !strings.Contains(s.Alt, "setup code "+s.Code) {
 		t.Errorf("installer-ready: code %q, alt %q", s.Code, s.Alt)
+	}
+	// The demo leaves the installer out: its stills open the install guide.
+	for name, want := range map[string]string{"installer-ready": stillQR + "install/", "installer-running": stillQR + "install/", "ready": qr, "pairing": qr} {
+		if s := got.Stills[name]; s.QR != want {
+			t.Errorf("%s: its QR code opens %q, want %q", name, s.QR, want)
+		}
+	}
+	if got := stillQRFor("installer-ready", stillQR); got != stillQR+"install/" {
+		t.Errorf("with the demo off, the installer's stills open %q, want the install guide", got)
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))
 	var names []string

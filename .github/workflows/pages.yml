@@ -139,7 +139,8 @@ jobs:
 
       # src/content/demo.ts `enabled` turns the live demo on: its export goes
       # into public/demo/ui, the build must find it, its e2e gate runs, and
-      # the TV stills' QR codes open /demo/ instead of the site's home page.
+      # the installed system's TV stills' QR codes open /demo/ instead of the
+      # site's home page (the installer's stills open /install/ either way).
       - name: Demo flag
         id: demo
         run: |

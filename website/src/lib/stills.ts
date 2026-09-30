@@ -6,9 +6,11 @@
 //
 // They are not committed, so a local build or `next dev` usually has none:
 // getStill() then answers null and the page draws its own picture (TvStill's
-// fallback). On a still, the QR code opens this website, or its live demo
-// when that is on (stills.json `qr`; pages.yml sets VOS_WELCOME_STILLS_QR to
-// the site's /demo/ when src/content/demo.ts has `enabled: true`).
+// fallback). On a still, the QR code opens this website: the installed
+// system's stills open the site's root, or its live demo when that is on
+// (stills.json `qr`; pages.yml sets VOS_WELCOME_STILLS_QR to the site's /demo/
+// when src/content/demo.ts has `enabled: true`), and the installer's open the
+// install guide, since the demo leaves the installer out (each still's `qr`).
 //
 //   VAPOROS_STILLS_REQUIRED=1   no stills.json fails the build (pages.yml), so
 //                               the site never deploys the drawings by mistake
@@ -36,10 +38,12 @@ export interface Still {
   /** The screen's status line ("Ready to stream") and its tone ("ready"). */
   status: string;
   tone: string;
+  /** What its QR code opens. */
+  qr: string;
 }
 
 export interface StillSet {
-  /** What every still's QR code opens. */
+  /** What the installed system's stills' QR codes open. */
   qr: string;
   stills: Record<StillName, Still>;
 }
@@ -47,8 +51,10 @@ export interface StillSet {
 /** Where the stills are, from the project directory (the build's cwd). */
 export const STILLS_DIR = 'public/tv';
 
-/** What a still's QR code may open: this site, or its live demo. */
+/** What the installed system's stills' QR codes may open: this site, or its live demo. */
 const QR_TARGETS = [site.url, `${site.url}demo/`];
+/** What the installer's stills' QR codes open: the install guide. */
+const QR_INSTALL = `${site.url}install/`;
 
 const FILE = /^[a-z0-9-]+\.(?:jpg|png)$/;
 const HASH = /^[0-9a-f]{8,64}$/;
@@ -91,6 +97,9 @@ export function parseStills(json: unknown, exists: (file: string) => boolean): S
     if (!exists(file)) fail(`${where}: ${file} is missing`);
     const v = text(o, 'v', where);
     if (!HASH.test(v)) fail(`${where}: "v" ${JSON.stringify(v)} is not a hex hash`);
+    const stillQr = text(o, 'qr', where);
+    const wantQr = name.startsWith('installer-') ? QR_INSTALL : qr;
+    if (stillQr !== wantQr) fail(`${where}: "qr" ${JSON.stringify(stillQr)} is not ${JSON.stringify(wantQr)}`);
     stills[name] = {
       name,
       src: withBase(`/tv/${file}?v=${v}`),
@@ -99,6 +108,7 @@ export function parseStills(json: unknown, exists: (file: string) => boolean): S
       alt: text(o, 'alt', where),
       status: text(o, 'status', where),
       tone: text(o, 'tone', where, true),
+      qr: stillQr,
     };
   }
   return { qr, stills };
