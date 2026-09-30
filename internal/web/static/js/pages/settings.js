@@ -153,8 +153,10 @@ async function changePassword(e) {
     return;
   }
   const btn = byId('pw-save');
+  if (btn.getAttribute('aria-busy') === 'true') return;
+  // Busy, not disabled: a disabled key would drop focus to <body> (WCAG 2.4.3).
   btn.setAttribute('aria-busy', 'true');
-  btn.disabled = true;
+  btn.setAttribute('aria-disabled', 'true');
   try {
     // A 401 here is the server refusing the current password: this page
     // was signed in a moment ago, so it is no reason to leave it.
@@ -162,9 +164,7 @@ async function changePassword(e) {
     byId('pw-form').reset();
     for (const b of document.querySelectorAll('[data-reveal]')) reveal(b, false);
     notify('Password changed. Other devices are signed out.', { kind: 'ok' });
-    btn.disabled = false;
   } catch (err) {
-    btn.disabled = false;
     if (err.status === 401 || err.status === 403) {
       L.fieldError(cur, "That's not the current password.");
       cur.focus();
@@ -181,6 +181,7 @@ async function changePassword(e) {
     }
   } finally {
     btn.removeAttribute('aria-busy');
+    btn.removeAttribute('aria-disabled');
   }
 }
 

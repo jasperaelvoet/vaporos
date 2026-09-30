@@ -150,6 +150,12 @@ export default [
         assert.equal(await cam.locator('.sto-line').textContent(), "exFAT can't hold Steam games. Use ext4, btrfs, xfs, f2fs or NTFS.");
         assert.equal(await cam.getByRole('button').count(), 0);
       });
+      await step('one Use for games is white-hot, the drive to use first; the others are ghost keys', async () => {
+        const keys = page.locator('#others button', { hasText: 'for games' });
+        assert.ok((await keys.count()) > 1);
+        assert.equal(await page.locator('#others button.primary', { hasText: 'for games' }).count(), 1);
+        assert.equal(await keys.first().getAttribute('class'), 'btn small primary');
+      });
       await step('an NTFS drive asks first; Cancel sends nothing', async () => {
         let posted = 0;
         page.on('request', (r) => r.method() === 'POST' && r.url().endsWith('/storage/libraries') && posted++);

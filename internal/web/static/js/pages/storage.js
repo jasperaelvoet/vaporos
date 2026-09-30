@@ -22,7 +22,7 @@ const LIBRARY_FS = /^(ext[234]|btrfs|xfs|f2fs|ntfs3?)$/;
 const FS_NAMES = { exfat: 'exFAT', vfat: 'FAT', fat: 'FAT', msdos: 'FAT', iso9660: 'ISO 9660', udf: 'UDF', hfsplus: 'HFS+', apfs: 'APFS', swap: 'Swap', ntfs: 'NTFS', ntfs3: 'NTFS' };
 const PENDING = "VaporOS adds it to Steam the next time Steam isn't running, at the latest after a restart. To use it now, add this folder in Steam: Settings → Storage → Add Drive.";
 const UNREGISTERED = 'Add this folder once in Steam: Settings → Storage → Add Drive.';
-const BTN = /* classes */ { use: 'btn small primary', stop: 'btn small ghost' };
+const BTN = /* classes */ { use: 'btn small primary', useQuiet: 'btn small ghost', stop: 'btn small ghost' };
 
 let F = null;
 let disks = null;
@@ -97,7 +97,9 @@ function whyNot(d) {
   return '';
 }
 
-function driveRow(d, game, i) {
+// recommended: the one drive whose Use for games is white-hot (the first
+// that can be used, Steam libraries first); the others are ghost keys.
+function driveRow(d, game, i, recommended = false) {
   const li = cloneTpl('tpl-drive');
   li.dataset.uuid = d.uuid || '';
   // One drive glyph for all: every icon in any script is in every page's sprite.
@@ -138,7 +140,7 @@ function driveRow(d, game, i) {
     acts.append(h('button', { class: BTN.stop, type: 'button', onclick: (e) => stopUsing(d, e.currentTarget) }, h('span', {}, 'Stop using', h('span', { class: 'sr-only', text: ` ${title(d)}` }))));
   } else if (!whyNot(d)) {
     // One span, so the button's gap never opens around the hidden name.
-    acts.append(h('button', { class: BTN.use, type: 'button', onclick: (e) => adopt(d, e.currentTarget) }, h('span', {}, 'Use', h('span', { class: 'sr-only', text: ` ${title(d)}` }), ' for games')));
+    acts.append(h('button', { class: recommended ? BTN.use : BTN.useQuiet, type: 'button', onclick: (e) => adopt(d, e.currentTarget) }, h('span', {}, 'Use', h('span', { class: 'sr-only', text: ` ${title(d)}` }), ' for games')));
   }
   acts.hidden = !acts.children.length;
   return li;
@@ -153,7 +155,9 @@ function renderDrives() {
   byId('games').replaceChildren(...games.map((d, i) => driveRow(d, true, i)));
   byId('games').hidden = !games.length;
   byId('games-empty').hidden = games.length > 0;
-  byId('others').replaceChildren(...others.map((d, i) => driveRow(d, false, i)));
+  // One white-hot key per page (REDLINE): the drive to use first.
+  const pick = others.find((d) => !whyNot(d));
+  byId('others').replaceChildren(...others.map((d, i) => driveRow(d, false, i, d === pick)));
   byId('others').hidden = !others.length;
   byId('others-empty').hidden = others.length > 0;
   clipboard().then((m) => m.bindCopy(byId('drives')));

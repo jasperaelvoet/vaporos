@@ -75,7 +75,8 @@ export default [
         await open(t);
         assert.equal(await sum(page, 'updates'), 'Version 20260929.143000 is ready');
         assert.equal(await page.getAttribute('#row-updates', 'data-tone'), 'hot');
-        assert.equal(await text(page, '#plate-word'), 'restart');
+        // A staged update leaves the box ready (MASTER-PLAN §1.3): the row says it, the plate stays at ready.
+        assert.equal(await text(page, '#plate-word'), 'ready');
       });
       await step('an almost full system drive says so in words and goes cold', async () => {
         await dev(server, 'preset', { name: 'disk-low' });
