@@ -2,6 +2,7 @@
 // Ported from the Astro site's layouts/Base.astro and lib/paths.ts.
 import { RELEASES_URL, REPO_URL } from '@/lib/release-shape';
 import { tokens } from '@/lib/tokens.gen';
+import { demo } from './demo';
 import type { IconName, LinkItem, PageMeta } from './types';
 
 export const site = {
@@ -80,6 +81,10 @@ export const routes = {
   demo: '/demo/',
 } as const;
 
+/** The live demo's link: in the nav, the menu and the footer once content/demo.ts turns it on. */
+const demoLink = { key: 'demo', label: 'Live demo', href: routes.demo } satisfies LinkItem & { key: NavKey };
+const withDemo = <T,>(...items: T[]): T[] => (demo.enabled ? items : []);
+
 export const pageMeta = {
   home: { path: routes.home, title: null, description: site.description },
   download: {
@@ -135,9 +140,10 @@ export const nav = {
   mobileLabel: 'Main menu',
   /**
    * The header's links from 901 px, before the Download button (always last and
-   * primary). The live demo joins them when content/demo.ts turns it on (`demo`).
+   * primary). The live demo leads them when content/demo.ts turns it on.
    */
   items: [
+    ...withDemo(demoLink),
     { key: 'install', label: 'Install guide', href: routes.install },
     { key: 'faq', label: 'FAQ', href: routes.faq },
     { label: 'GitHub', href: links.repo, icon: 'github' },
@@ -146,12 +152,13 @@ export const nav = {
   menu: [
     { key: 'home', label: 'Home', href: routes.home },
     { key: 'download', label: 'Download', href: routes.download },
+    ...withDemo(demoLink),
     { key: 'install', label: 'Install guide', href: routes.install },
     { key: 'faq', label: 'FAQ', href: routes.faq },
     { label: 'GitHub', href: links.repo, icon: 'github' },
   ] satisfies (LinkItem & { key?: NavKey })[],
-  /** The live demo's link, for when content/demo.ts turns the demo on. */
-  demo: { key: 'demo', label: 'Live demo', href: routes.demo } satisfies LinkItem & { key: NavKey },
+  /** The live demo's link (in items and menu while content/demo.ts has it on). */
+  demo: demoLink,
   /** First item of the mobile menu. */
   home: { key: 'home', label: 'Home', href: routes.home } satisfies LinkItem & { key: NavKey },
   github: { label: 'GitHub', href: links.repo, icon: 'github' as IconName },
@@ -166,6 +173,7 @@ export const footer = {
       links: [
         { label: 'Download', href: routes.download },
         { label: 'Install guide', href: routes.install },
+        ...withDemo({ label: 'Live demo', href: routes.demo }),
         { label: 'FAQ', href: routes.faq },
         { label: 'Verify a download', href: routes.verify },
       ],

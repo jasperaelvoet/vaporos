@@ -77,7 +77,13 @@ function common(name, dir) {
   check(`${name}: the 404 page is noindex without a canonical`, /<meta name="robots" content="noindex/.test(nf) && !/rel="canonical"/.test(nf));
   const sitemap = existsSync(join(dir, 'sitemap.xml')) ? read(join(dir, 'sitemap.xml')) : '';
   const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  check(`${name}: sitemap lists the four pages, absolute`, locs.length === 4 && locs.every((l) => l.startsWith(SITE)), locs.join(' '));
+  // The live demo's page joins them while src/content/demo.ts has it on (scripts/drop-demo.mjs removes it otherwise).
+  const demoPage = existsSync(join(dir, 'demo/index.html'));
+  check(
+    `${name}: sitemap lists the ${demoPage ? 'five pages (with /demo/)' : 'four pages'}, absolute`,
+    locs.length === (demoPage ? 5 : 4) && locs.every((l) => l.startsWith(SITE)) && locs.includes(`${SITE}demo/`) === demoPage,
+    locs.join(' '),
+  );
   check(`${name}: release.pub is keys/release.pub`, existsSync(join(dir, 'release.pub')) && read(join(dir, 'release.pub')) === read(KEY));
 }
 

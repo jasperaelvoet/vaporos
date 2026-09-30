@@ -4,12 +4,14 @@
 //
 //   B1 hero            ready → streaming as you scroll (direction/redline/hero)
 //   B2 the screen      streaming: the virtual display takes each device's mode
-//   B3, B4 the phone   ready: what you do from your phone; a monitor only says where to go
+//   B3 the phone       ready: what you do from your phone; a monitor only says where to go
+//   B4 live demo       ready: the real control center on made-up data (content/demo.ts)
 //   B6 three steps     cold boot: install from a USB stick, finish on the phone
 //   B5 updates         updating: two slots, an update and a bad one
 //   B5 power           asleep: one evening of idle power-off and Wake-on-LAN
 //   B7 download        white-hot: the ISO, what it needs, how to verify it
 //   B8 questions       ready
+import { DemoBeat } from '@/components/demo/demo-beat';
 import { DownloadBlock } from '@/components/story/download-block';
 import { FaqTeaser } from '@/components/story/faq-teaser';
 import { PowerBeat } from '@/components/story/power-beat';
@@ -31,6 +33,7 @@ export default async function Home() {
       <ThermalHero release={release} />
       <ScreenBeat />
       <RemoteBeat />
+      <DemoBeat />
       <SetupBeat />
       <UpdatesBeat />
       <PowerBeat />

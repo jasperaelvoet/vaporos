@@ -1,5 +1,6 @@
 // The 404 page. GitHub Pages serves out/404.html for any missing path under
 // /vaporos/. Ported from pages/404.astro.
+import { demo } from './demo';
 import { routes } from './site';
 import type { ButtonItem, Rich } from './types';
 
@@ -15,6 +16,7 @@ export const notFound = {
     { label: 'Home', href: routes.home, icon: 'home', primary: true },
     { label: 'Download', href: routes.download, icon: 'download' },
     { label: 'Install guide', href: routes.install, icon: 'book' },
+    ...(demo.enabled ? [{ label: 'Live demo', href: routes.demo, icon: 'phone' as const }] : []),
     { label: 'FAQ', href: routes.faq, icon: 'question' },
   ] satisfies ButtonItem[],
 };

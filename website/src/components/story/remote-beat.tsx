@@ -2,8 +2,10 @@
 // Warm, at the ready temperature: what the control center does, one line
 // each, beside the picture of it: the control center's home page on a phone
 // (as it is today), in front of the welcome screen a connected monitor shows
-// once VaporOS is installed. The live demo is off until the next release
-// (content/demo.ts), so a line under the picture says when it arrives.
+// once VaporOS is installed. While the live demo is off (content/demo.ts), a
+// line under the picture says when it arrives; once it is on, it is the next
+// beat (components/demo/demo-beat.tsx).
+import { demo } from '@/content/demo';
 import { remoteBeat } from '@/content/home';
 import { remoteStory } from '@/content/story';
 import { Beat, BeatHead } from './beat';
@@ -30,7 +32,8 @@ export function RemoteBeat() {
           <TvStill name="ready" fallback={<TvScreen state="ready" />} />
           <RemotePhone />
           <figcaption className="beat-note">
-            {remoteStory.tvCaption} <span className="remote-demo">{remoteStory.demoLater}</span>
+            {remoteStory.tvCaption}
+            {!demo.enabled && <span className="remote-demo">{remoteStory.demoLater}</span>}
           </figcaption>
         </figure>
       </div>

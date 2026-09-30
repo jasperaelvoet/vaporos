@@ -115,7 +115,7 @@ for (const s of strings) {
   if (/\.href$/.test(s.at) && s.text.startsWith('/')) hrefs.push({ at: s.at, href: s.text });
 }
 const broken = hrefs.filter(({ href }) => {
-  const path = href.split('#')[0];
+  const path = href.split(/[?#]/)[0];
   // The demo's links render only once content/demo.ts turns it on.
   if (path === routes.demo || path.startsWith('/demo/')) return demoOn && !built.has(path) && !existsSync(join(SITE, 'public', path));
   if (built.has(path)) return false;

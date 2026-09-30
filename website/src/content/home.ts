@@ -11,6 +11,7 @@
 // Headline measured at its hottest width (its data-fit-k and
 // data-fit-k-narrow), so the first paint is already fitted; re-measure them
 // when a line changes.
+import { demo } from './demo';
 import { anchors, routes } from './site';
 import type { ButtonItem, IconName, Rich } from './types';
 
@@ -43,8 +44,9 @@ export const hero = {
   leadShort: 'A headless Steam box for a PC with an AMD GPU. Play on your TV, phone or laptop with Moonlight, and run it all from your phone.' as Rich,
   ctas: [
     { label: 'Download VaporOS', href: `#${anchors.get}`, icon: 'download', primary: true },
-    // With the live demo off, the second button shows how it works (CRIT 33).
-    { label: 'See how it works', href: `#${anchors.how}` },
+    // The second button tries the live demo (the home page's #demo) while
+    // content/demo.ts has it on, and shows how it works otherwise (CRIT 33).
+    demo.enabled ? { label: 'Try the live demo', href: '#demo' } : { label: 'See how it works', href: `#${anchors.how}` },
   ] satisfies ButtonItem[],
   /** aria-label of the facts list. */
   factsLabel: 'At a glance',

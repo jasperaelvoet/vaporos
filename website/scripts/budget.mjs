@@ -189,6 +189,8 @@ if (opt.live) {
         p.on('response', async (res) => {
           const url = res.url();
           if (!url.startsWith(origin)) return;
+          // The live demo's frame is the control center's own page, with its own budget (§12: iframe excluded).
+          if (res.frame() !== p.mainFrame()) return;
           const type = res.request().resourceType();
           if (type !== 'script' && type !== 'image') return;
           const at = Date.now();
