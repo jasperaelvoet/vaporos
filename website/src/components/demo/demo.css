@@ -1,0 +1,269 @@
+/* The live demo (demo-stage.tsx, scenario-panel.tsx): the phone frame and
+   what sits beside it. demo-layouts.css places them per page and screen.
+
+   Two layouts, chosen there so the first paint is already the right one:
+
+   frame  the control center at a phone's 390 × 844 CSS px inside a bezel,
+          scaled by --s (demo-stage.tsx fits it to the window), with the
+          scenario panel, Moonlight and the notes beside it
+   full   /demo/ on phones, touch screens and short windows: the frame fills
+          the screen under a 48 px bar, and the panel is a bottom sheet
+
+   The home page's stage only ever uses the frame: phones and touch screens
+   get the card instead (.demo-card), and the hidden stage never loads. */
+
+.demo-stage {
+  --s: 0.9;
+  --bezel: 12px;
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: clamp(2.5rem, 5vw, 5rem);
+  row-gap: 2rem;
+  align-items: start;
+}
+
+/* ------------------------------------------------------------ the phone */
+.demo-phone {
+  grid-row: 2;
+  padding: var(--bezel);
+  border-radius: calc(46px * var(--s) + var(--bezel));
+  background: color-mix(in srgb, var(--color-h0) 60%, var(--color-ash));
+  box-shadow:
+    0 0 0 1px var(--color-line),
+    0 36px 80px color-mix(in srgb, var(--color-h0) 70%, transparent),
+    0 0 120px color-mix(in srgb, var(--color-h3) 22%, transparent);
+}
+.demo-screen {
+  position: relative;
+  width: calc(390px * var(--s));
+  height: calc(844px * var(--s));
+  overflow: hidden;
+  border-radius: calc(46px * var(--s));
+  background: var(--color-ash);
+}
+.demo-frame {
+  display: block;
+  width: 390px;
+  height: 844px;
+  border: 0;
+  background: var(--color-ash);
+  color-scheme: dark;
+  transform: scale(var(--s));
+  transform-origin: 0 0;
+}
+/* Off screen until it has started and settled (use-demo.ts DEMO_SETTLE_MS),
+   so the page inside filling in isn't a layout shift of this one. */
+.demo-stage:not([data-started]) .demo-frame {
+  translate: -300vw 0;
+}
+/* Over the frame until it says ready. It lets clicks and hit tests through
+   to the frame (only its link takes them), so the frame is never covered. */
+.demo-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  text-align: center;
+  font-size: var(--text-fine);
+  color: var(--color-smoke);
+  background:
+    radial-gradient(ellipse 70% 45% at 62% 34%, color-mix(in srgb, var(--color-h3) 45%, transparent), transparent 70%),
+    var(--color-ash);
+}
+.demo-skel a {
+  pointer-events: auto;
+  color: var(--color-bone);
+  font-weight: 600;
+  text-underline-offset: 0.2em;
+}
+
+/* Skip links: out of sight until focused, then where the site's own skip
+   link shows (over the nav). The one that fits the layout is there. */
+.demo-skip {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 100;
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--radius-md);
+  background: var(--color-h9);
+  color: var(--color-ash);
+  font-weight: 600;
+  text-decoration: none;
+  translate: 0 calc(-100% - 1.5rem);
+}
+.demo-skip:focus-visible {
+  translate: 0 0;
+  outline-color: var(--color-ash);
+}
+/* Focus inside the control center: a ring just inside the screen's edge
+   (the screen clips anything outside it). demo-stage.tsx sets data-focus
+   while the frame holds the focus, a click into it included. */
+.demo-frame[data-focus] {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+.demo-skip-end,
+.demo-open-sheet,
+.demo-pinbar {
+  display: none;
+}
+.demo-end {
+  display: block;
+  width: 0;
+  height: 0;
+}
+
+/* ------------------------------------------------------------ the side */
+.demo-side {
+  grid-row: 2;
+  display: grid;
+  gap: 2.25rem;
+  max-width: 32rem;
+  padding-top: 0.5rem;
+  outline: none;
+}
+.demo-panel {
+  display: grid;
+  gap: 0.875rem;
+}
+.demo-panel-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 2.2vw, 1.875rem);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-bone);
+}
+.demo-panel-lead {
+  font-size: var(--text-fine);
+  line-height: 1.5;
+  color: var(--color-smoke);
+}
+.demo-scs {
+  display: grid;
+  gap: 0.875rem;
+  margin-top: 0.25rem;
+}
+.demo-sc-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 3.25rem;
+  padding: 0.5rem 1.125rem;
+  border-radius: 0.875rem;
+  background: var(--color-soot);
+  box-shadow: inset 0 0 0 1.5px var(--color-line);
+  color: var(--color-bone);
+  font-size: 1rem;
+  font-weight: 600;
+  text-align: left;
+  transition:
+    box-shadow 200ms,
+    background-color 200ms,
+    scale 200ms;
+}
+.demo-sc-btn:hover {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-bone) 65%, transparent);
+}
+.demo-sc-btn:active {
+  scale: 0.98;
+}
+.demo-sc-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  color: var(--color-h7);
+}
+.demo-sc-help {
+  margin-top: 0.375rem;
+  padding-inline: 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--color-smoke);
+}
+.demo-more {
+  margin-top: 0.75rem;
+  font-size: var(--text-meta);
+  color: var(--color-dim);
+  text-transform: lowercase;
+}
+.demo-scs-more {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0;
+}
+.demo-sc-quiet .demo-sc-btn {
+  min-height: 2.75rem;
+  font-size: 0.9375rem;
+  background: transparent;
+}
+.demo-sc-quiet .demo-sc-icon {
+  color: var(--color-smoke);
+}
+
+/* Moonlight on the Steam Deck: a small screen of its own, where the PIN shows. */
+.demo-ml {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  padding: 1.125rem 1.25rem 1.25rem;
+  border-radius: 1rem;
+  background: linear-gradient(160deg, var(--color-char), var(--color-soot) 70%);
+  box-shadow: inset 0 0 0 1px var(--color-line);
+}
+.demo-ml-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: var(--text-meta);
+  color: var(--color-smoke);
+}
+.demo-ml-app {
+  font-weight: 600;
+  color: var(--color-bone);
+}
+.demo-ml-text {
+  font-size: var(--text-fine);
+  line-height: 1.45;
+  color: var(--color-smoke);
+}
+.demo-ml-pin {
+  font-size: clamp(2.25rem, 4vw, 3rem);
+  line-height: 1;
+  letter-spacing: 0.24em;
+  color: var(--color-h8);
+}
+.demo-ml[data-ml="pin"] {
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--color-h7) 55%, transparent),
+    0 0 48px color-mix(in srgb, var(--color-h6) 18%, transparent);
+}
+.demo-ml-done {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-bone);
+}
+.demo-ml-check {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  color: var(--color-ink-ready);
+}
+
+.demo-notes {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-dim);
+}
+.demo-notes-title {
+  font-size: var(--text-fine);
+  font-weight: 600;
+  color: var(--color-smoke);
+}
