@@ -317,14 +317,58 @@ function autoWake() {
 
 // ---------- in-page notices (the page's own ui/notices.js)
 
-function notice(text) {
+// notice tells the parent and shows text in the page; opts go to notify()
+// (ui/notices.js). It answers the notice's element, or null.
+function notice(text, opts = {}) {
   post({ event: 'notice', text });
   const page = document.querySelector('script[type="module"][src*="/js/pages/"]');
-  if (!page || !document.getElementById('tpl-notice')) return;
-  import(new URL('../ui/notices.js', page.src).href).then(
-    (m) => m.notify(text, { kind: 'info', id: 'demo' }),
-    () => {},
+  if (!page || !document.getElementById('tpl-notice')) return Promise.resolve(null);
+  return import(new URL('../ui/notices.js', page.src).href).then(
+    (m) => {
+      const n = m.notify(text, { kind: 'info', id: 'demo', ...opts });
+      // notify() appends the notice to its stack before it returns.
+      return n ? document.getElementById(opts.kind === 'error' ? 'notices-alert' : 'notices-polite')?.lastElementChild || null : null;
+    },
+    () => null,
   );
+}
+
+// ---------- alone in a tab
+
+// Opened on its own (the website's "Open it in its own tab", a shared
+// link), nothing around the page says it is a demo: its title says so, and
+// a notice stays until it is dismissed, once per tab, with the way back to
+// the website's demo page.
+const ALONE_SEEN = 'vos-demo:alone-seen';
+const ALONE_TEXT = 'Live demo on made-up data: nothing here reaches a real PC.';
+
+function markAlone() {
+  if (FRAMED) return;
+  if (!document.title.startsWith('Demo · ')) document.title = `Demo · ${document.title}`;
+}
+markAlone();
+
+function aloneNotice() {
+  if (FRAMED) return;
+  try {
+    if (sessionStorage.getItem(ALONE_SEEN)) return;
+  } catch {
+    /* no storage: show it on every page */
+  }
+  // The website's /demo/ page sits over the export (<site>/demo/ui).
+  const site = /\/ui$/.test(base()) ? base().slice(0, -2) : '';
+  notice(ALONE_TEXT, { id: 'demo-alone', sticky: true, action: site ? { label: 'About the demo', href: '/' } : null }).then((el) => {
+    if (!el) return;
+    const link = el.querySelector('[data-part="link"]');
+    if (link && site) link.href = site;
+    el.querySelector('[data-part="close"]')?.addEventListener('click', () => {
+      try {
+        sessionStorage.setItem(ALONE_SEEN, '1');
+      } catch {
+        /* shown again on the next page */
+      }
+    });
+  });
 }
 
 // ---------- commands from the parent page
@@ -390,6 +434,7 @@ ready
   .then(() => {
     post({ event: 'ready', path: where(), manifest: HASH });
     postState();
+    aloneNotice();
   }, () => {});
 
 // ---------- nothing reaches a real PC
