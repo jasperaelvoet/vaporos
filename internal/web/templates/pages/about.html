@@ -1,8 +1,53 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  System › About (spec-cc-screens §12): the facts about this PC in one
+  place, as term and value pairs, from the shell's GET /status (its system
+  part is GET /system; the stream server's version is its sunshine part).
+  The temperatures are REDLINE's one real thermal reading: every sensor,
+  hottest first, on the heat ramp from 20 °C (h1) to 100 °C (white-hot);
+  no temperature here is ever invented. From 64rem, network and software
+  on the left, hardware on the right. The VaporOS website link waits for
+  its prefix in TestCSPCompliance's allowlist (web_test.go, the shell's).
+  pages/about.js fills it; styles/pages/about.css is its look.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="region-error abt-error" id="about-error" role="alert" hidden><p class="region-error-text">Couldn't load system information.</p><button class="btn small" id="about-retry" type="button">Try again</button></div>
+<div class="abt-grid" id="about" data-region="about" aria-busy="true">
+  <section class="rack abt-area-net" aria-labelledby="abt-net-title">
+    <h2 class="rack-title" id="abt-net-title">Network</h2>
+    <dl class="facts abt-facts">
+      <div class="fact"><dt>Name</dt><dd class="mono" id="abt-name"><span class="skel skel-line"></span></dd></div>
+      <div class="fact"><dt>Address</dt><dd class="mono" id="abt-address"><span class="skel skel-line"></span></dd></div>
+      <div class="fact"><dt>IP addresses</dt><dd class="mono abt-ips" id="abt-ips"><span class="skel skel-line"></span></dd></div>
+    </dl>
+  </section>
+
+  <section class="rack abt-area-soft" aria-labelledby="abt-soft-title">
+    <h2 class="rack-title" id="abt-soft-title">Software</h2>
+    <dl class="facts abt-facts">
+      <div class="fact"><dt>VaporOS</dt><dd class="mono" id="abt-version"><span class="skel skel-line"></span></dd></div>
+      <div class="fact" id="abt-webui-row" hidden><dt>Web UI</dt><dd class="mono" id="abt-webui"></dd></div>
+      <div class="fact"><dt>Update channel</dt><dd class="mono" id="abt-channel"><span class="skel skel-line"></span></dd></div>
+      <div class="fact"><dt>Boot slot</dt><dd class="mono" id="abt-slot"><span class="skel skel-line"></span></dd></div>
+      <div class="fact"><dt>Up for</dt><dd id="abt-uptime"><span class="skel skel-line"></span></dd></div>
+      <div class="fact"><dt>Stream server</dt><dd class="mono" id="abt-sunshine"><span class="skel skel-line"></span></dd></div>
+    </dl>
+  </section>
+
+  <section class="rack abt-area-hw" aria-labelledby="abt-hw-title">
+    <h2 class="rack-title" id="abt-hw-title">Hardware</h2>
+    <dl class="facts abt-facts">
+      <div class="fact"><dt>Processor</dt><dd id="abt-cpu"><span class="skel skel-line"></span></dd></div>
+      <div class="fact abt-gpu-row"><dt>Graphics</dt><dd id="abt-gpu"><span class="skel skel-line"></span></dd></div>
+    </dl>
+    <div class="abt-temps-box" aria-labelledby="abt-temps-title" role="group">
+      <h3 class="abt-temps-title" id="abt-temps-title">Temperatures</h3>
+      <dl class="abt-temps" id="abt-temps"><div class="abt-temp"><dt><span class="skel skel-line skel-short"></span></dt><dd></dd></div></dl>
+      <p class="abt-scale mono" aria-hidden="true"><span>20 °C</span><span>100 °C</span></p>
+    </div>
+  </section>
+
+  <div class="abt-actions">
+    <button class="btn ghost" id="abt-copy" type="button" disabled>{{icon "copy"}}Copy details</button>
+  </div>
+</div>
 {{end}}
