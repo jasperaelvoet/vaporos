@@ -105,7 +105,13 @@ async function havePin(e) {
   await refresh(false);
   btn.removeAttribute('aria-busy');
   if (pairings(snap).length) openPad(byId('dev-enter-pin'));
-  else byId('dev-pair-done').textContent = "Moonlight isn't waiting yet. Start pairing in Moonlight, then this page asks for the PIN.";
+  else {
+    // Not a live region: the PIN pad already says "paired"; this line is
+    // spoken only when it answers a press.
+    const words = "Moonlight isn't waiting yet. Start pairing in Moonlight, then this page asks for the PIN.";
+    byId('dev-pair-done').textContent = words;
+    announce(words);
+  }
 }
 
 function render() {

@@ -163,6 +163,14 @@ export default [
         await page.fill('#pin-device-name', '');
       });
       await step('an emptied name still pairs, as the device calls itself', async () => {
+        // Everything spoken or shown as a notice from here on.
+        await page.evaluate(() => {
+          window.vosSaid = [];
+          for (const id of ['announce-polite', 'announce-assertive', 'notices-polite', 'pin-status']) {
+            const el = document.getElementById(id);
+            new MutationObserver(() => window.vosSaid.push(`${id}: ${el.textContent}`)).observe(el, { childList: true, characterData: true, subtree: true });
+          }
+        });
         await page.focus('#pin');
         await typePIN(page, '1234');
         await page.locator('#pinpad[data-phase="success"]').waitFor({ state: 'attached' });
@@ -179,6 +187,12 @@ export default [
         assert.equal(await text(page, '#dev-paired-title'), 'Paired devices · 4 devices');
         assert.equal(await text(page, '#dev-pair-done'), 'Steam Deck is paired. Pick Steam in Moonlight to play.');
         await page.locator('.notice', { hasText: 'Steam Deck is paired.' }).waitFor();
+      });
+      await step('a pairing that works is never announced as Moonlight giving up, and is said once', async () => {
+        const said = await page.evaluate(() => window.vosSaid);
+        assert.ok(!said.some((x) => /stopped waiting/.test(x)), said.join(' | '));
+        assert.ok(!said.some((x) => /^announce-.*is paired/.test(x)), said.join(' | '));
+        assert.ok(said.some((x) => /^pin-status: Steam Deck is paired\./.test(x)), said.join(' | '));
       });
     },
   },
