@@ -1,14 +1,20 @@
 package web
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/boot"
+	"github.com/jasperaelvoet/vaporos/internal/events"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 	"github.com/jasperaelvoet/vaporos/internal/update"
 )
@@ -258,6 +264,12 @@ func (f *devFake) runStage(version string, from fakeStagePoint) {
 			if f.stage.cancelled && ph.name != "install" {
 				p := map[string]any{"phase": "cancelled", "percent": f.stage.progress["percent"], "bytes": 0, "total": 0, "version": target}
 				f.stage = nil
+				if ph.name != "download" {
+					// Writing began by unhooking the idle slot (Write order
+					// 1): no rollback target remains until the next stage.
+					u := f.doc("update")
+					u["other_slot"], u["next_boot"] = nil, nil
+				}
 				f.emitLocked("update.progress", p)
 				f.mu.Unlock()
 				return
@@ -343,5 +355,144 @@ func bootNext(docs map[string]any) {
 		"tries_left": 0, "tries_done": 0, "entry": entry}
 	if a := asObj(u["available"]); len(a) > 0 && boot.CompareVersions(asStr(a["version"]), version) <= 0 {
 		u["available"] = nil
+	}
+}
+
+// fakeWorld is a preset's fake with its routes by "METHOD /path", run for
+// the test's lifetime (a preset's stage in progress starts).
+func fakeWorld(t *testing.T, name string, routes ...func(*devFake, fakeAdder)) (*devFake, map[string]fakeHandler) {
+	t.Helper()
+	fx := testFixtures(t)
+	p := fx.presets[name]
+	if p == nil {
+		t.Fatalf("no preset %s", name)
+	}
+	docs, err := fx.docs(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newDevFake(nil, nil, p, docs, false)
+	hs := map[string]fakeHandler{}
+	for _, r := range routes {
+		r(f, func(method, path string, _ api.Access, h fakeHandler) { hs[method+" "+path] = h })
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	f.start(ctx)
+	return f, hs
+}
+
+// fakeDo runs one route of hs: the status and the JSON answer.
+func (f *devFake) fakeDo(t *testing.T, hs map[string]fakeHandler, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(method, api.Prefix+path, strings.NewReader(body))
+	f.mu.Lock()
+	v := hs[method+" "+path](w, r)
+	f.mu.Unlock()
+	out := map[string]any{}
+	if v == nil {
+		json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	b, _ := json.Marshal(v)
+	json.Unmarshal(b, &out)
+	return http.StatusOK, out
+}
+
+// waitEvent waits up to d for topic on ch with data that ok accepts.
+func waitEvent(t *testing.T, ch <-chan events.Event, topic string, d time.Duration, ok func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case ev := <-ch:
+			var m map[string]any
+			if ev.Topic == topic && json.Unmarshal(ev.Data, &m) == nil && ok(m) {
+				return m
+			}
+		case <-deadline:
+			t.Fatalf("no %s within %v", topic, d)
+			return nil
+		}
+	}
+}
+
+// The fake stops a stage as update.Cancel does (CONTRACTS.md POST
+// /update/cancel): cancelled while downloading or writing, and a stage that
+// began writing leaves no version to go back to; refused once installing.
+func TestFakeUpdateCancel(t *testing.T) {
+	t.Run("while writing", func(t *testing.T) {
+		f, hs := fakeWorld(t, "update-staging", (*devFake).updateRoutes)
+		ch, cancel := f.hub.Subscribe()
+		defer cancel()
+		waitEvent(t, ch, "update.progress", 2*time.Second, func(m map[string]any) bool { return m["phase"] == "write" })
+		if code, ans := f.fakeDo(t, hs, "POST", "/update/cancel", `{}`); code != 200 {
+			t.Fatalf("cancel: %d %v", code, ans)
+		}
+		p := waitEvent(t, ch, "update.progress", 2*time.Second, func(m map[string]any) bool { return m["phase"] != "write" })
+		if p["phase"] != "cancelled" || p["version"] != "20260929.143000" {
+			t.Errorf("after cancel: update.progress %v, want phase cancelled with the version", p)
+		}
+		_, u := f.fakeDo(t, hs, "GET", "/update", "")
+		if u["busy"] != false || u["progress"] != nil || u["other_slot"] != nil || u["next_boot"] != nil || u["last_error"] != "" {
+			t.Errorf("GET /update after a cancel while writing: busy %v progress %v other_slot %v next_boot %v last_error %q",
+				u["busy"], u["progress"], u["other_slot"], u["next_boot"], u["last_error"])
+		}
+		if code, ans := f.fakeDo(t, hs, "POST", "/update/cancel", `{}`); code != 409 || ans["error"] != "no update is running" {
+			t.Errorf("cancel with nothing running: %d %v", code, ans)
+		}
+	})
+	t.Run("while installing", func(t *testing.T) {
+		f, hs := fakeWorld(t, "update-available", (*devFake).updateRoutes)
+		ch, cancel := f.hub.Subscribe()
+		defer cancel()
+		f.mu.Lock()
+		f.startStageLocked("", fakeStagePoint{Phase: "install", Percent: 99})
+		f.mu.Unlock()
+		waitEvent(t, ch, "update.progress", 2*time.Second, func(m map[string]any) bool { return m["phase"] == "install" })
+		if code, ans := f.fakeDo(t, hs, "POST", "/update/cancel", `{}`); code != 409 || !strings.Contains(asStr(ans["error"]), "already installing") {
+			t.Errorf("cancel while installing: %d %v, want 409", code, ans)
+		}
+		waitEvent(t, ch, "update.progress", 3*time.Second, func(m map[string]any) bool { return m["phase"] == "done" })
+		_, u := f.fakeDo(t, hs, "GET", "/update", "")
+		if nb := asObj(u["next_boot"]); nb["version"] != "20260929.143000" || asObj(u["staged"])["version"] != "20260929.143000" {
+			t.Errorf("after the stage: staged %v next_boot %v", u["staged"], u["next_boot"])
+		}
+	})
+}
+
+// Going back sets next_boot and holds the version left (update.Rollback,
+// CONTRACTS.md "Update state"); a version that failed is refused, and a
+// stage while the rollback waits ends with the server's refusal.
+func TestFakeUpdateRollback(t *testing.T) {
+	f, hs := fakeWorld(t, "idle", (*devFake).updateRoutes)
+	ch, cancel := f.hub.Subscribe()
+	defer cancel()
+	if code, ans := f.fakeDo(t, hs, "POST", "/update/rollback", `{}`); code != 200 {
+		t.Fatalf("rollback: %d %v", code, ans)
+	}
+	st := waitEvent(t, ch, "update.state", time.Second, func(map[string]any) bool { return true })
+	if asObj(st["held"])["version"] != "20260929.101500" {
+		t.Errorf("update.state after going back: held %v, want the running version", st["held"])
+	}
+	_, u := f.fakeDo(t, hs, "GET", "/update", "")
+	if nb := asObj(u["next_boot"]); nb["version"] != "20260927.190000" || nb["slot"] != "b" {
+		t.Errorf("next_boot = %v, want the other slot's version", u["next_boot"])
+	}
+	if r := restartReasons(u, map[string]any{}); r["needed"] != true || asStr(asObj(asList(r["reasons"])[0])["kind"]) != "rollback" {
+		t.Errorf("restart reasons = %v, want a rollback", r)
+	}
+	if code, _ := f.fakeDo(t, hs, "POST", "/update/stage", `{"version":"20260929.143000"}`); code != 200 {
+		t.Fatalf("stage while a rollback waits: %d", code)
+	}
+	p := waitEvent(t, ch, "update.progress", 2*time.Second, func(m map[string]any) bool { return m["phase"] == "error" })
+	if !strings.Contains(asStr(p["error"]), "restart first") {
+		t.Errorf("stage while a rollback waits: %v, want the rollback-pending refusal", p)
+	}
+
+	f, hs = fakeWorld(t, "update-failed-newer", (*devFake).updateRoutes)
+	if code, ans := f.fakeDo(t, hs, "POST", "/update/rollback", `{}`); code != 409 || !strings.Contains(asStr(ans["error"]), "failed to start before") {
+		t.Errorf("going back to a version that failed: %d %v, want 409", code, ans)
 	}
 }

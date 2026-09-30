@@ -1,0 +1,171 @@
+/* System › Updates (spec-cc-screens §7) in REDLINE. The loud thing is the
+   two copies of VaporOS as thermal images: the running one glows up to
+   white-hot, the other is cool; a download heats it as it is written
+   (--heat, 0-1), the version that starts next is warm, and one that didn't
+   start is cold. The status card is quiet: its title in the state's cut
+   (width is temperature) under a thin heat edge. Words over heat sit on
+   ash plates. Classes start with upd- (TestNoUtilityCollisions). */
+@layer components {
+  .upd { display: grid; gap: 0; }
+  .upd .rack:first-child { padding-top: 0; }
+
+  /* ------------------------------------------------------------- status */
+  .upd-status {
+    position: relative; display: grid; justify-items: start; gap: 0.625rem; padding: 1.25rem 1rem 1rem;
+    border-radius: var(--radius-2xl); background: var(--color-surface); overflow: hidden;
+  }
+  /* the heat edge: from cold up to the state's temperature */
+  .upd-status::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+    background: linear-gradient(90deg, var(--color-h1), var(--state) 70%, var(--state));
+    transition: background var(--vos-dur-heat) var(--ease-out);
+  }
+  .upd-badge {
+    margin: 0; padding: 0.25rem 0.4375rem; border-radius: var(--radius-sm); background: var(--color-surface-2);
+    color: var(--color-ink-2); font: 500 var(--text-xs) / 1 var(--font-mono);
+  }
+  .upd-badge[data-tone="warn"] { background: var(--color-h8); color: var(--color-accent-ink); }
+  .upd-title {
+    width: 100%; margin: 0.125rem 0 0; font-family: var(--font-display); font-stretch: var(--state-cut-w); font-weight: var(--state-cut-g);
+    font-size: 1.75rem; line-height: 1.02; letter-spacing: -0.01em; overflow-wrap: anywhere;
+  }
+  .upd-title:focus { outline: none; }
+  .upd-title .skel, .upd-detail .skel { height: 1.25rem; }
+  .upd-detail { width: 100%; margin: 0; max-width: 34em; color: var(--color-ink-2); }
+  .upd-meta { margin: 0; color: var(--color-ink-3); font-size: var(--text-sm); }
+  .upd-checking { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-size: var(--text-md); }
+  .upd-pip { width: 0.5rem; height: 0.5rem; border-radius: var(--radius-xs); background: var(--color-h7); animation: vos-pulse 1.6s ease-in-out infinite alternate; }
+  .upd-progress { display: grid; gap: 0.5rem; width: 100%; padding: 0.25rem 0 0.125rem; }
+  .upd-progress[hidden], .upd-checking[hidden], .upd-meta[hidden] { display: none; }
+  .upd-progress-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: 0; font-weight: 600; }
+  .upd-pct { font-size: 1.5rem; font-weight: 600; line-height: 1; }
+  .upd-bytes { margin: 0; min-height: 1rem; color: var(--color-ink-2); font-size: var(--text-xs); }
+  .upd-banners { display: grid; gap: 0.5rem; width: 100%; margin: 0; padding: 0; list-style: none; }
+  .upd-banners:empty { display: none; }
+  .upd-banner {
+    display: flex; align-items: baseline; gap: 0.625rem; padding: 0.75rem 0.875rem;
+    border-radius: var(--radius-lg); background: var(--color-surface-2);
+  }
+  .upd-banner-mark { width: 0.5rem; height: 0.5rem; flex: none; border-radius: var(--radius-xs); background: var(--color-ink-3); translate: 0 -0.0625rem; }
+  .upd-banner[data-tone="warn"] .upd-banner-mark { background: var(--color-h8); }
+  .upd-banner[data-tone="danger"] { box-shadow: inset 3px 0 0 var(--color-cold); }
+  .upd-banner[data-tone="danger"] .upd-banner-mark { background: var(--color-cold); }
+  .upd-banner-text { margin: 0; font-size: var(--text-md); }
+  .upd-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; padding-top: 0.375rem; }
+  .upd-status > .region-error { width: 100%; }
+
+  /* ----------------------------------------------- the two copies (A/B) */
+  .upd-slots { display: grid; gap: 0.5rem; }
+  .upd-slot {
+    position: relative; display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; min-height: 13.5rem; padding: 0.875rem;
+    border-radius: var(--radius-2xl); background: var(--color-surface); overflow: hidden; isolation: isolate;
+  }
+  /* the thermal image: posterised bands rising from the foot of the card */
+  .upd-slot-art { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+  .upd-slot-art::before {
+    content: ""; position: absolute; inset: 0; transform-origin: 50% 100%;
+    background: radial-gradient(130% 70% at 50% 108%, var(--color-h9) 0 8%, var(--color-h8) 8% 16%, var(--color-h7) 16% 25%, var(--color-h6) 25% 34%,
+      var(--color-h5) 34% 43%, var(--color-h4) 43% 53%, var(--color-h3) 53% 64%, var(--color-h2) 64% 76%, var(--color-h1) 76% 90%, var(--color-h0) 90%);
+    transition: transform var(--vos-dur-cool) var(--ease-out), opacity var(--vos-dur-cool) var(--ease-out);
+  }
+  /* a scrim keeps the words at the top on near-black */
+  .upd-slot-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, rgb(0 0 4 / 0.86) 0 38%, rgb(0 0 4 / 0) 70%); }
+  .upd-slot[data-heat="warm"] .upd-slot-art::before {
+    background: radial-gradient(130% 62% at 50% 108%, var(--color-h7) 0 9%, var(--color-h6) 9% 20%, var(--color-h5) 20% 32%, var(--color-h4) 32% 45%,
+      var(--color-h3) 45% 58%, var(--color-h2) 58% 72%, var(--color-h1) 72% 88%, var(--color-h0) 88%);
+  }
+  .upd-slot[data-heat="cool"] .upd-slot-art::before {
+    background: radial-gradient(130% 55% at 50% 108%, var(--color-h4) 0 10%, var(--color-h3) 10% 24%, var(--color-h2) 24% 42%, var(--color-h1) 42% 66%, var(--color-h0) 66%);
+  }
+  /* below the scale: a version that didn't start is cold */
+  .upd-slot[data-heat="cold"] .upd-slot-art::before {
+    background: radial-gradient(130% 55% at 50% 108%, var(--color-c6) 0 10%, var(--color-c5) 10% 22%, var(--color-c4) 22% 36%, var(--color-c3) 36% 52%,
+      var(--color-c2) 52% 70%, var(--color-c1) 70% 86%, var(--color-c0) 86%);
+  }
+  .upd-slot[data-heat="empty"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-line); }
+  .upd-slot[data-heat="empty"] .upd-slot-art { display: none; }
+  /* while a version is written into this copy, it heats with the percent */
+  .upd-slot[data-heat="fill"] .upd-slot-art::before { transform: scale(calc(0.3 + var(--heat, 0) * 0.7)); opacity: calc(0.45 + var(--heat, 0) * 0.55); transition-duration: var(--vos-dur-pct); }
+  .upd-slot-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0; }
+  .upd-slot-label { font-size: var(--text-md); font-weight: 600; color: var(--color-ink-2); }
+  .upd-slot-ab { padding: 0.25rem 0.375rem; border-radius: var(--radius-xs); background: rgb(0 0 4 / 0.6); font-size: var(--text-xs); font-weight: 600; line-height: 1; }
+  .upd-slot-ab:empty { display: none; }
+  .upd-slot-version { margin: 0.25rem 0 0; font-size: 0.9375rem; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+  .upd-slot-sub { margin: 0; font-size: var(--text-sm); }
+  .upd-slot-foot {
+    display: grid; justify-items: start; gap: 0.375rem; margin-top: auto; padding: 0.5rem;
+    border-radius: var(--radius-lg); background: rgb(0 0 4 / 0.82);
+  }
+  .upd-back { background: var(--color-surface-2); }
+  .upd-why { margin: 0; color: var(--color-ink-2); font-size: var(--text-sm); }
+  .upd-why:empty { display: none; }
+  .upd-note { margin: 0; padding: 0 0.125rem; color: var(--color-ink-2); font-size: var(--text-md); max-width: 38em; }
+
+  /* ----------------------------------------------------------- settings */
+  .upd-card { display: grid; gap: 1.125rem; padding: 1.125rem 1rem 1rem; border-radius: var(--radius-2xl); background: var(--color-surface); }
+  .upd-switch-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 3rem; }
+  .upd-switch-text { display: grid; gap: 0.1875rem; }
+  .upd-switch-label { font-weight: 600; }
+  .upd-switch-input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  .upd-switch-input:disabled { cursor: default; }
+  .upd-switch {
+    position: relative; flex: none; width: 3.25rem; height: 2rem; border-radius: var(--radius-pill);
+    background: var(--color-surface-2); box-shadow: inset 0 0 0 1.5px var(--color-line-strong); transition: background-color var(--vos-dur-fast) var(--ease-out);
+  }
+  .upd-switch::before {
+    content: ""; position: absolute; top: 0.3125rem; left: 0.3125rem; width: 1.375rem; height: 1.375rem; border-radius: var(--radius-pill);
+    background: var(--color-ink-2); transition: translate var(--vos-dur-fast) var(--ease-out), background-color var(--vos-dur-fast) var(--ease-out);
+  }
+  .upd-switch-input:checked + .upd-switch { background: var(--color-h3); box-shadow: none; }
+  .upd-switch-input:checked + .upd-switch::before { translate: 1.25rem 0; background: var(--color-accent); }
+  .upd-switch-input:focus-visible + .upd-switch { outline: 2px solid var(--color-focus); outline-offset: 3px; }
+  .upd-switch-input:disabled + .upd-switch { opacity: 0.45; }
+  .upd-channel { display: grid; gap: 0.75rem; margin: 0; padding-top: 1.125rem; border-top: 1px solid var(--color-line); }
+  .upd-channel .field[hidden] { display: none; }
+  .upd-select { position: relative; }
+  .upd-select::after {
+    content: ""; position: absolute; right: 1rem; top: 50%; width: 0.4375rem; height: 0.4375rem; margin-top: -0.3125rem; pointer-events: none;
+    border: solid var(--color-ink-2); border-width: 0 1.5px 1.5px 0; rotate: 45deg;
+  }
+  .upd-form-actions { display: flex; justify-content: flex-end; }
+
+  /* --------------------------------------------- versions that didn't start */
+  .upd-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
+  .upd-chip { padding: 0.375rem 0.5rem; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1.5px var(--color-c5); font-size: var(--text-md); font-weight: 500; }
+
+  /* The shell's restart row says only what this page doesn't. */
+  .restart-row[data-covered] { display: none; }
+
+  @media (min-width: 23.5rem) {
+    .upd-slots { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  }
+
+  @media (min-width: 64rem) {
+    .upd { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); grid-template-areas: "status status" "versions settings" "versions failed"; gap: 2.25rem 2.5rem; align-items: start; }
+    .upd .rack { padding-top: 0; }
+    .upd-status-rack { grid-area: status; }
+    .upd-versions-rack { grid-area: versions; }
+    .upd-settings-rack { grid-area: settings; }
+    .upd-failed-rack { grid-area: failed; }
+    .upd-status { grid-template-columns: minmax(0, 1fr) auto; column-gap: 2rem; padding: 1.5rem 1.5rem 1.375rem; }
+    .upd-status > * { grid-column: 1; }
+    .upd-status > .upd-actions { grid-column: 2; grid-row: 1 / span 6; align-self: center; flex-direction: column; align-items: stretch; padding-top: 0; }
+    .upd-title { font-size: 2.25rem; }
+    .upd-slot { min-height: 15rem; padding: 1rem; }
+    .upd-slot-version { font-size: 1.0625rem; }
+    .upd-card { padding: 1.375rem 1.25rem 1.25rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .upd-status::before, .upd-slot-art::before, .upd-switch, .upd-switch::before { transition: none; }
+    .upd-pip { animation: none; }
+  }
+
+  @media (forced-colors: active) {
+    .upd .btn, .upd .input { border: 1px solid ButtonText; }
+    .upd-status, .upd-slot, .upd-card, .upd-banner, .upd-badge, .upd-chip, .upd-switch, .upd-slot-foot { border: 1px solid CanvasText; }
+    .upd-slot-art, .upd-status::before { display: none; }
+    .upd-switch-input:checked + .upd-switch::before { forced-color-adjust: none; background: Highlight; }
+    .upd-channel .input:focus-visible { outline: 2px solid Highlight; }
+  }
+}

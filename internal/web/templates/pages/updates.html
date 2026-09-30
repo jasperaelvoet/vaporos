@@ -1,8 +1,103 @@
-{{- /* A stub from the shell (C0b): the page's owner replaces it. */ -}}
+{{- /*
+  System › Updates (spec-cc-screens §7, MASTER-PLAN §3.5 C4a): which version
+  runs, what starts next, how updates arrive, and going back. The server
+  paints every card at its final size with its controls disabled;
+  pages/updates.js fills them from GET /update and the live update events,
+  and updates-more.js wires the actions and the settings. REDLINE: the two
+  copies of VaporOS are two thermal images; the running one glows hot, the
+  other is cool until a download heats it up as it is written, and a
+  version that didn't start is cold. The art says nothing the words don't.
+*/ -}}
 {{define "content"}}
-<section class="stub" data-region="stub" aria-busy="true" aria-labelledby="stub-title">
-  <h2 class="sr-only" id="stub-title">{{.Page.Title}}</h2>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span></div>
-  <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span></div>
-</section>
+<div class="upd" id="upd" data-state="">
+  <section class="rack upd-status-rack" aria-labelledby="upd-status-h">
+    <h2 class="rack-title" id="upd-status-h">Status</h2>
+    <div class="upd-status" id="upd-status" data-region="upd-status" data-state="" aria-busy="true">
+      <p class="upd-badge" id="upd-channel" data-tone="">Channel main</p>
+      <p class="upd-title" id="upd-title" tabindex="-1"><span class="skel skel-line skel-short" aria-hidden="true"></span></p>
+      <p class="upd-detail" id="upd-detail"><span class="skel skel-line" aria-hidden="true"></span></p>
+      <p class="upd-meta" id="upd-meta" hidden></p>
+      <p class="upd-checking" id="upd-checking" hidden><span class="upd-pip" aria-hidden="true"></span>Checking for updates…</p>
+      <div class="upd-progress" id="upd-progress" hidden>
+        <p class="upd-progress-row" aria-hidden="true"><span id="upd-phase"></span><b class="upd-pct mono" id="upd-pct"></b></p>
+        <div class="heat-bar" id="upd-bar" role="progressbar" aria-labelledby="upd-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext=""><i class="heat-bar-fill"></i></div>
+        <p class="upd-bytes mono" id="upd-bytes"></p>
+      </div>
+      <ul class="upd-banners" id="upd-banners" role="list"></ul>
+      <div class="upd-actions" id="upd-actions">
+        <button class="btn primary" id="upd-restart" type="button" hidden>{{icon "restart"}}Restart to update</button>
+        <button class="btn primary" id="upd-reboot" type="button" hidden>{{icon "restart"}}Restart now</button>
+        <button class="btn primary" id="upd-stage" type="button" hidden>{{icon "download"}}Download update</button>
+        <button class="btn ghost" id="upd-cancel" type="button" hidden>Stop<span class="sr-only"> the download</span></button>
+        <button class="btn" id="upd-check" type="button" disabled>{{icon "refresh"}}<span id="upd-check-label">Check now</span></button>
+      </div>
+      <div class="region-error" id="upd-error" role="alert" hidden><p class="region-error-text" id="upd-error-text"></p><button class="btn small" id="upd-retry" type="button">Try again</button></div>
+    </div>
+  </section>
+
+  <section class="rack upd-versions-rack" aria-labelledby="upd-versions-h">
+    <h2 class="rack-title" id="upd-versions-h">Versions</h2>
+    <div class="upd-slots" id="upd-slots" data-region="upd-versions" aria-busy="true">
+      <div class="upd-slot" id="upd-run" data-heat="hot" role="group" aria-labelledby="upd-run-label">
+        <span class="upd-slot-art" aria-hidden="true"></span>
+        <p class="upd-slot-head"><span class="upd-slot-label" id="upd-run-label">Running</span><span class="upd-slot-ab mono" id="upd-run-ab" aria-hidden="true"></span></p>
+        <p class="upd-slot-version mono" id="upd-run-version"><span class="skel skel-line" aria-hidden="true"></span></p>
+        <p class="upd-slot-sub" id="upd-run-sub"></p>
+      </div>
+      <div class="upd-slot" id="upd-other" data-heat="cool" role="group" aria-labelledby="upd-other-label">
+        <span class="upd-slot-art" aria-hidden="true"></span>
+        <p class="upd-slot-head"><span class="upd-slot-label" id="upd-other-label">Previous</span><span class="upd-slot-ab mono" id="upd-other-ab" aria-hidden="true"></span></p>
+        <p class="upd-slot-version mono" id="upd-other-version"><span class="skel skel-line" aria-hidden="true"></span></p>
+        <p class="upd-slot-sub" id="upd-other-sub"></p>
+        <div class="upd-slot-foot">
+          <button class="btn small upd-back" id="upd-back" type="button" aria-describedby="upd-back-why" disabled>Go back</button>
+          <p class="upd-why" id="upd-back-why"></p>
+        </div>
+      </div>
+    </div>
+    <p class="upd-note">A new version goes to the copy you aren't running. If it doesn't start, VaporOS goes back to the previous one by itself.</p>
+  </section>
+
+  <section class="rack upd-settings-rack" aria-labelledby="upd-settings-h">
+    <h2 class="rack-title" id="upd-settings-h">Settings</h2>
+    <div class="upd-card" id="upd-settings" data-region="upd-settings" aria-busy="true">
+      <div class="upd-switch-row">
+        <div class="upd-switch-text">
+          <label class="upd-switch-label" for="upd-auto">Download updates automatically</label>
+          <p class="field-hint" id="upd-auto-hint">New versions download in the background and start on the next restart.</p>
+        </div>
+        <input class="upd-switch-input" type="checkbox" role="switch" id="upd-auto" aria-describedby="upd-auto-hint" disabled>
+        <span class="upd-switch" aria-hidden="true"></span>
+      </div>
+      <form class="upd-channel" id="upd-channel-form" novalidate>
+        <div class="field">
+          <label class="field-label" for="upd-channel-pick">Update channel</label>
+          <div class="upd-select">
+            <select class="input" id="upd-channel-pick" name="pick" aria-describedby="upd-channel-hint" disabled>
+              <option value="main">main (stable)</option>
+              <option value="other">Other…</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" id="upd-other-field" hidden>
+          <label class="field-label" for="upd-channel-name">Channel name</label>
+          <input class="input mono" id="upd-channel-name" name="channel" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="128" aria-describedby="upd-channel-name-error">
+          <p class="field-error" id="upd-channel-name-error" hidden></p>
+        </div>
+        <p class="field-hint" id="upd-channel-hint">main is the stable channel. Other channels are test builds.</p>
+        <p class="form-error" id="upd-channel-form-error" role="alert"></p>
+        <div class="upd-form-actions"><button class="btn primary" id="upd-channel-save" type="submit" disabled>Save</button></div>
+      </form>
+    </div>
+  </section>
+
+  <section class="rack upd-failed-rack" id="upd-failed" aria-labelledby="upd-failed-h" hidden>
+    <h2 class="rack-title" id="upd-failed-h">Versions that didn't start</h2>
+    <div class="upd-card">
+      <ul class="upd-chips" id="upd-failed-list" role="list"></ul>
+      <p class="upd-note">VaporOS went back to the previous version by itself, and won't install these again.</p>
+    </div>
+  </section>
+</div>
+<template id="tpl-upd-banner"><li class="upd-banner" data-tone=""><span class="upd-banner-mark" aria-hidden="true"></span><p class="upd-banner-text" data-part="text"></p></li></template>
 {{end}}
