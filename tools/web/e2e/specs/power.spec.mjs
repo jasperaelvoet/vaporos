@@ -183,7 +183,7 @@ export default [
         assert.deepEqual(await body, { minutes: 0 });
         await notice(page, 'Stay awake stopped.');
         await until(page, () => document.getElementById('pwr-stop').hidden);
-        assert.equal(await text(page, '#pwr-awake-line'), 'Keep VaporOS on for a while, for example during a long download.');
+        assert.equal(await text(page, '#pwr-awake-line'), 'Keep VaporOS on for a while, even when nobody plays.');
       });
     },
   },

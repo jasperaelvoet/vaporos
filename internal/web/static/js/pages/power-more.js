@@ -37,7 +37,7 @@ export function update(p) {
   byId('pwr-idle').removeAttribute('aria-busy');
 
   const until = Date.parse(p.keep_awake_until || '') > serverNow() ? p.keep_awake_until : '';
-  byId('pwr-awake-line').textContent = until ? `VaporOS stays on until ${clock(until)}.` : 'Keep VaporOS on for a while, for example during a long download.';
+  byId('pwr-awake-line').textContent = until ? `VaporOS stays on until ${clock(until)}.` : 'Keep VaporOS on for a while, even when nobody plays.';
   byId('pwr-stop').hidden = !until && !(p.busy && p.busy.reason === 'manual keep-awake');
   for (const id of ['pwr-1h', 'pwr-4h']) byId(id).disabled = !p.idle_shutdown;
   byId('pwr-awake-off').hidden = !!p.idle_shutdown;
