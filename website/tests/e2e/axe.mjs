@@ -243,6 +243,7 @@ async function pixelContrast(page, targets) {
     for (const r of runs) {
       const box = await page.evaluate((sel) => {
         const el = document.querySelector(sel);
+        if (!el) return null; // re-rendered since axe ran (the release upgrade)
         el.scrollIntoView({ block: 'center', inline: 'nearest' });
         window.lenis?.scrollTo?.(scrollY, { immediate: true, force: true });
         // The text's own box (a Range over its text), not the element's padding.
@@ -253,7 +254,7 @@ async function pixelContrast(page, targets) {
         const y = Math.max(0, b.top);
         return { x, y, width: Math.min(innerWidth, b.right) - x, height: Math.min(innerHeight, b.bottom) - y };
       }, r.target);
-      if (box.width < 2 || box.height < 2) continue;
+      if (!box || box.width < 2 || box.height < 2) continue;
       await page.waitForTimeout(60);
       const img = decodePNG(await page.screenshot({ clip: box }));
       const [tr, tg, tb, ta = 1] = r.color;
