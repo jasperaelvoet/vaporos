@@ -3,11 +3,17 @@
 // tests/e2e/ci.mjs; G-15/G-16 for /demo/, G-20 for the site's side), headless:
 // /demo/ at 1440 starts the frame on the export's hash, ?open= deep-links;
 // the scenarios (stream and stream-end, pair with the Moonlight PIN typed
-// into the frame, update through the restart, power-off and wake, reset) are
-// announced and keep the focus on their button; at 390 the frame fills the
-// screen and the scenarios are a bottom sheet; the home page's #demo loads
-// on approach (a card on phones, no frame); a demo that never answers shows
-// the way out after 8 s; the nav, footer, 404 and sitemap link it; and
+// into the frame, update through the restart, power-off with the Wake card in
+// the frame within seconds, and wake, reset) are announced and keep the focus
+// on their button; the control center clicked through in the frame (the four
+// tabs and the six System pages without the fatal panel or sideways scroll,
+// Home › Controls › Power tapped and held, the Wake card on the Off scene and
+// on System › Power, the log's Download as a tab of its own, Sign out
+// stopped); at 390 the frame fills the screen and the scenarios are a bottom
+// sheet; the home page's #demo loads on approach (a card on phones, no
+// frame); a demo that never answers shows the way out after 8 s, and its
+// page alone in a tab says it is a demo (title and a notice that stays); the
+// nav, footer, 404 and sitemap link it; and
 // throughout, 0 requests to /api/v1/, 0 console errors or CSP violations
 // (page and frame), no sideways scroll. Then shoot --strict and axe on /demo/.
 //
@@ -80,6 +86,21 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
 const focused = (page) => page.evaluate(() => document.activeElement?.textContent?.trim() ?? '');
 
 const step = (name, fn) => fn().catch((e) => check(name, false, String(e?.message ?? e).split('\n')[0]));
+
+// The control center in the frame: booted (or given up), its regions painted.
+const booted = (fr, timeout = 10000) =>
+  fr.waitForFunction(() => ['ready', 'failed'].includes(document.documentElement.dataset.boot) && !document.querySelector('[data-region][aria-busy="true"]'), null, { timeout });
+// Where the frame is, as the control center names it ("/system/updates").
+const framePath = (fr) => new URL(fr.url()).pathname.replace('/vaporos/demo/ui', '').replace(/\/$/, '') || '/';
+// What a page in the frame shows that it shouldn't: the fatal panel, sideways scroll.
+const frameFaults = (fr) =>
+  fr.evaluate(() => {
+    const out = [];
+    if (!document.getElementById('fatal')?.hidden) out.push('the fatal panel');
+    const over = document.documentElement.scrollWidth - innerWidth;
+    if (over > 0) out.push(`${over} px of sideways scroll`);
+    return out;
+  });
 
 // ---------------------------------------------------------------- run
 const server = spawn(process.execPath, ['scripts/serve.mjs', OUT, String(PORT), '--quiet'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'] });
@@ -157,15 +178,24 @@ try {
       await fr.locator('#confirm-ok').click({ timeout: 5000 });
       await said(page, /VaporOS is off/, 15000);
       await said(page, /VaporOS is back on/, 30000);
-      await fr.waitForFunction(() => /20261001\.090000/.test(document.body.innerText), null, { timeout: 20000 });
+      // The page reloads once VaporOS answers again: wait for the new one,
+      // booted, with the restart's scene gone.
+      await fr.waitForFunction(() => document.documentElement.dataset.boot === 'ready' && !document.getElementById('scene')?.open && /20261001\.090000/.test(document.body.innerText), null, { timeout: 20000 });
       check('scenario update: it restarts onto 20261001.090000', true);
     });
 
     await step('scenario power-off and wake', async () => {
       const btn = page.getByRole('button', { name: 'Power it off' });
+      const t0 = Date.now();
       await btn.click();
       await said(page, /VaporOS is off/);
       check('scenario power-off: the button turns into Wake it, and keeps the focus', (await focused(page)) === 'Wake it', await focused(page));
+      // An idle power-off: the page saw the countdown run out, so it shows the
+      // Off scene and its Wake card a few seconds after the drop (ui/shell.js).
+      await fr.locator('#scene[open] [data-part="wake"]').waitFor({ state: 'visible', timeout: 15000 });
+      const ms = Date.now() - t0;
+      check(`scenario power-off: the frame shows the Wake card ${ms} ms later`, ms < 12000 && (await fr.getAttribute('#scene', 'data-phase')) === 'off', String(await fr.getAttribute('#scene', 'data-phase')));
+      await page.screenshot({ path: join(REPORT, 'shots', 'demo-off-wake.png') });
       await page.getByRole('button', { name: 'Wake it' }).click();
       await said(page, /VaporOS is back on/, 15000);
       check('scenario power-off and wake: off, then back on', true);
@@ -192,6 +222,92 @@ try {
     await page.goto(`${SITE}demo/?open=../../download`, { waitUntil: 'load' });
     await started(page);
     check('deep link: anything else opens Home', (await page.getAttribute('.demo-frame', 'src')) === `/vaporos/demo/ui/?v=${HASH}`);
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------ the control center, clicked through
+  await step('walk', async () => {
+    const ctx = await context(browser, { width: 1440, height: 900 });
+    const page = await ctx.newPage();
+    watch(page, '/demo/@1440 walk');
+    await page.goto(`${SITE}demo/`, { waitUntil: 'load' });
+    await started(page);
+    const fr = await frameOf(page);
+    await booted(fr);
+    const at = async (name) => {
+      const bad = await frameFaults(fr);
+      check(`walk: ${name} (${framePath(fr)}) without the fatal panel or sideways scroll`, bad.length === 0, bad.join(', '));
+    };
+    // Every click that loads a page in the frame, and the page settled.
+    const go = async (selector, path) => {
+      await fr.locator(selector).first().click();
+      await fr.waitForURL((u) => u.pathname.replace(/\/$/, '') === `/vaporos/demo/ui${path}`.replace(/\/$/, ''), { timeout: 10000 });
+      await booted(fr);
+    };
+
+    // Home › Controls › Power: a tap asks first, a hold powers off at once.
+    await fr.locator('#home-power:enabled').click();
+    await fr.locator('#power-sheet[open]').waitFor({ timeout: 5000 });
+    await fr.waitForFunction(() => document.getElementById('power-sheet').getAnimations({ subtree: true }).every((x) => x.playState !== 'running'));
+    await fr.locator('#home-poweroff').click();
+    await fr.locator('#confirm[open]').waitFor({ timeout: 5000 });
+    check('walk: a tap on Power off asks first', /power off/i.test((await fr.textContent('#confirm')) ?? ''), (await fr.textContent('#confirm-title')) ?? '');
+    await fr.locator('#confirm-cancel').click();
+    await fr.locator('#confirm').waitFor({ state: 'hidden', timeout: 5000 });
+    await fr.locator('#home-power').click();
+    await fr.locator('#power-sheet[open]').waitFor({ timeout: 5000 });
+    await fr.waitForFunction(() => document.getElementById('power-sheet').getAnimations({ subtree: true }).every((x) => x.playState !== 'running'));
+    await fr.locator('#home-poweroff').hover();
+    await page.mouse.down();
+    await page.waitForTimeout(1500);
+    await page.mouse.up();
+    await fr.locator('#scene[open][data-phase="off"] [data-part="wake"]').waitFor({ state: 'visible', timeout: 5000 });
+    check('walk: held, Power off fires without asking and the Off scene shows the Wake card', true);
+    await said(page, /VaporOS is off/);
+    await page.screenshot({ path: join(REPORT, 'shots', 'walk-held-off.png') });
+    await page.getByRole('button', { name: 'Wake it' }).click();
+    await said(page, /VaporOS is back on/, 20000);
+    await fr.locator('#scene').waitFor({ state: 'hidden', timeout: 20000 });
+    await booted(fr);
+    check('walk: Wake it brings the frame back', true);
+
+    // The four tabs, by the tab bar.
+    for (const [tab, path] of [['devices', '/devices'], ['screen', '/screen'], ['system', '/system'], ['home', '/']]) {
+      await go(`.tab[data-tab="${tab}"]`, path);
+      await at(`the ${tab} tab`);
+    }
+
+    // The six System pages, from System's list and back by the tab bar.
+    for (const sub of ['updates', 'power', 'storage', 'settings', 'logs', 'about']) {
+      await go('.tab[data-tab="system"]', '/system');
+      await go(`a.row-link[href$="/system/${sub}"]`, `/system/${sub}`);
+      await at(`System › ${sub}`);
+      if (sub === 'power') {
+        check('walk: System › Power shows the Wake card', await fr.locator('#pwr-wake [data-part="wake"]').isVisible());
+      }
+      if (sub === 'logs') {
+        // The frame has no allow-downloads: the log opens in a tab of its own,
+        // made in the page, with nothing sent to /api/v1.
+        const before = api.length;
+        const popup = page.waitForEvent('popup', { timeout: 8000 });
+        await fr.locator('#log-download').click();
+        const tab = await popup;
+        await tab.waitForURL(/^blob:/, { timeout: 8000 });
+        const text = (await tab.textContent('body')) ?? '';
+        check('walk: Download opens the log in a tab, from the page', /Sunshine version/.test(text) && api.length === before, `${tab.url().slice(0, 40)}, ${api.length - before} requests`);
+        await tab.close();
+      }
+    }
+
+    // Sign out is stopped: a notice, and the page stays.
+    await go('.tab[data-tab="system"]', '/system');
+    await fr.locator('#sys-signout').scrollIntoViewIfNeeded();
+    await fr.locator('#sys-signout').click();
+    await fr.locator('.notice', { hasText: 'Signing out is off' }).first().waitFor({ timeout: 5000 });
+    await said(page, /Signing out is off/);
+    await page.waitForTimeout(800);
+    check('walk: Sign out shows a notice and stays on System', framePath(fr) === '/system', framePath(fr));
+    await page.screenshot({ path: join(REPORT, 'shots', 'walk-signout.png') });
     await ctx.close();
   });
 
@@ -260,6 +376,31 @@ try {
     await page.getByText("The demo didn't start.").waitFor({ timeout: 10000 });
     const ms = Date.now() - t0;
     check(`fallback: a demo that never answers offers its own tab after ${ms} ms`, ms >= 7000 && (await page.getAttribute('.demo-skel a', 'href')) === `/vaporos/demo/ui/?v=${HASH}`);
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------ alone in a tab
+  await step('alone', async () => {
+    // The fallback's "Open it in its own tab", or a shared link: nothing
+    // around the page says it is a demo, so the page does.
+    const ctx = await context(browser, { width: 390, height: 844 });
+    const page = await ctx.newPage();
+    watch(page, '/demo/ui/ alone');
+    await page.goto(`${ORIGIN}/vaporos/demo/ui/?v=${HASH}`, { waitUntil: 'load' });
+    await booted(page);
+    check('alone: the title says it is a demo', (await page.title()).startsWith('Demo · '), await page.title());
+    const note = page.locator('.notice', { hasText: 'Live demo on made-up data' });
+    await note.waitFor({ timeout: 8000 });
+    check('alone: a notice says so, with the way to /demo/', (await note.locator('a[data-part="link"]').getAttribute('href')) === '/vaporos/demo/');
+    await page.screenshot({ path: join(REPORT, 'shots', 'alone-390.png') });
+    await page.waitForTimeout(5000);
+    check('alone: the notice stays until it is dismissed', await note.isVisible());
+    await note.locator('[data-part="close"]').click();
+    await page.locator('.tab[data-tab="devices"]').click();
+    await page.waitForURL(/\/demo\/ui\/devices/, { timeout: 10000 });
+    await booted(page);
+    await page.waitForTimeout(1000);
+    check('alone: dismissed, it stays away on the next page, and the title still says Demo', (await note.count()) === 0 && (await page.title()).startsWith('Demo · '), await page.title());
     await ctx.close();
   });
 
