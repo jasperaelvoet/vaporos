@@ -10,8 +10,9 @@
   .pwr .rack:first-child { padding-top: 0; }
 
   /* ------------------------------------------------------ the heat level */
-  .pwr-state { display: grid; border-radius: var(--radius-3xl); background: var(--color-surface); overflow: hidden; }
-  .pwr-vf { position: relative; height: 8.75rem; background: var(--color-h0); isolation: isolate; overflow: hidden; }
+  .pwr-state { display: grid; border-radius: var(--radius-3xl); background: var(--color-surface); }
+  /* the art clips itself to the card's corners; the card never clips words */
+  .pwr-vf { position: relative; height: 8.75rem; border-radius: var(--radius-3xl) var(--radius-3xl) 0 0; background: var(--color-h0); isolation: isolate; overflow: hidden; }
   .pwr-vf .heat-field { z-index: -1; }
   .pwr-state .src-core { opacity: calc(0.1 + var(--p-heat, 0.3) * 0.88); transform: scale(calc(0.6 + var(--p-heat, 0.3) * 0.62)); }
   .pwr-state .src-plume { opacity: calc(var(--p-heat, 0.3) * 0.6); transform: scale(calc(0.7 + var(--p-heat, 0.3) * 0.5)); }
@@ -55,7 +56,7 @@
   .pwr-detail { width: 100%; margin: 0; max-width: 34em; color: var(--color-ink-2); }
   .pwr-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .pwr-actions:not(:has(> :not([hidden]))) { display: none; }
-  .pwr-actions .btn { margin-top: 0.25rem; }
+  .pwr-actions .btn { max-width: 100%; margin-top: 0.25rem; white-space: normal; text-align: left; }
   .pwr-banner {
     width: 100%; margin: 0.25rem 0 0; padding: 0.75rem 0.875rem 0.75rem 1.875rem; position: relative;
     border-radius: var(--radius-lg); background: var(--color-surface-2); font-size: var(--text-md);
@@ -132,7 +133,7 @@
     .pwr-awake-rack { grid-area: awake; }
     .pwr-wol-rack { grid-area: wol; }
     .pwr-state { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
-    .pwr-vf { height: auto; min-height: 13rem; }
+    .pwr-vf { height: auto; min-height: 13rem; border-radius: var(--radius-3xl) 0 0 var(--radius-3xl); }
     .pwr-state-text { align-content: center; padding: 1.75rem 2rem; }
     .pwr-title { font-size: 2.25rem; }
     .pwr-count { font-size: 1.75rem; }
@@ -151,6 +152,7 @@
     .pwr-vf { height: 4.5rem; min-height: 0; }
     .pwr-state, .pwr-card, .pwr-banner, .pwr-preset-text, .pwr-switch, .pwr-nics, .pwr-tag, .pwr-wait, .pwr-count, .pwr-needle-label, .pwr-scale { border: 1px solid CanvasText; }
     .pwr-vf .heat-field { display: none; }
+    .pwr-tag { forced-color-adjust: none; background: Canvas; color: CanvasText; }
     .pwr-radio:checked + .pwr-preset-text, .pwr-switch-input:checked + .pwr-switch::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
     .pwr-needle::after { forced-color-adjust: none; border-top-color: Highlight; }
     .pwr-form .input:focus-visible { outline: 2px solid Highlight; }

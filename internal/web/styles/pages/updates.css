@@ -10,15 +10,11 @@
   .upd .rack:first-child { padding-top: 0; }
 
   /* ------------------------------------------------------------- status */
+  /* the heat edge, from cold up to the state's temperature, is a
+     background layer: it follows the corners without clipping the card */
   .upd-status {
-    position: relative; display: grid; justify-items: start; gap: 0.625rem; padding: 1.25rem 1rem 1rem;
-    border-radius: var(--radius-2xl); background: var(--color-surface); overflow: hidden;
-  }
-  /* the heat edge: from cold up to the state's temperature */
-  .upd-status::before {
-    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
-    background: linear-gradient(90deg, var(--color-h1), var(--state) 70%, var(--state));
-    transition: background var(--vos-dur-heat) var(--ease-out);
+    display: grid; justify-items: start; gap: 0.625rem; padding: 1.25rem 1rem 1rem; border-radius: var(--radius-2xl);
+    background: linear-gradient(90deg, var(--color-h1), var(--state) 70%) top / 100% 3px no-repeat, var(--color-surface);
   }
   .upd-badge {
     margin: 0; padding: 0.25rem 0.4375rem; border-radius: var(--radius-sm); background: var(--color-surface-2);
@@ -51,17 +47,19 @@
   .upd-banner[data-tone="danger"] { box-shadow: inset 3px 0 0 var(--color-cold); }
   .upd-banner[data-tone="danger"] .upd-banner-mark { background: var(--color-cold); }
   .upd-banner-text { margin: 0; font-size: var(--text-md); }
-  .upd-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; padding-top: 0.375rem; }
+  .upd-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; max-width: 100%; padding-top: 0.375rem; }
+  .upd-actions .btn, .upd-slot-foot .btn { max-width: 100%; white-space: normal; text-align: left; }
   .upd-status > .region-error { width: 100%; }
 
   /* ----------------------------------------------- the two copies (A/B) */
   .upd-slots { display: grid; gap: 0.5rem; }
   .upd-slot {
     position: relative; display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; min-height: 13.5rem; padding: 0.875rem;
-    border-radius: var(--radius-2xl); background: var(--color-surface); overflow: hidden; isolation: isolate;
+    border-radius: var(--radius-2xl); background: var(--color-surface); isolation: isolate;
   }
-  /* the thermal image: posterised bands rising from the foot of the card */
-  .upd-slot-art { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+  /* the thermal image: posterised bands rising from the foot of the card,
+     clipped to its corners (the card itself never clips its words) */
+  .upd-slot-art { position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden; pointer-events: none; }
   .upd-slot-art::before {
     content: ""; position: absolute; inset: 0; transform-origin: 50% 100%;
     background: radial-gradient(130% 70% at 50% 108%, var(--color-h9) 0 8%, var(--color-h8) 8% 16%, var(--color-h7) 16% 25%, var(--color-h6) 25% 34%,
@@ -157,14 +155,15 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .upd-status::before, .upd-slot-art::before, .upd-switch, .upd-switch::before { transition: none; }
+    .upd-slot-art::before, .upd-switch, .upd-switch::before { transition: none; }
     .upd-pip { animation: none; }
   }
 
   @media (forced-colors: active) {
     .upd .btn, .upd .input { border: 1px solid ButtonText; }
     .upd-status, .upd-slot, .upd-card, .upd-banner, .upd-badge, .upd-chip, .upd-switch, .upd-slot-foot { border: 1px solid CanvasText; }
-    .upd-slot-art, .upd-status::before { display: none; }
+    .upd-slot-art { display: none; }
+    .upd-badge { forced-color-adjust: none; background: Canvas; color: CanvasText; }
     .upd-switch-input:checked + .upd-switch::before { forced-color-adjust: none; background: Highlight; }
     .upd-channel .input:focus-visible { outline: 2px solid Highlight; }
   }
