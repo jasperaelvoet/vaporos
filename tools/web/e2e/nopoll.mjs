@@ -32,17 +32,29 @@ const paths = list(args.path || args.paths);
 if (!paths.length) paths.push(...APP_TOPICS[uiName].map((t) => ROUTES[uiName][t]).filter((p, i, all) => all.indexOf(p) === i));
 const allowedAfterLoad = [/\/api\/v1\/events(\?|$)/, /\/api\/v1\/ping(\?|$)/];
 
-// probe watches one signed-in page from its load for the run's time.
-async function probe(browser, s, path) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+// session signs in once per server (sign-in is rate limited, so the pages
+// probed side by side share one session, as tabs do) and returns its state.
+async function session(browser, s) {
+  const context = await browser.newContext();
   try {
-    await context.addInitScript(INIT);
     const login = await context.newPage();
     await login.goto(`${s.origin}/login`);
-    await login.evaluate(() =>
-      fetch('/api/v1/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'vaporvapor' }) }),
-    );
-    await login.close();
+    const status = await login.evaluate(async () => {
+      const r = await fetch('/api/v1/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'vaporvapor' }) });
+      return r.status;
+    });
+    if (status !== 200) throw new Error(`sign-in answered ${status}`);
+    return await context.storageState();
+  } finally {
+    await context.close();
+  }
+}
+
+// probe watches one signed-in page from its load for the run's time.
+async function probe(browser, s, path, storageState) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, storageState });
+  try {
+    await context.addInitScript(INIT);
     const page = await context.newPage();
     if (args.clock) await page.clock.install();
     const requests = [];
@@ -83,7 +95,8 @@ try {
   for (const name of presets) {
     const s = await startServer({ bin, p: preset(name), ui: uiName, logDir: join(out, 'servers'), stateDir: join(out, 'state', slug(name)) });
     try {
-      const runs = await Promise.all(paths.map((p) => probe(browser, s, p).catch((err) => ({ path: p, problems: [`harness: ${String(err?.message ?? err).split('\n')[0]}`] }))));
+      const state = await session(browser, s);
+      const runs = await Promise.all(paths.map((p) => probe(browser, s, p, state).catch((err) => ({ path: p, problems: [`harness: ${String(err?.message ?? err).split('\n')[0]}`] }))));
       for (const r of runs) {
         report.runs.push({ preset: name, ...r });
         const passive = r.passive?.length ? `; passive: ${r.passive.join(', ')}` : '';
