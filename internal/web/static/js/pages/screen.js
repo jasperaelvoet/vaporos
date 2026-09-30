@@ -1,8 +1,6 @@
-// pages/screen.js: Screen (spec-cc-screens §5). This module paints Right now,
-// the page's first thing; screen-more.js, fetched alongside, runs the cards
-// below it. The page asks /display, /sunshine and /sunshine/settings once;
-// then the shell's passive /status refreshes (which carry GET /display
-// whole) keep the display current.
+// pages/screen.js: Screen (spec-cc-screens §5). This paints Right now;
+// screen-more.js, fetched alongside, the cards below. After the first
+// reads, the shell's passive /status (GET /display whole) keeps it current.
 
 import { api, errorText } from '../core/api.js';
 import { byId, cloneTpl, h, part, setText } from '../core/dom.js';
@@ -28,7 +26,7 @@ export function settle(el) {
   settleMain();
 }
 
-// cardError shows a card's inline error (R3): <prefix>-error with its text.
+// cardError: a card's inline error (R3).
 export async function cardError(prefix, err, lead) {
   const text = await errorText(err);
   byId(`${prefix}-error`).hidden = false;
@@ -42,7 +40,7 @@ export function session() {
 
 export const streaming = () => (S.display && S.display.state === 'streaming') || !!(S.sunshine && S.sunshine.streaming) || !!session();
 
-// nowModel is Right now (§5.2): the state, its words and the shape's mode.
+// Right now (§5.2): the state, its words and the shape's mode.
 function nowModel(d) {
   if (d.profile === 'none') return { state: 'fault', title: 'No supported graphics card', detail: 'Streaming needs an AMD Radeon GPU. The welcome screen still works.' };
   const mode = d.current || '';
@@ -72,7 +70,7 @@ export function renderNow(d) {
   const label = part(art, 'label');
   label.textContent = m.label || '';
   label.hidden = !m.label;
-  // A new state stretches its words into its cut (styles/pages/screen.css).
+  // A new state stretches its words into its cut.
   const title = byId('now-title');
   if (shownState !== m.state || title.textContent !== m.title) {
     const fresh = title.cloneNode(false);
@@ -116,8 +114,8 @@ function renderPorts(d) {
   setText('layers', LAYERS[n] || `${n} layers: a game draws on its own layer, and the picture may freeze`);
 }
 
-// views are the other cards' renderers (screen-more.js); they run only when
-// the display changed, so a focused control stays put.
+// The other cards (screen-more.js) render only when the display changed,
+// so a focused control stays put.
 export const views = [renderPorts];
 let shown = '';
 

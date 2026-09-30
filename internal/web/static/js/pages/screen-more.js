@@ -60,6 +60,7 @@ function renderSettings(s, force) {
   if ([...box.querySelectorAll('input')].map((r) => r.value).join() !== enc.join()) {
     box.replaceChildren(...enc.map((v) => h('label', { class: 'scr-option', for: `q-enc-${v}` },
       h('input', { class: 'scr-radio', type: 'radio', name: 'encoder', id: `q-enc-${v}`, value: v }),
+      h('span', { class: 'scr-dot', 'aria-hidden': 'true' }),
       h('span', { class: 'scr-option-name', text: ENCODERS[v] || v }))));
   }
   for (const r of box.querySelectorAll('input')) r.checked = r.value === s.encoder;
