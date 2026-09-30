@@ -29,7 +29,7 @@ var logoDrawings = []struct{ id, goName, tsName, doc string }{
 	{"mono", "MarkMono", "mono", "the one-colour mark: the core V in currentColor"},
 	{"wordmark", "Wordmark", "wordmark", "Vapor in the hot cut (currentColor), OS in the cold cut in smoke"},
 	{"icon", "AppIcon", "icon", "the 512 app icon: the tile, the far-field isotherms and the full four-band mark"},
-	{"icon-small", "AppIconSmall", "iconSmall", "the app icon for 64 px and below: two rings and the compact mark"},
+	{"icon-small", "AppIconSmall", "iconSmall", "the app icon for 64 px and below: the tile, one ring and the compact mark"},
 }
 
 // logoSym is one drawing of logo.svg: a nested <svg id viewBox>.

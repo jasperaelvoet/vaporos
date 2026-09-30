@@ -106,7 +106,7 @@ func nextLogoPartial(syms map[string]*logoSym) string {
 }
 
 func legacyLogoPartial(syms map[string]*logoSym) string {
-	return partialHeader + `  The legacy UI's logo: the small app icon (the tile, two isotherms and the compact
+	return partialHeader + `  The legacy UI's logo: the small app icon (the tile, one isotherm and the compact
   mark), sized and rounded by the legacy stylesheet's .logo rules. No ids. */ -}}
 {{define "logo"}}` + inlineSVG(syms["icon-small"], "logo", 32, 32) + `{{end}}
 `
