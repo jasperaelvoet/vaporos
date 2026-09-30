@@ -1,7 +1,8 @@
 'use client';
 // The nav below 901 px: a <details> disclosure, so it opens without
 // JavaScript too. With it, the menu closes on Escape (focus back on the
-// button), on a click outside, and after a link is followed.
+// button), on a click outside, when focus moves past it, and after a link is
+// followed.
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { LinkItem } from '@/content/types';
@@ -33,11 +34,20 @@ export function MobileMenu({ items, label, navLabel, footer }: { items: readonly
     const onDown = (e: PointerEvent) => {
       if (d.open && !d.contains(e.target as Node)) close();
     };
+    // Tabbing out of the open panel closes it, so focus never lands on a link
+    // the panel covers (WCAG 2.4.11). relatedTarget is null when focus leaves
+    // the page (another window), which keeps the menu as it was.
+    const onFocusOut = (e: FocusEvent) => {
+      const to = e.relatedTarget as Node | null;
+      if (d.open && to && !d.contains(to)) close();
+    };
     document.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onDown);
+    d.addEventListener('focusout', onFocusOut);
     return () => {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('pointerdown', onDown);
+      d.removeEventListener('focusout', onFocusOut);
     };
   }, []);
 
