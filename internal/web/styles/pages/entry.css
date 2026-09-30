@@ -1,0 +1,116 @@
+/* Sign-in and first-run setup (spec-cc-screens §13, §14, MASTER-PLAN §3.5
+   C5) in REDLINE's look, on the shell's bare page (components.css .bare,
+   .entry, forms, buttons); the installer wizard adds install.css.
+     .evf       a thermal viewfinder of this PC: the heat field, corner
+                brackets and, on an ash plate, the address with the handshake
+                mark the screen connected to the PC draws next to it. Its
+                temperature is --heat (0-1), set per moment by
+                pages/entry-kit.js: standby-cool at the sign-in and the setup
+                code; a wrong password or code turns it cold. data-warming
+                makes it heat fast; it always cools slowly. On desktops it
+                fills the other half of the screen, as the TV's heat does.
+     .ent-code  the setup code in the panel the TV draws it in: a white-hot
+                rim, because it is what you touch.
+   State lives in data-* and aria-* attributes; numbers arrive as custom
+   properties through the CSSOM. */
+
+@layer components {
+  /* -------------------------------------------------------- the viewfinder */
+  .evf {
+    --heat: 0.2;
+    position: relative; display: grid; align-content: end; justify-items: start; gap: 0.5rem;
+    min-height: 9.5rem; padding: 0.875rem; border-radius: var(--radius-3xl);
+    overflow: hidden; isolation: isolate; background: var(--color-h0);
+  }
+  .evf[data-show="false"] { display: none; }
+  .evf .heat-field { z-index: -1; }
+  .evf .src-core { opacity: calc(0.18 + var(--heat) * 0.8); transform: scale(calc((0.8 + var(--heat) * 0.46) * var(--grow, 1))); }
+  .evf .src-plume { opacity: calc(var(--heat) * 0.62); transform: scale(calc((0.86 + var(--heat) * 0.34) * var(--grow, 1))); }
+  .evf .src-floor { opacity: calc(max(0, var(--heat) - 0.45) * 0.6); }
+  .evf :is(.src-core, .src-plume) { translate: 36px -46px; }
+  .evf[data-warming] .src { transition-duration: var(--vos-dur-heat); }
+  .evf:is([data-heat="cold"], [data-heat="failed"]) .field-heat { filter: url(#f-cold); }
+  .evf-corner { position: absolute; width: 1rem; height: 1rem; border: 0 solid rgb(243 238 231 / 0.5); pointer-events: none; }
+  .evf-corner[data-c="tl"] { left: 0.625rem; top: 0.625rem; border-left-width: 1.5px; border-top-width: 1.5px; }
+  .evf-corner[data-c="tr"] { right: 0.625rem; top: 0.625rem; border-right-width: 1.5px; border-top-width: 1.5px; }
+  .evf-corner[data-c="bl"] { left: 0.625rem; bottom: 0.625rem; border-left-width: 1.5px; border-bottom-width: 1.5px; }
+  .evf-corner[data-c="br"] { right: 0.625rem; bottom: 0.625rem; border-right-width: 1.5px; border-bottom-width: 1.5px; }
+  .evf-id {
+    display: flex; align-items: center; gap: 0.75rem; max-width: 100%; margin: 0 0 0 0.375rem;
+    padding: 0.375rem 0.75rem 0.375rem 0.375rem; border-radius: var(--radius-lg); background: rgb(0 0 4 / 0.86);
+  }
+  .evf-id .handshake { box-shadow: 0 0 0 1px var(--color-line); }
+  .evf-who { display: grid; gap: 0.125rem; min-width: 0; }
+  .evf-addr { font-size: var(--text-sm); font-weight: 500; overflow-wrap: anywhere; }
+  .evf-scheme { color: var(--color-ink-2); }
+  .evf-match { color: var(--color-ink-2); font-size: var(--text-xs); }
+
+  /* -------------------------------------------------- the setup code panel */
+  .ent-code {
+    display: grid; gap: 0.125rem; padding: 0.625rem 1rem 0.375rem; border-radius: var(--radius-xl);
+    background: var(--color-surface); box-shadow: inset 0 0 0 1.5px var(--color-accent);
+  }
+  .ent-code:focus-within { box-shadow: inset 0 0 0 2.5px var(--color-accent), 0 0 0 4px rgb(252 255 164 / 0.16); }
+  .ent-code:has([aria-invalid="true"]) { box-shadow: inset 0 0 0 2.5px var(--color-cold); }
+  .ent-code-label { color: var(--color-ink-2); font-size: var(--text-sm); }
+  .ent-code-input {
+    width: 100%; min-height: 3.25rem; padding: 0; border: 0; background: transparent; color: var(--color-ink);
+    font: 500 clamp(1.625rem, 8.5vw, 2.25rem) / 1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .ent-code-input:focus-visible { outline: none; box-shadow: inset 0 -2px 0 var(--color-accent); }
+  .ent-code-input::placeholder { color: var(--color-ink-3); text-transform: none; }
+
+  /* ------------------------------------------- password, help, errors */
+  .ent-pw { position: relative; }
+  .ent-pw .input { padding-right: 3.25rem; }
+  .ent-reveal {
+    position: absolute; right: 0.125rem; top: 50%; translate: 0 -50%; display: grid; place-items: center;
+    width: 2.75rem; height: 2.75rem; border: 0; border-radius: var(--radius-lg); background: transparent;
+    color: var(--color-ink-2); cursor: pointer;
+  }
+  .ent-reveal:hover, .ent-reveal[aria-pressed="true"] { color: var(--color-ink); }
+  .ent-reveal .icon { width: 1.25rem; height: 1.25rem; }
+  .ent-reveal::after {
+    content: ""; position: absolute; width: 1.375rem; height: 1.5px; border-radius: 1px; background: currentColor;
+    rotate: -45deg; scale: 0 1; transition: scale var(--vos-dur-fast) var(--ease-out);
+  }
+  .ent-reveal[aria-pressed="true"]::after { scale: 1 1; }
+  .ent-help { border-radius: var(--radius-2xl); background: var(--color-surface); }
+  .ent-help summary {
+    display: flex; align-items: center; gap: 0.625rem; min-height: 2.75rem; padding: 0 1rem;
+    font-size: var(--text-md); font-weight: 600; cursor: pointer; list-style: none;
+  }
+  .ent-help summary::-webkit-details-marker { display: none; }
+  .ent-help summary::before {
+    content: ""; width: 0.375rem; height: 0.375rem; border: solid currentColor; border-width: 0 1.5px 1.5px 0;
+    rotate: -45deg; transition: rotate var(--vos-dur-fast) var(--ease-out);
+  }
+  .ent-help[open] summary::before { rotate: 45deg; }
+  .ent-help p { margin: 0; padding: 0 1rem 1rem; color: var(--color-ink-2); font-size: var(--text-md); }
+  .btn[data-wait] { font-variant-numeric: tabular-nums; }
+
+  /* Desktops: as on the TV's installer screen, the words stay on the cool
+     side and the PC's heat fills the other half. */
+  @media (min-width: 64rem) {
+    html:is([data-page="login"], [data-page="setup"]) .bare { margin: 0 0 0 max(3rem, calc(25vw - 13.5rem)); padding-top: calc(4.5rem + env(safe-area-inset-top)); }
+    .evf, .evf[data-show="false"] {
+      position: fixed; top: 1rem; right: 1rem; bottom: 1rem; left: calc(50% + 0.5rem); z-index: 0;
+      display: grid; align-content: end; min-height: 0; padding: 2rem; border-radius: 1.75rem;
+    }
+    .evf { --grow: 1.3; }
+    .evf :is(.src-core, .src-plume) { translate: -60px 0; }
+    .evf-corner { width: 1.5rem; height: 1.5rem; }
+    .evf-corner[data-c="tl"], .evf-corner[data-c="bl"] { left: 1rem; }
+    .evf-corner[data-c="tr"], .evf-corner[data-c="br"] { right: 1rem; }
+    .evf-corner[data-c="tl"], .evf-corner[data-c="tr"] { top: 1rem; }
+    .evf-corner[data-c="bl"], .evf-corner[data-c="br"] { bottom: 1rem; }
+    .evf-id .handshake { width: 3rem; height: 3rem; }
+    .evf-addr { font-size: var(--text-base); }
+  }
+
+  @media (forced-colors: active) {
+    .evf, .evf-id, .ent-code, .ent-help { border: 1px solid CanvasText; }
+    .bare .btn { border: 1px solid ButtonText; }
+    .evf .heat-field { forced-color-adjust: none; }
+  }
+}

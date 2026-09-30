@@ -1,14 +1,36 @@
-{{- /* A working stub from the shell (C0b) until the entry pages' owner (C5)
-  replaces it: sign in with the admin password. */ -}}
+{{- /*
+  Sign in (spec-cc-screens §13) in REDLINE's look. Under the page title, a
+  small thermal viewfinder of this PC holds its address with the handshake
+  mark the screen connected to the PC draws next to the same address
+  (MASTER-PLAN §4.4), so a visitor can tell which PC they are signing in
+  to. The field is standby-cool; a wrong password turns it cold. The form
+  renders its submit button disabled until the script has asked
+  /auth/me (R10), so Enter can never send the password as a GET.
+  pages/login.js reads the ids here; styles/pages/entry.css draws them.
+*/ -}}
 {{define "content"}}
-<form class="entry" id="login-form" novalidate>
-  <p class="entry-lead" id="login-lead">Enter the admin password you chose when you set up VaporOS.</p>
-  <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
-  <div class="field">
-    <label class="field-label" for="login-password">Password</label>
-    <input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required aria-describedby="login-error">
+<div class="entry">
+  <div class="evf" id="login-vf" data-heat="standby">
+    <svg class="heat-field" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="520" fill="#000"/><ellipse class="src src-floor" cx="210" cy="430" rx="330" ry="120"/><ellipse class="src src-plume" cx="288" cy="150" rx="200" ry="150"/><ellipse class="src src-core" cx="276" cy="212" rx="128" ry="104"/></g></svg>
+    <span class="evf-corner" data-c="tl" aria-hidden="true"></span><span class="evf-corner" data-c="tr" aria-hidden="true"></span><span class="evf-corner" data-c="bl" aria-hidden="true"></span><span class="evf-corner" data-c="br" aria-hidden="true"></span>
+    <p class="evf-id">{{handshake .Hostname}}<span class="evf-who"><span class="evf-addr mono"><span class="evf-scheme">http://</span>{{.Hostname}}.local</span><span class="evf-match">The PC's screen shows the same mark.</span></span></p>
   </div>
-  <p class="form-error" id="login-error" role="alert"></p>
-  <button class="btn primary wide" type="submit" disabled>Sign in</button>
-</form>
+  <p class="entry-lead" id="login-lead">Enter the admin password you chose when you set up VaporOS.</p>
+  <form class="entry" id="login-form" novalidate>
+    <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
+    <div class="field">
+      <label class="field-label" for="login-password">Password</label>
+      <div class="ent-pw">
+        <input class="input" id="login-password" name="password" type="password" autocomplete="current-password" autofocus required aria-describedby="login-error">
+        <button class="ent-reveal" type="button" aria-controls="login-password" aria-pressed="false" aria-label="Show password" data-reveal>{{icon "eye"}}</button>
+      </div>
+    </div>
+    <p class="form-error" id="login-error" role="alert"></p>
+    <button class="btn primary wide" id="login-submit" type="submit" disabled>Sign in</button>
+  </form>
+  <details class="ent-help" id="login-forgot">
+    <summary>Forgot the password?</summary>
+    <p>Reinstall from the VaporOS USB stick and choose Repair. It keeps your games and settings and lets you set a new password.</p>
+  </details>
+</div>
 {{end}}

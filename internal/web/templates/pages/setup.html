@@ -1,51 +1,228 @@
-{{- /* A stub from the shell (C0b) until the entry pages' owner (C5)
-  replaces it: the first-run password form on an installed system, the
-  installer wizard's frame on the ISO. */ -}}
+{{- /*
+  /setup (spec-cc-screens §14, §15) in REDLINE's look: the first-run admin
+  password on an installed system (pages/setup.js), or on the live ISO the
+  installer wizard (pages/install.js, pages/install-run.js). Both show the
+  setup code in the panel the screen connected to the PC draws it in (a
+  white-hot rim), and this PC's address with its handshake mark
+  (MASTER-PLAN §4.4). The wizard's steps are panes; the one the visitor is
+  on is the only one shown. The drive list is a data region with skeleton
+  cards until the probe answers. The viewfinder is the PC's temperature:
+  standby at the code, heating step by step while it installs, white-hot
+  when done, an ember while it restarts. Choices survive a reload in this
+  tab (sessionStorage), never the password. styles/pages/entry.css.
+*/ -}}
 {{define "content"}}
 {{if .Installer}}{{template "wizard" .}}{{else}}{{template "first-run" .}}{{end}}
 {{end}}
 
 {{define "setup-code-field"}}
-<div class="field">
-  <label class="field-label" for="setup-code">Setup code</label>
-  <input class="input mono" id="setup-code" name="code" value="{{.Code}}" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-EFGH" aria-describedby="setup-code-hint">
-  <p class="field-hint" id="setup-code-hint">It's on the screen connected to the VaporOS PC. Scanning the QR code there fills it in for you.</p>
+<div class="ent-code">
+  <label class="ent-code-label" for="setup-code">Setup code</label>
+  <input class="ent-code-input" id="setup-code" name="code" value="{{.Code}}" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" aria-describedby="setup-code-hint setup-code-error">
+</div>
+<p class="field-hint" id="setup-code-hint">{{if .Installer}}Scanning the QR code on that screen fills it in.{{else}}It's on the screen connected to the PC. Scanning the QR code there fills it in.{{end}}</p>
+<p class="field-error" id="setup-code-error" hidden></p>
+{{end}}
+
+{{define "evf-art"}}
+  <svg class="heat-field" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="field-heat"><rect x="-60" y="-60" width="520" height="520" fill="#000"/><ellipse class="src src-floor" cx="210" cy="430" rx="330" ry="120"/><ellipse class="src src-plume" cx="288" cy="150" rx="200" ry="150"/><ellipse class="src src-core" cx="276" cy="212" rx="128" ry="104"/></g></svg>
+  <span class="evf-corner" data-c="tl" aria-hidden="true"></span><span class="evf-corner" data-c="tr" aria-hidden="true"></span><span class="evf-corner" data-c="bl" aria-hidden="true"></span><span class="evf-corner" data-c="br" aria-hidden="true"></span>
+{{- end}}
+
+{{define "evf-id"}}<p class="evf-id">{{handshake .Hostname}}<span class="evf-who"><span class="evf-addr mono"><span class="evf-scheme">http://</span>{{.Hostname}}.local</span><span class="evf-match">The PC's screen shows the same mark.</span></span></p>{{end}}
+
+{{define "first-run"}}
+<div class="entry">
+  <div class="evf" id="setup-vf" data-heat="standby">
+    {{template "evf-art"}}
+    {{template "evf-id" .}}
+  </div>
+  <form class="entry" id="first-run" novalidate>
+    <p class="entry-lead">Choose the admin password you'll use to manage this PC from your phone or computer.</p>
+    <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
+    {{if .NeedCode}}<div class="field">{{template "setup-code-field" .}}</div>{{end}}
+    <div class="field">
+      <label class="field-label" for="setup-password">New password</label>
+      <div class="ent-pw">
+        <input class="input" id="setup-password" type="password" autocomplete="new-password" required aria-describedby="setup-password-hint setup-password-error">
+        <button class="ent-reveal" type="button" aria-controls="setup-password" aria-pressed="false" aria-label="Show password" data-reveal>{{icon "eye"}}</button>
+      </div>
+      <p class="field-hint" id="setup-password-hint">At least 8 characters.</p>
+      <p class="field-error" id="setup-password-error" hidden></p>
+    </div>
+    <div class="field">
+      <label class="field-label" for="setup-password2">Repeat password</label>
+      <div class="ent-pw">
+        <input class="input" id="setup-password2" type="password" autocomplete="new-password" required aria-describedby="setup-password2-error">
+        <button class="ent-reveal" type="button" aria-controls="setup-password2" aria-pressed="false" aria-label="Show repeated password" data-reveal>{{icon "eye"}}</button>
+      </div>
+      <p class="field-error" id="setup-password2-error" hidden></p>
+    </div>
+    <p class="form-error" id="setup-error" role="alert"></p>
+    <button class="btn primary wide" id="setup-submit" type="submit" disabled>Save and continue</button>
+  </form>
 </div>
 {{end}}
 
-{{define "first-run"}}
-<form class="entry" id="first-run" novalidate>
-  <p class="entry-lead">Choose the admin password you'll use to manage this PC from your phone or computer.</p>
-  <input class="sr-only" type="text" name="username" value="admin" autocomplete="username" tabindex="-1" aria-hidden="true" aria-label="Username">
-  {{if .NeedCode}}{{template "setup-code-field" .}}{{end}}
-  <div class="field">
-    <label class="field-label" for="setup-password">New password</label>
-    <input class="input" id="setup-password" name="password" type="password" autocomplete="new-password" required aria-describedby="setup-password-hint">
-    <p class="field-hint" id="setup-password-hint">At least 8 characters.</p>
-  </div>
-  <div class="field">
-    <label class="field-label" for="setup-password2">Repeat password</label>
-    <input class="input" id="setup-password2" type="password" autocomplete="new-password" required>
-  </div>
-  <p class="form-error" id="setup-error" role="alert"></p>
-  <button class="btn primary wide" type="submit" disabled>Save and continue</button>
-</form>
-{{end}}
-
 {{define "wizard"}}
-<section class="entry" id="wizard" aria-labelledby="wizard-title">
-  <h2 class="sr-only" id="wizard-title">Steps</h2>
-  {{template "setup-code-field" .}}
-  <div class="field">
-    <label class="field-label" for="timezone">Time zone</label>
-    <select class="input" id="timezone" name="timezone">
-      {{- range .Timezones}}
-      <optgroup label="{{.Region}}">
-        {{- range .Zones}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
-      </optgroup>
-      {{- end}}
-    </select>
+<div class="wiz" id="wizard" data-step="{{if and .NeedCode (not .Code)}}code{{else}}disk{{end}}">
+  <div class="wiz-head" id="wiz-head"{{if and .NeedCode (not .Code)}} hidden{{end}}>
+    <p class="wiz-meta mono" aria-hidden="true"><span>{{.Hostname}}.local</span><span id="wiz-count">Step 1 of 4</span></p>
+    <ol class="wiz-segs" id="stepper" aria-label="Install steps">
+      <li class="wiz-seg" data-step="disk" data-state="current" aria-current="step"><span class="wiz-seg-bar" aria-hidden="true"></span><span>Drive</span><span class="sr-only" data-part="done"></span></li>
+      <li class="wiz-seg" data-step="account"><span class="wiz-seg-bar" aria-hidden="true"></span><span>Name</span><span class="sr-only" data-part="done"></span></li>
+      <li class="wiz-seg" data-step="extras"><span class="wiz-seg-bar" aria-hidden="true"></span><span>Games</span><span class="sr-only" data-part="done"></span></li>
+      <li class="wiz-seg" data-step="confirm"><span class="wiz-seg-bar" aria-hidden="true"></span><span>Install</span><span class="sr-only" data-part="done"></span></li>
+    </ol>
   </div>
-  <p class="entry-lead" data-region="stub" aria-busy="true">The installer's steps arrive with its page.</p>
-</section>
+
+  <div class="evf" id="wiz-vf" data-heat="standby" data-size="id" data-show="{{if and .NeedCode (not .Code)}}true{{else}}false{{end}}">
+    {{template "evf-art"}}
+    <p class="evf-plates" id="vf-plates" aria-hidden="true" hidden><span class="evf-plate" id="vf-disk"></span><span class="evf-plate" id="vf-time" hidden></span></p>
+    <div id="vf-id">{{template "evf-id" .}}</div>
+    <p class="evf-big" id="vf-big" aria-hidden="true" hidden></p>
+    <div class="evf-scale" aria-hidden="true"><span class="evf-needle" id="vf-needle">setting up</span><span class="evf-ramp"></span><span class="evf-ends"><span>asleep</span><span>streaming</span></span></div>
+  </div>
+
+  <form class="wiz-pane" data-step="code" id="code-form" novalidate aria-labelledby="code-title"{{if not (and .NeedCode (not .Code))}} hidden{{end}}>
+      <h2 class="wiz-title" id="code-title" tabindex="-1">Enter the setup code</h2>
+    <p class="wiz-lead">It's on the screen connected to the PC. It keeps others on your network from installing over it.</p>
+    <div class="field">{{template "setup-code-field" .}}</div>
+    <p class="form-error" id="code-error" role="alert"></p>
+    <div class="wiz-nav"><button class="btn primary" id="code-submit" type="submit" disabled>Continue</button></div>
+  </form>
+
+  <section class="wiz-pane" data-step="disk" aria-labelledby="disk-title"{{if and .NeedCode (not .Code)}} hidden{{end}}>
+    <h2 class="wiz-title" id="disk-title" tabindex="-1">Where should VaporOS go?</h2>
+    <p class="wiz-lead">Pick the drive to install on. The USB stick you started from isn't listed.</p>
+    <div class="wiz-note" data-tone="fault" id="disk-fault" hidden>{{icon "alert"}}<p id="disk-fault-text"></p></div>
+    <div class="wiz-note" id="gpu-note" hidden>{{icon "monitor"}}<p id="gpu-text"></p></div>
+    <p class="wiz-version" id="disk-version" hidden></p>
+    <fieldset class="wiz-set" aria-labelledby="disk-title">
+      <div class="wiz-list" id="disk-list" data-region="disks" aria-busy="true">
+        <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-short"></span></div>
+        <div class="skel-card" aria-hidden="true"><span class="skel skel-line"></span><span class="skel skel-short"></span></div>
+      </div>
+    </fieldset>
+    <p class="field-error" id="disk-error" role="alert"></p>
+    <div class="wiz-nav">
+      <button class="btn ghost" id="disk-rescan" type="button">{{icon "refresh"}}Rescan</button>
+      <button class="btn primary" id="disk-next" type="button">Next</button>
+    </div>
+  </section>
+
+  <form class="wiz-pane" data-step="account" id="account-form" novalidate aria-labelledby="account-title" hidden>
+    <h2 class="wiz-title" id="account-title" tabindex="-1">Name and password</h2>
+    <fieldset class="wiz-set" id="mode-field" hidden>
+      <legend class="wiz-legend">This drive already has VaporOS</legend>
+      <div class="wiz-list">
+        <label class="wiz-opt"><input class="wiz-opt-input" type="radio" name="mode" value="repair" checked><span class="wiz-opt-mark" aria-hidden="true"></span><span class="wiz-opt-body"><b class="wiz-opt-name">Repair</b><span class="wiz-opt-meta">Reinstall VaporOS. Games, settings and paired devices stay.</span></span></label>
+        <label class="wiz-opt"><input class="wiz-opt-input" type="radio" name="mode" value="erase"><span class="wiz-opt-mark" aria-hidden="true"></span><span class="wiz-opt-body"><b class="wiz-opt-name">Erase and install</b><span class="wiz-opt-meta">Start over. Everything on the drive is deleted.</span></span></label>
+      </div>
+    </fieldset>
+    <div class="wiz-note" id="repair-keeps" hidden>{{icon "info"}}<p>Repair keeps this PC's name and time zone. You can rename it later in System › Settings.</p></div>
+    <div class="field" id="hostname-field">
+      <label class="field-label" for="hostname">Name on your network</label>
+      <div class="wiz-affix">
+        <input class="input mono" id="hostname" name="hostname" value="vapor" required maxlength="63" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="hostname-hint hostname-error">
+        <span class="wiz-affix-text mono" aria-hidden="true">.local</span>
+      </div>
+      <p class="field-hint" id="hostname-hint">You'll open VaporOS at <b class="mono" id="host-preview">http://vapor.local</b>. Lowercase letters, digits and dashes.</p>
+      <p class="field-error" id="hostname-error" hidden></p>
+    </div>
+    <div class="field">
+      <label class="field-label" for="password">Admin password</label>
+      <div class="ent-pw">
+        <input class="input" id="password" type="password" autocomplete="new-password" required aria-describedby="password-hint password-error">
+        <button class="ent-reveal" type="button" aria-controls="password" aria-pressed="false" aria-label="Show password" data-reveal>{{icon "eye"}}</button>
+      </div>
+      <p class="field-hint" id="password-hint">At least 8 characters. You'll use it to sign in here.</p>
+      <p class="field-error" id="password-error" hidden></p>
+    </div>
+    <div class="field">
+      <label class="field-label" for="password2">Repeat password</label>
+      <div class="ent-pw">
+        <input class="input" id="password2" type="password" autocomplete="new-password" required aria-describedby="password2-error">
+        <button class="ent-reveal" type="button" aria-controls="password2" aria-pressed="false" aria-label="Show repeated password" data-reveal>{{icon "eye"}}</button>
+      </div>
+      <p class="field-error" id="password2-error" hidden></p>
+    </div>
+    <div class="wiz-nav">
+      <button class="btn ghost" type="button" data-back>{{icon "back"}}Back</button>
+      <button class="btn primary" type="submit" disabled>Next</button>
+    </div>
+  </form>
+
+  <form class="wiz-pane" data-step="extras" id="extras-form" novalidate aria-labelledby="extras-title" hidden>
+    <h2 class="wiz-title" id="extras-title" tabindex="-1">Games and time</h2>
+    <div class="field" id="timezone-field">
+      <label class="field-label" for="timezone">Time zone</label>
+      <div class="wiz-select">
+        <select class="input" id="timezone" name="timezone">
+          {{- range .Timezones}}
+          <optgroup label="{{.Region}}">
+            {{- range .Zones}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+          </optgroup>
+          {{- end}}
+        </select>
+        {{icon "chevron"}}
+      </div>
+    </div>
+    <fieldset class="wiz-set">
+      <legend class="wiz-legend">Steam libraries on other drives</legend>
+      <p class="field-hint">Keep the games you already downloaded. VaporOS mounts these drives on every start and adds them to Steam; nothing on them changes.</p>
+      <div class="wiz-list" id="library-list"></div>
+      <p class="region-empty" id="library-empty" hidden>No Steam libraries found on other drives. You can add drives later in System › Storage.</p>
+    </fieldset>
+    <div class="wiz-nav">
+      <button class="btn ghost" type="button" data-back>{{icon "back"}}Back</button>
+      <button class="btn primary" type="submit" disabled>Next</button>
+    </div>
+  </form>
+
+  <form class="wiz-pane" data-step="confirm" id="confirm-form" novalidate aria-labelledby="summary-title" hidden>
+    <h2 class="wiz-title" id="summary-title" tabindex="-1">Ready to install</h2>
+    <dl class="facts" id="summary"></dl>
+    <div class="wiz-note" id="other-vapor" hidden>{{icon "info"}}<p id="other-vapor-text"></p></div>
+    <div class="wiz-note" data-tone="danger" id="erase-warning" hidden>{{icon "alert"}}<p><b>Everything on <span id="erase-disk"></span> will be erased.</b> This can't be undone.</p></div>
+    <div class="field" id="erase-field" hidden>
+      <label class="field-label" for="erase-confirm">Type <b class="mono">ERASE</b> to confirm</label>
+      <input class="input mono" id="erase-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="erase-warning">
+    </div>
+    <p class="form-error" id="install-error" role="alert"></p>
+    <div class="wiz-nav">
+      <button class="btn ghost" type="button" data-back>{{icon "back"}}Back</button>
+      <button class="btn primary" id="install-btn" type="submit" disabled>{{icon "download"}}Install VaporOS</button>
+    </div>
+  </form>
+
+  <section class="wiz-pane" data-step="progress" aria-labelledby="progress-title" hidden>
+    <h2 class="wiz-title" id="progress-title" tabindex="-1">Installing VaporOS…</h2>
+    <p class="wiz-lead">This takes a few minutes. Keep the USB stick in and this page open.</p>
+    <div class="wiz-run">
+      <p class="wiz-run-step" id="progress-step">Getting ready</p>
+      <div class="heat-bar" id="progress-bar" role="progressbar" aria-labelledby="progress-step" aria-valuemin="0" aria-valuemax="100" data-indeterminate><i class="heat-bar-fill"></i></div>
+      <p class="wiz-msg" id="progress-message"></p>
+    </div>
+    <div class="wiz-note" data-tone="danger" id="progress-failed" hidden>{{icon "alert"}}<p><b>The install didn't finish.</b> <span id="progress-error"></span></p></div>
+    <div class="wiz-nav" id="progress-retry" hidden><button class="btn primary" id="retry-btn" type="button">Back to the summary</button></div>
+  </section>
+
+  <section class="wiz-pane" data-step="done" aria-labelledby="done-title" hidden>
+    <h2 class="wiz-title" id="done-title" tabindex="-1">VaporOS is installed</h2>
+    <ol class="wiz-done">
+      <li><b>Remove the USB stick</b> from the PC.</li>
+      <li>Press <b>Restart now</b>. VaporOS starts in about a minute.</li>
+      <li id="done-libraries" hidden>Your game drives are added to Steam by themselves, at the latest after the next restart. To use one sooner, add it in Steam: Settings → Storage → Add Drive, then choose <span id="done-library-paths"></span>.</li>
+    </ol>
+    <p class="form-error" id="reboot-error" role="alert"></p>
+    <div class="wiz-nav"><button class="btn primary" id="reboot-btn" type="button">{{icon "restart"}}Restart now</button></div>
+  </section>
+
+  <section class="wiz-pane" data-step="restart" aria-labelledby="restart-title" hidden>
+    <h2 class="wiz-title" id="restart-title" tabindex="-1">Restarting…</h2>
+    <p class="wiz-lead" id="restart-status" role="status">Waiting for VaporOS to start. This page moves on by itself.</p>
+    <p class="field-hint" id="restart-help">If it doesn't, open the address shown on the PC's screen or in your router's list of devices<span id="restart-or" hidden>, or <a class="wiz-link mono" id="restart-link" href="http://vapor.local/">http://vapor.local</a></span><span id="restart-alt" hidden>, or <a class="wiz-link mono" id="restart-ip" href="http://192.168.1.2/">http://192.168.1.2</a></span>.</p>
+  </section>
+</div>
 {{end}}
