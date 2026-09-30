@@ -140,10 +140,16 @@ func (redlineLook) column(l *layout, st State, g redlineGrid, colW, k float64) f
 	ty := brand.TVType
 	y := g.colTop
 
-	// The status, in the state's cut, one line if it can be.
+	// The status, in the state's cut, one line if it can be. When it is all
+	// the screen says ("Starting…"), it is set half as large again: the first
+	// thing a new PC shows should read from across the room.
 	if st.Status != "" {
 		fs := tvFont(ty.Status, statusCut(l))
-		lines := statusLines(fs, drawable(fs, st.Status), l.Len(g.statusPx*k), l.Len(colW))
+		spx := g.statusPx * k
+		if st.Detail == "" && st.URL == "" && st.Code == "" {
+			spx *= loneStatus
+		}
+		lines := statusLines(fs, drawable(fs, st.Status), l.Len(spx), l.Len(colW))
 		if len(lines) == 1 {
 			y += g.drop * k
 		}
@@ -195,43 +201,51 @@ func (redlineLook) column(l *layout, st State, g redlineGrid, colW, k float64) f
 		y += 14 * k
 	}
 
-	// The address: at its place, or lower when the words need the room,
-	// with the handshake mark in front of it.
+	// The address: at its place, or lower when the words need the room. A
+	// host too long to keep at least 60% of the address size on one line
+	// breaks after a hyphen or a dot onto a second line under the host; one
+	// too long even for that trades places with the IP address, which then
+	// takes the big line, so the line under it is never the larger one.
 	top := y + 64*k
 	if k == 1 {
 		top = max(top, g.addrTop[b2i(multi)])
 	}
 	if st.URL != "" {
 		ux := x0
-		if st.Hostname != "" {
-			side := 7 * float64(max(1, l.Len(16*k)))
-			l.HandshakeMark = brand.HandshakeFor(st.Hostname)
-			l.Handshake = image.Rect(l.X(x0), l.Y(top+10*k), l.X(x0)+int(side), l.Y(top+10*k)+int(side))
-			ux = x0 + side/l.S + 36*k
-			y = top + 10*k + side/l.S
-		}
-		umax := colW - (ux - x0)
+		umax := colW
 		fu := tvFont(ty.URL, "")
-		scheme, host := splitScheme(st.URL)
-		px := fitSize(fu, drawable(fu, scheme+host), l.Len(float64(ty.URL.Px)*k), l.Len(umax))
+		full := l.Len(float64(ty.URL.Px) * k)
+		addr, alt := st.URL, st.IPURL
+		scheme, parts, px := addressLines(fu, addr, full, l.Len(umax))
+		if float64(px) < longHost*float64(full) && alt != "" && alt != addr {
+			addr, alt = alt, addr
+			scheme, parts, px = addressLines(fu, addr, full, l.Len(umax))
+		}
 		base := top + 62*k
+		lead := float64(px) / l.S * 1.12
+		var sw int
 		if scheme != "" {
 			i := l.place(textItem{Role: roleURL, Text: scheme, Font: fu, Px: px, Color: p.Ink2, Dot: image.Pt(l.X(ux), l.Y(base))})
-			sw := advance(fu, px, scheme)
-			h, hpx := fit(fu, drawable(fu, host), px, l.Len(umax)-sw)
+			sw = advance(fu, px, scheme)
+			h, hpx := fit(fu, parts[0], px, l.Len(umax)-sw)
 			l.place(textItem{Role: roleURL, Text: h, Font: fu, Px: hpx, Color: p.Ink, Dot: l.Texts[i].Dot.Add(image.Pt(sw, 0))})
 		} else {
-			h, hpx := fit(fu, drawable(fu, host), px, l.Len(umax))
+			h, hpx := fit(fu, parts[0], px, l.Len(umax))
 			l.place(textItem{Role: roleURL, Text: h, Font: fu, Px: hpx, Color: p.Ink, Dot: image.Pt(l.X(ux), l.Y(base))})
 		}
+		if len(parts) > 1 {
+			base += lead
+			h, hpx := fit(fu, parts[1], px, l.Len(umax)-sw)
+			l.place(textItem{Role: roleURL, Text: h, Font: fu, Px: hpx, Color: p.Ink, Dot: image.Pt(l.X(ux)+sw, l.Y(base))})
+		}
 		y = max(y, base+0.24*float64(px)/l.S)
-		if st.IPURL != "" && st.IPURL != st.URL {
+		if alt != "" && alt != addr {
 			fo, fi := tvFont(ty.IPPrefix, ""), tvFont(ty.IP, "")
-			ib := top + 126*k
+			ib := base + 64*k
 			opx := l.Len(float64(ty.IPPrefix.Px) * k)
 			i := l.place(textItem{Role: roleIP, Text: "or", Font: fo, Px: opx, Color: p.Ink2, Dot: image.Pt(l.X(ux), l.Y(ib))})
 			ow := advance(fo, opx, "or ")
-			ip, ipx := fit(fi, drawable(fi, st.IPURL), l.Len(float64(ty.IP.Px)*k), l.Len(umax)-ow)
+			ip, ipx := fit(fi, drawable(fi, alt), l.Len(float64(ty.IP.Px)*k), l.Len(umax)-ow)
 			l.place(textItem{Role: roleIP, Text: ip, Font: fi, Px: ipx, Color: p.Ink, Dot: l.Texts[i].Dot.Add(image.Pt(ow, 0))})
 			y = max(y, ib+0.24*float64(ipx)/l.S)
 		}
@@ -239,7 +253,7 @@ func (redlineLook) column(l *layout, st State, g redlineGrid, colW, k float64) f
 
 	// The setup code, on a soot plate with a white-hot rim.
 	if st.Code != "" {
-		py := top + 184*k
+		py := max(top+184*k, y+48*k)
 		if k == 1 {
 			py = max(py, g.codeTop)
 		}
@@ -302,10 +316,15 @@ func (redlineLook) chrome(l *layout, st State, g redlineGrid) {
 	l.Signature = image.Rect(l.X(hx), l.Y(hy), l.X(hx+hw), l.Y(hy+hh))
 	barX, barW := hx+28, hw-56
 	fe := tvFont(ty.Scale, "")
-	l.addText(roleScale, brand.TVLabels.ScaleCold, fe, float64(ty.Scale.Px), p.Ink2, barX, hy+90, barW/2)
-	hot := l.addText(roleScale, brand.TVLabels.ScaleHot, fe, float64(ty.Scale.Px), p.Ink2, barX, hy+90, barW/2)
-	l.shift(hot, l.X(barX+barW)-l.Texts[hot].Dot.X-advance(fe, l.Texts[hot].Px, l.Texts[hot].Text))
-	if word, t := scaleMark(l); word != "" {
+	word, t := scaleMark(l)
+	if !nearEnd(word, t, brand.TVLabels.ScaleCold, 0) {
+		l.addText(roleScale, brand.TVLabels.ScaleCold, fe, float64(ty.Scale.Px), p.Ink2, barX, hy+90, barW/2)
+	}
+	if !nearEnd(word, t, brand.TVLabels.ScaleHot, 1) {
+		hot := l.addText(roleScale, brand.TVLabels.ScaleHot, fe, float64(ty.Scale.Px), p.Ink2, barX, hy+90, barW/2)
+		l.shift(hot, l.X(barX+barW)-l.Texts[hot].Dot.X-advance(fe, l.Texts[hot].Px, l.Texts[hot].Text))
+	}
+	if word != "" {
 		fw := tvFont(ty.ScaleLabel, "")
 		i := l.addText(roleScaleLabel, word, fw, float64(ty.ScaleLabel.Px), p.Ink, barX, hy+36, barW+24)
 		lw := float64(advance(fw, l.Texts[i].Px, word)) / l.S
@@ -323,9 +342,71 @@ func (redlineLook) chrome(l *layout, st State, g redlineGrid) {
 	sx, side := g.slot[0], g.slot[2]
 	i = l.addText(roleCaption, brand.TVLabels.QRCaption, fc, float64(ty.Caption.Px), p.Ink, sx, g.captionY+43, side-48)
 	w := advance(fc, l.Texts[i].Px, l.Texts[i].Text)
-	l.shift(i, (l.QRSlot.Min.X+l.QRSlot.Max.X)/2-w/2-l.Texts[i].Dot.X)
+	// The hostname's handshake mark leads the caption inside its plate: the
+	// mark the phone shows once it has opened this PC's address, never
+	// derived from the setup code. Seven cells a side (the 5×5 pattern and a
+	// cell of its ground around it), a whole number of pixels each.
+	var mark, gap int
+	if st.Hostname != "" {
+		mark, gap = 7*max(1, l.Len(6)), l.Len(16)
+	}
+	x := (l.QRSlot.Min.X+l.QRSlot.Max.X)/2 - (mark+gap+w)/2
+	l.shift(i, x+mark+gap-l.Texts[i].Dot.X)
 	pad := l.Len(24)
-	l.Caption = image.Rect(l.Texts[i].Dot.X-pad, l.Y(g.captionY), l.Texts[i].Dot.X+w+pad, l.Y(g.captionY+62))
+	l.Caption = image.Rect(x-pad, l.Y(g.captionY), l.Texts[i].Dot.X+w+pad, l.Y(g.captionY+62))
+	if mark > 0 {
+		my := (l.Caption.Min.Y + l.Caption.Max.Y - mark) / 2
+		l.HandshakeMark = brand.HandshakeFor(st.Hostname)
+		l.Handshake = image.Rect(x, my, x+mark, my+mark)
+	}
+}
+
+// loneStatus is how much larger a status is set when it is the only line
+// on the screen.
+const loneStatus = 1.4
+
+// longHost is the smallest share of the address size a host may be set at
+// on one line before it breaks onto two.
+const longHost = 0.6
+
+// addressLines sets an address at px (at most) in maxW pixels: its scheme,
+// its host as one line, or as two broken after a hyphen or a dot when one
+// line would fall below longHost of px, and the size they take.
+func addressLines(f *opentype.Font, addr string, px, maxW int) (scheme string, parts []string, size int) {
+	scheme, host := splitScheme(addr)
+	scheme, host = drawable(f, scheme), drawable(f, host)
+	size = fitSize(f, scheme+host, px, maxW)
+	parts = []string{host}
+	if float64(size) < longHost*float64(px) {
+		if a, b, bpx, ok := breakHost(f, scheme, host, px, maxW); ok && bpx > size {
+			parts, size = []string{a, b}, bpx
+		}
+	}
+	return scheme, parts, size
+}
+
+// breakHost splits host after a hyphen or a dot so that scheme+a and, under
+// the host, b both fit maxW at the largest size up to px; ok is false when
+// the host has nowhere to break.
+func breakHost(f *opentype.Font, scheme, host string, px, maxW int) (a, b string, size int, ok bool) {
+	for i, r := range host {
+		if (r != '-' && r != '.') || i == len(host)-1 {
+			continue
+		}
+		h1, h2 := host[:i+1], host[i+1:]
+		s := min(fitSize(f, scheme+h1, px, maxW), fitSize(f, scheme+h2, px, maxW))
+		if s > size || s == size && ok && abs(advance(f, px, h1)-advance(f, px, h2)) < abs(advance(f, px, a)-advance(f, px, b)) {
+			a, b, size, ok = h1, h2, s, true
+		}
+	}
+	return a, b, size, ok
+}
+
+// nearEnd reports whether the scale's end label (at end, 0 or 1) would
+// repeat the marker: the marker says the same word, or sits within a tenth
+// of the scale of that end.
+func nearEnd(word string, t float64, label string, end float64) bool {
+	return word == label || math.Abs(t-end) < 0.1
 }
 
 // scaleMark is the word the heat scale's marker carries and where on the
@@ -482,12 +563,11 @@ func (redlineLook) decorate(img *image.RGBA, l *layout) {
 		brand.DrawMark(img, l.Mark, map[string]color.Color{"line": brand.TVCanvas})
 	}
 
-	// The handshake: the hostname's 5×5 cells on its ground, as the phone
-	// shows it after the scan, in a hairline frame.
+	// The handshake: the hostname's 5×5 cells on a tile of its ground, as
+	// the phone shows it after the scan, inside the caption's plate.
 	if r := l.Handshake; !r.Empty() {
 		hs := l.HandshakeMark
-		fillRect(img, r.Inset(-max(1, l.Len(3))), opaque(brand.TVLine))
-		fillRect(img, r, opaque(hs.Ground))
+		blendRound(img, r, float64(r.Dx()/7), opaque(hs.Ground), 1)
 		cell := r.Dx() / 7
 		for y, row := range hs.Cells {
 			for x, on := range row {

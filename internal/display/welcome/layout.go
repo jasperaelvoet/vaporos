@@ -103,7 +103,7 @@ type layout struct {
 	Module    int             // pixels per module
 	QRFrame   image.Rectangle // decoration around the card; it contains the card and never paints inside it
 
-	Handshake     image.Rectangle // the hostname's handshake mark (brand.HandshakeFor), next to the address
+	Handshake     image.Rectangle // the hostname's handshake mark (brand.HandshakeFor), leading the QR caption in its plate
 	HandshakeMark brand.Handshake
 	Caption       image.Rectangle   // the plate under the QR caption
 	Plates        []image.Rectangle // plates the look puts behind lines that would sit on too much heat

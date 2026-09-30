@@ -195,9 +195,9 @@ func TestStatusCutAndBreak(t *testing.T) {
 	}
 }
 
-// The handshake mark next to the address is the hostname's (brand's
-// vectors), drawn cell for cell in its two colours, and never comes from
-// the setup code.
+// The handshake mark leads the QR caption inside its plate, before the
+// words; it is the hostname's (brand's vectors), drawn cell for cell in its
+// two colours, and never comes from the setup code.
 func TestHandshakeMark(t *testing.T) {
 	fx := loadFixtures(t)
 	for _, name := range []string{"ready", "installer-ready"} {
@@ -208,14 +208,14 @@ func TestHandshakeMark(t *testing.T) {
 			if l.Handshake.Empty() || l.HandshakeMark != hs || l.Handshake.Dx() != l.Handshake.Dy() || l.Handshake.Dx()%7 != 0 {
 				t.Fatalf("%s@%s: handshake %v %+v", name, sizeName(sz), l.Handshake, l.HandshakeMark)
 			}
-			var url image.Rectangle
+			var cap image.Rectangle
 			for _, it := range l.Texts {
-				if it.Role == roleURL {
-					url = url.Union(it.Rect)
+				if it.Role == roleCaption {
+					cap = it.Rect
 				}
 			}
-			if l.Handshake.Max.X >= url.Min.X || l.Handshake.Max.Y < url.Min.Y || l.Handshake.Min.Y > url.Max.Y {
-				t.Errorf("%s@%s: handshake %v is not beside the address %v", name, sizeName(sz), l.Handshake, url)
+			if !l.Handshake.In(l.Caption) || l.Handshake.Max.X >= cap.Min.X || l.Handshake.Max.Y < cap.Min.Y || l.Handshake.Min.Y > cap.Max.Y {
+				t.Errorf("%s@%s: handshake %v is not before the caption %v inside its plate %v", name, sizeName(sz), l.Handshake, cap, l.Caption)
 			}
 			img := paint(l, true)
 			cell := l.Handshake.Dx() / 7
