@@ -1094,6 +1094,9 @@ export class Engine {
         sun.pending_pairing = ps.length > 0;
         break;
       }
+      case 'sunshine.state':
+        sun.running = m.running === true;
+        break;
       case 'update.state': {
         const up = this.doc('update');
         for (const k of UPDATE_STATE_KEYS) {
@@ -2218,7 +2221,7 @@ const SUNSHINE = [
   ['POST', '/sunshine/restart', AUTHED, function () {
     // Sunshine comes back: its API answers again.
     for (const k of Object.keys(this.w.errs)) if (k.includes(' /sunshine')) delete this.w.errs[k];
-    this.doc('sunshine').running = true;
+    this.emit('sunshine.state', { running: true });
     return {};
   }],
   ['POST', '/sunshine/end-stream', AUTHED, function () {

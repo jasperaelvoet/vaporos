@@ -256,6 +256,7 @@ systemd-boot counting does the rest.
 | `session.end` | `{}` |
 | `pairing.pending` | `{name?}` |
 | `pairing.state` | `{pairings:[{id,name,address}]}`: who waits for a PIN (as in GET `/sunshine` `pairings`), sent after vosd's first poll of Sunshine and whenever the list changes. An empty list ends any pairing prompt; Sunshine not answering counts as an empty list |
+| `sunshine.state` | `{running}`: whether `vos-sunshine.service` is active (as in GET `/sunshine` `running`), sent after vosd's first poll of Sunshine and whenever it starts or stops |
 | `display.changed` | `{}` |
 | `power.idle` | `{idle_seconds,shutdown_in,busy}` (as in GET `/power`; `busy` is null while idle; sent every 15 s while idle and whenever the busy reason changes) |
 | `system.message` | `{level,text}` (`level`: `info`, `warning` or `error`) |

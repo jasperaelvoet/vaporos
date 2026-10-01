@@ -303,6 +303,46 @@ func TestPollPublishesPairingState(t *testing.T) {
 	}
 }
 
+func TestPollPublishesRunningState(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	var active atomic.Bool
+	h.s.unitActive = func(context.Context) bool { return active.Load() }
+	h.s.userSystemctl = func(context.Context, ...string) error { return errors.New("no manager yet") }
+	var seen int
+	next := func() []string {
+		h.rec.mu.Lock()
+		defer h.rec.mu.Unlock()
+		var out []string
+		for _, e := range h.rec.events[seen:] {
+			if e.Topic == "sunshine.state" {
+				out = append(out, string(e.Data))
+			}
+		}
+		seen = len(h.rec.events)
+		return out
+	}
+
+	h.s.poll(ctx)
+	if got := next(); !reflect.DeepEqual(got, []string{`{"running":false}`}) {
+		t.Errorf("first poll = %q", got)
+	}
+	h.s.poll(ctx)
+	if got := next(); len(got) != 0 {
+		t.Errorf("unchanged poll = %q", got)
+	}
+	active.Store(true)
+	h.s.poll(ctx)
+	if got := next(); !reflect.DeepEqual(got, []string{`{"running":true}`}) {
+		t.Errorf("Sunshine up = %q", got)
+	}
+	active.Store(false)
+	h.s.poll(ctx)
+	if got := next(); !reflect.DeepEqual(got, []string{`{"running":false}`}) {
+		t.Errorf("Sunshine down = %q", got)
+	}
+}
+
 func TestMaintainPicksUpNewGamesAndConnector(t *testing.T) {
 	h := newHarness(t)
 	writeCreds(t, h.f.user, h.f.pass)

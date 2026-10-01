@@ -168,6 +168,7 @@ function listen() {
   });
   on('pairing.state', (p) => apply({ sunshine: { ...(snap.sunshine || {}), pairings: (p && p.pairings) || [] } }));
   on('pairing.pending', soon);
+  on('sunshine.state', soon);
   on('display.changed', soon);
   on('update.state', soon);
   on('update.progress', (p, live) => {

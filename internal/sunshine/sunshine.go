@@ -79,6 +79,8 @@ type Service struct {
 	seenPairings   map[string]bool
 	sentPairings   []Pairing // the last pairing.state list
 	pairingsSent   bool
+	sentRunning    bool // the last sunshine.state
+	runningSent    bool
 	version        string
 	pendingRestart bool
 	nextConf       time.Time
@@ -474,9 +476,24 @@ func (s *Service) poll(ctx context.Context) bool {
 		s.mu.Unlock()
 		s.maintain(ctx)
 	}
+	s.noteRunning(busy || s.unitActive(ctx))
 	s.refreshPairings(ctx)
 	s.refreshVersion(ctx)
 	return busy
+}
+
+// noteRunning publishes sunshine.state after the first poll and whenever
+// the unit starts or stops. Pages only follow the event stream, so one
+// opened while Sunshine was still starting at boot would otherwise show it
+// down until something else made it ask again.
+func (s *Service) noteRunning(running bool) {
+	s.mu.Lock()
+	changed := !s.runningSent || s.sentRunning != running
+	s.sentRunning, s.runningSent = running, true
+	s.mu.Unlock()
+	if changed {
+		s.publish("sunshine.state", map[string]bool{"running": running})
+	}
 }
 
 // maintain applies what waits for an idle moment: re-rendered files,

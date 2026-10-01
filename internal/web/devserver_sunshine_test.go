@@ -184,7 +184,7 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 				delete(f.errs, k)
 			}
 		}
-		f.doc("sunshine")["running"] = true
+		f.emitLocked("sunshine.state", map[string]any{"running": true})
 		return fakeOK
 	})
 	add("POST", "/sunshine/end-stream", api.Authed, func(w http.ResponseWriter, r *http.Request) any {

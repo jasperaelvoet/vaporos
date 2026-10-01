@@ -217,8 +217,8 @@ func (f *devFake) emitLocked(topic string, data any) {
 
 // followLocked is what the real services do when an event is published:
 // Sunshine and the display follow a session (sunshine.go onEvent,
-// display/modeswitch.go), Sunshine's pairings follow pairing.state, and
-// the update state follows update.state.
+// display/modeswitch.go), Sunshine's pairings follow pairing.state and
+// whether it runs sunshine.state, and the update state follows update.state.
 func (f *devFake) followLocked(topic string, data any) {
 	m := asObj(data)
 	sun, disp := f.doc("sunshine"), f.doc("display")
@@ -254,6 +254,8 @@ func (f *devFake) followLocked(topic string, data any) {
 			ps = []any{}
 		}
 		sun["pairings"], sun["pending_pairing"] = deepCopyJSON(ps), len(ps) > 0
+	case "sunshine.state":
+		sun["running"] = m["running"] == true
 	case "update.state":
 		up := f.doc("update")
 		for _, k := range updateStateKeys {

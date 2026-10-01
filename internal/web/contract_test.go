@@ -120,7 +120,7 @@ var fakeTypes = map[string]func() any{
 
 // eventTopics are the topics vosd publishes (grep Publish in internal/).
 var eventTopics = []string{"update.progress", "update.state", "install.progress", "session.begin", "session.end",
-	"pairing.pending", "pairing.state", "display.changed", "power.idle", "system.message"}
+	"pairing.pending", "pairing.state", "sunshine.state", "display.changed", "power.idle", "system.message"}
 
 func testFixtures(t *testing.T) *fixtureSet {
 	t.Helper()
