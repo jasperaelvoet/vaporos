@@ -263,7 +263,7 @@ func TestSessionWithMonitor(t *testing.T) {
 	}
 
 	var clients Clients
-	if err := config.ReadJSON(config.ClientsPath(), &clients); err != nil || len(clients) != 3 || clients["TV"].FPS != 60 || !clients["TV"].HDR {
+	if err := config.ReadJSON(config.ClientsPath(), &clients); err != nil || len(clients) != 3 || clients["TV 3840x2160@60"].Name != "TV" || !clients["TV 3840x2160@60"].HDR {
 		t.Errorf("clients.json = %+v, %v", clients, err)
 	}
 }

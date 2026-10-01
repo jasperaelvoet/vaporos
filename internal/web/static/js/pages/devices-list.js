@@ -161,7 +161,7 @@ const devices = () => (snap.display && Array.isArray(snap.display.devices) ? sna
 
 // Playing first, then the most recently used, else by name (§4.6).
 function rows() {
-  const seen = new Map(devices().map((d) => [d.name, d]));
+  const seen = new Map(devices().map((d) => [d.name, d]).reverse()); // one per mode, newest first
   const ss = isStreaming(snap) ? session(snap) : null;
   const now = serverNow();
   return paired

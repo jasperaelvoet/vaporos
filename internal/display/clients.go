@@ -10,9 +10,10 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 )
 
-// ClientMode is what one Moonlight client last asked for
+// ClientMode is one mode a Moonlight client asked for
 // (/var/lib/vos/clients.json, docs/CONTRACTS.md).
 type ClientMode struct {
+	Name     string    `json:"name,omitempty"`
 	W        int       `json:"w"`
 	H        int       `json:"h"`
 	FPS      int       `json:"fps"`
@@ -23,7 +24,11 @@ type ClientMode struct {
 // Mode returns the client's mode.
 func (c ClientMode) Mode() edid.Mode { return edid.Mode{W: c.W, H: c.H, Refresh: c.FPS} }
 
-// Clients maps a client name to its last mode.
+// Clients holds one entry per client and mode, so a mode stays learned when
+// the same client, or another one under the same name, asks for a different
+// mode later; without a client name from Sunshine every device is
+// "Moonlight". Entries from before names were stored are keyed by name alone
+// and move to their mode's key on load.
 type Clients map[string]ClientMode
 
 // maxClients bounds clients.json; the oldest entries are forgotten first.
@@ -39,19 +44,29 @@ func LoadClients(path string) (Clients, error) {
 	if err != nil {
 		return Clients{}, err
 	}
+	for k, cm := range c {
+		if cm.Name == "" {
+			cm.Name = k
+			delete(c, k)
+			c[clientKey(k, cm.Mode())] = cm
+		}
+	}
 	return c, nil
 }
+
+func clientKey(name string, md edid.Mode) string { return name + " " + md.String() }
 
 // Save writes the file atomically.
 func (c Clients) Save(path string) error { return config.WriteJSONAtomic(path, c, 0o644) }
 
-// Record stores a client's mode, evicting the least recently seen entries
-// beyond maxClients.
+// Record stores a mode a client asked for, evicting the least recently seen
+// entries beyond maxClients.
 func (c Clients) Record(name string, cm ClientMode) {
 	if name == "" {
 		name = "unknown"
 	}
-	c[name] = cm
+	cm.Name = name
+	c[clientKey(name, cm.Mode())] = cm
 	for len(c) > maxClients {
 		oldest := ""
 		for n, v := range c {
@@ -63,7 +78,7 @@ func (c Clients) Record(name string, cm ClientMode) {
 	}
 }
 
-// newestFirst returns the client names, most recently seen first.
+// newestFirst returns the keys, most recently seen first.
 func (c Clients) newestFirst() []string {
 	names := make([]string, 0, len(c))
 	for n := range c {
@@ -102,12 +117,13 @@ type deviceMode struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
-// devices lists every client's last mode, most recently seen first.
+// devices lists every mode each client asked for, most recently seen first,
+// so a client's first entry is its last mode.
 func (c Clients) devices() []deviceMode {
 	out := []deviceMode{}
 	for _, n := range c.newestFirst() {
 		cm := c[n]
-		out = append(out, deviceMode{Name: n, Mode: cm.Mode().String(), HDR: cm.HDR, LastSeen: cm.LastSeen})
+		out = append(out, deviceMode{Name: cm.Name, Mode: cm.Mode().String(), HDR: cm.HDR, LastSeen: cm.LastSeen})
 	}
 	return out
 }

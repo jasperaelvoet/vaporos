@@ -295,7 +295,7 @@ func TestRemoveMode(t *testing.T) {
 		t.Fatalf("remove learned: %d %v", w.Code, out)
 	}
 	clients, err := LoadClients(config.ClientsPath())
-	if err != nil || len(clients) != 1 || clients["Deck"].FPS != 90 {
+	if err != nil || len(clients) != 1 || clients["Deck 1280x800@90"].Name != "Deck" {
 		t.Errorf("clients.json = %+v %v", clients, err)
 	}
 	if learnedEDIDHas(t, md(2400, 1080, 120)) {
@@ -437,5 +437,22 @@ func TestCLIEdid(t *testing.T) {
 		if code := cliEdid(bad, &stdout, &stderr); code == 0 {
 			t.Errorf("%v succeeded", bad)
 		}
+	}
+}
+
+// TestLearnKeepsEveryDevicesMode: devices that Sunshine all reports as
+// "Moonlight" each keep their mode in the learned EDID.
+func TestLearnKeepsEveryDevicesMode(t *testing.T) {
+	m, _, _, _ := newTestManager(t, false)
+	m.init(context.Background())
+	m.learn("Moonlight", md(2560, 1664, 60), false, false)
+	m.learn("Moonlight", md(2532, 1170, 60), false, false)
+	for _, want := range []edid.Mode{md(2560, 1664, 60), md(2532, 1170, 60)} {
+		if !learnedEDIDHas(t, want) {
+			t.Errorf("%s missing from the learned EDID", want)
+		}
+	}
+	if l := m.learnedModes(); len(l) != 2 {
+		t.Errorf("learned = %v", l)
 	}
 }

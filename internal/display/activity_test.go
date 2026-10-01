@@ -167,7 +167,7 @@ func TestClients(t *testing.T) {
 		t.Fatal(err)
 	}
 	c2, err := LoadClients(path)
-	if err != nil || len(c2) != 3 || c2["unknown"].W != 1920 {
+	if err != nil || len(c2) != 3 || c2["unknown 1920x1080@60"].Name != "unknown" {
 		t.Fatalf("reload = %+v %v", c2, err)
 	}
 	modes := c2.Modes()
@@ -180,9 +180,33 @@ func TestClients(t *testing.T) {
 	if len(c2) != maxClients {
 		t.Errorf("not bounded: %d", len(c2))
 	}
-	if _, ok := c2["Deck"]; ok {
+	if _, ok := c2["Deck 1280x800@90"]; ok {
 		t.Error("oldest client not evicted")
 	}
+
+	// Every device that streams as "Moonlight" keeps its own mode learned.
+	c3 := Clients{}
+	c3.Record("Moonlight", ClientMode{W: 2560, H: 1664, FPS: 60, LastSeen: t0})
+	c3.Record("Moonlight", ClientMode{W: 2532, H: 1170, FPS: 60, LastSeen: t0.Add(time.Hour)})
+	c3.Record("Moonlight", ClientMode{W: 2560, H: 1664, FPS: 60, LastSeen: t0.Add(2 * time.Hour)})
+	if modes := c3.Modes(); len(modes) != 2 || modes[0].String() != "2560x1664@60" || modes[1].String() != "2532x1170@60" {
+		t.Errorf("modes = %v", modes)
+	}
+	if d := c3.devices(); len(d) != 2 || d[0].Name != "Moonlight" || d[0].Mode != "2560x1664@60" {
+		t.Errorf("devices = %+v", d)
+	}
+
+	// A file from before names were stored moves to per-mode keys.
+	os.WriteFile(path, []byte(`{"Deck":{"w":1280,"h":800,"fps":90,"hdr":false,"last_seen":"2026-01-01T00:00:00Z"}}`), 0o644)
+	c4, err := LoadClients(path)
+	if err != nil || len(c4) != 1 || c4["Deck 1280x800@90"].Name != "Deck" {
+		t.Fatalf("old file = %+v %v", c4, err)
+	}
+	c4.Record("Deck", ClientMode{W: 1920, H: 1080, FPS: 60, LastSeen: t0.Add(time.Hour)})
+	if len(c4.Modes()) != 2 {
+		t.Errorf("old mode lost: %+v", c4)
+	}
+
 	os.WriteFile(path, []byte("{broken"), 0o644)
 	if _, err := LoadClients(path); err == nil {
 		t.Error("broken file accepted")
