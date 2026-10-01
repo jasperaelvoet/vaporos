@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,12 @@ type fakeHost struct {
 	gsReport   string // key gamescopectl reports ("" = same as gsKey)
 	gsHDR      bool   // HDR flag the fake gamescope runs with
 	ignoreMC   bool   // gamescope ignores modes.cfg (to test timeouts)
+	// ApplyEDID: applyErr makes it fail, applyNoop makes the kernel keep
+	// its EDID, gsStale makes gamescope miss the modes it adds.
+	applyErr  error
+	applyNoop bool
+	gsStale   bool
+	gsMissing map[edid.Mode]bool // modes gamescope does not know of
 	// composite is gamescope's composite_force convar; props are the X root
 	// window properties of its Xwayland (both reset when gamescope starts).
 	composite bool
@@ -141,6 +148,9 @@ func (f *fakeHost) applySavedModeLocked() {
 		key, mode, ok := strings.Cut(line, ":")
 		if ok && key == f.gsKey {
 			if m, err := edid.ParseMode(mode); err == nil {
+				if f.gsMissing[m] {
+					return // gamescope keeps what it shows
+				}
 				f.scan, f.scanOK = m, true
 				return
 			}
@@ -157,7 +167,11 @@ func (f *fakeHost) Connectors(card string) []drm.SysConnector {
 	return append([]drm.SysConnector(nil), f.conns...)
 }
 
-func (f *fakeHost) ConnectorModes(card, name string) []edid.Mode { return f.modes }
+func (f *fakeHost) ConnectorModes(card, name string) []edid.Mode {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.modes
+}
 
 func (f *fakeHost) Scanout(card, name string) (edid.Mode, bool, error) {
 	f.mu.Lock()
@@ -179,6 +193,49 @@ func (f *fakeHost) Planes(card, name string) (int, error) {
 		return 1, nil
 	}
 	return max(f.direct, 1), nil
+}
+
+// ApplyEDID is the kernel taking a new EDID: the connector's sysfs edid
+// and, when known, its mode list follow it.
+func (f *fakeHost) ApplyEDID(card, name string, b []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("apply-edid %s %s", card, name)
+	if f.applyErr != nil {
+		return f.applyErr
+	}
+	if f.applyNoop {
+		return nil
+	}
+	info, err := edid.Decode(b)
+	if err != nil {
+		return err
+	}
+	var before []edid.Mode
+	for _, c := range f.conns {
+		if c.Name == name && c.Dir != "" {
+			if old, err := edid.Decode(c.EDID()); err == nil {
+				before = old.Modes()
+			}
+			if err := os.WriteFile(filepath.Join(c.Dir, "edid"), b, 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	if f.gsStale {
+		if f.gsMissing == nil {
+			f.gsMissing = map[edid.Mode]bool{}
+		}
+		for _, md := range info.Modes() {
+			if !slices.Contains(before, md) {
+				f.gsMissing[md] = true
+			}
+		}
+	}
+	if f.modes != nil {
+		f.modes = info.Modes()
+	}
+	return nil
 }
 
 func (f *fakeHost) Gamescopectl(ctx context.Context, args ...string) (string, error) {

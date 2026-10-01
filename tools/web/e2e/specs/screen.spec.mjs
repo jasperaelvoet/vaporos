@@ -364,7 +364,7 @@ export default [
         await open(t);
         assert.equal(
           await text(page, '.scr-intro'),
-          'VaporOS switches the virtual screen to what each Moonlight device asks for. A device with an unusual screen gets the closest size now and its exact size after the next restart.',
+          'VaporOS switches the virtual screen to what each Moonlight device asks for, unusual sizes included. Where the graphics card can't add a size on the fly, the device gets the closest size until the next restart.',
         );
       });
     },

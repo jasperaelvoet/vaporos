@@ -155,7 +155,8 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAddMode adds a mode to config.display.extra_modes and the learned
-// EDID. The kernel offers it after the next boot.
+// EDID. The kernel offers it right away where it can, else after the next
+// boot; reboot_needed says which.
 func (m *Manager) handleAddMode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Mode string `json:"mode"`
@@ -193,7 +194,7 @@ func (m *Manager) addMode(md edid.Mode) error {
 			return fmt.Errorf("saving config: %w", err)
 		}
 	}
-	if _, err := m.regenerateEDID(); err != nil {
+	if _, err := m.regenerateEDID(m.idle()); err != nil {
 		return fmt.Errorf("writing EDID: %w", err)
 	}
 	return nil
@@ -249,7 +250,7 @@ func (m *Manager) removeMode(md edid.Mode) (bool, error) {
 	if !added && !learned {
 		return false, nil
 	}
-	if _, err := m.regenerateEDID(); err != nil {
+	if _, err := m.regenerateEDID(m.idle()); err != nil {
 		return true, fmt.Errorf("writing EDID: %w", err)
 	}
 	return true, nil

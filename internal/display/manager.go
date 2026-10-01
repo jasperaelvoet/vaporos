@@ -69,6 +69,7 @@ type Manager struct {
 	settle       time.Duration // a new mode must hold this long
 	modeTimeout  time.Duration // give up waiting for a mode after this
 	recheckAfter time.Duration // re-ask gamescope for its display key after this
+	liveModeWait time.Duration // how long a mode the EDID just gained gets to come up
 	poll         time.Duration // DRM polling interval while waiting for a mode
 	scanEvery    time.Duration // connector re-scan
 	refreshEvery time.Duration // hostname/IP refresh for the welcome screen
@@ -115,12 +116,17 @@ type Manager struct {
 	session      *sessionInfo
 	holdUntil    time.Time
 	rebootNeeded bool
-	overlay      statusOverlay
-	lastWelcome  *welcome.State
-	lastStart    map[string]time.Time
-	lastBusy     string
-	composite    compositeWatch
-	upSince      time.Time // the first init: when this vosd started
+	// edidPending: the learned EDID has modes the running kernel or
+	// gamescope do not offer yet. noLiveEDID: a live EDID change did not
+	// work on this machine, so new modes wait for a reboot until then.
+	edidPending bool
+	noLiveEDID  bool
+	overlay     statusOverlay
+	lastWelcome *welcome.State
+	lastStart   map[string]time.Time
+	lastBusy    string
+	composite   compositeWatch
+	upSince     time.Time // the first init: when this vosd started
 }
 
 // opLock is a mutex whose Lock can give up when a context ends.
@@ -171,6 +177,7 @@ func newManager(cfg *config.Config, h host, hub *events.Hub) *Manager {
 		settle:       500 * time.Millisecond,
 		modeTimeout:  60 * time.Second,
 		recheckAfter: 5 * time.Second,
+		liveModeWait: 15 * time.Second,
 		poll:         100 * time.Millisecond,
 		scanEvery:    2 * time.Second,
 		refreshEvery: 5 * time.Second,
@@ -295,6 +302,7 @@ func (m *Manager) start(ctx context.Context) {
 	}()
 	go m.watchComposite(ctx)
 	m.hot = m.h.Hotplug(ctx)
+	m.syncEDID()
 }
 
 // init learns the hardware and adopts whatever is already running.

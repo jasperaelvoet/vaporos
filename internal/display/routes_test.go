@@ -146,7 +146,8 @@ func TestDisplayConnectors(t *testing.T) {
 }
 
 func TestAddMode(t *testing.T) {
-	m, _, _, _ := newTestManager(t, false)
+	m, h, _, _ := newTestManager(t, false)
+	h.applyErr = drm.ErrNoOverride // the kernel offers new modes after a reboot only
 	m.init(context.Background())
 	for body, code := range map[string]int{
 		`{"mode":"garbage"}`:        400,
@@ -256,7 +257,8 @@ func learnedEDIDHas(t *testing.T, mode edid.Mode) bool {
 }
 
 func TestRemoveMode(t *testing.T) {
-	m, _, _, hub := newTestManager(t, false)
+	m, h, _, hub := newTestManager(t, false)
+	h.applyErr = drm.ErrNoOverride
 	m.init(context.Background())
 	evs, unsubscribe := hub.Subscribe()
 	defer unsubscribe()

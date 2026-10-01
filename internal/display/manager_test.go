@@ -13,6 +13,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/brand"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/display/drm"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
 	"github.com/jasperaelvoet/vaporos/internal/events"
@@ -269,6 +270,7 @@ func TestSessionWithMonitor(t *testing.T) {
 
 func TestSessionLearnsMode(t *testing.T) {
 	m, h, _, _ := newTestManager(t, false)
+	h.applyErr = drm.ErrNoOverride // the kernel takes a new EDID only at boot
 	ctx := context.Background()
 	m.init(ctx)
 	m.reconcile(ctx, false)
@@ -296,7 +298,7 @@ func TestSessionLearnsMode(t *testing.T) {
 	}
 	// Once the kernel runs with that EDID, nothing is pending.
 	mustWrite(t, h.conns[0].Dir+"/edid", string(b))
-	m.rebootNeeded = false
+	m.edidPending = false
 	if m.rebootNeededNow() {
 		t.Error("reboot still needed with the learned EDID active")
 	}

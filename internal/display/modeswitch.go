@@ -4,8 +4,9 @@ package display
 // prep-cmd) reaches Begin and End through the session socket. Begin picks
 // the mode, drives gamescope to it (modes.cfg + backend_set_dirty, or a
 // restart for an HDR change) and waits until the virtual connector really
-// scans it out; unknown client modes are learned into the EDID for the
-// next boot.
+// scans it out. An unknown client mode is learned into the EDID, which the
+// running kernel takes at once where it can (debugfs EDID override) and the
+// next boot takes in any case.
 
 import (
 	"bytes"
@@ -76,9 +77,15 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 		return session.Response{OK: true, Message: "no supported GPU or virtual display: streaming as is"}
 	}
 
-	avail := m.availableModes(gpu, virtual)
-	mode, exact := chooseMode(asked, avail)
-	m.learn(client, asked, req.HDR, exact)
+	mode, exact := chooseMode(asked, m.availableModes(gpu, virtual))
+	// fallback is what to show should a mode the EDID just gained live not
+	// come up: gamescope may not see the kernel's new modes.
+	var fallback edid.Mode
+	if m.learn(client, asked, req.HDR, exact) {
+		if md, ok := chooseMode(asked, m.availableModes(gpu, virtual)); ok {
+			fallback, mode, exact = mode, md, true
+		}
+	}
 	hdr := req.HDR && hdrAllowed
 	if p := gpu.Profile(); p == nil || !p.VirtualHDR() {
 		hdr = false
@@ -137,7 +144,25 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 		return session.Response{OK: false, Mode: mode.String(), HDR: hdr, Message: "gamescope: " + err.Error()}
 	}
 
-	ok, msg := m.waitForMode(ctx, gpu.Card, virtual, mode, keys)
+	wctx := ctx
+	if fallback.W > 0 {
+		var wcancel context.CancelFunc
+		wctx, wcancel = context.WithTimeout(ctx, m.liveModeWait+m.composeReserve)
+		defer wcancel()
+	}
+	ok, msg := m.waitForMode(wctx, gpu.Card, virtual, mode, keys)
+	if !ok && fallback.W > 0 && ctx.Err() == nil {
+		log.Printf("display: %s did not come up after a live EDID change (%s); using %s until a reboot", mode, msg, fallback)
+		m.mu.Lock()
+		m.noLiveEDID, m.edidPending = true, true
+		mode, exact = fallback, false
+		sess.Mode = mode.String()
+		m.mu.Unlock()
+		m.hub.Publish("display.changed", struct{}{})
+		keys = m.writeModesCfg(ctx, virtual, mode, true)
+		m.nudge(ctx)
+		ok, msg = m.waitForMode(ctx, gpu.Card, virtual, mode, keys)
+	}
 	// The modeset (or the fresh gamescope) is done: force composition, both
 	// the convar and the X property, which Steam may have reset.
 	if cerr := m.forceComposite(ctx); cerr != nil {
@@ -204,6 +229,7 @@ func (m *Manager) End(ctx context.Context) {
 		log.Printf("display: session end: %s after %s", was.Client, m.now().Sub(was.Since).Round(time.Second))
 	}
 	m.hub.Publish("session.end", struct{}{})
+	m.syncEDID()
 	m.poke()
 }
 
@@ -322,8 +348,8 @@ func (m *Manager) virtualEDID(gpu GPUInfo, virtual string) []byte {
 }
 
 // learn records the client's mode and, when the EDID lacks it, adds it to
-// the learned EDID for the next boot.
-func (m *Manager) learn(client string, asked edid.Mode, hdr, exact bool) {
+// the learned EDID. It reports whether the kernel offers the mode now.
+func (m *Manager) learn(client string, asked edid.Mode, hdr, exact bool) bool {
 	m.edidMu.Lock()
 	defer m.edidMu.Unlock()
 	clients, err := LoadClients(config.ClientsPath())
@@ -335,15 +361,17 @@ func (m *Manager) learn(client string, asked edid.Mode, hdr, exact bool) {
 		log.Printf("display: saving clients: %v", err)
 	}
 	if exact {
-		return
+		return false
 	}
 	if err := edid.Check(asked); err != nil {
 		log.Printf("display: cannot learn %v", err)
-		return
+		return false
 	}
-	if _, err := m.regenerateEDID(); err != nil {
+	live, err := m.regenerateEDID(true)
+	if err != nil {
 		log.Printf("display: learned EDID: %v", err)
 	}
+	return live
 }
 
 // configuredModes are the modes in display.extra_modes that parse.
@@ -364,9 +392,11 @@ func (m *Manager) extraModes() []edid.Mode {
 }
 
 // regenerateEDID rewrites /var/lib/vos/firmware/edid/vaporos.bin from the
-// catalogue plus extra modes. It reports whether the file changed (and so
-// a reboot is needed for the kernel to offer the new modes).
-func (m *Manager) regenerateEDID() (bool, error) {
+// catalogue plus extra modes, which the next boot loads. With live it also
+// hands the EDID to the running kernel, best effort. It reports whether the
+// virtual connector uses the EDID now; if not, its new modes wait for a
+// reboot and rebootNeededNow says so.
+func (m *Manager) regenerateEDID(live bool) (bool, error) {
 	res, err := edid.Generate(m.extraModes())
 	if err != nil {
 		return false, err
@@ -379,23 +409,106 @@ func (m *Manager) regenerateEDID() (bool, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if bytes.Equal(old, res.EDID) {
-		return false, nil
-	}
-	if old == nil {
+	changed := !bytes.Equal(old, res.EDID)
+	if changed && old == nil {
 		if img, err := os.ReadFile(config.ImageEDIDPath); err == nil && bytes.Equal(img, res.EDID) {
-			return false, nil // nothing beyond what the image already offers
+			changed = false // nothing beyond what the image already offers
 		}
 	}
-	if err := config.WriteFileAtomic(path, res.EDID, 0o644); err != nil {
-		return false, err
+	if changed {
+		if err := config.WriteFileAtomic(path, res.EDID, 0o644); err != nil {
+			return false, err
+		}
 	}
+	applied := live && m.applyEDID(res)
 	m.mu.Lock()
-	m.rebootNeeded = true
+	was := m.edidPending
+	switch {
+	case applied:
+		m.edidPending = false
+	case changed:
+		m.edidPending = true
+	}
+	pending := m.edidPending
 	m.mu.Unlock()
-	log.Printf("display: learned EDID now offers %d modes (applies after a reboot)", len(res.Modes))
-	m.hub.Publish("display.changed", struct{}{})
-	return true, nil
+	if changed {
+		when := "live"
+		if !applied {
+			when = "applies after a reboot"
+		}
+		log.Printf("display: learned EDID now offers %d modes (%s)", len(res.Modes), when)
+	}
+	if changed || pending != was {
+		m.hub.Publish("display.changed", struct{}{})
+	}
+	return applied, nil
+}
+
+// applyEDID gives the running kernel the EDID in res through the debugfs
+// override and re-probes the virtual connector. It reports whether the
+// connector uses it afterwards.
+func (m *Manager) applyEDID(res *edid.Result) bool {
+	virtual := m.virtual()
+	m.mu.Lock()
+	gpu, skip := m.gpu, m.live || m.noLiveEDID
+	m.mu.Unlock()
+	if skip || virtual == "" || gpu.cardName == "" {
+		return false
+	}
+	if bytes.Equal(m.connectorEDID(gpu, virtual), res.EDID) {
+		return true
+	}
+	// Never take the mode on screen away from under gamescope (a removed
+	// mode): that waits for the reboot.
+	if cur, active, err := m.h.Scanout(gpu.Card, virtual); err == nil && active && !slices.Contains(res.Modes, cur) {
+		return false
+	}
+	err := m.h.ApplyEDID(gpu.cardName, virtual, res.EDID)
+	if err == nil && !bytes.Equal(m.connectorEDID(gpu, virtual), res.EDID) {
+		err = errors.New("the connector kept its old EDID")
+	}
+	if err != nil {
+		// Such a kernel will not do better next time.
+		log.Printf("display: new modes wait for a reboot: no live EDID change: %v", err)
+		m.mu.Lock()
+		m.noLiveEDID = true
+		m.mu.Unlock()
+		return false
+	}
+	return true
+}
+
+// connectorEDID is the EDID the kernel uses for a connector (nil if none).
+func (m *Manager) connectorEDID(gpu GPUInfo, name string) []byte {
+	for _, c := range m.h.Connectors(gpu.cardName) {
+		if c.Name == name {
+			return c.EDID()
+		}
+	}
+	return nil
+}
+
+// idle reports whether no Moonlight session is on.
+func (m *Manager) idle() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.session == nil
+}
+
+// syncEDID makes the running kernel catch up with the learned EDID where
+// it lags, when nobody streams (a re-probe may blink the screen).
+func (m *Manager) syncEDID() {
+	m.mu.Lock()
+	skip := m.session != nil || m.live || m.noLiveEDID
+	m.mu.Unlock()
+	if skip {
+		return
+	}
+	m.edidMu.Lock()
+	defer m.edidMu.Unlock()
+	if _, err := m.regenerateEDID(true); err != nil {
+		log.Printf("display: learned EDID: %v", err)
+	}
 }
 
 // rebootNeededNow reports whether the running kernel lags the machine's
@@ -404,7 +517,7 @@ func (m *Manager) regenerateEDID() (bool, error) {
 func (m *Manager) rebootNeededNow() bool {
 	virtual := m.virtual()
 	m.mu.Lock()
-	flag, live, gpu := m.rebootNeeded, m.live, m.gpu
+	flag, live, gpu := m.rebootNeeded || m.edidPending, m.live, m.gpu
 	m.mu.Unlock()
 	if flag {
 		return true
@@ -425,14 +538,8 @@ func (m *Manager) rebootNeededNow() bool {
 	if err != nil || virtual == "" {
 		return false
 	}
-	for _, c := range m.h.Connectors(gpu.cardName) {
-		if c.Name == virtual {
-			if cur := c.EDID(); cur != nil && !bytes.Equal(cur, learned) {
-				return true
-			}
-		}
-	}
-	return false
+	cur := m.connectorEDID(gpu, virtual)
+	return cur != nil && !bytes.Equal(cur, learned)
 }
 
 // writeModesCfg stores mode as the saved mode of the virtual display in

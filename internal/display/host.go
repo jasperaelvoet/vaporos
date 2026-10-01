@@ -41,6 +41,9 @@ type host interface {
 	// Planes counts the planes that scan a framebuffer out on the CRTC
 	// driving a connector (0 when no CRTC drives it).
 	Planes(card, name string) (int, error)
+	// ApplyEDID hands the kernel a new EDID for a connector of card
+	// ("card1") and re-probes it, without a reboot where the kernel allows.
+	ApplyEDID(card, name string, edid []byte) error
 
 	Gamescopectl(ctx context.Context, args ...string) (string, error)
 	// Xprop runs xprop against gamescope's X server and returns its output.
@@ -195,6 +198,13 @@ func (h *realHost) Planes(card, name string) (int, error) {
 		return 0, nil
 	}
 	return c.PlanesOn(s.CRTC)
+}
+
+func (h *realHost) ApplyEDID(card, name string, edid []byte) error {
+	if err := drm.OverrideEDID(card, name, edid); err != nil {
+		return err
+	}
+	return drm.Reprobe(card, name)
 }
 
 // Gamescopectl runs gamescopectl as the gaming user: sysd.AsGamer sets
