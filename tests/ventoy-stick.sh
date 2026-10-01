@@ -8,8 +8,8 @@
 #
 #   tests/ventoy-stick.sh ISO IMAGE
 #
-# Linux only. Needs sudo, losetup, parted (or fdisk), curl and an exFAT
-# capable kernel.
+# Linux only. Needs sudo, losetup, parted (or fdisk), curl, and exFAT
+# in the kernel or FUSE.
 set -euo pipefail
 
 VENTOY_VERSION=1.1.17
@@ -48,7 +48,11 @@ sudo udevadm settle 2>/dev/null || true
 [[ -b ${loop}p1 ]] || { cat "$tmp/ventoy.log" >&2; echo "Ventoy made no partition 1 on $loop" >&2; exit 1; }
 
 mkdir -p "$tmp/mnt"
-sudo mount -t exfat "${loop}p1" "$tmp/mnt"
+# GitHub's runner kernel has no exFAT; Ventoy ships a FUSE driver (unpacked
+# by Ventoy2Disk.sh above).
+if ! sudo mount -t exfat "${loop}p1" "$tmp/mnt" 2>/dev/null; then
+    sudo "$tmp/ventoy-$VENTOY_VERSION/tool/x86_64/mount.exfat-fuse" "${loop}p1" "$tmp/mnt"
+fi
 # In a folder, as people keep them; the default image boots without a key
 # press, and with no second menu (normal mode, grub2 mode, ...).
 iso_name=$(basename "$ISO")
