@@ -367,7 +367,7 @@ No keypress, local or from a Moonlight client, reboots or suspends the box: `ctr
 
 **User** (`vapor`), in `/usr/lib/systemd/user`, controlled by vosd via `systemctl --user -M vapor@`:
 - `vos-gamescope.service`: env from `%t/vos/gamescope.env` (`VOS_OUTPUT`, `VOS_GS_EXTRA`); `GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg`
-- `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU.
+- `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU. After each start or restart vosd reads that run's log until Sunshine's web UI is up: a run that logged `Platform failed to initialize` (its KMS capture found no lit plane, e.g. it came up before gamescope's first modeset) never recovers by itself and fails every stream with error 503, so vosd restarts it while idle, 5 s after the failure and then backing off to 2 min.
 
 Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
 

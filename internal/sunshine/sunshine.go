@@ -98,6 +98,9 @@ type Service struct {
 	gpuOK          bool // a supported GPU was found; never probed again after that
 	nextGPUProbe   time.Time
 	noGPULogged    bool
+	verifyRun      bool // the run vosd last started has not been seen to set up capture
+	nextCaptureFix time.Time
+	captureBackoff time.Duration
 
 	pkgVersionOnce sync.Once
 	pkgVersion     string
@@ -127,6 +130,7 @@ func NewService(cfg *config.Config) *Service {
 	return &Service{
 		cfg:          cfg,
 		seenPairings: map[string]bool{},
+		verifyRun:    true, // whatever runs when vosd starts
 		pollEvery:    pollInterval,
 		apiBase:      defaultAPIBase,
 		infoURL:      defaultInfoURL,
@@ -376,6 +380,7 @@ func (s *Service) ensureRunning(ctx context.Context) {
 	}
 	s.mu.Lock()
 	s.version, s.pairings, s.pendingRestart = "", nil, false
+	s.verifyRun = true
 	s.mu.Unlock()
 }
 
@@ -464,6 +469,7 @@ func (s *Service) restart(ctx context.Context) error {
 	s.pendingRestart = false
 	s.version = ""
 	s.pairings = nil
+	s.verifyRun = true
 	return nil
 }
 
@@ -538,6 +544,7 @@ func (s *Service) maintain(ctx context.Context) {
 		return
 	}
 	s.ensureRunning(ctx)
+	s.checkCapture(ctx)
 }
 
 // refreshPairings tracks clients waiting for a PIN and announces new ones
