@@ -39,9 +39,11 @@ tar -xzf "$tgz" -C "$tmp"
 rm -f "$IMG"
 truncate -s 4G "$IMG"
 loop=$(sudo losetup -fP --show "$IMG")
-# Defaults, as a user gets them: MBR, Secure Boot support, exFAT labelled
-# Ventoy. It asks twice before it erases the disk.
-(cd "$tmp/ventoy-$VENTOY_VERSION" && printf 'y\ny\n' | sudo sh ./Ventoy2Disk.sh -I "$loop") >"$tmp/ventoy.log" 2>&1 ||
+# Ventoy's defaults (MBR, exFAT labelled Ventoy), but without its Secure
+# Boot shim: OVMF has Secure Boot off anyway, and with the shim Ventoy could
+# not chain-load its own loader there ("cannot load image"). It asks twice
+# before it erases the disk.
+(cd "$tmp/ventoy-$VENTOY_VERSION" && printf 'y\ny\n' | sudo sh ./Ventoy2Disk.sh -I -S "$loop") >"$tmp/ventoy.log" 2>&1 ||
     { cat "$tmp/ventoy.log" >&2; exit 1; }
 sudo partprobe "$loop" 2>/dev/null || true
 sudo udevadm settle 2>/dev/null || true
