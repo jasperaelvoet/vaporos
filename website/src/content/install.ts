@@ -21,7 +21,7 @@ export const installStrip = {
     {
       icon: 'usb',
       title: 'Flash a USB stick',
-      body: 'Download the ISO and write it to a USB stick with balenaEtcher, Rufus or `dd`.',
+      body: 'Download the ISO and write it to a USB stick with balenaEtcher, Rufus or `dd`, or copy it onto a Ventoy stick.',
       short: 'Write the ISO to a USB stick.',
     },
     {
@@ -218,6 +218,10 @@ export const installGuide = {
             { title: 'Linux', lang: 'sh', code: DD_LINUX },
             { title: 'macOS', lang: 'sh', code: DD_MAC },
           ],
+        },
+        {
+          type: 'p',
+          text: "Already use [Ventoy](https://www.ventoy.net/)? Then the ISO is a file to copy after all: put it on the Ventoy stick and pick it from the menu. That works in normal mode on exFAT (Ventoy's default), FAT32 or NTFS.",
         },
       ],
     },

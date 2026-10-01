@@ -18,6 +18,11 @@
 #                   that the installer refuses the image.
 #   SCALE=N         multiplies every timeout (default 1 with KVM, 8 with TCG)
 #   PORT=8080       host port forwarded to the VM's port 80
+#   STICK=IMAGE     boot this USB stick image instead of the ISO as a CD: a
+#                   Ventoy stick with the ISO on it as a file
+#                   (tests/ventoy-stick.sh). The test then ends once the
+#                   installer is up, the stick is marked as the live medium
+#                   and the target disk is offered; the CD run covers the rest.
 #   OVMF_CODE, OVMF_VARS   firmware images, found automatically
 #
 # WORKDIR (default $TMPDIR/vaporos-vm-smoke) ends up with serial.log,
@@ -32,6 +37,7 @@ VERSION=${2:?usage: $0 ISO VERSION [WORKDIR]}
 WORK=${3:-${TMPDIR:-/tmp}/vaporos-vm-smoke}
 PORT=${PORT:-8080}
 SIGNED=${SIGNED:-1}
+STICK=${STICK:-}
 [[ $SIGNED == [01] ]] || { echo "SIGNED must be 1 or 0, not '$SIGNED'" >&2; exit 2; }
 DISK=/dev/vda # virtio-blk, the first disk
 HOSTNAME_=vapor-ci
@@ -108,7 +114,12 @@ start_vm() {
         -qmp unix:"$QMP",server=on,wait=off
         -no-reboot
     )
-    if [[ $from == iso ]]; then
+    if [[ $from == iso && -n $STICK ]]; then
+        # A snapshot: the stick image stays as tests/ventoy-stick.sh made it.
+        args+=(-device qemu-xhci,id=xhci
+            -drive if=none,id=stick,file="$STICK",format=raw,snapshot=on
+            -device usb-storage,bus=xhci.0,drive=stick,removable=on,bootindex=0)
+    elif [[ $from == iso ]]; then
         args+=(-drive if=none,id=cd,file="$ISO",media=cdrom,readonly=on
             -device ide-cd,drive=cd,bus=ide.0,bootindex=0)
     fi
@@ -225,6 +236,7 @@ expect_ping() {
 command -v qemu-system-x86_64 >/dev/null || die "qemu-system-x86_64 is not installed"
 command -v qemu-img >/dev/null || die "qemu-img is not installed"
 [[ -f $ISO ]] || die "no ISO at $ISO"
+[[ -z $STICK || -f $STICK ]] || die "no stick image at $STICK"
 find_ovmf
 log "ISO $(basename "$ISO"), expecting version $VERSION; firmware $OVMF_CODE; accel $ACCEL, timeouts x$SCALE"
 
@@ -249,6 +261,21 @@ fi
 c=$(http GET /install/probe -H "X-VOS-Setup: $code")
 [[ $c == 200 ]] || die "GET /install/probe -> $c $(cat "$WORK/body")"
 grep -q "\"$DISK\"" "$WORK/body" || die "the installer does not offer $DISK: $(cat "$WORK/body")"
+
+if [[ -n $STICK ]]; then
+    # The stick the ISO file is on is the live medium: listed as such, so
+    # the installer never offers to erase it.
+    live=$(python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+print(" ".join(x["path"] for x in d.get("disks", []) if x.get("transport") == "usb" and x.get("is_live")))' "$WORK/body")
+    [[ -n $live ]] || die "the Ventoy stick is not marked as the live medium: $(cat "$WORK/body")"
+    log "PASS: the ISO boots from a Ventoy stick ($live, marked live), and the installer offers $DISK"
+    if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+        printf '### Ventoy boot (%s)\nBooted the `%s` installer from an .iso file on a Ventoy stick; the stick is the live medium. %ss.\n' \
+            "$ACCEL" "$VERSION" $((SECONDS - T0)) >>"$GITHUB_STEP_SUMMARY"
+    fi
+    exit 0
+fi
 
 # 2. Install through the API, as the web wizard does. The job runs in the
 #    background: 202 Accepted.

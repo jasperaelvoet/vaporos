@@ -12,21 +12,26 @@
 #   second disk with VaporOS on it is never used. Installs from before
 #   vos.disk go by /dev/disk/by-partlabel, on whatever disk has the name.
 #
-# Live:       vos.mode=live
+# Live:       vos.mode=live vos.label=VOS_LIVE vos.version=<version>
 #   /            overlay: erofs image on the ISO + tmpfs, all changes lost on reboot
+#   The ISO is the device labelled vos.label (written to a stick, or a CD),
+#   or else an .iso file with that label and the manifest version
+#   vos.version on an exFAT, FAT or NTFS partition (Ventoy, which cannot
+#   hook into systemd-boot), mounted read-only at /run/vos/host.
 #
 # VaporOS never shows a shell. Anything that goes wrong here reboots the
 # machine instead. A freshly updated slot is on trial, and systemd-boot's
 # boot counting falls back to the previous one after three tries; any other
 # slot that cannot start is marked bad on the ESP first, so the other slot
 # starts next rather than this one forever. The reason goes to the serial
-# console.
+# console and to the screen.
 
 run_hook() {
     vos_mode="$(getarg vos.mode disk)"
     vos_slot="$(getarg vos.slot)"
     vos_disk="$(getarg vos.disk)"
     vos_label="$(getarg vos.label VOS_LIVE)"
+    vos_version="$(getarg vos.version)"
     vos_disk_name=""
     slot_dev=""
 
@@ -46,9 +51,18 @@ vos_serial() {
     fi
 }
 
+# vos_screen: the console is ttyS0 alone, so without this a machine with
+# only a monitor shows a blank screen and reboots without a word.
+vos_screen() {
+    if [ -c /dev/tty1 ]; then
+        printf '\nVaporOS: %s\n' "$*" 2>/dev/null >/dev/tty1
+    fi
+}
+
 vos_reboot() {
     vos_demote
     vos_serial "$* -- rebooting in 5 seconds"
+    vos_screen "$* -- rebooting in 5 seconds"
     sleep 5
     reboot -f
     # reboot -f does not return; if it somehow does, ask the kernel directly.
@@ -288,16 +302,95 @@ vos_mount_disk() {
         "$root/etc" || vos_die "cannot overlay /etc"
 }
 
+# vos_try_medium DEV: mounts DEV at /run/vos/medium if it is this boot's
+# ISO: iso9660 with the vos.version manifest (any, without vos.version).
+vos_try_medium() {
+    mount -t iso9660 -o ro "$1" /run/vos/medium 2>/dev/null || return 1
+    if [ -z "$vos_version" ] ||
+        grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"${vos_version}\"" /run/vos/medium/vos/manifest.json 2>/dev/null; then
+        return 0
+    fi
+    umount /run/vos/medium
+    return 1
+}
+
+# vos_try_iso FILE: attaches FILE and mounts it as the medium if it is
+# this boot's ISO. blkid reads the volume label of a plain file.
+vos_try_iso() {
+    local dev
+    [ "$(blkid -p -s LABEL -o value "$1" 2>/dev/null)" = "$vos_label" ] || return 1
+    dev="$(losetup -f --show -r "$1")" || return 1
+    vos_try_medium "$dev" && return 0
+    losetup -d "$dev"
+    return 1
+}
+
+# vos_scan_part NAME: looks for this boot's ISO as a file on partition NAME,
+# mounted read-only at /run/vos/host and left mounted when it is there.
+# Only filesystems Ventoy formats and a ro mount leaves alone: ext4 would
+# replay its journal even read-only.
+vos_scan_part() {
+    local dev="/dev/$1" fs
+    case "$(blkid -p -s TYPE -o value "$dev" 2>/dev/null)" in
+        exfat) fs=exfat ;;
+        vfat)  fs=vfat ;;
+        ntfs)  fs=ntfs3 ;;
+        *)     return 1 ;;
+    esac
+    mount -t "$fs" -o ro "$dev" /run/vos/host 2>/dev/null || return 1
+    if find /run/vos/host -xdev -type f -iname '*.iso' 2>/dev/null | {
+        while IFS= read -r f; do
+            if vos_try_iso "$f"; then
+                vos_serial "live medium is ${f#/run/vos/host} on ${dev}"
+                exit 0
+            fi
+        done
+        exit 1
+    }; then
+        return 0
+    fi
+    umount /run/vos/host
+    return 1
+}
+
+# vos_find_live: mounts this boot's ISO at /run/vos/medium, waiting up to
+# 30 s for it. The labelled device has the first 3 s to itself, so a
+# written stick or a CD is never scanned for. USB partitions come first:
+# searching an internal Windows drive can take a while.
+vos_find_live() {
+    local i=0 d n usb scanned=" "
+    mkdir -p /run/vos/medium /run/vos/host
+    while :; do
+        if [ -b "/dev/disk/by-label/${vos_label}" ] && vos_try_medium "/dev/disk/by-label/${vos_label}"; then
+            return 0
+        fi
+        if [ "$i" -ge 6 ]; then
+            for d in /sys/class/block/*; do
+                n="${d##*/}"
+                case "$n" in loop* | ram* | zram* | sr* | dm-* | md* | nbd*) continue ;; esac
+                case "$scanned" in *" $n "*) continue ;; esac
+                [ -b "/dev/$n" ] || continue
+                case "$(readlink -f "$d")" in */usb*) usb=1 ;; *) usb=0 ;; esac
+                [ "$usb" = 1 ] || [ "$i" -ge 20 ] || continue
+                scanned="${scanned}${n} "
+                vos_scan_part "$n" && return 0
+            done
+        fi
+        [ "$i" -ge 60 ] && return 1
+        i=$((i + 1))
+        sleep .5
+    done
+}
+
 vos_mount_live() {
     root="$1"
-    iso_dev="/dev/disk/by-label/${vos_label}"
     base=/run/vos
 
-    poll_device "$iso_dev" 30 || vos_die "live medium not found at ${iso_dev}"
+    vos_find_live ||
+        vos_die "live medium not found: no ${vos_label} device and no ${vos_label} .iso file on an exFAT, FAT or NTFS partition"
 
     msg ":: mounting VaporOS live medium"
-    mkdir -p "$base/medium" "$base/lower" "$base/cow"
-    mount -t iso9660 -o ro "$iso_dev" "$base/medium" || vos_die "cannot mount ${iso_dev}"
+    mkdir -p "$base/lower" "$base/cow"
 
     loopdev="$(losetup -f --show -r "$base/medium/vos/root.erofs")" ||
         vos_die "cannot attach root.erofs"

@@ -382,6 +382,21 @@ else
     elapsed
 fi
 
+# What the vos hook needs to find and mount the root, live or installed. A
+# module the kernel builds in is not a file in the image, but it is listed
+# in modules.builtin.
+cp "$INITRD_CACHE" "$ROOT/vos-initramfs-check.img"
+initrd_files=$(arch-chroot "$ROOT" lsinitcpio -l /vos-initramfs-check.img) || die "lsinitcpio cannot read the initramfs"
+rm -f "$ROOT/vos-initramfs-check.img"
+for m in erofs overlay loop ext4 vfat isofs exfat ntfs3; do
+    grep -Eq "/$m\.ko(\.[a-z]+)?$" <<<"$initrd_files" ||
+        grep -q "/$m\.ko$" "$ROOT/usr/lib/modules/$KVER/modules.builtin" ||
+        die "the initramfs has no $m module"
+done
+for b in find blkid losetup mount e2fsck; do
+    grep -Eq "(^|/)bin/$b$" <<<"$initrd_files" || die "the initramfs has no $b"
+done
+
 rm -rf "$STAGE"; mkdir -p "$STAGE/vos"
 cp "$INITRD_CACHE" "$STAGE/vos/initramfs.img"
 cp "$ROOT/usr/lib/modules/$KVER/vmlinuz" "$STAGE/vos/vmlinuz"

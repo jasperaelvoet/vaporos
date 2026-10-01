@@ -142,6 +142,32 @@ func TestParseLsblkLive(t *testing.T) {
 	}
 }
 
+func TestParseLsblkLiveFromVentoy(t *testing.T) {
+	// The ISO is a file on the stick's exFAT partition, attached as loop1.
+	data := []byte(`{"blockdevices": [
+		{"name":"loop1","path":"/dev/loop1","type":"loop","size":1610612736,"rm":false,"label":"VOS_LIVE","fstype":"iso9660","mountpoints":["/run/vos/medium"]},
+		{"name":"sdb","path":"/dev/sdb","type":"disk","size":32015679488,"model":"Cruzer Blade","tran":"usb","rm":true,"mountpoints":[null],
+			"children": [
+				{"name":"sdb1","path":"/dev/sdb1","pkname":"sdb","type":"part","size":31981076480,"rm":true,"label":"Ventoy","fstype":"exfat","mountpoints":["/run/vos/host"]},
+				{"name":"sdb2","path":"/dev/sdb2","pkname":"sdb","type":"part","size":33554432,"rm":true,"label":"VTOYEFI","fstype":"vfat","mountpoints":[null]}
+			]},
+		{"name":"nvme0n1","path":"/dev/nvme0n1","type":"disk","size":1000204886016,"tran":"nvme","rm":false,"mountpoints":[null]}
+	]}`)
+	disks, err := parseLsblk(data, "VOS_LIVE", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := byPath(disks)
+	for _, p := range []string{"/dev/sdb", "/dev/sdb1", "/dev/sdb2"} {
+		if !m[p].IsSystem {
+			t.Errorf("Ventoy stick %s not system", p)
+		}
+	}
+	if m["/dev/nvme0n1"].IsSystem {
+		t.Error("nvme0n1 wrongly system")
+	}
+}
+
 func TestExistingInstallIsNotSystemWhenLive(t *testing.T) {
 	data := readFixture(t, "lsblk-installed.json")
 	// Booted from the ISO, nothing of the old install is mounted.

@@ -114,6 +114,12 @@ func TestLiveDisks(t *testing.T) {
 			f.write(filepath.Join(dir, "loop/backing_file"), "/mnt/isos/vaporos.iso\n")
 			return []string{"8:34 /mnt/isos ext4 /dev/sdc2", "7:0 " + f.mediumMount() + " iso9660 /dev/loop0"}
 		}, "sdc"},
+		{"iso file on a ventoy stick", func(f *fakeSys) []string {
+			f.addPart("sdc", "sdc1", "8:33", 1, "", 30*gib)
+			dir := f.addVirtual("loop1", "7:1")
+			f.write(filepath.Join(dir, "loop/backing_file"), "/run/vos/host/isos/vaporos.iso\n")
+			return []string{"8:33 /run/vos/host exfat /dev/sdc1", "7:1 " + f.mediumMount() + " iso9660 /dev/loop1"}
+		}, "sdc"},
 		{"device mapper", func(f *fakeSys) []string {
 			f.addPart("sdc", "sdc1", "8:33", 1, "", 100*gib)
 			dir := f.addVirtual("dm-0", "254:0")

@@ -91,11 +91,26 @@ func (h *hookEnv) run(vars, script string) string {
 		"/run/", h.path("run")+"/", "[ -b ", "[ -e ").Replace(string(src))
 	h.write("hook.sh", hook)
 	stubs := `
-getarg() { case "$1" in vos.slot) echo "${A_slot:-$2}" ;; vos.disk) echo "${A_disk:-$2}" ;; vos.mode) echo "${A_mode:-$2}" ;; *) echo "$2" ;; esac; }
+getarg() { case "$1" in vos.slot) echo "${A_slot:-$2}" ;; vos.disk) echo "${A_disk:-$2}" ;; vos.mode) echo "${A_mode:-$2}" ;; vos.version) echo "${A_version:-$2}" ;; *) echo "$2" ;; esac; }
 err() { echo "ERR: $*"; }
 msg() { :; }
 poll_device() { [ -e "$1" ]; }
-blkid() { eval "echo \${G_${6##*/}:-}"; }
+blkid() {
+    case "$3" in
+        TYPE) eval "echo \${T_${6##*/}:-}" ;;
+        LABEL) head -n 1 "$6" ;;
+        *) eval "echo \${G_${6##*/}:-}" ;;
+    esac
+}
+# A fake .iso file is its label, then its version. losetup keeps the
+# backing file next to the device, in files: the hook runs it in subshells.
+losetup() {
+    case "$1" in
+        -d) echo "DETACH $(cat "$2.backing")"; rm -f "$2" "$2.backing" ;;
+        *) n=$(($(cat "$DEV/loops" 2>/dev/null || echo 0) + 1)); echo "$n" >"$DEV/loops"
+           echo "$4" >"$DEV/loop$n.backing"; : >"$DEV/loop$n"; echo "$DEV/loop$n" ;;
+    esac
+}
 udevadm() { :; }
 sleep() { :; }
 sync() { :; }
@@ -104,13 +119,19 @@ mount() {
     case "$2" in
         vfat) rmdir "$6" 2>/dev/null; ln -s "$ESP" "$6" ;;
         erofs) [ -n "${FAIL_EROFS:-}" ] && return 1; echo "MOUNT $*" ;;
+        iso9660)
+            if [ -f "$5.backing" ]; then v="$(sed -n 2p "$(cat "$5.backing")")"; else v="${LABEL_VERSION:-}"; fi
+            mkdir -p "$6/vos"; echo "{\"version\": \"$v\"}" >"$6/vos/manifest.json"
+            echo "MOUNT iso9660 $(cat "$5.backing" 2>/dev/null || echo "$5")" ;;
+        exfat | vfat | ntfs3) rm -rf "$6"; mkdir -p "$6"; cp -R "$HOST/${5##*/}/." "$6/"; echo "MOUNT $2 ${5##*/}" ;;
         *) echo "MOUNT $*" ;;
     esac
 }
-umount() { rm -f "$1"; }
+umount() { rm -rf "$1"; }
 e2fsck() { return 0; }
 `
-	test := "ESP=" + h.path("esp") + "; NEW=" + h.path("new_root") + "; " + vars + "\n" + stubs +
+	test := "ESP=" + h.path("esp") + "; NEW=" + h.path("new_root") + "; DEV=" + h.path("dev") + "; HOST=" + h.path("host") +
+		"; " + vars + "\n" + stubs +
 		". " + h.path("hook.sh") + "\nrun_hook\n" + script + "\n"
 	h.write("test.sh", test)
 	out, _ := exec.Command(shell, h.path("test.sh")).CombinedOutput()
@@ -192,6 +213,66 @@ func TestHookMarksFailedSlotBad(t *testing.T) {
 			}
 			if got := h.entries(); got != c.want {
 				t.Errorf("entries %q, want %q\n%s", got, c.want, out)
+			}
+		})
+	}
+}
+
+func TestHookFindsTheLiveISO(t *testing.T) {
+	// A fake .iso file holds its label and version (see the losetup stub).
+	iso := func(label, version string) string { return label + "\n" + version + "\n" }
+	ventoy := func(h *hookEnv) {
+		h.write("host/sdb4/old/vaporos-1.iso", iso("VOS_LIVE", "20260101.000000"))
+		h.write("host/sdb4/other.iso", iso("ARCH_202609", ""))
+		h.write("host/sdb4/isos/VaporOS-2.ISO", iso("VOS_LIVE", "20261001.120000"))
+		h.write("host/sdb4/notes.txt", "")
+	}
+	live := "A_mode=live A_version=20261001.120000 T_sdb4=exfat "
+	cases := []struct {
+		name, vars string
+		setup      func(h *hookEnv)
+		want, not  []string
+	}{
+		{"labelled device", live + "LABEL_VERSION=20261001.120000", func(h *hookEnv) {
+			ventoy(h)
+			h.write("dev/disk/by-label/VOS_LIVE", "")
+		}, []string{"MOUNT iso9660 " + "@dev/disk/by-label/VOS_LIVE", "MOUNT -t erofs"}, []string{"MOUNT exfat", "REBOOT"}},
+		{"file on ventoy's exfat", live, ventoy,
+			[]string{"MOUNT exfat sdb4", "MOUNT iso9660 @host/isos/VaporOS-2.ISO", "MOUNT -t erofs"},
+			[]string{"other.iso", "REBOOT"}},
+		{"another version only", "A_mode=live A_version=20261002.000000 T_sdb4=exfat ", ventoy,
+			[]string{"DETACH @host/old/vaporos-1.iso", "DETACH @host/isos/VaporOS-2.ISO", "ERR: live medium not found", "REBOOT"},
+			[]string{"MOUNT -t erofs"}},
+		// The subtest name ends up in the temp path: it must not say "usb".
+		{"stick before internal drive", live + "T_sdb4=exfat T_sdc1=exfat", func(h *hookEnv) {
+			ventoy(h)
+			h.write("host/sdc1/VaporOS.iso", iso("VOS_LIVE", "20261001.120000"))
+			h.write("sys/devices/pci0/usb2/sdc/sdc1/partition", "1")
+			os.Symlink(h.path("sys/devices/pci0/usb2/sdc/sdc1"), h.path("sys/class/block/sdc1"))
+			h.write("dev/sdc1", "")
+		}, []string{"MOUNT exfat sdc1", "MOUNT iso9660 @host/VaporOS.iso"}, []string{"MOUNT exfat sdb4"}},
+		{"never ext4", live + "T_sdb4=ext4", ventoy,
+			[]string{"ERR: live medium not found", "REBOOT"}, []string{"MOUNT ext4", "MOUNT iso9660"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHookEnv(t)
+			c.setup(h)
+			out := h.run(c.vars, `vos_mount_live "$NEW"`)
+			// Mounted files are copies under /run/vos/host; @ stands for the temp tree.
+			at := func(s string) string {
+				s = strings.ReplaceAll(s, "@host/", h.path("run/vos/host")+"/")
+				return strings.ReplaceAll(s, "@", h.root+"/")
+			}
+			for _, w := range c.want {
+				if !strings.Contains(out, at(w)) {
+					t.Errorf("want %q in:\n%s", at(w), out)
+				}
+			}
+			for _, n := range c.not {
+				if strings.Contains(out, at(n)) {
+					t.Errorf("unwanted %q in:\n%s", at(n), out)
+				}
 			}
 		})
 	}

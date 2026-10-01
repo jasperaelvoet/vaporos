@@ -47,7 +47,7 @@ cat >"$tmp/live.conf" <<ENTRY
 title   VaporOS $version (installer)
 linux   /vos/vmlinuz
 initrd  /vos/initramfs.img
-options vos.mode=live vos.label=VOS_LIVE $cmdline
+options vos.mode=live vos.label=VOS_LIVE vos.version=$version $cmdline
 ENTRY
 mcopy -i "$esp" "$tmp/live.conf" ::/loader/entries/live.conf
 
@@ -55,6 +55,9 @@ grep -qx 'editor no' <<<"$(mtype -i "$esp" ::/loader/loader.conf)" ||
     die "the ISO's loader.conf does not say 'editor no'"
 [[ $(mtype -i "$esp" ::/loader/entries/live.conf) != *console=tty0* ]] ||
     die "the ISO's live entry puts a console on tty0"
+# The initramfs tells this ISO from others by it, as a file on a Ventoy stick.
+[[ " $(mtype -i "$esp" ::/loader/entries/live.conf) " == *" vos.version=$version "* ]] ||
+    die "the ISO's live entry does not name its version"
 
 # Only these files go on the ISO, under /vos (graft points: nothing is copied).
 files=(root.erofs vmlinuz initramfs.img manifest.json)

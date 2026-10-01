@@ -75,7 +75,9 @@
 1. **Download** the ISO (`vaporos-<version>.iso`) from the
    [website](https://jasperaelvoet.github.io/vaporos/download/) or the
    [latest release](https://github.com/jasperaelvoet/vaporos/releases/latest).
-2. **Write it to a USB stick** with balenaEtcher, Rufus (DD mode) or `dd`.
+2. **Write it to a USB stick** with balenaEtcher, Rufus (DD mode) or `dd`. On a
+   [Ventoy](https://www.ventoy.net/) stick, copy the ISO onto it instead (normal
+   mode, exFAT, FAT32 or NTFS).
 3. **Boot the PC from the stick in UEFI mode.** A monitor shows an address
    (`http://vaporos-setup.local`), a QR code and a setup code.
 4. **Scan the QR code** or open the address on your phone. The installer asks

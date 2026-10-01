@@ -82,6 +82,8 @@ func (f *flexBool) UnmarshalJSON(b []byte) error {
 // can have; they back up the partition-label check.
 var systemMounts = map[string]bool{
 	"/": true, "/state": true, "/efi": true, "/usr": true, "/var": true, "/run/vos/medium": true,
+	// The partition the live ISO is an .iso file on (a Ventoy stick).
+	"/run/vos/host": true,
 }
 
 // parseLsblk flattens lsblk's tree into Disk entries: every disk, then its

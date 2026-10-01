@@ -495,7 +495,7 @@ jobs:
     outputs:
       # A step's outcome is recorded before continue-on-error applies, so
       # this is true only when the test itself passed.
-      passed: ${{ steps.smoke.outcome == 'success' }}
+      passed: ${{ steps.smoke.outcome == 'success' && steps.ventoy.outcome == 'success' }}
     env:
       VERSION: ${{ needs.go.outputs.version }}
     steps:
@@ -532,12 +532,13 @@ jobs:
             echo "accel=tcg" >>"$GITHUB_OUTPUT"
           fi
 
+      # parted: tests/ventoy-stick.sh partitions the Ventoy stick with it.
       - name: Install QEMU and OVMF
         run: |
           for try in 1 2 3; do
             if sudo apt-get update -qq &&
                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-                 qemu-system-x86 qemu-utils ovmf >/dev/null; then
+                 qemu-system-x86 qemu-utils ovmf parted >/dev/null; then
               break
             fi
             [ "$try" -lt 3 ] || exit 1
@@ -559,6 +560,19 @@ jobs:
           SIGNED: ${{ needs.sign.outputs.signed == 'true' && '1' || '0' }}
         run: bash tests/qemu-smoke.sh "out/vaporos-$VERSION.iso" "$VERSION" vm-smoke
 
+      # The same ISO as a file on a real Ventoy stick (a pinned, checksummed
+      # release), booted up to the installer: the initramfs has to find the
+      # file itself, since Ventoy cannot hook into systemd-boot.
+      - name: Boot the ISO from a Ventoy stick
+        id: ventoy
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ steps.kvm.outputs.accel != 'kvm' }}
+        env:
+          ACCEL: ${{ steps.kvm.outputs.accel }}
+        run: |
+          bash tests/ventoy-stick.sh "out/vaporos-$VERSION.iso" "$RUNNER_TEMP/ventoy.img"
+          STICK="$RUNNER_TEMP/ventoy.img" bash tests/qemu-smoke.sh "out/vaporos-$VERSION.iso" "$VERSION" vm-ventoy
+
       - name: Upload the VM logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -567,6 +581,8 @@ jobs:
           path: |
             vm-smoke/*.log
             vm-smoke/screens/
+            vm-ventoy/*.log
+            vm-ventoy/screens/
           if-no-files-found: ignore
           retention-days: 14
           overwrite: true

@@ -64,6 +64,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
 | `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
 | `/run/vos/medium/vos/` | initramfs (live) | ISO contents: root.erofs, vmlinuz, initramfs.img, manifest.json(.sig) |
+| `/run/vos/host` | initramfs (live) | read-only mount of the exFAT, FAT or NTFS partition the ISO is an `.iso` file on (Ventoy); absent when the ISO is a device |
 | `/efi` | fstab automount of `PARTLABEL=vos_esp` | ESP (systemd-boot, `/vos/<ver>/{vmlinuz,initramfs.img}`, `loader/entries/vos-<ver>[+N[-M]].conf`). The initramfs gives the boot disk's partitions udev `link_priority=100` (`/run/udev/rules.d/61-vos-boot-disk.rules`); vos refuses an ESP that is not on the disk `/` is on |
 | `/var/home/vapor` | tmpfiles | gaming user home (Steam, Sunshine config/state) |
 | `/var/mnt/<label>` | generator | adopted game library disks (`/mnt` → `var/mnt`), mounted `nofail,noatime,nosuid,nodev,x-systemd.device-timeout=10s` (+`uid=1000,gid=1000` for ntfs3) |
@@ -105,7 +106,11 @@ A boot entry's `options` are built as: `vos.slot=<a|b>` + image cmdline + machin
   without it the initramfs goes by `/dev/disk/by-partlabel` and `vos update` by the disk `/` is on, then the label),
   plus, on a machine with a supported GPU,
   `video=<C>:e drm.edid_firmware=<C>:edid/vaporos.bin firmware_class.path=/var/lib/vos/firmware`
-- **Live ISO entry:** `vos.mode=live vos.label=VOS_LIVE` + the image cmdline.
+- **Live ISO entry:** `vos.mode=live vos.label=VOS_LIVE vos.version=<version>` + the image cmdline.
+  The initramfs mounts the device labelled `vos.label` (a written stick or a CD; the first 3 s are its alone),
+  or else the first `*.iso` file, on any exFAT, FAT or NTFS partition, whose ISO 9660 label is `vos.label`
+  and whose `/vos/manifest.json` has `version` = `vos.version` (Ventoy in normal mode, which cannot hook into
+  systemd-boot). It waits 30 s for either, then reboots.
 - **Test knobs:** `vos.health.fail=1` makes `vos health` fail on a counted boot (ignored on a blessed entry). `vos.debug=1` is reserved.
 
 `vos update` writes the new entry with the *new* manifest's cmdline. `vosd`

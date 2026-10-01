@@ -20,6 +20,11 @@ build() {
     # Without this rule udev never probes the disc, so /dev/disk/by-label
     # never shows up for the ISO.
     add_udev_rule 60-cdrom_id.rules
+    # Live boot from an .iso file on the filesystems Ventoy formats (the hook
+    # mounts it from there); vfat is above. exFAT's default charset is UTF-8.
+    add_module exfat
+    add_module 'ntfs3?'
+    add_module 'nls_utf8?'
 
     add_binary losetup
     add_binary mount
@@ -28,6 +33,8 @@ build() {
     add_binary e2fsck
     # util-linux blkid: the GPT disk GUID (PTUUID) that vos.disk names.
     add_binary blkid
+    # Finds the live ISO as a file on a Ventoy stick; busybox here has no find.
+    add_binary find
 
     add_runscript
 }
@@ -37,7 +44,8 @@ help() {
 Mounts the VaporOS root: a read-only erofs image with /etc overlaid and
 /var bind-mounted from the data partition (installed; the partitions are
 found on the disk vos.disk= names), or the same image from the ISO under a
-tmpfs overlay (live, vos.mode=live). Never opens a shell: failures reboot,
+tmpfs overlay (live, vos.mode=live), on a written stick, a CD, or as an .iso
+file on exFAT, FAT or NTFS (Ventoy). Never opens a shell: failures reboot,
 and a slot that cannot start is marked bad so the other one starts next.
 HELPEOF
 }
