@@ -209,7 +209,8 @@ info "kernel $KVER"
 # Our files. Ownership (and any extended attributes) come from the macOS
 # checkout, so drop them: everything is root's.
 cp -a --no-preserve=ownership,xattr "$SRC/rootfs/." "$ROOT/"
-chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot"
+chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" \
+    "$ROOT/usr/bin/steamos-update" "$ROOT/usr/bin/steamos-select-branch"
 sed -i "s/@VERSION@/$VERSION/g" "$ROOT/usr/lib/os-release"
 ln -sf ../usr/lib/os-release "$ROOT/etc/os-release"
 
@@ -292,7 +293,7 @@ link_policy() { grep -E '^(NamePolicy|AlternativeNamesPolicy|MACAddressPolicy)='
 systemctl --quiet --root="$ROOT" enable \
     vosd.service vos-firewall.service vos-health.service \
     seatd.service avahi-daemon.service power-profiles-daemon.service \
-    systemd-networkd.service systemd-resolved.service \
+    NetworkManager.service systemd-resolved.service \
     systemd-timesyncd.service iwd.service fstrim.timer
 # PipeWire for every user (only vapor exists): sockets activate it on demand.
 systemctl --quiet --root="$ROOT" --global enable \
@@ -517,6 +518,17 @@ check_image() {
     [[ -L $m/etc/systemd/system/boot-complete.target.requires/vos-health.service ]] ||
         problem "vos-health.service is not required by boot-complete.target"
     [[ ! -e $m/etc/systemd/system/multi-user.target.wants/sshd.service ]] || problem "sshd is enabled"
+    [[ -L $m/etc/systemd/system/multi-user.target.wants/NetworkManager.service ]] ||
+        problem "NetworkManager.service is not enabled"
+    [[ ! -e $m/etc/systemd/system/multi-user.target.wants/systemd-networkd.service ]] ||
+        problem "systemd-networkd is enabled next to NetworkManager"
+    for f in usr/bin/NetworkManager usr/lib/iwd/iwd usr/lib/polkit-1/polkitd \
+        usr/lib/NetworkManager/conf.d/50-vos.conf usr/share/polkit-1/rules.d/50-vos-networkmanager.rules; do
+        [[ -e $m/$f ]] || problem "/$f is missing"
+    done
+    for f in usr/bin/steamos-update usr/bin/steamos-select-branch; do
+        [[ -x $m/$f ]] || problem "/$f is not executable"
+    done
 
     umount "$m"
     if (( ${#problems[@]} )); then

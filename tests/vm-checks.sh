@@ -151,6 +151,25 @@ check_cachyos() {
     fi
 }
 
+# Steam's first-run setup lists networks through NetworkManager, as vapor.
+check_network() {
+    local svc state perms rc
+    svc=$(systemctl is-active NetworkManager.service systemd-networkd.service | tr '\n' ,)
+    if [[ $svc == active,inactive, ]]; then ok nm "NetworkManager runs, networkd does not"; else bad nm "NetworkManager,networkd: $svc"; fi
+    state=$(nmcli -t -f STATE general 2>/dev/null)
+    if [[ $state == connected* ]]; then ok nm-state "NetworkManager is $state"; else bad nm-state "NetworkManager is '${state:-unreachable}'"; fi
+    perms=$(runuser -u vapor -- nmcli -t general permissions 2>/dev/null)
+    if grep -qx 'org.freedesktop.NetworkManager.wifi.scan:yes' <<<"$perms" &&
+       grep -qx 'org.freedesktop.NetworkManager.settings.modify.system:yes' <<<"$perms"; then
+        ok nm-polkit "vapor may scan and save networks"
+    else
+        bad nm-polkit "vapor's NetworkManager permissions: $(tr '\n' ' ' <<<"$perms")"
+    fi
+    /usr/bin/steamos-update check >/dev/null 2>&1
+    rc=$?
+    if (( rc == 7 )); then ok steamos-update "reports no update"; else bad steamos-update "exited $rc, expected 7"; fi
+}
+
 # The monitor must never show a console: no getty or shell may own tty1.
 check_no_terminal() {
     local n
@@ -445,6 +464,7 @@ case $group in
         check_layout
         check_units
         check_cachyos
+        check_network
         check_no_terminal
         check_health
         check_ping "$version"

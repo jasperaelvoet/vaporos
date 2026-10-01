@@ -391,4 +391,12 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 
 47990 is never reachable from outside.
 
-**Network** (systemd-networkd, `20-wired.network` and `25-wireless.network`): DHCP with `ClientIdentifier=mac` under `[DHCPv4]`, so the installer and the installed system get the same address.
+**Network** (NetworkManager, `/usr/lib/NetworkManager/conf.d/50-vos.conf`; Wi-Fi through iwd; DNS through systemd-resolved):
+- NetworkManager, not networkd, because Steam's SteamOS first-run setup and its network settings list and join networks over NM's D-Bus API.
+- Wired ports get NM's automatic DHCP profile; route metric 100 wired, 600 Wi-Fi.
+- `ipv4.dhcp-client-id=mac`, so the installer and the installed system get the same address (networkd's `ClientIdentifier=mac` before it sent the same one).
+- `hostname-mode=none` (vosd owns `/etc/hostname`), `ethernet.wake-on-lan=ignore` (`50-vos-wol.link` sets it), no connectivity check.
+- Networks joined in Steam are saved in `/etc/NetworkManager/system-connections/`, kept by the `/etc` overlay.
+- `/usr/share/polkit-1/rules.d/50-vos-networkmanager.rules` grants every `org.freedesktop.NetworkManager.*` action to `vapor`, which has no seat session.
+
+**SteamOS helpers** Steam runs with `-steamos3`, as stubs in `/usr/bin`: `steamos-update` exits 7 (no update; VaporOS updates through vos) and `steamos-select-branch -c` prints `stable`.

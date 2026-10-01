@@ -42,7 +42,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/system` | `/system/*` and `/ssh`: machine info, hostname, reboot/poweroff, SSH toggle and keys. |
 | `internal/update` | `vos update/rollback/status/health/sign/keygen` and vosd's update service: OCI/HTTP/dir sources, streaming into the idle slot, update-state. |
 | `internal/web` | Embedded web UI, the control center (go:embed): server-rendered page shells in `templates/`; ES modules and a Tailwind-built CSS file in `static/`; CSS input in `styles/`; the dev server's fake API data in `fixtures/`; no external assets. The routes are the registry in `web.go`, and `activeSet` picks the UI vosd serves. The previous eight-page UI stays in `templates/legacy/` and `static/legacy/` until it is removed. |
-| `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, networkd. |
+| `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, NetworkManager config and its polkit rule, the `steamos-*` stubs Steam calls. |
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
 | `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, manifest and ISO. |

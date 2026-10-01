@@ -1,0 +1,5 @@
+#!/bin/sh
+# Steam (-steamos3) asks this for OS updates during first-run setup and in its
+# settings. VaporOS updates through vos (docs/CONTRACTS.md "Update format"),
+# so there is never one here. 7 is SteamOS's "no update available".
+exit 7

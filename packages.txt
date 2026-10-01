@@ -28,8 +28,11 @@ e2fsprogs
 dosfstools
 gptfdisk
 
-# ---- Networking (systemd-networkd + resolved come with base)
+# ---- Networking: NetworkManager with the iwd backend, which Steam's
+# first-run setup talks to; polkit lets vapor (Steam) use it. resolved comes with base.
+networkmanager
 iwd
+polkit
 # vapor.local and Sunshine's _nvstream._tcp announcement
 avahi
 nss-mdns

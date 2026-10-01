@@ -1,0 +1,9 @@
+// vapor lingers without a logind seat session, so NetworkManager's default
+// policy would treat Steam as inactive and refuse it. Steam's first-run setup
+// and network settings must scan, join and save networks.
+// See docs/CONTRACTS.md "Network".
+polkit.addRule(function (action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 && subject.user === "vapor") {
+        return polkit.Result.YES;
+    }
+});

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Steam (-steamos3) reads and sets the OS branch through this. VaporOS's channel
+# comes from its update source (docs/CONTRACTS.md "Update format"), not Steam.
+case $1 in
+    -c) echo stable ;;
+    -l) echo stable ;;
+esac
+exit 0
