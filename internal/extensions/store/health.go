@@ -10,7 +10,14 @@ import (
 // tried set becomes enabled, provided pending still names it and every id
 // of the set mounted or was skipped only because this catalog does not list
 // it. Caller holds Lock.
-func AfterHealthy(rep *BootReport) error {
+func AfterHealthy(rep *BootReport) error { return AfterHealthyWant(rep, "") }
+
+// AfterHealthyWant is AfterHealthy for a caller that knows the desired set:
+// want is its fingerprint (Plan.Fingerprint), and the tried set is promoted
+// only when what booted has that fingerprint, so a set the user has since
+// changed is never made the fallback. An empty want skips this check.
+// Caller holds Lock.
+func AfterHealthyWant(rep *BootReport, want string) error {
 	if rep == nil {
 		return nil
 	}
@@ -34,6 +41,9 @@ func AfterHealthy(rep *BootReport) error {
 		if !rep.IsMounted(id) && rep.SkipReason(id) != SkipNotInCatalog {
 			return nil
 		}
+	}
+	if want != "" && Fingerprint(rep.MountedPairs(), s.Options) != want {
+		return nil
 	}
 	_, err = Promote(rep.Set)
 	return err

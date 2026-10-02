@@ -329,21 +329,28 @@ and directory sources serve it by that name next to `manifest.json`.
 | --- | --- |
 | `images/<sha256>.raw` | A sealed image: written to a temp file, fsynced, sha256-checked, closed, reopened read-only, `FS_IOC_ENABLE_VERITY` (sha256, 4096, no salt), `FS_IOC_MEASURE_VERITY` compared with the catalog, then renamed into place and the directory fsynced. A file under its final name is always sealed; one without fs-verity, or with another digest, is deleted and fetched again |
 | `wanted` | the ids the user added, one per line (core ids are always wanted) |
-| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines, module and param `[A-Za-z0-9_-]+`, value `[0-9A-Za-z_x.-]+`; other lines are dropped), boots left to try it (one digit; anything else reads as 0). `<n>` is a decimal number, one more than any set in `sets/` or named by a link or the boot report. Written into `sets/.tmp-<n>`, fsynced, renamed |
+| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines, module and param `[A-Za-z0-9_-]+`, value `[0-9A-Za-z_x.-]+`; other lines are dropped), boots left to try it (one digit; anything else reads as 0). `<n>` is a decimal number that is never used twice: the larger of `sets/.next` and one more than any set in `sets/` or named by a link or the boot report. Written into `sets/.tmp-<n>`, fsynced, renamed |
+| `sets/.next` | the high-water mark: the next set number (one decimal line), written atomically after each new set is renamed into place and never lowered; anything else reads as 0 |
 | `enabled`, `pending` | symlinks `sets/<n>` (relative): the last good set, and the set on trial. Renaming `pending` into place is the commit of a change |
-| `proven` | `<id> <fsverity>` lines: images that passed a boot |
+| `proven` | `<id> <fsverity>` lines: images that passed a boot, pruned by GC |
 | `failed` | `<fingerprint>` lines: sets whose trial failed. The fingerprint is the hex sha256 of the set's sorted, unique `<id> <fsverity>` lines (digests from the booted catalog) followed by its sorted, unique option lines, each ending in `\n` |
 | `skip-once` | present: the next boot mounts no extension, then the initramfs removes it |
 | `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest |
 | `settings/<id>.json` | the extension's settings (never in config.json) |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
-Images are sealed without the lock (a final name is always sealed), and GC
-leaves a temp image (`images/.tmp-*`) alone for an hour after its last write.
-`/run/vos/ext.lock` (flock) serialises every write to `wanted`, the sets,
-`enabled`, `pending`, `proven`, `failed` and the store's garbage collection.
-GC keeps the images that `wanted` ∪ core resolve to in the booted catalog and
-in both slot files, and those mounted this boot.
+Images are sealed without the lock (a final name is always sealed), and may
+be fetched before the `wanted`, set or slot file that keeps them, so GC
+leaves an image, sealed or temp (`images/.tmp-*`), alone for an hour after
+its last write (mtime). `/run/vos/ext.lock` (flock) serialises every write to
+`wanted`, the sets, `enabled`, `pending`, `proven`, `failed` and the store's
+garbage collection. GC keeps the images that `wanted` ∪ core resolve to in
+the booted catalog and in both slot files, and those mounted this boot; the
+sets that `enabled`, `pending` or the boot report name; and the `proven`
+lines whose pair the booted catalog or a slot file lists or this boot
+mounted. vos reads the line files (`wanted`, `proven`, `failed`, a set's
+files) whole or not at all: one over 1 MiB is an error, and a line of 4 KiB
+or more (longer than any valid one) is skipped.
 
 **Boot** (the initramfs hook, after `/state`, `/var` and `/etc` are mounted;
 never in live mode; never `vos_die`):
@@ -386,8 +393,9 @@ never in live mode; never `vos_die`):
    `no-verity`, space-separated; `mode` is `off` with `cmdline` or
    `skip-once`. Skip reasons: `requires`, `not-in-catalog`, `missing`, `size`,
    `fsverity`, `unproven`, `mount`, `no-usr`, `overlay`. A missing file reads
-   as mode `off`. Everything at runtime (generator, Steam settings, the
-   control center) follows this file, not intent.
+   as mode `off` with reason `no-report` (vos's own token). Readers test for a
+   token, never compare the whole `reason`. Everything at runtime (generator,
+   Steam settings, the control center) follows this file, not intent.
 
 **Trial and promotion:** a boot in mode `pending` is an extension trial. `vos
 health` treats it like a counted boot with a fallback: a failure exits 1 (so
@@ -396,24 +404,45 @@ boot uses `enabled`), and `vos.health.fail=1` applies. On success, under the
 lock: every mounted `id fsverity` is added to `proven` (also on an OS trial);
 then, if `pending` still points at the booted set and every id of the set
 mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
-(rename, directory fsync) and `pending` removed. On trial boots (mode
-`pending`, or an OS trial) the generator gives `vos-health.service` a drop-in
-with `JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
+(rename, directory fsync) and `pending` removed. A set the user no longer
+wants is never promoted: reconcile removes or replaces such a `pending`, also
+on its own trial, and a promoter that knows the desired set's fingerprint
+promotes only when what booted has it. On trial boots (mode `pending`, or an
+OS trial) the generator gives `vos-health.service` a drop-in with
+`JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
 
 **Reconcile** (vosd, at start and after every change, under the lock): the
 desired set is `wanted` ∪ core, with their requirements, as the booted catalog
-lists them, limited to images sealed in the store, plus the module options
-their settings render. Equal to the booted set (ids, digests, options): no
-`pending`, unless this boot is that `pending` set's trial (`vos health` promotes
-it). Equal to `pending`: left alone. Its fingerprint in `failed`: not
-proposed (the extension needs attention; "Try again" removes the fingerprint).
-Otherwise a new set becomes `pending` with `tries` 2. A `pending` with `tries` 0
-that this boot did not use moves to `failed`. Missing images are fetched for
-the booted version (from `config.update.source` at that version, by name, and
-from an OCI registry also by digest) and, best effort, for the other slot's.
-Once per boot, at idle I/O priority, vosd reads every mounted image through; an
-I/O error or a wrong digest deletes it, fetches it again (once per digest per
-boot) and proposes a new set.
+lists them, plus the module options their settings render. Additions are
+limited to images sealed in the store: an id whose image is missing stays in
+the desired set only if it, or an id that requires it, mounted this boot or is
+in the booted or the `enabled` set (a missing image never shrinks the set).
+What booted is the mounted ids and digests with the booted set's options; a
+boot that mounted nothing on purpose (mode `off`, or no report) counts as
+`enabled` at the booted catalog's digests. Then, the first that applies:
+1. A `pending` outside its own trial that names the booted or the `enabled`
+   set (a promotion cut short) is removed, never failed.
+2. A `pending` with `tries` 0 that this boot did not use moves to `failed`
+   (fingerprint at the booted catalog's digests). On an OS trial it is only
+   removed: its trials ran at the old image's digests, and the desired set gets
+   a trial of its own at the new ones.
+3. Desired equal to what booted: no `pending`, unless this boot is that
+   `pending` set's trial and the set booted whole (every id mounted or skipped
+   as `not-in-catalog`), which `vos health` promotes.
+4. Equal to `pending` (ids and options): left alone.
+5. Its fingerprint in `failed`: not proposed, and a `pending` is removed (the
+   extension needs attention; "Try again" removes the fingerprint).
+6. Otherwise a new set becomes `pending` with `tries` 2.
+
+After a removal (1, 2, 3 or 5) reconcile runs again. A restart is needed (to
+try `pending`) only while `pending` has tries left, this boot is neither its
+trial nor one with reason `cmdline` or `skip-once`, and every image it names
+is sealed. Missing images are fetched for the booted version (from
+`config.update.source` at that version, by name, and from an OCI registry also
+by digest) and, best effort, for the other slot's. Once per boot, at idle I/O
+priority, vosd reads every mounted image through; an I/O error or a wrong
+digest deletes it and fetches it again (once per digest per boot). The desired
+set keeps it meanwhile, so the next boot mounts the new copy.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 

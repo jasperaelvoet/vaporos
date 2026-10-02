@@ -19,9 +19,11 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
-// tempGrace is how long a temp image file is left alone after its last
-// write: a Put may still be filling it.
-const tempGrace = time.Hour
+// freshGrace is how long GC leaves an image file alone after its last
+// write: a Put may still be filling a temp file, and a sealed image may be
+// fetched ahead of the wanted, set or slot file that will keep it (Put runs
+// without the lock).
+const freshGrace = time.Hour
 
 // ImagePath is where the sealed image with this sha256 lives.
 func ImagePath(sha256 string) string {
@@ -220,7 +222,7 @@ func cleanImageTemps(now time.Time) ([]string, error) {
 			continue
 		}
 		fi, err := ent.Info()
-		if err != nil || now.Sub(fi.ModTime()) < tempGrace {
+		if err != nil || now.Sub(fi.ModTime()) < freshGrace {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(dir, ent.Name())); err != nil {

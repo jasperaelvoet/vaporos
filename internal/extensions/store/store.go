@@ -9,15 +9,17 @@
 // Locking: every function that writes wanted, a set, the enabled or pending
 // link, proven or failed, or runs GC expects the caller to hold Lock
 // (WriteWanted, AddProven, AddFailed, RemoveFailed, WriteSet, Propose,
-// WriteEnabled, ClearPending, Promote, FailPending, AfterHealthy, GC). Put,
-// Has and CleanTemp do not need it: an image only ever gets its final name
-// sealed, and GC leaves fresh temp files alone. The slot files belong to the
-// update lock (WriteSlot, RemoveSlot).
+// WriteEnabled, ClearPending, Promote, FailPending, AfterHealthy,
+// AfterHealthyWant, GC, Collect). Put, Has and CleanTemp do not need it: an
+// image only ever gets its final name sealed, and GC leaves fresh images and
+// temp files alone. The slot files belong to the update lock (WriteSlot,
+// RemoveSlot).
 package store
 
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -35,34 +37,84 @@ var (
 	ErrUnsupported = errors.New("fs-verity is not supported here")
 )
 
-// maxListFile bounds the line files (wanted, proven, failed, a set's files).
+// maxListFile bounds the line files (wanted, proven, failed, a set's
+// files): a larger one is an error, never read in part.
 const maxListFile = 1 << 20
+
+// maxLine bounds one line of them. No valid entry comes near it (the longest
+// is an option line of about 400 bytes), so a longer line is skipped as junk
+// rather than failing every read of the file.
+const maxLine = 4 << 10
+
+// ErrListTooBig means a line file is over maxListFile bytes.
+var ErrListTooBig = errors.New("store file is too big")
 
 // tempPrefix starts every temp file and directory the store writes, so a
 // leftover one is never read as an image or a set.
 const tempPrefix = ".tmp-"
 
 // readLines returns the trimmed, non-empty, non-comment lines of path. A
-// missing file has none.
+// missing file has none; one over maxListFile is ErrListTooBig.
 func readLines(path string) ([]string, error) {
+	var out []string
+	err := scanLines(path, maxListFile, func(line string) { out = append(out, line) })
+	return out, err
+}
+
+// scanLines calls fn with each trimmed, non-empty, non-comment line of path
+// shorter than maxLine. A limit > 0 refuses a larger file before reading
+// any of it. Only a regular file is read: anything else might never end.
+func scanLines(path string, limit int64, fn func(line string)) error {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
-	var out []string
-	sc := bufio.NewScanner(io.LimitReader(f, maxListFile))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		out = append(out, line)
+	fi, err := f.Stat()
+	if err != nil {
+		return err
 	}
-	return out, sc.Err()
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s: not a regular file", path)
+	}
+	tooBig := func(size int64) error {
+		return fmt.Errorf("%s: %w (%d bytes, at most %d)", path, ErrListTooBig, size, limit)
+	}
+	var in io.Reader = f
+	// The store replaces these files by rename; the reader still catches
+	// one that grows in place while it is read.
+	lr := &io.LimitedReader{R: f, N: limit + 1}
+	if limit > 0 {
+		if fi.Size() > limit {
+			return tooBig(fi.Size())
+		}
+		in = lr
+	}
+	r := bufio.NewReaderSize(in, maxLine)
+	for {
+		line, long, err := r.ReadLine()
+		if long {
+			for long && err == nil {
+				_, long, err = r.ReadLine()
+			}
+		} else if err == nil {
+			if l := strings.TrimSpace(string(line)); l != "" && !strings.HasPrefix(l, "#") {
+				fn(l)
+			}
+		}
+		if errors.Is(err, io.EOF) && limit > 0 && lr.N == 0 {
+			return tooBig(limit + 1)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 func joinLines(lines []string) []byte {

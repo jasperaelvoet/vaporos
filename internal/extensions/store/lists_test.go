@@ -3,7 +3,9 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +82,37 @@ func TestFailed(t *testing.T) {
 	}
 	if err := AddFailed("nope"); err == nil {
 		t.Error("AddFailed took a bad fingerprint")
+	}
+}
+
+func TestListFilesAreBounded(t *testing.T) {
+	setup(t)
+	long := strings.Repeat("a", maxLine+10)
+	writeFile(t, config.ExtWantedPath(), "proton\n"+long+"\ncoolercontrol\n"+long)
+	w, err := Wanted()
+	check(t, err)
+	eq(t, "overlong lines skipped", strs(w), strs([]string{"coolercontrol", "proton"}))
+
+	// At the limit the file is read whole, the last line included.
+	line := hex64('1') + "\n"
+	body := strings.Repeat("#"+strings.Repeat(" ", len(line)-2)+"\n", maxListFile/len(line)-1) + line
+	body = strings.Repeat(" ", maxListFile-len(body)) + body
+	writeFile(t, config.ExtFailedPath(), body)
+	f, err := Failed()
+	check(t, err)
+	eq(t, "last line at the limit", f[hex64('1')], true)
+
+	writeFile(t, config.ExtFailedPath(), body+"\n")
+	if _, err := Failed(); !errors.Is(err, ErrListTooBig) {
+		t.Errorf("Failed on a file over the limit = %v, want ErrListTooBig", err)
+	}
+	if err := AddFailed(hex64('2')); !errors.Is(err, ErrListTooBig) {
+		t.Errorf("AddFailed rewrote a file it could not read whole: %v", err)
+	}
+
+	check(t, os.MkdirAll(config.ExtProvenPath(), 0o755))
+	if _, err := Proven(); err == nil {
+		t.Error("Proven read a directory")
 	}
 }
 

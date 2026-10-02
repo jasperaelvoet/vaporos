@@ -80,7 +80,7 @@ func TestWriteSetDropsBadOptionsAndClampsTries(t *testing.T) {
 	if _, err := WriteSet([]string{"Proton"}, nil, 2); err == nil {
 		t.Error("WriteSet took an invalid id")
 	}
-	eq(t, "sets", strs(entries(t, config.ExtSetsDir())), strs([]string{"1", "2"}))
+	eq(t, "sets", strs(entries(t, config.ExtSetsDir())), strs([]string{nextSetFile, "1", "2"}))
 }
 
 func TestWriteSetIgnoresAndCleansTempDirs(t *testing.T) {
@@ -92,7 +92,7 @@ func TestWriteSetIgnoresAndCleansTempDirs(t *testing.T) {
 	}
 	s := writeSet(t, []string{"proton"}, nil, 2)
 	eq(t, "name", s.Name, "1")
-	eq(t, "sets", strs(entries(t, sets)), strs([]string{"1"}))
+	eq(t, "sets", strs(entries(t, sets)), strs([]string{nextSetFile, "1"}))
 }
 
 func TestSetNamesNeverReuseLinkedOrBooted(t *testing.T) {
@@ -104,6 +104,29 @@ func TestSetNamesNeverReuseLinkedOrBooted(t *testing.T) {
 	eq(t, "after report", writeSet(t, nil, nil, 0).Name, "13")
 	check(t, os.Symlink("sets/20", config.ExtPendingLink()))
 	eq(t, "after pending", writeSet(t, nil, nil, 0).Name, "21")
+}
+
+func TestSetNamesNeverReuseCollected(t *testing.T) {
+	setup(t)
+	for range 3 {
+		writeSet(t, []string{"proton"}, nil, 2)
+	}
+	check(t, setLink(config.ExtEnabledLink(), "1"))
+	_, err := GC(nil)
+	check(t, err)
+	eq(t, "sets", strs(entries(t, config.ExtSetsDir())), strs([]string{nextSetFile, "1"}))
+	eq(t, "after GC", writeSet(t, nil, nil, 0).Name, "4")
+	b, err := os.ReadFile(filepath.Join(config.ExtSetsDir(), nextSetFile))
+	check(t, err)
+	eq(t, "high-water mark", string(b), "5\n")
+
+	// A mark that is not a set number counts for nothing; the sets in
+	// sets/ still do.
+	writeFile(t, filepath.Join(config.ExtSetsDir(), nextSetFile), "x\n")
+	eq(t, "bad mark", writeSet(t, nil, nil, 0).Name, "5")
+	writeFile(t, filepath.Join(config.ExtSetsDir(), nextSetFile), "40\n")
+	eq(t, "mark above every set", writeSet(t, nil, nil, 0).Name, "40")
+	noTemps(t, config.ExtSetsDir())
 }
 
 func TestParseTries(t *testing.T) {
@@ -181,7 +204,7 @@ func TestClearPending(t *testing.T) {
 	check(t, err)
 	check(t, ClearPending())
 	eq(t, "pending link", readLink(t, config.ExtPendingLink()), "")
-	eq(t, "set kept for GC", strs(entries(t, config.ExtSetsDir())), strs([]string{"1"}))
+	eq(t, "set kept for GC", strs(entries(t, config.ExtSetsDir())), strs([]string{nextSetFile, "1"}))
 }
 
 func TestFailPending(t *testing.T) {
