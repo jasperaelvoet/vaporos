@@ -22,9 +22,10 @@ const coolerDescriptor = `{"schema":1,"id":"cooler","name":"Cooler","summary":"F
 func extFixture(t *testing.T) (dir string, report func(rep *store.BootReport)) {
 	t.Helper()
 	isolate(t)
-	oldDesc, oldUnits := config.ExtDescriptorsDir, systemUnitDir
-	t.Cleanup(func() { config.ExtDescriptorsDir, systemUnitDir = oldDesc, oldUnits })
+	oldDesc, oldUnits, oldCount := config.ExtDescriptorsDir, systemUnitDir, config.BootCountVar
+	t.Cleanup(func() { config.ExtDescriptorsDir, systemUnitDir, config.BootCountVar = oldDesc, oldUnits, oldCount })
 	config.ExtDescriptorsDir, systemUnitDir = t.TempDir(), t.TempDir()
+	config.BootCountVar = filepath.Join(t.TempDir(), "LoaderBootCountPath")
 	if err := os.WriteFile(filepath.Join(config.ExtDescriptorsDir, "cooler.json"), []byte(coolerDescriptor), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -92,19 +93,42 @@ func TestGeneratorExtensionsSkipped(t *testing.T) {
 }
 
 func TestGeneratorTrialDropin(t *testing.T) {
-	for mode, want := range map[string]bool{
-		store.ModePending: true, store.ModeOSTrial: true, store.ModeEnabled: false, store.ModeOff: false,
-	} {
-		t.Run(mode, func(t *testing.T) {
+	cases := map[string]struct {
+		rep     *store.BootReport // nil: a report that cannot be read
+		counted bool              // systemd-boot counts this boot
+		want    bool
+	}{
+		"pending":  {rep: &store.BootReport{Mode: store.ModePending}, want: true},
+		"os-trial": {rep: &store.BootReport{Mode: store.ModeOSTrial}, counted: true, want: true},
+		"enabled":  {rep: &store.BootReport{Mode: store.ModeEnabled}},
+		"off":      {rep: &store.BootReport{Mode: store.ModeOff, Reason: store.ReasonNoReport}},
+		// An OS trial with vos.ext=0 or skip-once mounts nothing (mode off),
+		// and is a trial all the same.
+		"counted, cmdline":           {rep: &store.BootReport{Mode: store.ModeOff, Reason: store.ReasonCmdline}, counted: true, want: true},
+		"counted, skip-once":         {rep: &store.BootReport{Mode: store.ModeOff, Reason: store.ReasonSkipOnce}, counted: true, want: true},
+		"counted, unreadable report": {counted: true, want: true},
+		"unreadable report":          {},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
 			dir, report := extFixture(t)
-			report(&store.BootReport{Mode: mode, Mounted: mounted("cooler")})
-			if errs := generate(dir); len(errs) != 0 {
+			if c.rep != nil {
+				c.rep.Mounted = mounted("cooler")
+				report(c.rep)
+			} else {
+				os.WriteFile(config.ExtBootPath(), []byte("{broken"), 0o644)
+			}
+			if c.counted {
+				os.WriteFile(config.BootCountVar, []byte("x"), 0o644)
+			}
+			errs := generate(dir)
+			if c.rep == nil && len(errs) != 1 || c.rep != nil && len(errs) != 0 {
 				t.Fatalf("errors %v", errs)
 			}
 			b, err := os.ReadFile(filepath.Join(dir, "vos-health.service.d", "50-vos-trial.conf"))
-			if !want {
+			if !c.want {
 				if !os.IsNotExist(err) {
-					t.Fatalf("drop-in on mode %s: %q %v", mode, b, err)
+					t.Fatalf("drop-in: %q %v", b, err)
 				}
 				return
 			}

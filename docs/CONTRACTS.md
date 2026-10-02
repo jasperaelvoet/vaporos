@@ -482,9 +482,10 @@ mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
 (rename, directory fsync) and `pending` removed. A set the user no longer
 wants is never promoted: reconcile removes or replaces such a `pending`, also
 on its own trial, and a promoter that knows the desired set's fingerprint
-promotes only when what booted has it. On trial boots (mode `pending`, or an
-OS trial) the generator gives `vos-health.service` a drop-in with
-`JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
+promotes only when what booted has it. On trial boots (mode `pending`, or any
+boot systemd-boot counts, also with `vos.ext=0` or `skip-once`) the generator
+gives `vos-health.service` a drop-in with `JobTimeoutSec=10min` and
+`JobTimeoutAction=reboot-force` (see Units).
 
 A trial that hangs the kernel or PID 1 must still reboot, so it uses up a try.
 CachyOS blacklists the hardware watchdog drivers, which only stops their
@@ -701,7 +702,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 - `vosd.service`: `ExecStart=/usr/bin/vos daemon`, `Restart=always`
 - `vos-welcome.service`: started and stopped by vosd only
 - `vos-health.service`: `FailureAction=reboot` (see "Health")
-- `vos-generator` (`/usr/lib/systemd/system-generators`), following `/run/vos/extensions.json` and never intent: for each mounted extension, the system units its shipped descriptor (`/usr/share/vos/extensions/<id>.json`) lists in `services` with scope `system` are wanted the way their `[Install]` would (`.service` by `multi-user.target`, `.socket`, `.timer` and `.path` by `sockets.target`, `timers.target` and `paths.target`; an instance links to its template's file); a unit file that is missing is logged and skipped. On a trial boot (mode `pending` or `os-trial`) it writes `vos-health.service.d/50-vos-trial.conf`: `[Unit]` `JobTimeoutSec=10min`, `JobTimeoutAction=reboot-force`. It always exits 0
+- `vos-generator` (`/usr/lib/systemd/system-generators`), following `/run/vos/extensions.json` and never intent: for each mounted extension, the system units its shipped descriptor (`/usr/share/vos/extensions/<id>.json`) lists in `services` with scope `system` are wanted by `multi-user.target` (`.service`), `sockets.target`, `timers.target` or `paths.target` by suffix (an instance links to its template's file); a unit file that is missing is logged and skipped. On a trial boot (mode `pending`, or any boot systemd-boot counts: `LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f` in efivars, the variable `vos health` reads, also when `vos.ext=0` or `skip-once` left mode `off` or the report cannot be read) it writes `vos-health.service.d/50-vos-trial.conf`: `[Unit]` `JobTimeoutSec=10min`, `JobTimeoutAction=reboot-force`. It always exits 0
 - `seatd.service.d/vos.conf`
 - `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
 - every `systemd-sysext*` and `systemd-confext*` unit is masked: only the initramfs merges extensions

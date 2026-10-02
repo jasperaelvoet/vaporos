@@ -35,9 +35,6 @@ import (
 
 var (
 	MountInfoPath = "/proc/self/mountinfo"
-	// BootCountVar exists while systemd-boot is counting this boot, i.e.
-	// the entry is still on trial (systemd-bless-boot reads it too).
-	BootCountVar = "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 
 	healthTimeout = 90 * time.Second // the whole check
 	pingTimeout   = 60 * time.Second // vosd must answer within this
@@ -350,7 +347,7 @@ func supportedGPU() bool {
 // bootCounting reports whether this boot is still on trial: systemd-boot
 // set LoaderBootCountPath, or the running slot's entry has a counter.
 func bootCounting() bool {
-	if _, err := os.Stat(BootCountVar); err == nil {
+	if _, err := os.Stat(config.BootCountVar); err == nil {
 		return true
 	}
 	if boot.EnsureESP(config.ESP) != nil {

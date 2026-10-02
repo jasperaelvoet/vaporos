@@ -38,6 +38,9 @@ var (
 	GamerHome        = "/var/home/vapor"
 	DefaultUpdateSrc = "oci://ghcr.io/jasperaelvoet/vaporos"
 	HTTPPort         = 80
+	// BootCountVar exists while systemd-boot counts this boot: its entry
+	// is on trial (systemd-bless-boot reads it too).
+	BootCountVar = "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 )
 
 // Derived paths (functions so they follow StateDir/RunDir overrides).

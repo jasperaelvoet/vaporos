@@ -540,7 +540,7 @@ func TestReconcile(t *testing.T) {
 	// It booted but is still on trial: vosd starts before `vos health`
 	// passes, so staged stays until health clears it...
 	e = setup(t)
-	e.write(BootCountVar, "x")
+	e.write(config.BootCountVar, "x")
 	e.setState(&State{Staged: &Staged{Version: bootedVersion, Slot: "a"}})
 	if st, _ := Reconcile(); st.Staged == nil {
 		t.Fatalf("on trial: %+v", st)
@@ -548,7 +548,7 @@ func TestReconcile(t *testing.T) {
 	// ...or until the fallback boot of the old slot finds it out of tries.
 	a := e.entry("a")
 	e.must(os.Rename(a.Path, filepath.Join(filepath.Dir(a.Path), "vos-"+bootedVersion+"+0-3.conf")))
-	os.Remove(BootCountVar)
+	os.Remove(config.BootCountVar)
 	e.bootSlot("b")
 	e.write(config.ImageInfoPath, `{"version":"`+oldIdleVersion+`","rollback_index":50}`)
 	if st, _ := Reconcile(); st.Staged != nil || !st.HasFailed(bootedVersion) {

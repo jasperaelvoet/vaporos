@@ -332,11 +332,11 @@ func TestBootCounting(t *testing.T) {
 	if bootCounting() {
 		t.Fatal("a blessed entry counts as on trial")
 	}
-	e.write(BootCountVar, "x")
+	e.write(config.BootCountVar, "x")
 	if !bootCounting() {
 		t.Fatal("LoaderBootCountPath ignored")
 	}
-	os.Remove(BootCountVar)
+	os.Remove(config.BootCountVar)
 	a := e.entry("a")
 	e.must(os.Rename(a.Path, strings.TrimSuffix(a.Path, ".conf")+"+2-1.conf"))
 	if !bootCounting() {
