@@ -80,12 +80,14 @@ func gamerID() int {
 // Install puts the prefix on the drive the disk setting names and has
 // vapor download the launcher's installer into it. It refuses before it
 // touches a drive when none is picked, and a drive that is not connected,
-// has another filesystem or too little space. A prefix state.json already
-// records stays on the filesystem it records, as the card's status and
-// the launch hook judge it: another drive at its folder isn't connected,
-// and moving Star Citizen to it is removing it and adding it again. What
-// it refuses with is a code the person reads as its sentence
-// (MessageText); the rest of the error goes to the journal.
+// has another filesystem or too little space. While a setup lasts, its
+// prefix stays on the filesystem state.json records, as the card's status
+// and the launch hook judge it: another drive at its folder isn't
+// connected, so its retries never move Star Citizen there. Once Remove
+// marked the record, adding Star Citizen again is a new setup on the drive
+// at the picked folder now: the old drive may be dead, and a new one may
+// have its name. What it refuses with is a code the person reads as its
+// sentence (MessageText); the rest of the error goes to the journal.
 func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 	p, err := placeFor(diskSetting(x))
 	if err != nil {
@@ -95,10 +97,10 @@ func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 	if err != nil {
 		return fmt.Errorf("reading the mount table: %w", err)
 	}
-	old, again := readState(x.DataDir)
-	again = again && old.Prefix == p.Prefix()
+	old, same := readState(x.DataDir)
+	same = same && old.Prefix == p.Prefix()
 	var m mount
-	if again {
+	if same && !old.Removed {
 		m, err = onDrive(ms, p, old.UUID) // its files may be gone: Install puts them back
 	} else {
 		m, err = driveMount(ms, p)
@@ -133,8 +135,10 @@ func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 		return extensions.Refuse(codeCantWrite, fmt.Errorf("marking %s: %w", p.Prefix(), err))
 	}
 	st := state{Disk: p.Disk, Prefix: p.Prefix(), UUID: uuid}
-	if again && strings.EqualFold(old.UUID, uuid) {
-		st.Installer, st.Version = old.Installer, old.Version // Steam keeps its shortcut meanwhile
+	if same && strings.EqualFold(old.UUID, uuid) {
+		// Steam keeps its shortcut meanwhile, and after a removal its own
+		// drive came back with the launcher on it.
+		st.Installer, st.Version = old.Installer, old.Version
 	}
 	if err := saveState(x.DataDir, st); err != nil {
 		return err
@@ -213,16 +217,25 @@ func isFileAt(p place, rel string) bool {
 	return true
 }
 
-// Remove leaves the prefix alone unless purge: then vapor deletes the
-// recorded one, game and all, while the drive that holds it is the one
-// Install recorded. On the system drive the prefix is the home data area,
-// which vosd's purge deletes.
+// Remove first marks the record removed, so adding Star Citizen again is a
+// new setup however the rest goes: vosd keeps state.json when a purge
+// refuses, and the drive it names may never come back. It leaves the
+// prefix alone unless purge: then vapor deletes the recorded one, game and
+// all, while the drive that holds it is the one Install recorded, never
+// another with its name. On the system drive the prefix is the home data
+// area, which vosd's purge deletes.
 func (helper) Remove(ctx context.Context, x *extensions.Ext, purge bool) error {
-	if !purge {
-		return nil
-	}
 	st, ok := readState(x.DataDir)
 	if !ok {
+		return nil
+	}
+	if !st.Removed {
+		st.Removed = true
+		if err := saveState(x.DataDir, st); err != nil {
+			return err
+		}
+	}
+	if !purge {
 		return nil
 	}
 	p, ok := placeOf(st.Prefix)
@@ -246,12 +259,12 @@ func (helper) Remove(ctx context.Context, x *extensions.Ext, purge bool) error {
 	return nil
 }
 
-// Steam gives the shortcut its target once an installer is there: the
-// installer Install recorded, in the prefix. The launch hook starts the
-// launcher instead, so the file may be gone by then: a newer download
-// replaced it before Steam picked up the new target.
+// Steam gives the shortcut its target once a setup has an installer
+// there: the installer Install recorded, in the prefix. The launch hook
+// starts the launcher instead, so the file may be gone by then: a newer
+// download replaced it before Steam picked up the new target.
 func (helper) Steam(x *extensions.Ext) extensions.SteamParts {
-	st, ok := readState(x.DataDir)
+	st, ok := setUp(x.DataDir)
 	if !ok || st.Installer == "" {
 		return extensions.SteamParts{}
 	}
@@ -264,7 +277,7 @@ func (helper) Steam(x *extensions.Ext) extensions.SteamParts {
 // the launcher is in, and when the PC has less memory than it wants.
 func (helper) Status(ctx context.Context, x *extensions.Ext) []extensions.StatusLine {
 	var out []extensions.StatusLine
-	if st, ok := readState(x.DataDir); ok {
+	if st, ok := setUp(x.DataDir); ok {
 		out = append(out, driveLines(x, st)...)
 	}
 	if w := memoryWarning(); w != "" {

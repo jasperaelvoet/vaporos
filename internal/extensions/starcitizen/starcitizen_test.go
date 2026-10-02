@@ -287,6 +287,195 @@ func TestInstallStaysOnItsDrive(t *testing.T) {
 	}
 }
 
+// rawState is state.json as its keys are written.
+func rawState(t *testing.T, x *extensions.Ext) map[string]any {
+	t.Helper()
+	var m map[string]any
+	must(t, json.Unmarshal([]byte(readFile(t, statePath(x.DataDir))), &m))
+	return m
+}
+
+// The pin on a recorded drive holds one setup, not the next: Star
+// Citizen's drive dies, it is removed (a purge refuses, so vosd keeps
+// state.json), a new drive gets the old one's name, and Star Citizen added
+// again picking it is set up there, where "Connect it" could never be done.
+func TestAddAgainOnANewDriveWithItsName(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		b := newBox(t)
+		f := newFeed(t, "2.17.0")
+		x := b.ext(b.mnt)
+		must(t, (helper{}).Install(context.Background(), x))
+		prefix := b.mnt + "/VaporOS/star-citizen"
+		stale := prefix + "/installer/" + f.file
+
+		// The drive dies, with its files.
+		b.mounted = false
+		b.writeMounts()
+		must(t, os.Rename(b.mnt+"/VaporOS", b.root+"/dead"))
+		err := (helper{}).Remove(context.Background(), x, purge)
+		if purge && codeOf(err) != codeFilesStay || !purge && err != nil {
+			t.Errorf("purge %v: removing: %v", purge, err)
+		}
+		removed := state{Disk: b.mnt, Prefix: prefix, UUID: gameUUID, Installer: f.file, Version: "2.17.0", Removed: true}
+		if st, ok := readState(x.DataDir); !ok || st != removed {
+			t.Errorf("purge %v: the record %+v", purge, st)
+		}
+		// Removed, it is set up nowhere, as without a record.
+		if got := (helper{}).Status(context.Background(), x); len(got) != 0 {
+			t.Errorf("purge %v: status %q", purge, statusTexts(got))
+		}
+		if parts := (helper{}).Steam(x); len(parts.Shortcuts) != 0 {
+			t.Errorf("purge %v: Steam parts %+v", purge, parts)
+		}
+		l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(stale, true), Env: slices.Clone(steamEnv)}
+		if err := (helper{}).LaunchHook(context.Background(), l); codeOf(err) != codeFilesElsewhere {
+			t.Errorf("purge %v: the launch hook: %v", purge, err)
+		}
+		var out bytes.Buffer
+		if code := fetchInstallerCmd(context.Background(), []string{"--prefix", prefix}, &out, io.Discard); code != 1 || strings.TrimSpace(out.String()) != `{"refused":"files-elsewhere"}` {
+			t.Errorf("purge %v: fetch-installer: exit %d, %s", purge, code, out.String())
+		}
+
+		// A new, empty drive with its name, picked for Star Citizen added again.
+		b.mounted = true
+		b.swapDrive()
+		f2 := newFeed(t, "2.18.0")
+		b.calls = nil
+		if err := (helper{}).Install(context.Background(), x); err != nil {
+			t.Fatalf("purge %v: adding it again on the new drive: %v", purge, err)
+		}
+		want := state{Disk: b.mnt, Prefix: prefix, UUID: otherUUID, Installer: f2.file, Version: "2.18.0"}
+		if st, ok := readState(x.DataDir); !ok || st != want {
+			t.Errorf("purge %v: state %+v", purge, st)
+		}
+		if _, ok := rawState(t, x)["removed"]; ok {
+			t.Errorf("purge %v: a setup's state.json has removed", purge)
+		}
+		if got := readFile(t, filepath.Join(prefix, markerName)); got != otherUUID+"\n" {
+			t.Errorf("purge %v: marker %q", purge, got)
+		}
+		if len(b.calls) != 1 {
+			t.Errorf("purge %v: ran %q", purge, b.calls)
+		}
+		if got := statusTexts((helper{}).Status(context.Background(), x)); !slices.Equal(got, []string{"Its files are on SATA1TB, which has 900 GB free.", "Start Star Citizen in Steam: its first start installs the RSI Launcher."}) {
+			t.Errorf("purge %v: status %q", purge, got)
+		}
+
+		// That setup is pinned in turn: the old drive back at its folder
+		// isn't its drive.
+		b.gameDev = "sdb1"
+		b.writeMounts()
+		b.calls = nil
+		if err := (helper{}).Install(context.Background(), x); codeOf(err) != codeNotConnected || len(b.calls) != 0 {
+			t.Errorf("purge %v: the old drive back: %v, ran %q", purge, err, b.calls)
+		}
+	}
+}
+
+// Removed while its drive is there or unplugged, and added again once its
+// own drive is back, Star Citizen keeps what is on it: the launcher it
+// installed and the installer Steam's shortcut names.
+func TestAddAgainOnItsOwnDrive(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		b := newBox(t)
+		f := newFeed(t, "2.17.0")
+		x := b.ext(b.mnt)
+		must(t, (helper{}).Install(context.Background(), x))
+		prefix := b.mnt + "/VaporOS/star-citizen"
+		writeFile(t, prefix+launcherPath, "MZ")
+
+		b.mounted = !purge // a purge deletes nothing while it is unplugged
+		b.writeMounts()
+		err := (helper{}).Remove(context.Background(), x, purge)
+		if purge && codeOf(err) != codeFilesStay || !purge && err != nil {
+			t.Errorf("purge %v: removing: %v", purge, err)
+		}
+		if parts := (helper{}).Steam(x); len(parts.Shortcuts) != 0 {
+			t.Errorf("purge %v: Steam parts %+v once it is removed", purge, parts)
+		}
+
+		b.mounted = true
+		b.writeMounts()
+		newFeed(t, "2.18.0")
+		b.calls = nil
+		must(t, (helper{}).Install(context.Background(), x))
+		want := state{Disk: b.mnt, Prefix: prefix, UUID: gameUUID, Installer: f.file, Version: "2.17.0"}
+		if st, ok := readState(x.DataDir); !ok || st != want {
+			t.Errorf("purge %v: state %+v", purge, st)
+		}
+		if len(b.calls) != 0 {
+			t.Errorf("purge %v: ran %q", purge, b.calls)
+		}
+		if parts := (helper{}).Steam(x); parts.Shortcuts["launcher"].Exe != prefix+"/installer/"+f.file {
+			t.Errorf("purge %v: Steam parts %+v", purge, parts)
+		}
+	}
+}
+
+// Added again on a new drive with the old one's name, before that setup
+// recorded anything (the new drive is too full), a purge still knows only
+// the old drive's files: it deletes nothing on the new one, not even a
+// copy of the prefix with the old drive's marker.
+func TestPurgeAfterAddingAgainKeepsTheNewDrivesFiles(t *testing.T) {
+	b := newBox(t)
+	newFeed(t, "2.17.0")
+	x := b.ext(b.mnt)
+	must(t, (helper{}).Install(context.Background(), x))
+	prefix := b.mnt + "/VaporOS/star-citizen"
+	b.mounted = false
+	b.writeMounts()
+	must(t, os.Rename(b.mnt+"/VaporOS", b.root+"/dead"))
+	if err := (helper{}).Remove(context.Background(), x, true); codeOf(err) != codeFilesStay {
+		t.Fatalf("the drive died: %v", err)
+	}
+
+	b.mounted = true
+	b.swapDrive()
+	writeFile(t, filepath.Join(prefix, markerName), gameUUID+"\n")
+	writeFile(t, prefix+"/pfx/user.reg", "the new drive's")
+	b.free[b.mnt] = 100e9
+	b.calls = nil
+	if err := (helper{}).Install(context.Background(), x); codeOf(err) != codeNoSpace {
+		t.Errorf("adding it again on a full drive: %v", err)
+	}
+	if st, ok := readState(x.DataDir); !ok || st.UUID != gameUUID || !st.Removed {
+		t.Errorf("the record %+v", st)
+	}
+	if err := (helper{}).Remove(context.Background(), x, true); codeOf(err) != codeFilesStay {
+		t.Errorf("purging: %v", err)
+	}
+	if len(b.calls) != 0 {
+		t.Errorf("ran %q", b.calls)
+	}
+	if got := readFile(t, prefix+"/pfx/user.reg"); got != "the new drive's" {
+		t.Errorf("the new drive's file holds %q", got)
+	}
+}
+
+// A state.json from before removals were marked is a setup; Remove marks
+// it and keeps the rest, so a later purge finds the files.
+func TestStateWithoutRemoved(t *testing.T) {
+	b := newBox(t)
+	prefix := b.installed()
+	x := b.ext(b.mnt)
+	writeFile(t, statePath(x.DataDir), fmt.Sprintf(`{"disk":%q,"prefix":%q,"uuid":%q,"installer":"RSI Launcher-Setup-2.17.0.exe","version":"2.17.0"}`, b.mnt, prefix, gameUUID))
+	if st, ok := setUp(x.DataDir); !ok || st.Prefix != prefix || st.UUID != gameUUID {
+		t.Errorf("an older state.json: %+v, %v", st, ok)
+	}
+	must(t, (helper{}).Remove(context.Background(), x, false))
+	if raw := rawState(t, x); raw["removed"] != true || raw["prefix"] != prefix || raw["uuid"] != gameUUID {
+		t.Errorf("state.json %v", raw)
+	}
+	if _, ok := setUp(x.DataDir); ok {
+		t.Error("a removed record is a setup")
+	}
+	b.calls = nil
+	must(t, (helper{}).Remove(context.Background(), x, true))
+	if len(b.calls) == 0 || b.calls[0][0] != "rm" || b.calls[0][len(b.calls[0])-1] != prefix {
+		t.Errorf("purging the removed record ran %q", b.calls)
+	}
+}
+
 func TestSteamWithoutInstall(t *testing.T) {
 	b := newBox(t)
 	x := b.ext(b.mnt)
