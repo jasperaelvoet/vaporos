@@ -8,6 +8,8 @@
 #   /state       ext4, read-write        partition vos_data (e2fsck'd first)
 #   /var         bind of /state/var
 #   /etc         overlay: image /etc + /state/etc/upper
+#   /usr         read-only overlay of the extension images this boot mounts
+#                (docs/CONTRACTS.md "Extensions"), when it mounts any
 #   The partitions are found by GPT name on the disk vos.disk names, so a
 #   second disk with VaporOS on it is never used. Installs from before
 #   vos.disk go by /dev/disk/by-partlabel, on whatever disk has the name.
@@ -34,6 +36,7 @@ run_hook() {
     vos_version="$(getarg vos.version)"
     vos_disk_name=""
     slot_dev=""
+    vos_ext_noverity=""
 
     export mount_handler="vos_mount_handler"
 }
@@ -287,6 +290,7 @@ vos_mount_disk() {
     poll_device "$data_dev" 30 || vos_die "data partition not found at ${data_dev}"
 
     vos_fsck_data "$data_dev"
+    vos_ext_verity "$data_dev"
 
     msg ":: mounting VaporOS slot ${vos_slot}"
     mount -t erofs -o ro "$slot_dev" "$root" || vos_die "cannot mount ${slot_dev}"
@@ -300,6 +304,327 @@ vos_mount_disk() {
     mount -t overlay overlay \
         -o "lowerdir=$root/etc,upperdir=$root/state/etc/upper,workdir=$root/state/etc/work,index=off" \
         "$root/etc" || vos_die "cannot overlay /etc"
+
+    vos_mount_extensions "$root"
+}
+
+# Extensions (docs/CONTRACTS.md "Extensions", Boot): sealed erofs images in
+# the store on vos_data, laid over /usr before switch_root, so PID 1, the
+# generators and udev see one finished /usr. The read-only slot's catalog
+# says which fs-verity digest each may have. Nothing here ever stops the
+# boot: whatever goes wrong skips an extension, and /run/vos/extensions.json
+# says why.
+
+# vos_ext_verity DEV: the store seals images with fs-verity, which needs
+# ext4's verity feature. New installs are made with it; older ones get it
+# here, while DEV is not mounted yet. Failing costs only the extensions.
+vos_ext_verity() {
+    tune2fs -l "$1" 2>/dev/null | grep -Eq '^Filesystem features:.* verity( |$)' && return 0
+    msg ":: enabling fs-verity on $1"
+    tune2fs -O verity "$1" >/dev/null 2>&1
+    tune2fs -l "$1" 2>/dev/null | grep -Eq '^Filesystem features:.* verity( |$)' && return 0
+    vos_ext_noverity=1
+    vos_serial "cannot enable fs-verity on $1; no extension can mount"
+    return 1
+}
+
+# vos_ext_id ID: is ID an extension id, ^[a-z][a-z0-9-]{0,31}$?
+vos_ext_id() {
+    case "$1" in
+        [a-z]*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!a-z0-9-]*) return 1 ;;
+    esac
+    [ "${#1}" -le 32 ]
+}
+
+# vos_ext_hex S: is S a digest, 64 lowercase hex digits?
+vos_ext_hex() {
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#1}" -eq 64 ]
+}
+
+# vos_ext_link NAME: prints the set the store's link NAME (enabled or
+# pending) points at. Links are relative, sets/<n>, and resolved against the
+# store on vos_data, never against the initramfs's own /var.
+vos_ext_link() {
+    local t
+    t="$(readlink "$vos_ext/$1" 2>/dev/null)" || return 1
+    case "$t" in
+        sets/*) t="${t#sets/}" ;;
+        *) return 1 ;;
+    esac
+    case "$t" in
+        "" | *[!0-9A-Za-z_-]*) return 1 ;;
+    esac
+    [ -f "$vos_ext/sets/$t/ids" ] || return 1
+    echo "$t"
+}
+
+# vos_ext_tries SET: prints SET's tries; anything but one digit is 0.
+vos_ext_tries() {
+    local t=""
+    [ -f "$vos_ext/sets/$1/tries" ] && read -r t <"$vos_ext/sets/$1/tries"
+    case "$t" in
+        [0-9]) echo "$t" ;;
+        *) echo 0 ;;
+    esac
+}
+
+# vos_ext_decrement SET TRIES: takes a try off SET before any of it mounts,
+# so a set that hangs the boot still uses its tries up.
+vos_ext_decrement() {
+    local d="$vos_ext/sets/$1"
+    if echo "$(($2 - 1))" >"$d/tries.new" && sync && mv -f "$d/tries.new" "$d/tries" && sync; then
+        return 0
+    fi
+    rm -f "$d/tries.new"
+    return 1
+}
+
+vos_ext_why() {
+    vos_ext_reason="${vos_ext_reason:+$vos_ext_reason }$1"
+}
+
+# vos_ext_choose: picks this boot's set: vos_ext_mode, vos_ext_set and
+# vos_ext_left (the tries a pending set has left after this boot).
+vos_ext_choose() {
+    local p t
+    if [ "$(getarg vos.ext)" = 0 ]; then
+        vos_ext_mode=off
+        vos_ext_why cmdline
+    fi
+    if [ -e "$vos_ext/skip-once" ] || [ -L "$vos_ext/skip-once" ]; then
+        rm -rf "$vos_ext/skip-once"
+        sync
+        vos_ext_mode=off
+        vos_ext_why skip-once
+    fi
+    [ "$vos_ext_mode" != off ] || return 0
+    # systemd-boot counts this boot: an OS update on trial. It covers the
+    # enabled set at this catalog's digests; a pending set waits, so a
+    # trial never tries two new things at once.
+    if [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ]; then
+        vos_ext_mode=os-trial
+        vos_ext_set="$(vos_ext_link enabled)" || vos_ext_why no-set
+        return
+    fi
+    if p="$(vos_ext_link pending)"; then
+        t="$(vos_ext_tries "$p")"
+        if [ "$t" -eq 0 ]; then
+            vos_ext_why tries-used
+        elif vos_ext_decrement "$p" "$t"; then
+            vos_ext_mode=pending vos_ext_set="$p" vos_ext_left=$((t - 1))
+            return
+        else
+            vos_ext_why tries-write
+        fi
+    fi
+    vos_ext_mode=enabled
+    vos_ext_set="$(vos_ext_link enabled)" || vos_ext_why no-set
+}
+
+# vos_ext_umount N: unmounts /run/vos/x/N and detaches its loop device, if
+# it got one of ours.
+vos_ext_umount() {
+    local dev
+    umount "/run/vos/x/$1"
+    eval "dev=\${vos_ext_loop_$1:-}"
+    [ -z "$dev" ] || losetup -d "$dev"
+}
+
+# vos_ext_try: checks the image of the caller's catalog entry (id, sha,
+# size, fsv, req) and mounts it at /run/vos/x/<n+1>. Sets r to why it is
+# skipped, or to "" with n counted up.
+vos_ext_try() {
+    local p m dev dir img="$vos_ext/images/$sha.raw"
+    r=requires
+    for p in $req; do
+        case "$up" in
+            *" $p "*) ;;
+            *) return ;;
+        esac
+    done
+    r=missing
+    [ -f "$img" ] || return
+    r=size
+    [ "$(stat -c %s "$img" 2>/dev/null)" = "$size" ] || return
+    r=unproven
+    [ "$vos_ext_mode" != enabled ] || grep -qxF "$id $fsv" "$vos_ext/proven" 2>/dev/null || return
+    # The kernel checks every block it reads against this digest.
+    r=fsverity
+    m="$(fsverity measure "$img" 2>/dev/null)"
+    [ "${m%% *}" = "sha256:$fsv" ] || return
+    r=mount
+    dir="/run/vos/x/$((n + 1))"
+    mkdir -p "$dir" || return
+    if ! mount -t erofs -o ro "$img" "$dir" 2>/dev/null; then
+        # Neither file-backed erofs nor mount's own loop set-up worked.
+        dev="$(losetup -f --show -r "$img")" || return
+        if ! mount -t erofs -o ro "$dev" "$dir"; then
+            losetup -d "$dev"
+            return
+        fi
+        eval "vos_ext_loop_$((n + 1))=\$dev"
+    fi
+    n=$((n + 1))
+    r=no-usr
+    if [ ! -d "$dir/usr" ] || [ -L "$dir/usr" ]; then
+        vos_ext_umount "$n"
+        return
+    fi
+    r=""
+}
+
+# vos_ext_modprobe MOUNTED: writes the set's module options that a mounted
+# image allows (its usr/lib/vos/ext/<id>/module-options lists the
+# "module param" pairs) where kmod reads them. Nothing else from /var ever
+# reaches a kernel module.
+vos_ext_modprobe() {
+    local f="$vos_ext/sets/$vos_ext_set/modprobe.conf" line rest mod pv param val ok out="" n id sha fsv
+    [ -f "$f" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "options "*) rest="${line#options }" ;;
+            *) continue ;;
+        esac
+        mod="${rest%% *}"
+        pv="${rest#* }"
+        param="${pv%%=*}"
+        val="${pv#*=}"
+        [ "$mod" != "$rest" ] && [ "$param" != "$pv" ] || continue
+        # Neither alphabet has a space or an =: the line was exactly
+        # "options <module> <param>=<value>".
+        case "$mod" in "" | *[!0-9A-Za-z_-]*) continue ;; esac
+        case "$param" in "" | *[!0-9A-Za-z_-]*) continue ;; esac
+        case "$val" in "" | *[!0-9A-Za-z_x.-]*) continue ;; esac
+        ok=""
+        while read -r n id sha fsv; do
+            [ -n "$id" ] || continue
+            if grep -qxF "$mod $param" "/run/vos/x/$n/usr/lib/vos/ext/$id/module-options" 2>/dev/null; then
+                ok=1
+                break
+            fi
+        done <<EOF
+$1
+EOF
+        [ -z "$ok" ] || out="${out}options $mod $param=$val
+"
+    done <"$f"
+    [ -n "$out" ] || return 0
+    mkdir -p /run/modprobe.d
+    printf '# Written by the VaporOS initramfs: module options of extension set %s.\n%s' \
+        "$vos_ext_set" "$out" >/run/modprobe.d/vos-ext.conf
+}
+
+# vos_ext_report MOUNTED SKIPPED: writes /run/vos/extensions.json. Ids,
+# digests, set names and reasons all come from alphabets checked above (or
+# are fixed words), so nothing needs escaping.
+vos_ext_report() {
+    local j sep="" n id sha fsv r list="" skipped=""
+    j="{\"mode\":\"$vos_ext_mode\",\"set\":\"$vos_ext_set\",\"tries_left\":$vos_ext_left,\"reason\":\"$vos_ext_reason\",\"mounted\":["
+    while read -r n id sha fsv; do
+        [ -n "$id" ] || continue
+        j="$j$sep{\"id\":\"$id\",\"sha256\":\"$sha\",\"fsverity\":\"$fsv\"}"
+        sep=,
+        list="${list:+$list,}$id"
+    done <<EOF
+$1
+EOF
+    j="$j],\"skipped\":["
+    sep=""
+    while read -r id r; do
+        [ -n "$id" ] || continue
+        j="$j$sep{\"id\":\"$id\",\"reason\":\"$r\"}"
+        sep=,
+        skipped="${skipped:+$skipped,}$id:$r"
+    done <<EOF
+$2
+EOF
+    mkdir -p /run/vos
+    printf '%s]}\n' "$j" >/run/vos/extensions.json.new && mv -f /run/vos/extensions.json.new /run/vos/extensions.json
+    msg ":: extensions (${vos_ext_mode}): ${list:-none mounted}"
+    vos_serial "extensions mode=${vos_ext_mode} set=${vos_ext_set:--} mounted=${list:--} skipped=${skipped:--} reason=${vos_ext_reason:--}"
+}
+
+# vos_mount_extensions ROOT: mounts the images of the set this boot uses and
+# lays their usr/ read-only over ROOT/usr. Installed systems only.
+vos_mount_extensions() {
+    [ "$vos_mode" = live ] && return 0
+    # No word read from the catalog or the store may expand as a glob.
+    set -f
+    vos_ext_mount "$1"
+    set +f
+}
+
+vos_ext_mount() {
+    local root="$1" kind id sha size fsv core req r n=0 ids=" " seen=" " up=" " lower="" mounted="" skipped=""
+    vos_ext="$root/state/var/lib/vos/ext"
+    vos_ext_mode=enabled vos_ext_set="" vos_ext_left=0 vos_ext_reason=""
+    vos_ext_choose
+    [ -z "$vos_ext_noverity" ] || vos_ext_why no-verity
+
+    if [ -n "$vos_ext_set" ]; then
+        while read -r id || [ -n "$id" ]; do
+            vos_ext_id "$id" || continue
+            case "$ids" in *" $id "*) continue ;; esac
+            ids="$ids$id "
+        done <"$vos_ext/sets/$vos_ext_set/ids"
+    fi
+
+    # Catalog order, requirements first. fd 3, so nothing run in the loop
+    # can read the catalog away.
+    if [ "$ids" != " " ] && [ -f "$root/usr/lib/vos/extensions.list" ]; then
+        while read -r kind id sha size fsv core req <&3 || [ -n "$kind" ]; do
+            [ "$kind" = ext ] || continue
+            case "$ids" in *" $id "*) ;; *) continue ;; esac
+            case "$seen" in *" $id "*) continue ;; esac
+            vos_ext_hex "$sha" && vos_ext_hex "$fsv" || continue
+            case "$size" in "" | *[!0-9]*) continue ;; esac
+            seen="$seen$id "
+            vos_ext_try
+            if [ -n "$r" ]; then
+                skipped="$skipped$id $r
+"
+            else
+                up="$up$id "
+                mounted="$mounted$n $id $sha $fsv
+"
+                # The first lowerdir is the top layer: later extensions,
+                # which may require earlier ones, sit above them.
+                lower="/run/vos/x/$n/usr:$lower"
+            fi
+        done 3<"$root/usr/lib/vos/extensions.list"
+    fi
+    for id in $ids; do
+        case "$seen" in
+            *" $id "*) ;;
+            *) skipped="$skipped$id not-in-catalog
+" ;;
+        esac
+    done
+
+    # util-linux passes lowerdir through fsconfig(2) by default, which
+    # older kernels cap far below the page mount(2) takes.
+    if [ -n "$mounted" ] &&
+        ! LIBMOUNT_FORCE_MOUNT2=always mount -t overlay overlay -o "ro,lowerdir=$lower$root/usr" "$root/usr"; then
+        while read -r n id sha fsv; do
+            [ -n "$id" ] || continue
+            vos_ext_umount "$n"
+            skipped="$skipped$id overlay
+"
+        done <<EOF
+$mounted
+EOF
+        mounted=""
+    fi
+
+    [ -z "$mounted" ] || vos_ext_modprobe "$mounted"
+    vos_ext_report "$mounted" "$skipped"
 }
 
 # vos_try_medium DEV: mounts DEV at /run/vos/medium if it is this boot's

@@ -305,7 +305,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | --- | --- |
 | `images/<sha256>.raw` | A sealed image: written to a temp file, fsynced, sha256-checked, closed, reopened read-only, `FS_IOC_ENABLE_VERITY` (sha256, 4096, no salt), `FS_IOC_MEASURE_VERITY` compared with the catalog, then renamed into place and the directory fsynced. A file under its final name is always sealed; one without fs-verity, or with another digest, is deleted and fetched again |
 | `wanted` | the ids the user added, one per line (core ids are always wanted) |
-| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines), boots left to try it (0-9). Written into a temp directory, fsynced, renamed |
+| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions (`<n>`: `[0-9A-Za-z_-]+`): ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines), boots left to try it (one digit, 0-9). Written into a temp directory, fsynced, renamed |
 | `enabled`, `pending` | symlinks `sets/<n>` (relative): the last good set, and the set on trial. Renaming `pending` into place is the commit of a change |
 | `proven` | `<id> <fsverity>` lines: images that passed a boot |
 | `failed` | `<fingerprint>` lines: sets whose trial failed (sha256 of their sorted `id fsverity` lines and module options) |
@@ -322,29 +322,45 @@ in both slot files, and those mounted this boot.
 **Boot** (the initramfs hook, after `/state`, `/var` and `/etc` are mounted;
 never in live mode; never `vos_die`):
 1. Before mounting vos_data (after e2fsck), it sets the ext4 `verity` feature
-   if missing (`tune2fs -O verity`).
-2. It picks the set: nothing with `vos.ext=0` or `skip-once` (removed first);
-   else, while systemd-boot counts this boot (`LoaderBootCountPath` in efivars:
-   an OS trial), `enabled` at the booted catalog's digests, with `pending`
-   left for later; else `pending` if its `tries` > 0 (decremented, temp +
-   rename + sync, before anything mounts; if that fails, `enabled`); else
-   `enabled`, mounting only images listed in `proven`.
-3. For each id of the set in catalog order: skipped if a requirement was
-   skipped, if the catalog does not list it, if `images/<sha256>.raw` is
-   missing or the wrong size, if `fsverity measure` differs from the catalog,
-   if `mount -t erofs -o ro` fails, or if the image has no `usr/`. Mounted at
-   `/run/vos/x/<n>`.
+   if missing (`tune2fs -O verity`). A failure is reason `no-verity`, nothing more.
+2. It picks the set: nothing with `vos.ext=0` or `skip-once` (removed first,
+   whichever applies); else, while systemd-boot counts this boot
+   (`LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f` in efivars: an OS
+   trial), `enabled` at the booted catalog's digests, with `pending` left for
+   later; else `pending` if its `tries` > 0 (decremented, temp + rename + sync,
+   before anything mounts; if that fails, `enabled`); else `enabled`, mounting
+   only images whose `<id> <fsverity>` line is in `proven`. A link counts only
+   as exactly `sets/<n>`, resolved in the store on vos_data, to a set with an
+   `ids` file; `tries` other than one digit is 0. With no set to use, nothing
+   mounts and the mode stays `enabled` (or `os-trial`) with reason `no-set`.
+3. For each id of the set in catalog order (lines of `ids` that are not ids
+   are ignored), the first check that fails is the skip reason: a requirement
+   that did not mount (`requires`, also when it is not in the set),
+   `images/<sha256>.raw` missing (`missing`) or of another size (`size`), not in
+   `proven` (`unproven`, `enabled` mode only), `fsverity measure` other than the
+   catalog (`fsverity`), `mount -t erofs -o ro` failing, also through
+   `losetup -r` (`mount`), no `usr/` directory (`no-usr`, unmounted). Ids the
+   catalog does not list follow as `not-in-catalog`. Each image mounts at the
+   next `/run/vos/x/<n>` (n = 1, 2, ...).
 4. With at least one mounted, `/usr` becomes `overlay -o ro,lowerdir=/run/vos/x/<k>/usr:...:<root>/usr`
-   (no upper; mounted with `LIBMOUNT_FORCE_MOUNT2=always`). If that fails,
-   every image is unmounted and skipped.
-5. `/run/modprobe.d/vos-ext.conf` gets the set's `options` lines whose
-   `module param` pair is in a mounted image's `module-options` and whose
-   value matches `[0-9A-Za-z_x.-]+`.
-6. It writes `/run/vos/extensions.json`:
+   (no upper; mounted with `LIBMOUNT_FORCE_MOUNT2=always`), the images in
+   reverse catalog order, so an extension sits above those it requires. If
+   that fails, every image is unmounted and skipped as `overlay`.
+5. `/run/modprobe.d/vos-ext.conf` gets the set's `modprobe.conf` lines that are
+   exactly `options <module> <param>=<value>` (module and param of
+   `[0-9A-Za-z_-]`, value of `[0-9A-Za-z_x.-]`, one param per line) and whose
+   `<module> <param>` is a line of a mounted image's
+   `usr/lib/vos/ext/<id>/module-options`. Nothing is written without one.
+6. It writes `/run/vos/extensions.json`, one line of compact JSON:
    `{"mode":"pending|enabled|os-trial|off","set":"<n>","tries_left":N,"reason":"...","mounted":[{"id","sha256","fsverity"}],"skipped":[{"id","reason"}]}`.
-   Skip reasons: `requires`, `not-in-catalog`, `missing`, `size`, `fsverity`,
-   `unproven`, `mount`, `no-usr`, `overlay`. Everything at runtime (generator,
-   Steam settings, the control center) follows this file, not intent.
+   `set` is empty when none is used; `tries_left` is what the pending set has
+   left after this boot (0 in other modes); `reason` is zero or more of
+   `cmdline` (`vos.ext=0`), `skip-once`, `no-set`, `tries-used` (`pending` had
+   no tries left), `tries-write` (its tries could not be written) and
+   `no-verity`, space-separated. Skip reasons: `requires`, `not-in-catalog`,
+   `missing`, `size`, `fsverity`, `unproven`, `mount`, `no-usr`, `overlay`.
+   Everything at runtime (generator, Steam settings, the control center)
+   follows this file, not intent.
 
 **Trial and promotion:** a boot in mode `pending` is an extension trial. `vos
 health` treats it like a counted boot with a fallback: a failure exits 1 (so

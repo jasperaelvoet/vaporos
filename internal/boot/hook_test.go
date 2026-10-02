@@ -14,13 +14,15 @@ import (
 // on the vos.disk disk and marks a slot that cannot start as bad, in shell.
 // These tests run its functions under dash against a fake sysfs, /dev and
 // ESP: paths are rewritten into a temp tree, [ -b ] becomes [ -e ] (plain
-// files stand in for block devices), and mount, blkid and reboot are stubs.
+// files stand in for block devices), and mount, blkid, reboot and the
+// extension tools (tune2fs, fsverity, stat) are stubs.
 
 const hookPath = "../../rootfs/usr/lib/initcpio/hooks/vos"
 
 type hookEnv struct {
-	t    *testing.T
-	root string
+	t       *testing.T
+	root    string
+	catalog []string // ext lines of new_root/usr/lib/vos/extensions.list
 }
 
 func newHookEnv(t *testing.T) *hookEnv {
@@ -87,11 +89,11 @@ func (h *hookEnv) run(vars, script string) string {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	hook := strings.NewReplacer("/sys/class/block", h.path("sys/class/block"), "/dev/", h.path("dev")+"/",
-		"/run/", h.path("run")+"/", "[ -b ", "[ -e ").Replace(string(src))
+	hook := strings.NewReplacer("/sys/class/block", h.path("sys/class/block"), "/sys/firmware/", h.path("sys/firmware")+"/",
+		"/dev/", h.path("dev")+"/", "/run/", h.path("run")+"/", "[ -b ", "[ -e ").Replace(string(src))
 	h.write("hook.sh", hook)
 	stubs := `
-getarg() { case "$1" in vos.slot) echo "${A_slot:-$2}" ;; vos.disk) echo "${A_disk:-$2}" ;; vos.mode) echo "${A_mode:-$2}" ;; vos.version) echo "${A_version:-$2}" ;; *) echo "$2" ;; esac; }
+getarg() { case "$1" in vos.slot) echo "${A_slot:-$2}" ;; vos.disk) echo "${A_disk:-$2}" ;; vos.mode) echo "${A_mode:-$2}" ;; vos.version) echo "${A_version:-$2}" ;; vos.ext) echo "${A_ext:-$2}" ;; *) echo "$2" ;; esac; }
 err() { echo "ERR: $*"; }
 msg() { :; }
 poll_device() { [ -e "$1" ]; }
@@ -102,9 +104,13 @@ blkid() {
         *) eval "echo \${G_${6##*/}:-}" ;;
     esac
 }
+# Stubs keep their variables local: the hook's are dynamically scoped, and
+# these run inside its functions.
+#
 # A fake .iso file is its label, then its version. losetup keeps the
 # backing file next to the device, in files: the hook runs it in subshells.
 losetup() {
+    local n
     case "$1" in
         -d) echo "DETACH $(cat "$2.backing")"; rm -f "$2" "$2.backing" ;;
         *) n=$(($(cat "$DEV/loops" 2>/dev/null || echo 0) + 1)); echo "$n" >"$DEV/loops"
@@ -115,10 +121,29 @@ udevadm() { :; }
 sleep() { :; }
 sync() { :; }
 reboot() { echo REBOOT; exit 0; }
+# An extension image (<sha256>.raw, or a loop device backed by one) mounts
+# as a copy of trees/<sha256>. FAIL_FILE_MOUNT fails it unless it comes
+# through losetup; FAIL_IMAGE (sha256s) and FAIL_OVERLAY (the /usr overlay)
+# fail outright.
 mount() {
+    local src img v
     case "$2" in
         vfat) rmdir "$6" 2>/dev/null; ln -s "$ESP" "$6" ;;
-        erofs) [ -n "${FAIL_EROFS:-}" ] && return 1; echo "MOUNT $*" ;;
+        erofs)
+            src="$5"; [ -f "$5.backing" ] && src="$(cat "$5.backing")"
+            case "$src" in
+                *.raw)
+                    img="${src##*/}"; img="${img%.raw}"
+                    [ -f "$5.backing" ] || [ -z "${FAIL_FILE_MOUNT:-}" ] || return 32
+                    case " ${FAIL_IMAGE:-} " in *" $img "*) return 32 ;; esac
+                    cp -R "$TREES/$img/." "$6/" 2>/dev/null
+                    echo "MOUNT erofs $img $6" ;;
+                *) [ -n "${FAIL_EROFS:-}" ] && return 1; echo "MOUNT $*" ;;
+            esac ;;
+        ext4) echo "MOUNT $*"; echo "MOUNT ext4" >>"$TRACE" ;;
+        overlay)
+            case "$6" in */usr) [ -z "${FAIL_OVERLAY:-}" ] || return 32 ;; esac
+            echo "MOUNT $* FORCE=${LIBMOUNT_FORCE_MOUNT2:-}" ;;
         iso9660)
             if [ -f "$5.backing" ]; then v="$(sed -n 2p "$(cat "$5.backing")")"; else v="${LABEL_VERSION:-}"; fi
             mkdir -p "$6/vos"; echo "{\"version\": \"$v\"}" >"$6/vos/manifest.json"
@@ -127,10 +152,30 @@ mount() {
         *) echo "MOUNT $*" ;;
     esac
 }
-umount() { rm -rf "$1"; }
-e2fsck() { return 0; }
+umount() { echo "UMOUNT $1"; rm -rf "$1"; }
+e2fsck() { echo "E2FSCK $*" >>"$TRACE"; return 0; }
+# The data partition has ext4's verity feature once $TMP/verity exists.
+tune2fs() {
+    case "$1" in
+        -l) echo "Filesystem volume name:   vos_data"
+            echo "Filesystem features:      has_journal ext_attr extent 64bit$([ -e "$TMP/verity" ] && echo " verity") metadata_csum" ;;
+        -O) echo "TUNE2FS $*" >>"$TRACE"; [ -n "${FAIL_TUNE2FS:-}" ] || : >"$TMP/verity" ;;
+        *) return 1 ;;
+    esac
+}
+# An image is sealed when fsv/<sha256> holds its fs-verity digest.
+fsverity() {
+    local f
+    [ "$1" = measure ] || return 1
+    f="${2##*/}"; f="${f%.raw}"
+    [ -f "$FSV/$f" ] || { echo "ERROR: $2 is not a verity file" >&2; return 1; }
+    echo "sha256:$(cat "$FSV/$f") $2"
+}
+# busybox stat; macOS has another one.
+stat() { [ "$1 $2" = "-c %s" ] && [ -f "$3" ] && echo $(($(wc -c <"$3"))); }
 `
 	test := "ESP=" + h.path("esp") + "; NEW=" + h.path("new_root") + "; DEV=" + h.path("dev") + "; HOST=" + h.path("host") +
+		"; TMP=" + h.root + "; TRACE=" + h.path("trace") + "; TREES=" + h.path("trees") + "; FSV=" + h.path("fsv") +
 		"; " + vars + "\n" + stubs +
 		". " + h.path("hook.sh") + "\nrun_hook\n" + script + "\n"
 	h.write("test.sh", test)

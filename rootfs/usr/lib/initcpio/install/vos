@@ -35,6 +35,10 @@ build() {
     add_binary blkid
     # Finds the live ISO as a file on a Ventoy stick; busybox here has no find.
     add_binary find
+    # Extensions: tune2fs turns on ext4's verity feature on vos_data, and
+    # fsverity measures each image before it mounts (fsverity-utils).
+    add_binary tune2fs
+    add_binary fsverity
 
     add_runscript
 }
@@ -45,7 +49,9 @@ Mounts the VaporOS root: a read-only erofs image with /etc overlaid and
 /var bind-mounted from the data partition (installed; the partitions are
 found on the disk vos.disk= names), or the same image from the ISO under a
 tmpfs overlay (live, vos.mode=live), on a written stick, a CD, or as an .iso
-file on exFAT, FAT or NTFS (Ventoy). Never opens a shell: failures reboot,
-and a slot that cannot start is marked bad so the other one starts next.
+file on exFAT, FAT or NTFS (Ventoy). Installed, it lays the extension
+images the store holds read-only over /usr once fs-verity vouches for them.
+Never opens a shell: failures reboot, and a slot that cannot start is marked
+bad so the other one starts next; an extension that cannot mount is skipped.
 HELPEOF
 }
