@@ -48,7 +48,7 @@ multi-call:
 | `vos ext star-citizen fetch-installer --prefix DIR` | as `vapor` (it refuses as root), run by the star-citizen helper's install: downloads the RSI Launcher's installer that the publisher's `latest.yml` names into `DIR/installer/`, resuming and checking it, and prints `{"installer","version"}` (see Extensions, Star Citizen). DIR must be a Star Citizen prefix on its own drive. The last line on stderr says what went wrong, for the card. Exit 0, 1 on failure, 2 on bad arguments |
 | `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (exit 3 while another sync runs); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
-| `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam (`vos-gamescope.service`): brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
+| `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam and after every stop (`vos-gamescope.service`), and from vosd when `dispatcher` turns false while that unit is down: brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
 | `vos version` | prints the version |
 
@@ -708,9 +708,10 @@ ones through a trial once it can.
 **Steam** (installed systems only; `vos steam prepare` is
 `internal/steamprep`, vosd's side `internal/extensions`; the files' formats
 are Steam's). Extensions change Steam's own files only through
-`vos steam prepare`, which runs as `vapor` before every start of Steam,
-while it is down. vosd says what is wanted and reads what was done; it
-never edits those files for an extension.
+`vos steam prepare`, which runs as `vapor` while Steam is down: before
+every start of Steam and after every stop. vosd says what is wanted and
+reads what was done; it never edits those files for an extension (it
+only starts prepare as `vapor`, see `dispatcher`).
 
 *Desired state,* `/var/lib/vos/ext/steam.json` (root's, 0644), written by
 vosd atomically and only when its bytes change: at start before its first
@@ -792,8 +793,14 @@ vosd asks for a Steam restart (see Units, Display policy).
   `dispatcher` as `steam.json` has it, and a second failed read in a row
   makes it false. While it is false no launch options are wrapped, and
   those that were are unwrapped. So staging an image built before
-  extensions (a downgrade) turns it false at once, and the Steam restart
-  that follows (at the next quiet moment) unwraps them.
+  extensions (a downgrade) turns it false at once, and the next prepare
+  unwraps them before that image can boot: the Steam restart that follows
+  (at the next quiet moment), or gamescope's stop
+  (`ExecStopPost=-/usr/bin/vos steam prepare`, at shutdown too). When it
+  turns false (from true in the file it replaces) while
+  `vos-gamescope.service` is inactive or failed, no stop or restart is
+  coming, so vosd runs `vos steam prepare` as `vapor` (`runuser`, as it
+  runs vapor's actions) at once.
 - prepare ignores, with a log line, entries that are not well formed: ids
   and keys `^[a-z][a-z0-9-]{0,31}$`, tools, branches and branch request
   ids `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, app ids above 0 and listed once,
@@ -844,8 +851,8 @@ trusts it for display only:
 - `error`: what failed, `; `-separated (a file that does not parse or could
   not be written, `out of time`), and `""` after a clean run.
 
-*`vos steam prepare [--unwrap]`* (`ExecStartPre=-` of
-`vos-gamescope.service`):
+*`vos steam prepare [--unwrap]`* (`ExecStartPre=-` and `ExecStopPost=-`
+of `vos-gamescope.service`, and vosd's run when `dispatcher` turns false):
 1. As root it does nothing: it never writes vapor's files as root. It
    always exits 0 (2 on bad arguments) and logs to stderr (the journal).
 2. It has a 5 s budget on its own timer. The work stops between files at
@@ -1023,7 +1030,9 @@ trusts it for display only:
       with no record of VaporOS's is taken over with `before` `""`. A
       branch no longer asked for goes back to `before` if the manifest
       still asks for the one VaporOS wrote.
-6. `--unwrap`, run before booting a VaporOS without the dispatcher, takes
+6. `--unwrap`, which nothing in VaporOS runs (a plain run unwraps the
+   launch options while `dispatcher` is false; this is for a shell, before
+   booting a system without `vos steam prepare`), takes
    every dispatcher token out of every app's launch options (as above) and
    out of the VaporOS shortcuts' `LaunchOptions` (the shortcuts stay, with
    `%command%` and their `args`). Every CompatToolMapping entry VaporOS owns gets `before`
@@ -1666,7 +1675,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 No keypress, local or from a Moonlight client, reboots or suspends the box: `ctrl-alt-del.target` is masked, `system.conf.d/vos.conf` sets `CtrlAltDelBurstAction=none`, `sysctl.d/99-vos.conf` sets `kernel.sysrq = 0`, and logind ignores the reboot, suspend and hibernate keys (and their long presses).
 
 **User** (`vapor`), in `/usr/lib/systemd/user`, controlled by vosd via `systemctl --user -M vapor@`:
-- `vos-gamescope.service`: env from `%t/vos/gamescope.env` (`VOS_OUTPUT`, `VOS_GS_EXTRA`); `GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg`; `ExecStartPre=-/usr/bin/vos steam prepare` first, so every start of Steam follows the mounted extensions (see Extensions, Steam)
+- `vos-gamescope.service`: env from `%t/vos/gamescope.env` (`VOS_OUTPUT`, `VOS_GS_EXTRA`); `GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg`; `ExecStartPre=-/usr/bin/vos steam prepare` first, so every start of Steam follows the mounted extensions, and `ExecStopPost=-/usr/bin/vos steam prepare`, so every stop (at shutdown too) applies the latest `steam.json` while Steam is down (see Extensions, Steam)
 - `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU. After each start or restart vosd reads that run's log until Sunshine's web UI is up: a run that logged `Platform failed to initialize` (its KMS capture found no lit plane, e.g. it came up before gamescope's first modeset) never recovers by itself and fails every stream with error 503, so vosd restarts it while idle, 5 s after the failure and then backing off to 2 min.
 
 Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
@@ -1677,7 +1686,7 @@ Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
 - **GPU and a monitor:** the welcome screen runs while idle. `session begin` stops it, starts gamescope and applies the mode. `session end` plus 60 s idle (no game or download) stops gamescope and starts the welcome screen again.
 - **HDR:** a `begin` whose HDR differs from gamescope's restarts gamescope only when no Steam game runs; otherwise the session keeps the current HDR (the mode still switches).
 - **A Steam game runs** (here and for idle shutdown: one probe, `internal/gameproc`) while a process of `vapor` (the real uid in `/proc/<pid>/status`) is Steam's reaper for an app (`argv[0]`'s base name exactly `reaper`, `argv[1]` `SteamLaunch`, and a non-zero decimal `AppId=`, up to 64 bits, before `--`; gamescope's `gamescopereaper` is not one), or has `SteamAppId` > 0 in its environment, or while `vapor`'s manager has `vos-ext-handoff.service` loaded (`/run/user/1000/systemd/transient/vos-ext-handoff.service` is a regular file, opened through gamerfs: a symlink in any component counts as no unit).
-- **Steam restart** (`display.Manager.RestartSteam`): when what `vos steam prepare` applies changes under a running Steam (see Extensions, Steam), vosd restarts Steam, only in the gaming state on a box without a monitor (with one, the welcome screen replaces gamescope at the next idle moment, and its next start applies the change), with no session and nothing busy (a game, a download, a Sunshine client), only while `vos-gamescope.service` is active (while it is activating, its prepare step perhaps reading the old file, or deactivating, it looks again later; inactive or failed, its next start runs prepare, so nothing is restarted), and only when the display policy is not switching (it never waits for it); not at all when gamescope's unit last started (its start job, `InactiveExitTimestamp`) after the change. With a process holding `~/.steam/steam.pipe` it runs `steam -shutdown` as `vapor` with that process's `DISPLAY`, `WAYLAND_DISPLAY`, `GAMESCOPE_WAYLAND_DISPLAY`, `XAUTHORITY` and `DBUS_SESSION_BUS_ADDRESS`, for at most 10 s and without holding the display policy: a session that begins meanwhile waits, within its own time limit, until the restart is over and then switches the mode of the gamescope that came back. Steam counts as restarted once that holder's pid or the unit's `ExecMainStartTimestamp` changes (gamescope exits with Steam and `Restart=always` starts both again); after 30 s, without a holder, or when `steam -shutdown` fails or runs out of time, it restarts `vos-gamescope.service` (when the display policy is not switching and the rules above still allow it). Requests made before the restart are one restart; vosd's own come at most once every 10 minutes, one a person asks for whenever the box is quiet. vosd's first gamescope start waits up to 5 s for `/var/lib/vos/ext/steam.json` to name the boot report's set, so prepare sees this boot's extensions.
+- **Steam restart** (`display.Manager.RestartSteam`): when what `vos steam prepare` applies changes under a running Steam (see Extensions, Steam), vosd restarts Steam, only in the gaming state on a box without a monitor (with one, the welcome screen replaces gamescope at the next idle moment, and its next start applies the change), with no session and nothing busy (a game, a download, a Sunshine client), only while `vos-gamescope.service` is active (while it is activating, its prepare step perhaps reading the old file, or deactivating, it looks again later; inactive or failed, its next start runs prepare, so nothing is restarted, though a `dispatcher` that turned false has vosd run prepare at once, see Extensions, Steam), and only when the display policy is not switching (it never waits for it); not at all when gamescope's unit last started (its start job, `InactiveExitTimestamp`) after the change. With a process holding `~/.steam/steam.pipe` it runs `steam -shutdown` as `vapor` with that process's `DISPLAY`, `WAYLAND_DISPLAY`, `GAMESCOPE_WAYLAND_DISPLAY`, `XAUTHORITY` and `DBUS_SESSION_BUS_ADDRESS`, for at most 10 s and without holding the display policy: a session that begins meanwhile waits, within its own time limit, until the restart is over and then switches the mode of the gamescope that came back. Steam counts as restarted once that holder's pid or the unit's `ExecMainStartTimestamp` changes (gamescope exits with Steam and `Restart=always` starts both again); after 30 s, without a holder, or when `steam -shutdown` fails or runs out of time, it restarts `vos-gamescope.service` (when the display policy is not switching and the rules above still allow it). Requests made before the restart are one restart; vosd's own come at most once every 10 minutes, one a person asks for whenever the box is quiet. vosd's first gamescope start waits up to 5 s for `/var/lib/vos/ext/steam.json` to name the boot report's set, so prepare sees this boot's extensions.
 
 Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/sunshine/sunshine.conf`:
 - `capture = kms`, `encoder = vulkan`, `adapter_name = <render node of the virtual connector's card>`, `output_name = <virtual connector name, e.g. DP-1>` (Sunshine's KMS capture matches connector names; a number would mean "n-th active plane", which shifts while the welcome screen lights other outputs)

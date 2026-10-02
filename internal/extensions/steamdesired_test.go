@@ -75,7 +75,23 @@ func steamBox(t *testing.T) (*env, *[]string) {
 		Shortcuts: map[string]ShortcutTarget{"launcher": {Exe: scExe, StartDir: scPrefix}},
 	}})
 	withHelper(t, "truckersmp", settingsHelper{saw: &saw, parts: SteamParts{Beta: map[uint32]BetaRequest{227300: ets2Beta}}})
+	fakeGamescope(t, "active")
 	return e, &saw
+}
+
+// fakeGamescope stands in for gamescope's unit in state, and returns the
+// `vos steam prepare` runs vosd makes as vapor.
+func fakeGamescope(t *testing.T, state string) <-chan struct{} {
+	t.Helper()
+	ran := make(chan struct{}, 10)
+	st, prep := gamescopeState, prepareAsGamer
+	t.Cleanup(func() { gamescopeState, prepareAsGamer = st, prep })
+	gamescopeState = func(context.Context) string { return state }
+	prepareAsGamer = func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	}
+	return ran
 }
 
 // ets2Beta is TruckersMP asking for the branch its mod supports.
@@ -571,6 +587,53 @@ func TestSlotsChangedFollowsTheDispatcher(t *testing.T) {
 	slotB(t, false)
 	s.SlotsChanged()
 	waitFor(t, func() bool { return !dispatcherOn() && len(restarts()) == asked+1 })
+}
+
+// The dispatcher turning off while gamescope is down: vosd runs prepare
+// as vapor at once, since no Steam start or restart is coming that would.
+// While gamescope runs (or starts, or stops) it leaves that to the unit,
+// and a dispatcher that stays off runs nothing more.
+func TestDispatcherOffRunsPrepare(t *testing.T) {
+	for state, runs := range map[string]bool{"inactive": true, "failed": true, "active": false, "activating": false, "deactivating": false, "": false} {
+		t.Run(state, func(t *testing.T) {
+			e, _ := steamBox(t)
+			s, _ := e.service()
+			ran := fakeGamescope(t, state)
+			bootsOtherVersion()
+			slotB(t, true)
+			if _, err := s.SyncSteam(); err != nil || !dispatcherOn() {
+				t.Fatalf("on: %v", err)
+			}
+			slotB(t, false)
+			if _, err := s.SyncSteam(); err != nil || dispatcherOn() {
+				t.Fatalf("off: %v", err)
+			}
+			wait := 200 * time.Millisecond
+			if runs {
+				wait = 5 * time.Second
+			}
+			select {
+			case <-ran:
+				if !runs {
+					t.Fatal("ran prepare")
+				}
+			case <-time.After(wait):
+				if runs {
+					t.Fatal("did not run prepare")
+				}
+			}
+			locked(t, func() error { return store.WriteSlot("b", otherVersion, nil) }) // still none
+			e.report(store.BootReport{Mode: store.ModeEnabled, Set: "4", Mounted: mountedAs(newImage(t, "proton", "", 100, true))})
+			if changed, err := s.SyncSteam(); err != nil || !changed {
+				t.Fatalf("again: %v %v", changed, err)
+			}
+			select {
+			case <-ran:
+				t.Fatal("ran prepare for a dispatcher that was off already")
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
 }
 
 // A slot file written behind vosd's back (`vos update` from a shell) is
