@@ -261,6 +261,14 @@ func TestSteamOwners(t *testing.T) {
 	if d := loadDesired(t); len(d.Shortcuts) != 0 || !slices.Equal(d.Owners, []string{"proton", "star-citizen", "truckersmp"}) {
 		t.Errorf("fallback: %+v", d)
 	}
+	// Mounted, with no target for its only shortcut yet: listed nowhere
+	// else, owned all the same.
+	sc0 := newImage(t, "star-citizen", "", 100, false, "proton")
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "3", Mounted: mountedAs(proton, tmp, sc0)})
+	withHelper(t, "star-citizen", testHelper{})
+	if d := loadDesired(t); len(d.Shortcuts) != 0 || !slices.Contains(d.Owners, "star-citizen") {
+		t.Errorf("no target yet: %+v", d)
+	}
 	// Removed but mounted until the restart: its entries go at once,
 	// while its shortcut waits for the boot that no longer mounts it.
 	// One the booted catalog lacks still counts while it is wanted.
