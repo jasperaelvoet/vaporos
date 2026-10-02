@@ -178,10 +178,22 @@ func (e *testEnv) makeImage(version string, rollback int64, rootSize int, mutate
 	for i := range root {
 		root[i] = byte(rng.Uint32())
 	}
+	return e.makeImageRoot(version, rollback, root, false, mutate)
+}
+
+// makeImageRoot builds and signs an image with this root and, with index,
+// its block index (root.erofs.idx).
+func (e *testEnv) makeImageRoot(version string, rollback int64, root []byte, index bool, mutate func(*manifest.Manifest)) *image {
+	e.t.Helper()
 	files := map[string][]byte{
 		"root.erofs":    root,
 		"vmlinuz":       []byte("kernel " + version),
 		"initramfs.img": []byte("initrd " + version),
+	}
+	if index {
+		var idx bytes.Buffer
+		e.must(WriteIndex(bytes.NewReader(root), int64(len(root)), &idx))
+		files["root.erofs.idx"] = idx.Bytes()
 	}
 	art := func(name string) manifest.Artifact {
 		sum := sha256.Sum256(files[name])
@@ -194,6 +206,9 @@ func (e *testEnv) makeImage(version string, rollback int64, rootSize int, mutate
 		Artifacts: map[string]manifest.Artifact{
 			"root": art("root.erofs"), "kernel": art("vmlinuz"), "initrd": art("initramfs.img"),
 		},
+	}
+	if index {
+		m.Artifacts[manifest.Index] = art("root.erofs.idx")
 	}
 	if mutate != nil {
 		mutate(m)
@@ -231,33 +246,44 @@ type fakeRegistry struct {
 	serveIndex bool
 
 	blobs           map[string][]byte // digest -> content
+	names           map[string]string // digest -> file name
 	manifest, index []byte
 	rootDigest      string
 	failRoot        atomic.Bool // drop the next root download half way
+	noRanges        atomic.Bool // answer root's ranges with the whole file
+	// rangeLimit, when > 0, is how many bounded ranges of root are served;
+	// the ones after it get 503. onRange runs for each, with its number.
+	rangeLimit atomic.Int32
+	rangeReqs  atomic.Int32
+	onRange    func(n int)
+	minSig     atomic.Int32 // storage URLs signed before this have expired (403)
 	// holdRoot, when set, stops each root download half way until the
 	// client gives up, and receives once the half is out.
 	holdRoot chan struct{}
 
 	tokenReqs, rootBlobReqs atomic.Int32
+	rootServed              atomic.Int64 // bytes of root sent
 	mu                      sync.Mutex
 	rootRanges, rootSigs    []string
+	blobReqs                map[string]int // registry blob requests, by file name
 	sig                     int
 }
 
 func newFakeRegistry(t *testing.T, img *image) *fakeRegistry {
 	t.Helper()
-	f := &fakeRegistry{t: t, repo: "jasperaelvoet/vaporos", tag: "main", blobs: map[string][]byte{}}
+	f := &fakeRegistry{t: t, repo: "jasperaelvoet/vaporos", tag: "main", blobs: map[string][]byte{}, names: map[string]string{}, blobReqs: map[string]int{}}
 	var layers []map[string]any
 	names := []string{"manifest.json", "manifest.json.sig", "root.erofs", "vmlinuz", "initramfs.img"}
 	for _, name := range slices.Sorted(maps.Keys(img.files)) {
 		if !slices.Contains(names, name) {
-			names = append(names, name) // extension images
+			names = append(names, name) // root.erofs.idx and extension images
 		}
 	}
 	for _, name := range names {
 		b := img.files[name]
 		d := sha(b)
 		f.blobs[d] = b
+		f.names[d] = name
 		layers = append(layers, map[string]any{
 			"mediaType": "application/octet-stream", "digest": d, "size": len(b),
 			"annotations": map[string]string{titleAnnotation: name},
@@ -335,6 +361,7 @@ func (f *fakeRegistry) registry(w http.ResponseWriter, r *http.Request) {
 			f.rootBlobReqs.Add(1)
 		}
 		f.mu.Lock()
+		f.blobReqs[f.names[d]]++
 		f.sig++
 		n := f.sig
 		f.mu.Unlock()
@@ -353,6 +380,10 @@ func (f *fakeRegistry) storage(w http.ResponseWriter, r *http.Request) {
 	data, ok := f.blobs[d]
 	if !ok || r.URL.Query().Get("sig") == "" {
 		http.NotFound(w, r)
+		return
+	}
+	if n, _ := strconv.Atoi(r.URL.Query().Get("sig")); n < int(f.minSig.Load()) {
+		http.Error(w, "AuthenticationFailed: signature expired", http.StatusForbidden)
 		return
 	}
 	if d == f.rootDigest {
@@ -379,6 +410,32 @@ func (f *fakeRegistry) storage(w http.ResponseWriter, r *http.Request) {
 			w.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler) // the connection drops half way
 		}
+		if rg := r.Header.Get("Range"); rg != "" && !strings.HasSuffix(rg, "-") {
+			n := f.rangeReqs.Add(1)
+			if f.onRange != nil {
+				f.onRange(int(n))
+			}
+			if limit := f.rangeLimit.Load(); limit > 0 && n > limit {
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		if f.noRanges.Load() {
+			r.Header.Del("Range")
+		}
+		w = countingWriter{w, &f.rootServed}
 	}
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+}
+
+// countingWriter counts the body bytes a handler writes.
+type countingWriter struct {
+	http.ResponseWriter
+	n *atomic.Int64
+}
+
+func (c countingWriter) Write(b []byte) (int, error) {
+	k, err := c.ResponseWriter.Write(b)
+	c.n.Add(int64(k))
+	return k, err
 }

@@ -43,6 +43,7 @@ multi-call:
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher (see Extensions). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. Until the dispatcher hooks anything it execs CMD (looked up in `PATH` unless absolute; `argv[0]` as given) with ARGS and the environment unchanged; `--shortcut` refuses instead (exit 1, reason on stderr) unless `/run/vos/extensions.json`, which it reads as `vapor`, lists ID as mounted; `--app` always runs CMD. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
+| `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
 | `vos version` | prints the version |
 
@@ -178,9 +179,11 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
  "cmdline":"quiet …","min_updater":1,
  "artifacts":{"root":{"name":"root.erofs","size":123,"sha256":"…"},
               "kernel":{"name":"vmlinuz","size":123,"sha256":"…"},
-              "initrd":{"name":"initramfs.img","size":123,"sha256":"…"}}}
+              "initrd":{"name":"initramfs.img","size":123,"sha256":"…"},
+              "index":{"name":"root.erofs.idx","size":123,"sha256":"…"}}}
 ```
 - `version` is the UTC build or commit time, `YYYYMMDD.HHMMSS`.
+- `index` is optional (older updaters ignore it; `min_updater` stays 1): the block index of `root.erofs`, see "Block index". The build always writes it.
 - `rollback_index` is the same instant as unix seconds (monotonic across dev and CI).
 - The signature is `manifest.json.sig`: base64 of the ed25519 signature over the exact bytes of `manifest.json`.
 - Private keys are base64 of the 64-byte ed25519 private key.
@@ -192,7 +195,7 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `oci://ghcr.io/jasperaelvoet/vaporos` with a tag, which is the channel (branch name, `main` by default). Pulled anonymously:
   1. `GET https://ghcr.io/token?scope=repository:jasperaelvoet/vaporos:pull&service=ghcr.io`
   2. manifest with `Accept: application/vnd.oci.image.manifest.v1+json`
-  3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`, and each extension image `ext-<id>.raw`. Follow the 307 redirect; resume with `Range`.
+  3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`, `root.erofs.idx` when the manifest names it, and each extension image `ext-<id>.raw`. Follow the 307 redirect; resume with `Range`. Block downloads (see "Block index") send `Range: bytes=A-B` and need a 206; they may reuse a storage URL for up to 2 minutes, and ask the registry again when it answers anything else.
   4. an extension image also with no tag at all, as the blob `/v2/<repo>/blobs/sha256:<sha256>`, which works while any tag still holds it (token, redirect and resume as above).
 - `http(s)://host/dir/` or a local dir: the same files by name.
 
@@ -203,17 +206,44 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `rollback_index` > booted image's, unless `--force` or `--allow-downgrade`.
 - Without a picked version or `--force`: `rollback_index` > `held.rollback_index`.
 - The version is not in `failed`, unless `--force`.
-- Every artifact's size and sha256 match, and every extension image's size, sha256 and fs-verity digest.
+- Every artifact's size and sha256 match (for OCI, also its layer's digest and size), and every extension image's size, sha256 and fs-verity digest.
 - Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
-0. Fetch kernel and initrd, then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. On a boot whose report has reason `no-verity` no image is fetched, counted or given space (they could not be sealed), and a seal refused as unsupported stops the fetching: either way the new image then starts without them (logged). Any other failure fails the stage.
+0. Fetch kernel and initrd into `/var/tmp`, verified; a file the ESP already holds for an installed version (same size and sha256) is copied from there instead of downloaded. Then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. On a boot whose report has reason `no-verity` no image is fetched, counted or given space (they could not be sealed), and a seal refused as unsupported stops the fetching: either way the new image then starts without them (logged). Any other failure fails the stage.
 1. Under ext.lock: remove the idle slot's entries, then write `ext/slots/<idle>.json` from the new manifest (an empty `extensions` object when it has none). An image of step 0 that GC removed in between (no slot file named it yet) is fetched again.
-2. Stream root into the idle slot partition while hashing.
+2. Fill the idle slot partition with root: from the block index when the manifest has one (see "Block index"), else by streaming the whole file while hashing.
 3. Re-read and verify.
 4. Kernel and initrd to `/efi/vos/<ver>/` (tmp + rename).
 5. Write entry `vos-<ver>+3.conf` last. The running entry stays a fallback: `+0-1` for a downgrade or the same version, re-blessed if it was at `+0` and the new version is newer. systemd-boot's NVRAM overrides (`LoaderConfigTimeout`, `LoaderEntryDefault`, `LoaderEntryPreferred`) are cleared; the installer clears them after `bootctl install` too.
 6. Record `staged` in update-state (and `held` for a downgrade).
+
+**Block index** (`root.erofs.idx`, made by `vos index root.erofs`): a 32-byte
+header, then one hash per 4096-byte block of `root.erofs`, in order (the last
+block may be shorter). Header: `VOSBIDX1`, the block size (u32 LE, 4096), the
+hash size (u32 LE, 16), the image size (u64 LE, = `artifacts.root.size`),
+8 zero bytes. A hash is the first 16 bytes of the block's SHA-256. erofs puts
+every file's data on block boundaries, so files that did not change between
+two images are the same blocks, only at other offsets. With the index, step 2 is:
+1. Download the index (verified against the manifest) and read the slots: the
+   idle slot's blocks where the new image puts them, and the booted slot's
+   blocks up to the size its erofs superblock gives (`blocks << blkszbits` at
+   byte 1024; the new image's size when it has none).
+2. Every block of the new image the idle slot already holds stays (so a stage
+   that stopped part way resumes there); one the booted slot holds anywhere is
+   copied from it; the rest is downloaded. Runs of missing blocks are joined
+   across gaps of up to 64 KiB, cut at 8 MiB, and fetched 8 at a time as
+   `Range` requests of root.
+3. Every block is checked against the index before it is written, and step 3
+   still checks the whole image.
+
+The updater streams the whole root instead when the manifest has no index, the
+index is malformed, more than 3/4 of the image would be downloaded, the source
+answers a range with the whole file, or a downloaded block or the read-back
+does not match. A download that fails (network, cancel) fails the stage; the
+next stage keeps the blocks already in the idle slot. While blocks are
+fetched, `update.progress` `write` counts the bytes to download in `bytes` and
+`total`; while the slots are read and blocks copied, `total` is 0.
 
 **Update state** (`/var/lib/vos/update-state.json`):
 ```json
@@ -221,9 +251,10 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
  "available":{"version":"<ver>","size":123,"checked":"RFC3339"},"checked":"RFC3339","last_error":"",
  "held":{"version":"<ver>","rollback_index":N}}
 ```
-`available.size` is the root plus the extension images this machine would
-still have to fetch for it (Write order step 0; none on a boot with reason
-`no-verity`).
+`available.size` is the most a stage downloads: the root plus the extension
+images this machine would still have to fetch for it (Write order step 0; none
+on a boot with reason `no-verity`). With the block index, less of the root is
+downloaded.
 On daemon start: if `staged.version` ≠ booted, and the staged entry has no
 tries left (or is gone), append it to `failed` and clear `staged`. If it
 equals booted, clear `staged` once the boot is no longer on trial.
@@ -672,7 +703,7 @@ ones through a trial once it can.
 
 | Topic | Data |
 | --- | --- |
-| `update.progress` | `{phase,percent,bytes,total,version,error?}`. A stage goes through `check`, `download` (kernel, initrd and extension images), `write` (root into the idle slot), `verify` (read back), `install` (ESP) and `done`; `percent` covers the whole stage, with `download` and `write` sharing 0-80 % by their bytes, while `bytes` and `total` count the current phase. Phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped |
+| `update.progress` | `{phase,percent,bytes,total,version,error?}`. A stage goes through `check`, `download` (kernel, initrd and extension images), `write` (root into the idle slot), `verify` (read back), `install` (ESP) and `done`; `percent` covers the whole stage, with `download` and `write` sharing 0-80 % by their bytes (the files `download` fetches, and root's size for `write`), while `bytes` and `total` count the current phase, and in `write` only what it downloads (see "Block index"). Phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped |
 | `update.state` | the update-state |
 | `install.progress` | `{step,percent,message,state}` |
 | `session.begin` | `{client,app?,mode,hdr,since}` (`app`: Sunshine's app, `Steam` or a game's name, omitted when Sunshine names none; `since`: when it was launched, RFC 3339 UTC; a resume keeps both) |
@@ -827,4 +858,8 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - Networks joined in Steam are saved in `/etc/NetworkManager/system-connections/`, kept by the `/etc` overlay.
 - `/usr/share/polkit-1/rules.d/50-vos-networkmanager.rules` grants every `org.freedesktop.NetworkManager.*` action to `vapor`, which has no seat session.
 
-**SteamOS helpers** Steam runs with `-steamos3`, as stubs in `/usr/bin`: `steamos-update` exits 7 (no update; VaporOS updates through vos) and `steamos-select-branch -c` prints `stable`.
+**SteamOS helpers** Steam runs with `-steamos3` and calls SteamOS's helpers, which VaporOS ships as stubs in `/usr/bin` and `/usr/bin/steamos-polkit-helpers/` (`polkit-helpers/` below). None of them goes through pkexec as SteamOS's do; each runs as `vapor`.
+- `steamos-update` exits 7 (no update; VaporOS updates through vos) and `steamos-select-branch -c` prints `stable`. Steam checks for and applies OS updates through `polkit-helpers/steamos-update`, which runs `/usr/bin/steamos-update` with the same arguments; without it, first-run setup stops at "Unable to download the required update (2)".
+- `polkit-helpers/steamos-set-timezone <Area/City>` runs `timedatectl set-timezone`, as on SteamOS, so a zone picked in Steam's first-run setup or settings replaces the installer's and is kept by the `/etc` overlay. `/usr/share/polkit-1/rules.d/50-vos-timedate.rules` grants `vapor` `org.freedesktop.timedate1.set-timezone` and no other timedated action (not the clock, NTP or the RTC).
+- Steam Deck firmware, which Steam checks on every update check ("Error: YieldingCheckForUpdateBIOS: update check error" without the stubs): `polkit-helpers/jupiter-biosupdate` exits 0 and `polkit-helpers/jupiter-dock-updater` exits 7, each its updater's "no update" (Valve's BIOS updater exits 7 when it has one, the dock updater 0). `jupiter-initial-firmware-update` exits 0: no day-one firmware update, which only the Steam Deck OLED needs.
+- `polkit-helpers/steamos-devkit-mode --disable` exits 0, since there is no devkit service to stop; `--enable` exits 1.

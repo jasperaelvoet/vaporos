@@ -45,6 +45,9 @@ var ErrChecksum = errors.New("checksum mismatch")
 // gave up; the last failure is wrapped too.
 var ErrRetriesExhausted = errors.New("giving up")
 
+// errNoRanges means a server answered a byte range with the whole file.
+var errNoRanges = errors.New("the server does not support byte ranges")
+
 // Retry policy for downloads. Variables so tests can shrink them.
 var (
 	maxAttempts  = 10               // consecutive failures without progress
@@ -56,15 +59,29 @@ var (
 
 // httpClient is shared by every remote source. It has no overall timeout
 // (an image takes minutes); stalls are caught per connection instead.
-var httpClient = &http.Client{Transport: &http.Transport{
-	Proxy:                 http.ProxyFromEnvironment,
-	DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-	TLSHandshakeTimeout:   15 * time.Second,
-	ResponseHeaderTimeout: 60 * time.Second,
-	IdleConnTimeout:       90 * time.Second,
-	MaxIdleConns:          8,
-	ForceAttemptHTTP2:     true,
-}}
+var httpClient = &http.Client{Transport: newTransport()}
+
+// An HTTP/2 connection that goes quiet this long is pinged, and closed
+// when the ping gets no answer in time. Otherwise a dead connection stays
+// in the pool, and every retry of every request on it stalls again.
+// Variables so tests can shorten them.
+var (
+	h2PingAfter   = 15 * time.Second
+	h2PingTimeout = 15 * time.Second
+)
+
+func newTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          8,
+		ForceAttemptHTTP2:     true,
+		HTTP2:                 &http.HTTP2Config{SendPingTimeout: h2PingAfter, PingTimeout: h2PingTimeout},
+	}
+}
 
 // Source is where images come from: an OCI registry, an HTTP(S)
 // directory, a local directory or the live medium. Each serves the same
@@ -79,8 +96,11 @@ type Source struct {
 
 // fetcher is one kind of source.
 type fetcher interface {
-	// open returns name's content from byte offset on.
-	open(ctx context.Context, name string, offset int64) (io.ReadCloser, error)
+	// open returns name's content from byte offset on: up to byte end
+	// (exclusive), or to the end of the file when end < 0. A bounded open
+	// that the source cannot serve as a range fails with errNoRanges rather
+	// than return the whole file.
+	open(ctx context.Context, name string, offset, end int64) (io.ReadCloser, error)
 	// remote reports whether failures are worth retrying (network) or not
 	// (a local file reads the same the second time).
 	remote() bool
@@ -226,6 +246,13 @@ func (s *Source) Open(ctx context.Context, name string, size int64) io.ReadClose
 	return &resumeReader{ctx: ctx, f: s.f, name: name, size: size}
 }
 
+// OpenRange streams bytes [off, end) of name as byte range requests,
+// resuming like Open. A source that answers a range with the whole file
+// fails with errNoRanges.
+func (s *Source) OpenRange(ctx context.Context, name string, off, end int64) io.ReadCloser {
+	return &resumeReader{ctx: ctx, f: s.f, name: name, off: off, size: end, ranged: true}
+}
+
 // Fetch streams artifact a into w, verifying its size and sha256. onChunk,
 // if set, runs after every chunk with the bytes done so far; an error from
 // it stops the copy.
@@ -274,11 +301,12 @@ func copyVerified(r io.Reader, w io.Writer, size int64, want string, onChunk fun
 // resumeReader reads one file from a fetcher, reconnecting at the current
 // offset whenever a remote connection fails or stalls.
 type resumeReader struct {
-	ctx  context.Context
-	f    fetcher
-	name string
-	off  int64
-	size int64 // -1 when unknown
+	ctx    context.Context
+	f      fetcher
+	name   string
+	off    int64
+	size   int64 // where reading stops; -1 when unknown
+	ranged bool  // ask for [off, size) only
 
 	body   io.ReadCloser
 	cancel context.CancelFunc
@@ -347,7 +375,11 @@ func (r *resumeReader) Read(p []byte) (int, error) {
 func (r *resumeReader) connect() error {
 	ctx, cancel := context.WithCancel(r.ctx)
 	stall := time.AfterFunc(stallTimeout, cancel)
-	body, err := r.f.open(ctx, r.name, r.off)
+	end := int64(-1)
+	if r.ranged {
+		end = r.size
+	}
+	body, err := r.f.open(ctx, r.name, r.off, end)
 	if sb, ok := body.(*skipBody); err == nil && ok {
 		// Skipped bytes are arriving bytes: a long skip is not a stall.
 		err = sb.skip(func() { stall.Reset(stallTimeout) })
@@ -464,7 +496,8 @@ func retryable(err error) bool {
 // dirFetcher reads a local directory (also the live medium).
 type dirFetcher struct{ dir string }
 
-func (d dirFetcher) open(ctx context.Context, name string, offset int64) (io.ReadCloser, error) {
+// open ignores end: the reader stops where it wants, and nothing more is read.
+func (d dirFetcher) open(ctx context.Context, name string, offset, end int64) (io.ReadCloser, error) {
 	f, err := os.Open(filepath.Join(d.dir, name))
 	if err != nil {
 		return nil, err
@@ -496,20 +529,21 @@ func newHTTPDir(spec string) (*httpFetcher, error) {
 	return &httpFetcher{base: u}, nil
 }
 
-func (h *httpFetcher) open(ctx context.Context, name string, offset int64) (io.ReadCloser, error) {
-	resp, err := get(ctx, h.base.JoinPath(name).String(), nil, offset)
+func (h *httpFetcher) open(ctx context.Context, name string, offset, end int64) (io.ReadCloser, error) {
+	resp, err := get(ctx, h.base.JoinPath(name).String(), nil, offset, end)
 	if err != nil {
 		return nil, err
 	}
-	return finish(ctx, resp, offset)
+	return finish(ctx, resp, offset, end)
 }
 
 func (h *httpFetcher) remote() bool   { return true }
 func (h *httpFetcher) String() string { return h.base.String() }
 
 // get sends one GET without following redirects (finish does that by hand,
-// so a registry token never reaches a storage URL). offset > 0 adds Range.
-func get(ctx context.Context, u string, hdr http.Header, offset int64) (*http.Response, error) {
+// so a registry token never reaches a storage URL). offset > 0 adds Range,
+// as does end >= 0, which bounds it (exclusive).
+func get(ctx context.Context, u string, hdr http.Header, offset, end int64) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, &permanentError{fmt.Errorf("invalid URL %s", redact(u))}
@@ -518,7 +552,10 @@ func get(ctx context.Context, u string, hdr http.Header, offset int64) (*http.Re
 		req.Header[k] = v
 	}
 	req.Header.Set("User-Agent", "vaporos-updater/"+config.BinaryVersion)
-	if offset > 0 {
+	switch {
+	case end >= 0:
+		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-"+strconv.FormatInt(end-1, 10))
+	case offset > 0:
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
 	}
 	c := *httpClient
@@ -537,8 +574,9 @@ func get(ctx context.Context, u string, hdr http.Header, offset int64) (*http.Re
 }
 
 // finish follows redirects (without the original headers) and turns the
-// final response into a body that starts at offset.
-func finish(ctx context.Context, resp *http.Response, offset int64) (io.ReadCloser, error) {
+// final response into a body that starts at offset. A bounded request
+// (end >= 0) must come back as a range.
+func finish(ctx context.Context, resp *http.Response, offset, end int64) (io.ReadCloser, error) {
 	for hop := 0; isRedirect(resp.StatusCode); hop++ {
 		loc, err := resp.Location()
 		drain(resp)
@@ -548,12 +586,18 @@ func finish(ctx context.Context, resp *http.Response, offset int64) (io.ReadClos
 		if hop == maxRedirects {
 			return nil, &permanentError{fmt.Errorf("too many redirects at %s", redact(loc.String()))}
 		}
-		if resp, err = get(ctx, loc.String(), nil, offset); err != nil {
+		if resp, err = get(ctx, loc.String(), nil, offset, end); err != nil {
 			return nil, err
 		}
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
+		if end >= 0 {
+			// Reading on would download the file from its start for every
+			// range.
+			resp.Body.Close()
+			return nil, &permanentError{fmt.Errorf("%s: %w", redact(resp.Request.URL.String()), errNoRanges)}
+		}
 		if offset > 0 {
 			// The server ignored Range: the reader skips what it has.
 			return &skipBody{ReadCloser: resp.Body, n: offset}, nil

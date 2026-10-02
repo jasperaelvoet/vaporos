@@ -261,7 +261,7 @@ jobs:
 
       - name: Check the output
         run: |
-          for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json; do
+          for f in root.erofs root.erofs.idx vmlinuz initramfs.img systemd-bootx64.efi manifest.json; do
             if [ ! -s "out/$f" ]; then
               echo "::error::the build produced no out/$f"
               exit 1
@@ -392,7 +392,7 @@ jobs:
       - name: Check manifest.json
         run: |
           python3 - "$VERSION" "$CHANNEL" "$GITHUB_SHA" rootfs/usr/lib/vos/cmdline <<'EOF'
-          import calendar, hashlib, json, os, re, sys, time
+          import calendar, hashlib, json, os, re, struct, sys, time
           version, channel, git, cmdline_path = sys.argv[1:]
           errors = []
           def sha256(path):
@@ -415,7 +415,7 @@ jobs:
           for key, value in want.items():
               if m.get(key) != value or type(m.get(key)) is not type(value):
                   errors.append(f"{key} is {m.get(key)!r}, expected {value!r}")
-          names = {"root": "root.erofs", "kernel": "vmlinuz", "initrd": "initramfs.img"}
+          names = {"root": "root.erofs", "kernel": "vmlinuz", "initrd": "initramfs.img", "index": "root.erofs.idx"}
           artifacts = m.get("artifacts") or {}
           if sorted(artifacts) != sorted(names):
               errors.append(f"artifacts are {sorted(artifacts)}, expected {sorted(names)}")
@@ -479,6 +479,22 @@ jobs:
           here = sorted(f for f in os.listdir("out") if f.startswith("ext-") and f.endswith(".raw"))
           if here != named:
               errors.append(f"out/ holds the extension images {here}, the manifest names {named}")
+          # The block index describes root.erofs (docs/CONTRACTS.md "Block
+          # index"): checked here without the Go code that wrote it.
+          if os.path.isfile("out/root.erofs") and os.path.isfile("out/root.erofs.idx"):
+              size = os.path.getsize("out/root.erofs")
+              with open("out/root.erofs", "rb") as img, open("out/root.erofs.idx", "rb") as idx:
+                  head = idx.read(32)
+                  if head[:8] != b"VOSBIDX1" or struct.unpack_from("<IIQ", head, 8) != (4096, 16, size) or head[24:] != bytes(8):
+                      errors.append("out/root.erofs.idx: the header does not describe out/root.erofs")
+                  else:
+                      for i, block in enumerate(iter(lambda: img.read(4096), b"")):
+                          if hashlib.sha256(block).digest()[:16] != idx.read(16):
+                              errors.append(f"out/root.erofs.idx: block {i} does not match out/root.erofs")
+                              break
+                      else:
+                          if idx.read(1):
+                              errors.append("out/root.erofs.idx: longer than out/root.erofs needs")
           for e in errors:
               print(f"::error file=out/manifest.json::{e}")
           sys.exit(1 if errors else 0)
@@ -795,7 +811,7 @@ jobs:
           # ...and it describes the files about to be pushed, extension images
           # included.
           cd out
-          jq -r '(.artifacts | .root, .kernel, .initrd), (.extensions // {} | .[]) | "\(.sha256)  \(.name)"' manifest.json |
+          jq -r '(.artifacts | .root, .kernel, .initrd, .index), (.extensions // {} | .[]) | "\(.sha256)  \(.name)"' manifest.json |
             sha256sum --check --strict
 
       - name: Checksums
@@ -921,6 +937,7 @@ jobs:
             manifest.json:application/vnd.vaporos.manifest.v1+json \
             manifest.json.sig:application/vnd.vaporos.manifest.signature.v1 \
             root.erofs:application/vnd.vaporos.root.v1.erofs \
+            root.erofs.idx:application/vnd.vaporos.root-index.v1 \
             vmlinuz:application/vnd.vaporos.kernel.v1 \
             initramfs.img:application/vnd.vaporos.initrd.v1 \
             "${ext[@]}"

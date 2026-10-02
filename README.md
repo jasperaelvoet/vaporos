@@ -117,6 +117,9 @@ with Copy buttons. Note them while VaporOS is on.
 - An install follows the channel of the ISO it came from: `main` for the latest release, the branch name for prereleases. By default VaporOS downloads new versions in
   the background and starts them on the next restart. You can turn that off
   under **System › Updates** and install by hand.
+- An update downloads only the parts of the system image that changed,
+  typically 10 to 20 percent of it, and copies the rest from the version that
+  is running. An update that was interrupted picks up where it stopped.
 - **Go back** under **System › Updates** starts the previous version on the
   next restart.
 - If a new version doesn't start properly, VaporOS returns to the previous

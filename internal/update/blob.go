@@ -66,12 +66,12 @@ func (s *Source) FetchBlob(ctx context.Context, sha256 string, size int64, w io.
 // the registry's token, redirect and resume handling.
 type blobFetcher struct{ o *ociFetcher }
 
-func (b blobFetcher) open(ctx context.Context, digest string, offset int64) (io.ReadCloser, error) {
-	resp, err := b.o.do(ctx, b.o.base()+"/v2/"+b.o.repo+"/blobs/"+digest, nil, offset)
+func (b blobFetcher) open(ctx context.Context, digest string, offset, end int64) (io.ReadCloser, error) {
+	resp, err := b.o.do(ctx, b.o.base()+"/v2/"+b.o.repo+"/blobs/"+digest, nil, offset, end)
 	if err != nil {
 		return nil, err
 	}
-	return finish(ctx, resp, offset)
+	return finish(ctx, resp, offset, end)
 }
 
 func (b blobFetcher) remote() bool   { return true }

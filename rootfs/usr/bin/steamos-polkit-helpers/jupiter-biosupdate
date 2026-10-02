@@ -1,0 +1,5 @@
+#!/bin/sh
+# Steam (-steamos3) runs "jupiter-biosupdate check" for Steam Deck BIOS updates
+# on every update check. Valve's updater exits 0 on hardware that is not a Deck
+# (no update) and 7 when it has one.
+exit 0

@@ -573,7 +573,15 @@ type testExt struct {
 func (e *testEnv) makeImageExt(version string, rollback int64, rootSize int, exts ...testExt) *image {
 	e.t.Helper()
 	files := map[string][]byte{}
-	img := e.makeImage(version, rollback, rootSize, func(m *manifest.Manifest) {
+	img := e.makeImage(version, rollback, rootSize, withExts(rollback, files, exts))
+	maps.Copy(img.files, files)
+	return img
+}
+
+// withExts is a makeImage mutate that lists exts in the manifest and puts
+// their images into files.
+func withExts(rollback int64, files map[string][]byte, exts []testExt) func(*manifest.Manifest) {
+	return func(m *manifest.Manifest) {
 		m.Extensions = map[string]manifest.Extension{}
 		for i, x := range exts {
 			b := bytes.Repeat([]byte{byte(i + 1), byte(rollback)}, x.size/2)
@@ -582,9 +590,7 @@ func (e *testEnv) makeImageExt(version string, rollback int64, rootSize int, ext
 			m.Extensions[x.id] = manifest.Extension{Name: name, Size: int64(len(b)), SHA256: strings.TrimPrefix(sha(b), "sha256:"),
 				FSVerity: fmt.Sprintf("%064x", i+1), Core: x.core, Requires: x.requires}
 		}
-	})
-	maps.Copy(img.files, files)
-	return img
+	}
 }
 
 // fakeStore stands in for sealing, which needs fs-verity (neither the dev
@@ -996,6 +1002,66 @@ func TestStageExtensionsFromOCI(t *testing.T) {
 	e.checkStaged(img)
 	if strings.Join(fs.puts, " ") != "proton" || !e.sealed(img, "proton") {
 		t.Fatalf("put %v", fs.puts)
+	}
+}
+
+// A manifest with both a block index and extension images: the images are
+// sealed in download, before the idle slot is unhooked, and root then comes
+// from its block index in write, the two sharing the first 80% by bytes.
+func TestStageBlocksWithExtensions(t *testing.T) {
+	e := setup(t)
+	pair := makeImagePair()
+	e.putSlot("a", pair.old)
+	files := map[string][]byte{}
+	img := e.makeImageRoot(newVersion, 200, pair.new, true, withExts(200, files, testExts))
+	maps.Copy(img.files, files)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	f := newFakeRegistry(t, img)
+
+	var progress []Progress
+	if _, err := Stage(context.Background(), e.cfg(f.spec()), Options{
+		Progress: func(p Progress) { progress = append(progress, p) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+	if strings.Join(fs.puts, " ") != "proton cooler" || !e.sealed(img, "proton") || !e.sealed(img, "cooler") {
+		t.Fatalf("put %v", fs.puts)
+	}
+	if slot, err := store.ReadSlot("b"); err != nil || slot == nil || slot.Version != newVersion || len(slot.Extensions) != 3 {
+		t.Fatalf("slots/b.json: %+v %v", slot, err)
+	}
+	fresh := int64(pair.fresh * BlockSize)
+	if got := f.rootServed.Load(); got != fresh {
+		t.Fatalf("root bytes downloaded: %d, want %d", got, fresh)
+	}
+
+	d := bootFilesSize(img.m) + img.m.Extensions["proton"].Size + img.m.Extensions["cooler"].Size
+	split := int(80 * d / (d + int64(len(img.root()))))
+	last, firstWrite := -1, -1
+	var lastDownload, lastWrite Progress
+	for _, p := range progress {
+		if p.Percent < last {
+			t.Fatalf("progress went back: %+v after %d%%", p, last)
+		}
+		last = p.Percent
+		switch p.Phase {
+		case "download":
+			lastDownload = p
+		case "write":
+			if firstWrite < 0 {
+				firstWrite = p.Percent
+			}
+			lastWrite = p
+		}
+	}
+	if lastDownload.Bytes != d || lastDownload.Total != d || lastDownload.Percent != split {
+		t.Fatalf("last download progress %+v, want %d bytes at %d%%", lastDownload, d, split)
+	}
+	if firstWrite != split || lastWrite.Percent != 80 || lastWrite.Bytes != fresh || lastWrite.Total != fresh || last != 100 {
+		t.Fatalf("write from %d%% to %+v, ended at %d%%; want %d%% to 80%% with %d bytes, and 100%%",
+			firstWrite, lastWrite, last, split, fresh)
 	}
 }
 

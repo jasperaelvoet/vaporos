@@ -179,7 +179,7 @@ for f in out/ext-*.raw; do
         *) rm -f "$f" ;;
     esac
 done
-for f in root.erofs vmlinuz initramfs.img $ext "$iso"; do
+for f in root.erofs root.erofs.idx vmlinuz initramfs.img $ext "$iso"; do
     rsync -t --inplace --partial "$PVE_USER@$PVE_HOST:$BUILD_DIR/out/$f" "out/$f"
 done
 # The manifest last, so out/ never pairs a new one with older files.

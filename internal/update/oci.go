@@ -89,7 +89,20 @@ type ociFetcher struct {
 
 	mu     sync.Mutex
 	layers map[string]ociDescriptor // by title
+
+	locMu sync.Mutex
+	locs  map[string]storageURL // by digest, for range requests
 }
+
+// storageURL is where the registry last redirected a blob.
+type storageURL struct {
+	url string
+	at  time.Time
+}
+
+// storageURLTTL is how long range requests reuse a blob's storage URL
+// before asking the registry again; ghcr signs them for about 10 minutes.
+var storageURLTTL = 2 * time.Minute
 
 func newOCI(spec, channel string) (*ociFetcher, error) {
 	o := &ociFetcher{scheme: "https"}
@@ -148,7 +161,7 @@ func (o *ociFetcher) getToken() string {
 // do sends a registry request with the current token. On a 401 it gets a
 // token for the challenge and tries once more: tokens are short-lived, and
 // a long download can outlast one.
-func (o *ociFetcher) do(ctx context.Context, u string, hdr http.Header, offset int64) (*http.Response, error) {
+func (o *ociFetcher) do(ctx context.Context, u string, hdr http.Header, offset, end int64) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		h := hdr.Clone()
 		if h == nil {
@@ -157,7 +170,7 @@ func (o *ociFetcher) do(ctx context.Context, u string, hdr http.Header, offset i
 		if tok := o.getToken(); tok != "" {
 			h.Set("Authorization", "Bearer "+tok)
 		}
-		resp, err := get(ctx, u, h, offset)
+		resp, err := get(ctx, u, h, offset, end)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +220,7 @@ func (o *ociFetcher) authenticate(ctx context.Context, challenge string) error {
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	resp, err := get(ctx, ru.String(), nil, 0)
+	resp, err := get(ctx, ru.String(), nil, 0, -1)
 	if err != nil {
 		return fmt.Errorf("registry token: %w", err)
 	}
@@ -327,7 +340,7 @@ func (o *ociFetcher) fetchManifest(ctx context.Context, ref string) (*ociManifes
 	hdr := http.Header{"Accept": {strings.Join([]string{mediaOCIManifest, mediaOCIIndex, mediaDockerManifest, mediaDockerList}, ", ")}}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	resp, err := o.do(ctx, u, hdr, 0)
+	resp, err := o.do(ctx, u, hdr, 0, -1)
 	if err != nil {
 		return nil, err
 	}
@@ -378,15 +391,59 @@ func (o *ociFetcher) digest(ctx context.Context, name string) (string, int64, er
 }
 
 // open GETs a blob. Every (re)open asks the registry again, because the
-// signed storage URL from an earlier redirect may have expired.
-func (o *ociFetcher) open(ctx context.Context, name string, offset int64) (io.ReadCloser, error) {
+// signed storage URL from an earlier redirect may have expired. Range
+// requests (end >= 0) come in hundreds, so they reuse a recent storage URL
+// and go back to the registry only when it answers anything but the range.
+func (o *ociFetcher) open(ctx context.Context, name string, offset, end int64) (io.ReadCloser, error) {
 	d, _, err := o.digest(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := o.do(ctx, o.base()+"/v2/"+o.repo+"/blobs/"+d, nil, offset)
+	if end >= 0 {
+		if u := o.storageURL(d); u != "" {
+			resp, err := get(ctx, u, nil, offset, end)
+			if err != nil {
+				return nil, err
+			}
+			if resp.StatusCode == http.StatusPartialContent {
+				return finish(ctx, resp, offset, end)
+			}
+			drain(resp)
+			o.forgetStorageURL(d)
+		}
+	}
+	resp, err := o.do(ctx, o.base()+"/v2/"+o.repo+"/blobs/"+d, nil, offset, end)
 	if err != nil {
 		return nil, err
 	}
-	return finish(ctx, resp, offset)
+	if end >= 0 && isRedirect(resp.StatusCode) {
+		if loc, err := resp.Location(); err == nil {
+			o.rememberStorageURL(d, loc.String())
+		}
+	}
+	return finish(ctx, resp, offset, end)
+}
+
+func (o *ociFetcher) storageURL(digest string) string {
+	o.locMu.Lock()
+	defer o.locMu.Unlock()
+	if l, ok := o.locs[digest]; ok && time.Since(l.at) < storageURLTTL {
+		return l.url
+	}
+	return ""
+}
+
+func (o *ociFetcher) rememberStorageURL(digest, u string) {
+	o.locMu.Lock()
+	defer o.locMu.Unlock()
+	if o.locs == nil {
+		o.locs = map[string]storageURL{}
+	}
+	o.locs[digest] = storageURL{url: u, at: time.Now()}
+}
+
+func (o *ociFetcher) forgetStorageURL(digest string) {
+	o.locMu.Lock()
+	defer o.locMu.Unlock()
+	delete(o.locs, digest)
 }

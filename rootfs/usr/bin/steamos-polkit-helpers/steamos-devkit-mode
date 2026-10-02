@@ -1,0 +1,6 @@
+#!/bin/sh
+# Steam (-steamos3) runs "steamos-devkit-mode --disable" to stop SteamOS's
+# devkit service, and --enable to start it. VaporOS has none.
+[ "$1" = --disable ] && exit 0
+echo "steamos-devkit-mode: VaporOS has no devkit service" >&2
+exit 1

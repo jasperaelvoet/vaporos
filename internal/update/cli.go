@@ -29,7 +29,7 @@ var (
 // errUsage means the command line was wrong (exit status 2).
 var errUsage = errors.New("usage")
 
-// CLI runs update, rollback, status, health, sign or keygen.
+// CLI runs update, rollback, status, health, sign, keygen or index.
 func CLI(cmd string, args []string) int {
 	var err error
 	switch cmd {
@@ -45,6 +45,8 @@ func CLI(cmd string, args []string) int {
 		err = cliSign(args)
 	case "keygen":
 		err = cliKeygen(args)
+	case "index":
+		err = cliIndex(args)
 	default:
 		fmt.Fprintf(stderr, "vos: unknown command %q\n", cmd)
 		return 2
@@ -377,6 +379,24 @@ func cliHealth(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 	defer cancel()
 	return runHealth(ctx, systemHealthEnv(), logf)
+}
+
+func cliIndex(args []string) error {
+	fs := newFlags("index", "IMAGE")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		fs.Usage()
+		return errUsage
+	}
+	out, err := IndexFile(pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "wrote %s\n", out)
+	return nil
 }
 
 func cliSign(args []string) error {

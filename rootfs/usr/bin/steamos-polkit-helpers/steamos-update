@@ -1,0 +1,6 @@
+#!/bin/sh
+# Steam (-steamos3) checks for and applies OS updates through this path, also
+# in first-run setup, which stops at "Unable to download the required update"
+# when it is missing. On SteamOS it runs steamos-update through pkexec; the
+# stub needs no root.
+exec /usr/bin/steamos-update "$@"

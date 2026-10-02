@@ -19,7 +19,7 @@ contract there first, then in code, and keep the two in sync.
 
 | Path | What |
 | --- | --- |
-| `cmd/vos/main.go` | Multi-call entry point: `daemon`, `welcome`, `session`, `edid`, `install`, `update/rollback/status/health/sign/keygen`, `generator` (also via argv[0] `vos-generator`), `version`. |
+| `cmd/vos/main.go` | Multi-call entry point: `daemon`, `welcome`, `session`, `edid`, `install`, `update/rollback/status/health/sign/keygen/index`, `generator` (also via argv[0] `vos-generator`), `version`. |
 | `internal/api` | vosd's HTTP server: routing, access levels (Public/Authed/Setup/Local), sessions, CSRF, setup codes, Host and source-IP checks, rate limit, SSE. |
 | `internal/auth` | Web admin password (argon2id, PHC string) in `/var/lib/vos/auth.json`. |
 | `internal/boot` | ESP management: systemd-boot entries per slot with boot counting, kernels under `/vos/<ver>/`, loader.conf, cmdline assembly. |
@@ -46,14 +46,14 @@ contract there first, then in code, and keep the two in sync.
 | `internal/sunshine` | Renders `sunshine.conf`/`apps.json`, local API credentials, pairing/clients/logs proxy, KMS plane-loss watchdog. |
 | `internal/sysd` | Thin wrappers around `systemctl` and processes (no D-Bus). |
 | `internal/system` | `/system/*` and `/ssh`: machine info, hostname, reboot/poweroff, SSH toggle and keys. |
-| `internal/update` | `vos update/rollback/status/health/sign/keygen` and vosd's update service: OCI/HTTP/dir sources, streaming into the idle slot, update-state. |
+| `internal/update` | `vos update/rollback/status/health/sign/keygen/index` and vosd's update service: OCI/HTTP/dir sources, filling the idle slot from the block index (blocks already on the machine are kept or copied, the rest fetched by range) or by streaming the whole image, update-state. |
 | `internal/web` | Embedded web UI, the control center (go:embed): server-rendered page shells in `templates/`; ES modules and a Tailwind-built CSS file in `static/`; CSS input in `styles/`; the dev server's fake API data in `fixtures/`; no external assets. The routes are the registry in `web.go`, and `activeSet` picks the UI vosd serves. The previous eight-page UI stays in `templates/legacy/` and `static/legacy/` until it is removed. |
 | `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, NetworkManager config and its polkit rule, the `steamos-*` stubs Steam calls. |
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
 | `extensions/` | The curated extensions, one directory per id: `extension.json` (the descriptor) and optional `files/usr/...`. Built with the image and signed in its manifest; see CONTRACTS "Extensions". |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
-| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `lib.sh` holds the helpers `selftest.sh` tests. |
-| `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`. |
+| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, block index, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `lib.sh` holds the helpers `selftest.sh` tests. |
+| `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`, `serve.py` (the dev loop's update server, with byte ranges). |
 | `tests/` | `qemu-smoke.sh` (the CI install-and-boot test), `vm-checks.sh` (in-VM checks for `make test`), QMP helpers. |
 | `keys/` | `release.pub` only. See `keys/README.md`. |
 | `design/` | The one source for how VaporOS looks on the control center, the website and the TV: `tokens.json` (colours, the state vocabulary, type, motion), `logo.svg`, the UI icons in `icons/`, the font manifest and OFL licences in `fonts/`, the copy voice (`voice.md`) and test vectors (`*-vectors.json`). Everything made from it is generated (see Commands); `design/README.md` has the schema. |

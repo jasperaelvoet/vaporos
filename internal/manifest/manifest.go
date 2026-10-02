@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -30,15 +31,19 @@ const UpdaterVersion = 1
 // Product is the only product a manifest may describe.
 const Product = "vaporos"
 
-// The artifacts every manifest carries, by key in Manifest.Artifacts.
+// The artifacts a manifest carries, by key in Manifest.Artifacts.
 const (
-	Root   = "root"   // root.erofs, streamed into a slot partition
+	Root   = "root"   // root.erofs, written into a slot partition
 	Kernel = "kernel" // vmlinuz, copied to the ESP
 	Initrd = "initrd" // initramfs.img, copied to the ESP
+	Index  = "index"  // root.erofs.idx, root's block index (optional)
 )
 
 // RequiredArtifacts lists the keys Parse insists on.
 var RequiredArtifacts = []string{Root, Kernel, Initrd}
+
+// OptionalArtifacts lists the keys Parse checks when they are there.
+var OptionalArtifacts = []string{Index}
 
 var (
 	// ErrBadSignature means no trusted key verifies the signature.
@@ -64,7 +69,7 @@ type Manifest struct {
 	Kernel        string              `json:"kernel"`
 	Cmdline       string              `json:"cmdline"`
 	MinUpdater    int                 `json:"min_updater"`
-	Artifacts     map[string]Artifact `json:"artifacts"` // "root", "kernel", "initrd"
+	Artifacts     map[string]Artifact `json:"artifacts"` // "root", "kernel", "initrd", "index"
 	// Extensions are the sealed extension images built with this image
 	// (docs/CONTRACTS.md "Extensions"), by id. Optional: older manifests
 	// have none, and older updaters ignore the field.
@@ -148,9 +153,12 @@ func (m *Manifest) Validate() error {
 	if strings.ContainsFunc(m.Cmdline, isControl) || len(m.Cmdline) > 4096 {
 		return errors.New("manifest: cmdline contains control characters or is too long")
 	}
-	for _, key := range RequiredArtifacts {
+	for _, key := range slices.Concat(RequiredArtifacts, OptionalArtifacts) {
 		a, ok := m.Artifacts[key]
 		if !ok {
+			if slices.Contains(OptionalArtifacts, key) {
+				continue
+			}
 			return fmt.Errorf("manifest: missing artifact %q", key)
 		}
 		if !fileNameRe.MatchString(a.Name) {
@@ -241,6 +249,12 @@ func validateExtensions(exts map[string]Extension) error {
 
 // Artifact returns the artifact stored under key ("root", "kernel", "initrd").
 func (m *Manifest) Artifact(key string) Artifact { return m.Artifacts[key] }
+
+// Has reports whether the manifest carries an artifact under key.
+func (m *Manifest) Has(key string) bool {
+	_, ok := m.Artifacts[key]
+	return ok
+}
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 

@@ -45,7 +45,7 @@ func main() {
 		os.Exit(display.CLIEdid(args))
 	case "install":
 		os.Exit(install.CLI(args))
-	case "update", "rollback", "status", "health", "sign", "keygen":
+	case "update", "rollback", "status", "health", "sign", "keygen", "index":
 		os.Exit(update.CLI(cmd, args))
 	case "generator":
 		os.Exit(storage.CLIGenerator(args))
@@ -75,6 +75,7 @@ func usage() {
   edid generate|decode       virtual display EDID
   health                     boot health check
   sign | keygen              update signing
+  index IMAGE                write IMAGE.idx, the block index updates download by
   ext <command>              extensions: fetch, launch, and the build's checks
   version
 `)

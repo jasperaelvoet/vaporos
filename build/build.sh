@@ -242,8 +242,10 @@ info "kernel $KVER"
 # Our files. Ownership (and any extended attributes) come from the macOS
 # checkout, so drop them: everything is root's.
 cp -a --no-preserve=ownership,xattr "$SRC/rootfs/." "$ROOT/"
-chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" \
-    "$ROOT/usr/bin/steamos-update" "$ROOT/usr/bin/steamos-select-branch"
+# The SteamOS helpers Steam calls (docs/CONTRACTS.md "SteamOS helpers").
+steamos_helpers=(usr/bin/steamos-update usr/bin/steamos-select-branch usr/bin/jupiter-initial-firmware-update
+    usr/bin/steamos-polkit-helpers/{steamos-update,steamos-set-timezone,steamos-devkit-mode,jupiter-biosupdate,jupiter-dock-updater})
+chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" "${steamos_helpers[@]/#/$ROOT/}"
 sed -i "s/@VERSION@/$VERSION/g" "$ROOT/usr/lib/os-release"
 ln -sf ../usr/lib/os-release "$ROOT/etc/os-release"
 
@@ -566,10 +568,11 @@ check_image() {
     [[ ! -e $m/etc/systemd/system/multi-user.target.wants/systemd-networkd.service ]] ||
         problem "systemd-networkd is enabled next to NetworkManager"
     for f in usr/bin/NetworkManager usr/lib/iwd/iwd usr/lib/polkit-1/polkitd \
-        usr/lib/NetworkManager/conf.d/50-vos.conf usr/share/polkit-1/rules.d/50-vos-networkmanager.rules; do
+        usr/lib/NetworkManager/conf.d/50-vos.conf usr/share/polkit-1/rules.d/50-vos-networkmanager.rules \
+        usr/share/polkit-1/rules.d/50-vos-timedate.rules usr/bin/timedatectl; do
         [[ -e $m/$f ]] || problem "/$f is missing"
     done
-    for f in usr/bin/steamos-update usr/bin/steamos-select-branch; do
+    for f in "${steamos_helpers[@]}"; do
         [[ -x $m/$f ]] || problem "/$f is not executable"
     done
 
@@ -613,6 +616,13 @@ info "all checks passed"
 elapsed
 
 # --------------------------------------------------------------- manifest ---
+# The block index lets an installed system download only the blocks of
+# root.erofs it does not have (docs/CONTRACTS.md "Block index").
+step "Indexing root.erofs"
+msg=$("$VOS" index "$STAGE/vos/root.erofs" 2>&1) || die "vos index failed: $msg"
+[[ -s $STAGE/vos/root.erofs.idx ]] || die "vos index did not write root.erofs.idx"
+info "root.erofs.idx: $(mib "$(stat -c %s "$STAGE/vos/root.erofs.idx")") MiB"
+
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 artifact() { # artifact NAME -> {"name","size","sha256"}
     jq -n --arg name "$1" --argjson size "$(stat -c %s "$STAGE/vos/$1")" --arg sha "$(sha "$STAGE/vos/$1")" \
@@ -624,11 +634,12 @@ jq -n --arg version "$VERSION" --argjson rollback_index "$ROLLBACK_INDEX" \
       --argjson root "$(artifact root.erofs)" \
       --argjson kernel_file "$(artifact vmlinuz)" \
       --argjson initrd "$(artifact initramfs.img)" \
+      --argjson index "$(artifact root.erofs.idx)" \
       --slurpfile extensions "$EXT_CATALOG/extensions.json" \
       '{schema: 1, product: "vaporos", version: $version, rollback_index: $rollback_index,
         channel: $channel, git: $git, created: $created, kernel: $kernel, cmdline: $cmdline,
         min_updater: 1,
-        artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd}}
+        artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd, index: $index}}
        + if ($extensions[0] | length) > 0 then {extensions: $extensions[0]} else {} end' \
       >"$STAGE/vos/manifest.json"
 
@@ -672,8 +683,8 @@ fi
 
 # ------------------------------------------------------------------ out -----
 step "Publishing to out/"
-rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig" "$OUT"/ext-*.raw
-for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
+rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig" "$OUT/root.erofs.idx" "$OUT"/ext-*.raw
+for f in root.erofs root.erofs.idx vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
     if [[ -f $STAGE/vos/$f ]]; then cp "$STAGE/vos/$f" "$OUT/"; fi
 done
 for id in "${EXT_IDS[@]}"; do

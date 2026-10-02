@@ -1,0 +1,9 @@
+// vapor lingers without a logind seat session, so timedated's default policy
+// would refuse it. Steam sets the timezone from its first-run setup and
+// settings (steamos-polkit-helpers/steamos-set-timezone); only the zone, never
+// the clock, NTP or the RTC. See docs/CONTRACTS.md "SteamOS helpers".
+polkit.addRule(function (action, subject) {
+    if (action.id === "org.freedesktop.timedate1.set-timezone" && subject.user === "vapor") {
+        return polkit.Result.YES;
+    }
+});

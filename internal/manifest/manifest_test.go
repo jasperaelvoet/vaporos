@@ -41,8 +41,13 @@ func TestParseValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Version != "20260929.123456" || m.Artifact(Root).Name != "root.erofs" {
+	if m.Version != "20260929.123456" || m.Artifact(Root).Name != "root.erofs" || m.Has(Index) {
 		t.Fatalf("parsed %+v", m)
+	}
+	withIndex := validManifest()
+	withIndex.Artifacts[Index] = Artifact{Name: "root.erofs.idx", Size: 64, SHA256: sum}
+	if m, err := Parse(encode(t, withIndex)); err != nil || !m.Has(Index) || m.Artifact(Index).Size != 64 {
+		t.Fatalf("with an index: %+v, %v", m, err)
 	}
 }
 
@@ -76,6 +81,9 @@ func TestParseRejects(t *testing.T) {
 			a.SHA256 = strings.ToUpper(sum)
 			m.Artifacts["initrd"] = a
 		},
+		"bad index name": func(m *Manifest) { m.Artifacts["index"] = Artifact{Name: "/root.erofs.idx", Size: 64, SHA256: sum} },
+		"empty index":    func(m *Manifest) { m.Artifacts["index"] = Artifact{Name: "root.erofs.idx", SHA256: sum} },
+		"index sha":      func(m *Manifest) { m.Artifacts["index"] = Artifact{Name: "root.erofs.idx", Size: 64} },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -223,6 +231,12 @@ func TestParseExtensions(t *testing.T) {
 	// A manifest without the field is still valid: older builds have none.
 	if m, err := Parse(encode(t, validManifest())); err != nil || m.Extensions != nil {
 		t.Fatalf("no extensions: %v %+v", err, m)
+	}
+	// Extension images and a block index go together.
+	both := withExtensions(validManifest())
+	both.Artifacts[Index] = Artifact{Name: "root.erofs.idx", Size: 64, SHA256: sum}
+	if m, err := Parse(encode(t, both)); err != nil || !m.Has(Index) || len(m.Extensions) != 2 {
+		t.Fatalf("with an index and extensions: %v %+v", err, m)
 	}
 }
 

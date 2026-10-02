@@ -675,7 +675,7 @@ export default [
       await ready();
       await step('a newer version is one card with its size and Download update', async () => {
         await page.locator('#cards-list .ctx-card', { hasText: /^Version \d{8}\.\d{6} is available/ }).waitFor();
-        assert.match(await text(page, '#cards-list .ctx-body'), /^1\.4 GB download\. Switches over on the next restart\.$/);
+        assert.match(await text(page, '#cards-list .ctx-body'), /^Up to 1\.4 GB download\. Switches over on the next restart\.$/);
         await page.click('#cards-list button:has-text("Download update")');
         await page.locator('#notices-polite .notice', { hasText: /^Downloading version / }).waitFor();
       });
