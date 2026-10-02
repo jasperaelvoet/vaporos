@@ -622,19 +622,26 @@ vm_add_core_extensions() {
 }
 
 # vm_api METHOD PATH [JSON]: call the installed system's API from the
-# Proxmox host, signed in with the admin password. Prints the response body;
-# fails, showing vosd's error, on an HTTP error.
+# Proxmox host, signed in with the admin password. Prints the response body
+# on stdout; on an HTTP error it fails and writes vosd's answer to stderr,
+# which a caller discarding stdout still shows.
 vm_api() {
     local method=$1 path=$2 body=${3:-} login
     login=$(printf '{"password":"%s"}' "$ADMIN_PASS")
-    pve "set -e; jar=\$(mktemp); trap 'rm -f \$jar' EXIT
-         curl -sS --fail-with-body -m 30 -c \$jar -H 'Content-Type: application/json' \
-              -d $(printf %q "$login") http://$VM_IP/api/v1/auth/login >/dev/null
-         csrf=\$(curl -sS -m 30 -b \$jar http://$VM_IP/api/v1/auth/me |
-                python3 -c 'import json,sys; print(json.load(sys.stdin)[\"csrf\"])')
-         curl -sS --fail-with-body -m 120 -b \$jar -X $method -H \"X-VOS-CSRF: \$csrf\" \
+    pve "set -e; jar=\$(mktemp); out=\$(mktemp); trap 'rm -f \$jar \$out' EXIT
+         call() {
+             curl -sS --fail-with-body -o \$out \"\$@\" && return 0
+             [ ! -s \$out ] || echo \"vosd answered: \$(head -c 2000 \$out)\" >&2
+             return 1
+         }
+         call -m 30 -c \$jar -H 'Content-Type: application/json' \
+              -d $(printf %q "$login") http://$VM_IP/api/v1/auth/login
+         call -m 30 -b \$jar http://$VM_IP/api/v1/auth/me
+         csrf=\$(python3 -c 'import json,sys; print(json.load(sys.stdin)[\"csrf\"])' <\$out)
+         call -m 120 -b \$jar -X $method -H \"X-VOS-CSRF: \$csrf\" \
               -H 'Content-Type: application/json' ${body:+-d $(printf %q "$body")} \
-              http://$VM_IP/api/v1$path"
+              http://$VM_IP/api/v1$path
+         cat \$out"
 }
 
 # Add CoolerControl as a person does, in the control center with the admin
