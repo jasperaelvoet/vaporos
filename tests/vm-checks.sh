@@ -10,6 +10,7 @@
 #   booted   --slot S --version V [--blessed]    after an update or a rollback
 #   fallback --slot S --version V --failed F     after F failed its health check
 #   web                                          the control center's pages only
+#   extensions [--mode M] [--mounted ID]...      the extension store and merge
 #
 # Every check prints one line, "VOS-CHECK <ok|warn|FAIL> <name> <detail>", and
 # the run ends with "VOS-CHECKS-DONE pass=N warn=N fail=N". dev.sh reads those
@@ -427,6 +428,75 @@ check_fallback() {
     fi
 }
 
+# Extensions (docs/CONTRACTS.md "Extensions"): what the initramfs merged, and
+# that every mounted image is sealed (fs-verity), measured as the read-only
+# catalog says and refuses writes, even from root.
+check_extensions() {
+    local want_mode=$1 report mode id line sha fsv img have mounted
+    shift
+    report=$(tr -d ' \t\r\n' </run/vos/extensions.json 2>/dev/null)
+    if [[ -z $report ]]; then
+        bad ext-report "/run/vos/extensions.json is missing or empty"
+        return
+    fi
+    mode=$(json_str mode <<<"$report")
+    if [[ -z $want_mode || $mode == "$want_mode" ]]; then
+        ok ext-report "mode $mode, set $(json_str set <<<"$report"), reason '$(json_str reason <<<"$report")'"
+    else
+        bad ext-report "mode '$mode', expected $want_mode: $(cut -c1-300 <<<"$report")"
+    fi
+    if grep -q '^dispatcher ' /usr/lib/vos/extensions.list 2>/dev/null; then
+        ok ext-catalog "$(grep -c '^ext ' /usr/lib/vos/extensions.list) extension(s) in /usr/lib/vos/extensions.list"
+    else
+        bad ext-catalog "/usr/lib/vos/extensions.list is missing or has no dispatcher line"
+    fi
+    for unit in systemd-sysext.service systemd-confext.service; do
+        have=$(systemctl is-enabled "$unit" 2>/dev/null)
+        if [[ $have == masked ]]; then ok "ext-$unit" "masked"; else bad "ext-$unit" "is '${have:-?}', expected masked"; fi
+    done
+    mounted=${report#*\"mounted\":[}
+    mounted=${mounted%%]*}
+    for id in "$@"; do
+        if [[ $mounted != *"\"id\":\"$id\""* ]]; then
+            bad "ext-$id" "not mounted: $(cut -c1-300 <<<"$report")"
+            continue
+        fi
+        line=$(grep "^ext $id " /usr/lib/vos/extensions.list)
+        sha=$(cut -d' ' -f3 <<<"$line")
+        fsv=$(cut -d' ' -f5 <<<"$line")
+        img=/var/lib/vos/ext/images/$sha.raw
+        have=$(fsverity measure "$img" 2>/dev/null | cut -d' ' -f1)
+        if [[ $have == "sha256:$fsv" ]]; then
+            ok "ext-$id-sealed" "$img measures sha256:${fsv:0:16}..."
+        else
+            bad "ext-$id-sealed" "fsverity measure $img: '${have:-failed}', catalog says sha256:$fsv"
+        fi
+        if { : >>"$img"; } 2>/dev/null; then
+            bad "ext-$id-immutable" "root could open $img for writing"
+        else
+            ok "ext-$id-immutable" "root cannot open the image for writing"
+        fi
+        if [[ -d /usr/lib/vos/ext/$id ]]; then
+            ok "ext-$id-usr" "/usr/lib/vos/ext/$id is in the merged /usr"
+        else
+            bad "ext-$id-usr" "/usr/lib/vos/ext/$id is missing from /usr"
+        fi
+    done
+    if (($#)); then
+        have=$(findmnt -no FSTYPE /usr | tail -n1)
+        if [[ $have == overlay ]]; then ok ext-usr-overlay "/usr is an overlay"; else bad ext-usr-overlay "/usr is '$have', expected overlay"; fi
+    fi
+    if [[ " $* " == *" proton "* ]]; then
+        if [[ -f /usr/share/steam/compatibilitytools.d/proton-cachyos-slr/compatibilitytool.vdf ]]; then
+            ok ext-proton-tool "proton-cachyos-slr is in /usr/share/steam/compatibilitytools.d"
+        else
+            bad ext-proton-tool "no /usr/share/steam/compatibilitytools.d/proton-cachyos-slr/compatibilitytool.vdf"
+        fi
+        have=$(stat -c %a /dev/ntsync 2>/dev/null)
+        if [[ $have == 666 ]]; then ok ext-ntsync "/dev/ntsync is 0666"; else warn ext-ntsync "/dev/ntsync mode '${have:-missing}'"; fi
+    fi
+}
+
 # ------------------------------------------------------------------ main ----
 
 # Sourced rather than run: define the checks and stop here.
@@ -438,13 +508,14 @@ usage: vm-checks.sh system   --slot S --version V --password P
        vm-checks.sh booted   --slot S --version V [--blessed]
        vm-checks.sh fallback --slot S --version V --failed F
        vm-checks.sh web
+       vm-checks.sh extensions [--mode M] [--mounted ID]...
 USAGE
     exit 2
 }
 
 group=${1:-}
 [[ $# -gt 0 ]] && shift
-slot="" version="" password="" failed="" blessed=0
+slot="" version="" password="" failed="" blessed=0 mode="" mounted=()
 while (($#)); do
     case $1 in
         --slot) slot=${2:-}; shift 2 ;;
@@ -452,10 +523,12 @@ while (($#)); do
         --password) password=${2:-}; shift 2 ;;
         --failed) failed=${2:-}; shift 2 ;;
         --blessed) blessed=1; shift ;;
+        --mode) mode=${2:-}; shift 2 ;;
+        --mounted) mounted+=("${2:-}"); shift 2 ;;
         *) usage ;;
     esac
 done
-[[ $group == web || -n $slot && -n $version ]] || usage
+[[ $group == web || $group == extensions || -n $slot && -n $version ]] || usage
 
 case $group in
     system)
@@ -488,6 +561,9 @@ case $group in
         ;;
     web)
         check_web
+        ;;
+    extensions)
+        check_extensions "$mode" "${mounted[@]}"
         ;;
     *) usage ;;
 esac
