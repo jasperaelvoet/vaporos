@@ -27,17 +27,28 @@ import (
 // Every change answers the document and publishes it as extensions.state;
 // an added extension downloads in eight steps while the dev server runs (a
 // preset's download too), then waits for a restart, which mounts what is
-// wanted and drops the rest (bootExtensions). The cards do not say what an
-// extension conflicts with or which settings feed kernel module options:
-// the fake refuses no conflict, and takes a setting that needs a restart, of
-// an extension that needs the password, for a module option.
+// wanted and drops the rest (bootExtensions); a restart with skip_once set
+// mounts nothing, and the one after starts them again. The cards do not
+// say what an extension conflicts with, so the fake refuses no conflict; a
+// setting's needs_password says it feeds kernel module options, and a
+// card's runs_as_root and module_options whether adding it takes the
+// password (its needs_password, which the fake keeps up to date, adds its
+// requirements not added yet).
 
 // extTick is how often a download moves on.
 const extTick = 400 * time.Millisecond
 
+// maxActionArgs is extensions.maxActionArgs.
+const maxActionArgs = 64 << 10
+
+// startedOffText is a card's reason after a start without extensions
+// (extensions.startedOffText).
+const startedOffText = "VaporOS started without extensions this time. Restart to start them again."
+
 func (f *devFake) extensionsRoutes(add fakeAdder) {
 	add("GET", "/extensions", api.Authed, func(w http.ResponseWriter, r *http.Request) any { return f.doc("extensions") })
-	add("POST", "/extensions/skip-once", api.Authed, func(w http.ResponseWriter, r *http.Request) any { return fakeOK })
+	add("POST", "/extensions/skip-once", api.Authed, func(w http.ResponseWriter, r *http.Request) any { return f.extSkipOnce(true) })
+	add("DELETE", "/extensions/skip-once", api.Authed, func(w http.ResponseWriter, r *http.Request) any { return f.extSkipOnce(false) })
 	add("POST", "/extensions/{id}", api.Authed, f.extInstall)
 	add("DELETE", "/extensions/{id}", api.Authed, f.extRemove)
 	add("PUT", "/extensions/{id}/settings", api.Authed, f.extSettings)
@@ -106,11 +117,25 @@ func checkExtSettings(x map[string]any, change map[string]any) (map[string]any, 
 	return out, nil
 }
 
-// moduleSetting stands in for "key feeds x's kernel module options": the
-// card only says that x needs the password and that key takes a restart.
+// moduleSetting is "key feeds x's kernel module options": changing it
+// takes the password.
 func moduleSetting(x map[string]any, key string) bool {
 	s := extSetting(x, key)
-	return s != nil && s["restart"] == true && x["needs_password"] == true
+	return s != nil && s["needs_password"] == true
+}
+
+// ownPassword is whether adding x itself takes the password: it runs as
+// root or sets kernel module options.
+func ownPassword(x map[string]any) bool {
+	return x["runs_as_root"] == true || x["module_options"] == true
+}
+
+// extSkipOnce sets or clears the flag that the next restart starts without
+// extensions.
+func (f *devFake) extSkipOnce(on bool) any {
+	f.doc("extensions")["skip_once"] = on
+	f.extChangedLocked()
+	return fakeOK
 }
 
 // settingDefault is a setting's value without a settings file, as far as
@@ -176,7 +201,7 @@ func (f *devFake) extInstall(w http.ResponseWriter, r *http.Request) any {
 		needs = needs || moduleSetting(x, k)
 	}
 	for _, a := range adding {
-		needs = needs || a["needs_password"] == true
+		needs = needs || ownPassword(a)
 	}
 	if needs && !extPassword(w, req.Password, "Adding "+name) {
 		return nil
@@ -364,6 +389,9 @@ func (f *devFake) extAction(w http.ResponseWriter, r *http.Request) any {
 	if len(req.Args) > 0 && req.Args[0] != '{' {
 		return refused(w, http.StatusBadRequest, "args must be an object")
 	}
+	if len(req.Args) > maxActionArgs {
+		return refused(w, http.StatusBadRequest, "args is too large")
+	}
 	id, action := r.PathValue("id"), r.PathValue("name")
 	x := f.extLocked(id)
 	if x == nil {
@@ -416,11 +444,16 @@ func (f *devFake) extChangedLocked() any {
 }
 
 // refreshExtensions recomputes what follows from the cards: who requires
-// whom, and the restart a restart-needed card waits for. A restart that is
-// newly needed may happen by itself (restart.auto), as the circuit breaker
-// of a fresh set allows.
+// whom, whether adding one takes the password, and the restart a
+// restart-needed card waits for. A restart that is needed may happen by
+// itself (restart.auto), as the circuit breaker of a fresh set allows,
+// unless the next start leaves the extensions out.
 func refreshExtensions(doc map[string]any) {
 	cards := asList(doc["extensions"])
+	byID := map[string]map[string]any{}
+	for _, c := range cards {
+		byID[asStr(asObj(c)["id"])] = asObj(c)
+	}
 	var adding, removing, changing []string
 	for _, c := range cards {
 		m := asObj(c)
@@ -432,6 +465,7 @@ func refreshExtensions(doc map[string]any) {
 			}
 		}
 		m["required_by"] = req
+		m["needs_password"] = needsPassword(byID, m)
 		if m["state"] != extensions.StateRestartNeeded {
 			continue
 		}
@@ -444,7 +478,6 @@ func refreshExtensions(doc map[string]any) {
 			changing = append(changing, name)
 		}
 	}
-	rs := asObj(doc["restart"])
 	if len(adding)+len(removing)+len(changing) == 0 {
 		doc["restart"] = map[string]any{"needed": false, "auto": false, "reason": ""}
 		return
@@ -459,8 +492,32 @@ func refreshExtensions(doc map[string]any) {
 	if len(changing) > 0 {
 		parts = append(parts, "changing the settings of "+joinNames(changing))
 	}
-	auto := rs["auto"] == true || rs["needed"] != true
-	doc["restart"] = map[string]any{"needed": true, "auto": auto, "reason": "Restart to finish " + joinNames(parts) + "."}
+	doc["restart"] = map[string]any{"needed": true, "auto": doc["skip_once"] != true, "reason": "Restart to finish " + joinNames(parts) + "."}
+}
+
+// needsPassword is whether adding x takes the password: it, or a
+// requirement not added yet (directly or not), runs as root or sets kernel
+// module options.
+func needsPassword(byID map[string]map[string]any, x map[string]any) bool {
+	seen := map[string]bool{}
+	var walk func(m map[string]any, own bool) bool
+	walk = func(m map[string]any, own bool) bool {
+		id := asStr(m["id"])
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+		if ownPassword(m) && (own || (m["wanted"] != true && m["core"] != true)) {
+			return true
+		}
+		for _, r := range asList(m["requires"]) {
+			if dep := byID[asStr(r)]; dep != nil && walk(dep, false) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(x, true)
 }
 
 // joinNames is "A", "A and B" or "A, B and C" (extensions.joinNames).
@@ -472,24 +529,38 @@ func joinNames(names []string) string {
 }
 
 // bootExtensions is what a restart starts: what is wanted and was waiting
-// is mounted, what is not wanted any more is gone, and a download under way
-// starts over (resumeExtInstallsLocked).
+// (or was left out by the restart before) is mounted, what is not wanted
+// any more is gone, and a download under way starts over
+// (resumeExtInstallsLocked). With skip_once nothing is mounted, and what
+// is wanted needs attention until the next restart.
 func bootExtensions(docs map[string]any) {
-	doc := asObj(docs["extensions"])
+	doc, ok := docs["extensions"].(map[string]any)
+	if !ok {
+		return
+	}
+	skip := doc["skip_once"] == true
 	for _, c := range asList(doc["extensions"]) {
 		m := asObj(c)
-		switch m["state"] {
-		case extensions.StateInstalling:
+		wanted := m["wanted"] == true || m["core"] == true
+		switch {
+		case m["state"] == extensions.StateInstalling:
 			m["progress"] = map[string]any{"bytes": 0.0, "total": extTotal(m)}
-		case extensions.StateRestartNeeded:
-			wanted := m["wanted"] == true || m["core"] == true
-			m["mounted"], m["progress"] = wanted, nil
+		case m["state"] == extensions.StateRestartNeeded,
+			m["state"] == extensions.StateNeedsAttention && m["reason"] == startedOffText:
+			m["mounted"], m["progress"], m["reason"] = wanted, nil, ""
 			m["state"] = extensions.StateNotInstalled
 			if wanted {
 				m["state"] = extensions.StateInstalled
 			}
 		}
+		if skip && m["mounted"] == true {
+			m["mounted"], m["state"] = false, extensions.StateNotInstalled
+			if wanted {
+				m["state"], m["reason"] = extensions.StateNeedsAttention, startedOffText
+			}
+		}
 	}
+	doc["skip_once"] = false
 	refreshExtensions(doc)
 }
 
@@ -612,5 +683,60 @@ func TestFakeExtensions(t *testing.T) {
 	}
 	if code, _ := do("POST", "/extensions/skip-once", ""); code != 200 {
 		t.Fatal("skip-once")
+	}
+	_, doc = do("GET", "/extensions", "")
+	if doc["skip_once"] != true || asObj(doc["restart"])["auto"] != false {
+		t.Fatalf("after skip-once: skip_once %v, restart %v", doc["skip_once"], doc["restart"])
+	}
+	if code, _ := do("DELETE", "/extensions/skip-once", ""); code != 200 {
+		t.Fatal("taking skip-once back")
+	}
+	_, doc = do("GET", "/extensions", "")
+	if doc["skip_once"] != false || asObj(doc["restart"])["auto"] != true {
+		t.Fatalf("after taking it back: skip_once %v, restart %v", doc["skip_once"], doc["restart"])
+	}
+
+	// A restart with skip_once mounts nothing; the one after starts them again.
+	do("POST", "/extensions/skip-once", "")
+	f.mu.Lock()
+	bootExtensions(f.docs)
+	f.mu.Unlock()
+	_, doc = do("GET", "/extensions", "")
+	if c := card(doc, "proton"); c["state"] != "needs-attention" || c["mounted"] != false || doc["skip_once"] != false {
+		t.Fatalf("after a start without extensions: %v, skip_once %v", c, doc["skip_once"])
+	}
+	f.mu.Lock()
+	bootExtensions(f.docs)
+	f.mu.Unlock()
+	_, doc = do("GET", "/extensions", "")
+	if c := card(doc, "proton"); c["state"] != "installed" || c["mounted"] != true || c["reason"] != "" {
+		t.Fatalf("after the next start: %v", c)
+	}
+	if code, ans := do("POST", "/extensions/truckersmp/actions/copy-profiles", `{"args":{"x":"`+strings.Repeat("a", maxActionArgs)+`"}}`); code != 400 || ans["error"] != "args is too large" {
+		t.Fatalf("large args: %d %v", code, ans["error"])
+	}
+}
+
+// Adding an extension takes the password when it, or a requirement not
+// added yet, runs as root or sets kernel module options, as the real
+// document says.
+func TestFakeNeedsPassword(t *testing.T) {
+	doc := map[string]any{"extensions": []any{
+		map[string]any{"id": "coolercontrol", "runs_as_root": true, "requires": []any{}},
+		map[string]any{"id": "fan-profiles", "requires": []any{"coolercontrol"}},
+		map[string]any{"id": "proton", "core": true, "module_options": true, "requires": []any{}},
+		map[string]any{"id": "truckersmp", "requires": []any{"proton"}},
+	}, "restart": map[string]any{}}
+	refreshExtensions(doc)
+	want := map[string]bool{"coolercontrol": true, "fan-profiles": true, "proton": true, "truckersmp": false}
+	for _, c := range asList(doc["extensions"]) {
+		if m := asObj(c); m["needs_password"] != want[asStr(m["id"])] {
+			t.Errorf("%s needs_password = %v", m["id"], m["needs_password"])
+		}
+	}
+	asObj(asList(doc["extensions"])[0])["wanted"] = true
+	refreshExtensions(doc)
+	if m := asObj(asList(doc["extensions"])[1]); m["needs_password"] != false {
+		t.Errorf("fan-profiles once CoolerControl is wanted: %v", m["needs_password"])
 	}
 }

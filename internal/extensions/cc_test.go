@@ -1,12 +1,16 @@
 package extensions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +40,7 @@ var shipped = map[string]string{
 		"module_options":[{"module":"amdgpu","param":"ppfeaturemask","setting":"overdrive"}],
 		"network":{"ports":[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11986"}]},
 		"web":{"port":11987,"label":"Open CoolerControl"},
+		"actions":[{"name":"restore-fans","label":"Restore fans","run_as":"root"},{"name":"curves","label":"Reset curves"}],
 		"data":[{"name":"config","where":"system"}],
 		"settings":[{"key":"overdrive","type":"bool","label":"Graphics card overclocking","help":"Lets CoolerControl change the card's clocks.","restart":true},
 			{"key":"poll","type":"choice","label":"Sensor updates","choices":["normal","slow"],"default":"slow"}],
@@ -74,6 +79,8 @@ type rig struct {
 	gamer   []string // AsGamer calls
 	events  []Document
 	reauths int
+	running map[bool][]string                                                      // the units listUnits finds, system (false) and user (true)
+	asVapor func(ctx context.Context, name string, args ...string) (string, error) // runs an AsGamer call, after it is recorded
 }
 
 // rigPassword is the admin password the rig's re-authentication accepts.
@@ -144,10 +151,28 @@ func (r *rig) wire() {
 		r.mu.Unlock()
 		return nil
 	}
-	r.s.cc.asGamer = func(_ context.Context, name string, args ...string) (string, error) {
+	r.s.cc.listUnits = func(_ context.Context, user bool, patterns ...string) ([]string, error) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		var out []string
+		for _, u := range r.running[user] {
+			if slices.ContainsFunc(patterns, func(p string) bool { ok, _ := path.Match(p, u); return ok }) {
+				out = append(out, u)
+			}
+		}
+		return out, nil
+	}
+	r.s.cc.asGamer = func(ctx context.Context, name string, args ...string) (string, error) {
 		r.mu.Lock()
 		r.gamer = append(r.gamer, strings.Join(append([]string{name}, args...), " "))
+		run := r.asVapor
 		r.mu.Unlock()
+		switch {
+		case run != nil:
+			return run(ctx, name, args...)
+		case name == vosBinary:
+			return vaporCLI(ctx, args...)
+		}
 		return "", nil
 	}
 	r.s.cc.reauth = func(w http.ResponseWriter, _ *http.Request, password string) bool {
@@ -162,10 +187,31 @@ func (r *rig) wire() {
 	}
 }
 
-// pass runs one reconcile, as Run does after a change.
+// vaporCLI runs `vos ext action` in this process, as AsGamer runs it as
+// vapor: its output, and an error with its exit status.
+func vaporCLI(_ context.Context, args ...string) (string, error) {
+	if len(args) < 2 || args[0] != "ext" || args[1] != "action" {
+		return "", fmt.Errorf("vos %v is not vos ext action", args)
+	}
+	var out bytes.Buffer
+	if code := actionCmd(args[2:], &out); code != 0 {
+		return out.String(), exitStatus(code)
+	}
+	return out.String(), nil
+}
+
+// exitStatus is a command's exit status, as *exec.ExitError tells it.
+type exitStatus int
+
+func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+func (e exitStatus) ExitCode() int { return int(e) }
+
+// pass runs one reconcile, as Run does after a change, and waits for the
+// helpers' installs it started.
 func (r *rig) pass() {
 	r.t.Helper()
 	r.s.pass(r.t.Context(), r.b)
+	r.s.waitInstalls()
 }
 
 // boot restarts into the set a restart tries: pending, mounted whole, as
@@ -217,6 +263,7 @@ func (r *rig) do(method, path, body string) (int, string) {
 	}{
 		{"GET /extensions", r.s.handleGet},
 		{"POST /extensions/skip-once", r.s.handleSkipOnce},
+		{"DELETE /extensions/skip-once", r.s.handleKeepOnce},
 		{"POST /extensions/{id}", r.s.handleInstall},
 		{"DELETE /extensions/{id}", r.s.handleRemove},
 		{"PUT /extensions/{id}/settings", r.s.handleSettings},
@@ -231,14 +278,25 @@ func (r *rig) do(method, path, body string) (int, string) {
 	return w.Code, strings.TrimSpace(w.Body.String())
 }
 
-// recHelper is a helper that records its calls.
+// recHelper is a helper that records its calls, and how many of them ran
+// at once.
 type recHelper struct {
 	NopHelper
 	mu         sync.Mutex
 	calls      []string
 	installErr error
+	removeErr  error
+	actionErr  error
 	status     []StatusLine
 	options    func(x *Ext) []string
+
+	// With hold set, Install tells started and waits for hold to close
+	// (or for its context, unless stubborn).
+	hold     chan struct{}
+	started  chan struct{}
+	stubborn bool
+
+	inside, most int
 }
 
 func (h *recHelper) record(s string) {
@@ -253,28 +311,64 @@ func (h *recHelper) Calls() []string {
 	return append([]string(nil), h.calls...)
 }
 
+// enter and leave count the calls under way.
+func (h *recHelper) enter() {
+	h.mu.Lock()
+	h.inside++
+	h.most = max(h.most, h.inside)
+	h.mu.Unlock()
+}
+
+func (h *recHelper) leave() {
+	h.mu.Lock()
+	h.inside--
+	h.mu.Unlock()
+}
+
 func (h *recHelper) Status(context.Context, *Ext) []StatusLine { return h.status }
 
-func (h *recHelper) Install(_ context.Context, x *Ext) error {
+func (h *recHelper) Install(ctx context.Context, x *Ext) error {
+	h.enter()
+	defer h.leave()
 	h.record("install " + x.ID)
+	h.mu.Lock()
+	hold, started, stubborn := h.hold, h.started, h.stubborn
+	h.mu.Unlock()
+	if hold != nil {
+		started <- struct{}{}
+		if stubborn {
+			<-hold
+		} else {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+				h.record("install " + x.ID + " stopped")
+				return ctx.Err()
+			}
+		}
+	}
 	return h.installErr
 }
 
 func (h *recHelper) Remove(_ context.Context, x *Ext, purge bool) error {
+	h.enter()
+	defer h.leave()
 	if purge {
 		h.record("remove " + x.ID + " purge")
 	} else {
 		h.record("remove " + x.ID)
 	}
-	return nil
+	return h.removeErr
 }
 
 func (h *recHelper) Action(_ context.Context, x *Ext, name string, args json.RawMessage) error {
-	if name != "copy-profiles" {
+	h.enter()
+	defer h.leave()
+	if name != "copy-profiles" && name != "restore-fans" {
 		return ErrNoAction
 	}
 	h.record("action " + x.ID + " " + name + " " + string(args))
-	return nil
+	return h.actionErr
 }
 
 func (h *recHelper) ModuleOptions(x *Ext) []string {

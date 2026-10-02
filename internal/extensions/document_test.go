@@ -46,7 +46,7 @@ func TestDocumentCards(t *testing.T) {
 		t.Errorf("coolercontrol = %+v", c)
 	}
 	want := []SettingDoc{
-		{Key: "overdrive", Type: "bool", Label: "Graphics card overclocking", Help: "Lets CoolerControl change the card's clocks.", Restart: true, Choices: []string{}, Value: false},
+		{Key: "overdrive", Type: "bool", Label: "Graphics card overclocking", Help: "Lets CoolerControl change the card's clocks.", Restart: true, Choices: []string{}, Value: false, NeedsPassword: true},
 		{Key: "poll", Type: "choice", Label: "Sensor updates", Choices: []string{"normal", "slow"}, Value: "slow"},
 	}
 	if b, w := mustJSON(t, c.Settings), mustJSON(t, want); b != w {

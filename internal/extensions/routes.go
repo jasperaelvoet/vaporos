@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -17,18 +19,27 @@ import (
 )
 
 // ccState is the control center's side of the service: the API's changes,
-// the document's publisher and the auto-restart.
+// the helpers' calls, the document's publisher and the auto-restart.
 type ccState struct {
-	change sync.Mutex    // one change through the API at a time
+	change sync.Mutex    // one change to wanted or the settings through the API at a time
 	dirty  chan struct{} // the document may have changed
 
 	descMu sync.Mutex
-	descs  map[string]*descriptor.Descriptor // shipped descriptors, nil for none
+	descs  map[string]*descriptor.Descriptor // shipped descriptors read so far, nil for none
+
+	idMu sync.Mutex
+	ids  map[string]chan struct{} // per id, held across its helper's Install, Remove or Action (lockID)
+
+	installs sync.WaitGroup // the helper installs' goroutine (startInstalls)
 
 	// Under Service.mu.
-	notes   map[string]string // by id: why its helper did not finish setting it up or removing it
-	tries   map[string]int    // by id: its helper's installs this boot
-	helpers int               // helper installs under way
+	notes      map[string]string             // by id: why its helper did not finish setting it up or removing it
+	tries      map[string]int                // by id: its helper's installs this boot
+	helpers    int                           // helper calls under way (Install, Remove, Action): busy
+	installing map[string]context.CancelFunc // by id: its helper's Install under way
+	removing   map[string]int                // by id: removals waiting for or holding its helper lock
+	stopped    map[string]stoppedUnits       // by id: the units a removal stopped this boot
+	installer  struct{ running, again bool } // the installs' goroutine runs; a pass asked again meanwhile
 
 	auto autoState
 
@@ -36,25 +47,62 @@ type ccState struct {
 	publish   func(topic string, data any)
 	reauth    func(w http.ResponseWriter, r *http.Request, password string) bool
 	systemctl func(ctx context.Context, user bool, args ...string) error
+	listUnits func(ctx context.Context, user bool, patterns ...string) ([]string, error)
 	asGamer   func(ctx context.Context, name string, args ...string) (string, error)
 }
 
 func newCCState(publish func(string, any)) ccState {
 	return ccState{
-		dirty:   make(chan struct{}, 1),
-		notes:   map[string]string{},
-		tries:   map[string]int{},
-		publish: publish,
+		dirty:      make(chan struct{}, 1),
+		ids:        map[string]chan struct{}{},
+		notes:      map[string]string{},
+		tries:      map[string]int{},
+		installing: map[string]context.CancelFunc{},
+		removing:   map[string]int{},
+		stopped:    map[string]stoppedUnits{},
+		publish:    publish,
 		systemctl: func(ctx context.Context, user bool, args ...string) error {
 			if user {
 				return sysd.UserSystemctl(ctx, args...)
 			}
 			return sysd.Systemctl(ctx, args...)
 		},
-		asGamer: sysd.AsGamer,
-		auto:    newAutoState(),
+		listUnits: listActiveUnits,
+		asGamer:   sysd.AsGamer,
+		auto:      newAutoState(),
 	}
 }
+
+// lockID takes id's helper lock: its helper's Install, Remove and actions
+// run one at a time, and a removal waits for an install under way.
+func (s *Service) lockID(ctx context.Context, id string) (unlock func(), err error) {
+	s.cc.idMu.Lock()
+	ch := s.cc.ids[id]
+	if ch == nil {
+		ch = make(chan struct{}, 1)
+		s.cc.ids[id] = ch
+	}
+	s.cc.idMu.Unlock()
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// helperBusy counts a helper call as busy (adding an extension) while it
+// runs: n is 1 as it starts and -1 as it ends.
+func (s *Service) helperBusy(n int) {
+	s.mu.Lock()
+	s.cc.helpers += n
+	s.mu.Unlock()
+	s.changed()
+}
+
+// maxActionArgs bounds an action's args, which reach `vos ext action` on
+// its command line.
+const maxActionArgs = 64 << 10
 
 // helperTimeout bounds a helper's Install, Remove or Action. A variable for
 // tests.
@@ -65,6 +113,7 @@ func (s *Service) Routes(srv *api.Server) {
 	s.cc.reauth = srv.Reauth
 	srv.Handle("GET", "/extensions", api.Authed, s.handleGet)
 	srv.Handle("POST", "/extensions/skip-once", api.Authed, s.handleSkipOnce)
+	srv.Handle("DELETE", "/extensions/skip-once", api.Authed, s.handleKeepOnce)
 	srv.Handle("POST", "/extensions/{id}", api.Authed, s.handleInstall)
 	srv.Handle("DELETE", "/extensions/{id}", api.Authed, s.handleRemove)
 	srv.Handle("PUT", "/extensions/{id}/settings", api.Authed, s.handleSettings)
@@ -179,6 +228,10 @@ func (s *Service) handleAction(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "args must be an object")
 		return
 	}
+	if len(req.Args) > maxActionArgs {
+		api.Error(w, http.StatusBadRequest, "args is too large")
+		return
+	}
 	// The action outlives a page that goes away; helperTimeout bounds it.
 	ctx := context.WithoutCancel(r.Context())
 	s.answer(w, r, s.Action(ctx, r.PathValue("id"), r.PathValue("name"), req.Args))
@@ -196,7 +249,25 @@ func (s *Service) handleSkipOnce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("extensions: the next start mounts no extension (skip-once)")
+	s.changed()
 	api.OK(w)
+}
+
+// handleKeepOnce takes the flag back: the next boot starts the extensions.
+func (s *Service) handleKeepOnce(w http.ResponseWriter, r *http.Request) {
+	if err := os.Remove(config.ExtSkipOncePath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		api.Error(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	log.Printf("extensions: the next start mounts the extensions again")
+	s.changed()
+	api.OK(w)
+}
+
+// skipOnce reports whether the next boot leaves the extensions out.
+func skipOnce() bool {
+	_, err := os.Lstat(config.ExtSkipOncePath())
+	return err == nil
 }
 
 // name is id's name for messages: its descriptor's, else the id.

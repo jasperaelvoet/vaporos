@@ -1,5 +1,5 @@
 {
-  "description": "Extensions: what installing, removing, a setting and an action refuse, the VaporOS password, a download that waits for a restart, and the restart that adds it.",
+  "description": "Extensions: what installing, removing, a setting and an action refuse, the VaporOS password (for what runs as root or sets kernel module options, and the settings that feed them), a download that waits for a restart, the restart that adds it, and a start without extensions.",
   "vectors": [
     {
       "name": "extensions-refusals",
@@ -19,7 +19,38 @@
         {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"library": "/var/mnt/games"}}, "expect": {"status": 200}},
         {"req": "POST /extensions/truckersmp/actions/fly", "body": {}, "expect": {"status": 404, "body": {"error": "TruckersMP has no action \"fly\""}}},
         {"req": "POST /extensions/truckersmp/actions/copy-profiles", "body": {}, "expect": {"status": 409, "body": {"error": "TruckersMP is not running yet. Restart VaporOS first."}}},
-        {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "body": {}}}
+        {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "body": {}, "events": [["extensions.state", {"skip_once": true}]]}},
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"skip_once": true}}},
+        {"req": "DELETE /extensions/skip-once", "expect": {"status": 200, "body": {}, "events": [["extensions.state", {"skip_once": false}]]}}
+      ]
+    },
+    {
+      "name": "extensions-passwords",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"extensions": [{"id": "proton", "needs_password": false}, {"id": "coolercontrol", "needs_password": true, "module_options": true, "settings": [{"key": "gpu_overdrive", "needs_password": true}, {"key": "poll_rate", "needs_password": false}]}, {"id": "truckersmp", "needs_password": false, "steam": {"forces": [{"app": 227300}, {"app": 270880}]}}, {"id": "star-citizen", "needs_password": false}]}}},
+        {"req": "POST /extensions/coolercontrol", "body": {"options": {"poll_rate": "every_five_seconds"}}, "expect": {"status": 403, "body": {"error": "Adding CoolerControl needs the admin password"}}},
+        {"req": "POST /extensions/coolercontrol", "body": {"password": "vaporvapor"}, "expect": {"status": 200}},
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"poll_rate": "every_five_seconds"}}, "expect": {"status": 200}},
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_overdrive": true}}, "expect": {"status": 403, "body": {"error": "Changing this setting needs the admin password"}}},
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_overdrive": true}, "password": "vaporvapor"}, "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "extensions-skip-once-restart",
+      "slow": true,
+      "preset": "extensions-restart",
+      "ignore_topics": ["power.idle"],
+      "steps": [
+        {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "events": [["extensions.state", {"skip_once": true, "restart": {"needed": true, "auto": false}}]]}},
+        {"req": "POST /system/reboot", "passive": true},
+        {"wait": {"until": "down"}},
+        {"wake": true},
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"skip_once": false, "restart": {"needed": false}, "extensions": [{"id": "proton", "state": "needs-attention", "mounted": false}, {"id": "coolercontrol", "state": "needs-attention", "mounted": false}, {"id": "truckersmp", "state": "needs-attention"}, {"id": "star-citizen", "state": "not-installed"}]}}},
+        {"req": "POST /system/reboot", "passive": true},
+        {"wait": {"until": "down"}},
+        {"wake": true},
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"restart": {"needed": false}, "extensions": [{"id": "proton", "state": "installed"}, {"id": "coolercontrol", "state": "installed", "mounted": true}, {"id": "truckersmp", "state": "installed"}, {"id": "star-citizen", "state": "not-installed"}]}}}
       ]
     },
     {

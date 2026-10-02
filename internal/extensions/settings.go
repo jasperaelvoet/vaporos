@@ -179,7 +179,10 @@ func unmarkInstalled(id string) error {
 }
 
 // ext is what id's helper works with.
-func (s *Service) ext(id string, d *descriptor.Descriptor) *Ext {
+func (s *Service) ext(id string, d *descriptor.Descriptor) *Ext { return newExt(id, d) }
+
+// newExt is what id's helper works with, in vosd or in `vos ext action`.
+func newExt(id string, d *descriptor.Descriptor) *Ext {
 	return &Ext{ID: id, Desc: d, Settings: loadSettings(id, d),
 		DataDir: filepath.Join(config.ExtDataDir(), id),
 		HomeDir: filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, id)}

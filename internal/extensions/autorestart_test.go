@@ -41,7 +41,7 @@ type autoRig struct {
 	clock   time.Time
 	reboots []string
 	ok      bool
-	next    string
+	next    NextBoot
 	health  bool
 	uptime  time.Duration
 }
@@ -64,7 +64,7 @@ func (a *autoRig) wireAuto() {
 	a.s.SetAutoRestart(func(_ context.Context, msg string) (bool, error) {
 		a.reboots = append(a.reboots, msg)
 		return a.ok, nil
-	}, func() string { return a.next })
+	}, func() NextBoot { return a.next })
 	a.s.cc.auto.healthDone = func(context.Context) bool { return a.health }
 	a.s.cc.auto.uptime = func() (time.Duration, error) { return a.uptime, nil }
 }
@@ -127,13 +127,95 @@ func TestAutoRestart(t *testing.T) {
 	}
 }
 
-// A staged update boots first: the words say so.
+// A staged update or rollback boots first: the words say so.
 func TestAutoRestartWithAStagedUpdate(t *testing.T) {
+	for _, c := range []struct {
+		next NextBoot
+		want string
+	}{
+		{NextBoot{Version: "20261003.091500"}, "Restarting to install VaporOS 20261003.091500; CoolerControl is added after the next restart"},
+		{NextBoot{Version: "20260801.000000", Rollback: true}, "Restarting to go back to VaporOS 20260801.000000; CoolerControl is added after the next restart"},
+	} {
+		a := newAutoRig(t)
+		a.next = c.next
+		a.idle(autoIdle)
+		if len(a.reboots) != 1 || a.reboots[0] != c.want {
+			t.Fatalf("reboots %q, want %q", a.reboots, c.want)
+		}
+	}
+}
+
+// While the next start leaves the extensions out, a restart would not try
+// the set: VaporOS does not restart by itself for it, and says so.
+func TestAutoRestartSkipOnce(t *testing.T) {
 	a := newAutoRig(t)
-	a.next = "20261003.091500"
+	if code, _ := a.do("POST", "/extensions/skip-once", ""); code != 200 {
+		t.Fatal("skip-once")
+	}
+	if d := a.doc(); !d.SkipOnce || !d.Restart.Needed || d.Restart.Auto {
+		t.Fatalf("document = skip_once %v, restart %+v", d.SkipOnce, d.Restart)
+	}
+	a.idle(time.Hour)
+	if len(a.reboots) != 0 || exists(config.ExtAutoRestartPath()) {
+		t.Fatalf("restarted with skip-once set: %q", a.reboots)
+	}
+	if code, _ := a.do("DELETE", "/extensions/skip-once", ""); code != 200 {
+		t.Fatal("cancelling skip-once")
+	}
+	if d := a.doc(); d.SkipOnce || !d.Restart.Auto {
+		t.Fatalf("document = skip_once %v, restart %+v", d.SkipOnce, d.Restart)
+	}
+	a.idle(time.Hour)
+	if len(a.reboots) != 1 {
+		t.Fatalf("no restart once skip-once was taken back: %q", a.reboots)
+	}
+}
+
+// The health check and the reboot each run within their own bound, and
+// a lock held elsewhere is waited for a bounded time, each lock its own.
+func TestAutoRestartBounds(t *testing.T) {
+	a := newAutoRig(t)
+	var healthLeft, rebootLeft time.Duration
+	a.s.cc.auto.healthDone = func(ctx context.Context) bool {
+		d, _ := ctx.Deadline()
+		healthLeft = time.Until(d)
+		return true
+	}
+	a.s.SetAutoRestart(func(ctx context.Context, msg string) (bool, error) {
+		d, ok := ctx.Deadline()
+		if ok {
+			rebootLeft = time.Until(d)
+		}
+		a.reboots = append(a.reboots, msg)
+		return true, nil
+	}, nil)
 	a.idle(autoIdle)
-	if want := "Restarting to install VaporOS 20261003.091500; CoolerControl is added after the next restart"; len(a.reboots) != 1 || a.reboots[0] != want {
-		t.Fatalf("reboots %q, want %q", a.reboots, want)
+	if len(a.reboots) != 1 || healthLeft <= 0 || healthLeft > autoHealthWait || rebootLeft <= 0 || rebootLeft > autoRebootWait {
+		t.Fatalf("reboots %q, health had %v, reboot had %v", a.reboots, healthLeft, rebootLeft)
+	}
+}
+
+// A busy store lock holds the auto-restart back only for autoLockWait,
+// counted from when the update lock was had.
+func TestAutoRestartWaitsForTheStoreLock(t *testing.T) {
+	a := newAutoRig(t)
+	saved := autoLockWait
+	t.Cleanup(func() { autoLockWait = saved })
+	autoLockWait = 300 * time.Millisecond
+	unlock, err := store.Lock(t.Context())
+	must(t, err)
+	start := time.Now()
+	a.idle(autoIdle)
+	unlock()
+	if len(a.reboots) != 0 {
+		t.Fatal("restarted without the store lock")
+	}
+	if d := time.Since(start); d < autoLockWait || d > autoLockWait+2*time.Second {
+		t.Fatalf("waited %v for the store lock, want about %v", d, autoLockWait)
+	}
+	a.idle(autoIdle)
+	if len(a.reboots) != 1 {
+		t.Fatal("no restart once the lock was free")
 	}
 }
 

@@ -83,8 +83,8 @@ func (s *Service) pass(ctx context.Context, b *booted) (retry bool) {
 	}
 	s.record(b, rep, p)
 	// On a trial, helpers set up only what `vos health` passed.
-	if !awaitingHealth(rep) && s.runInstalls(ctx, b.cat, rep) {
-		retry = true
+	if !awaitingHealth(rep) {
+		s.startInstalls(ctx, b.cat, rep)
 	}
 
 	if !s.fetchOther(ctx, b) {
