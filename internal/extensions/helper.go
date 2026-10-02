@@ -58,12 +58,21 @@ type SteamParts struct {
 	// Shortcuts by descriptor key: where the executable is and what to
 	// start in, which only the install knows.
 	Shortcuts map[string]ShortcutTarget
-	// Beta asks Steam to switch an app to a branch ("" for the public one).
-	Beta map[uint32]string
+	// Beta asks Steam to switch apps to a branch, one request per app.
+	Beta map[uint32]BetaRequest
 	// SunshineApps are entries Sunshine lists after the games, started
 	// without a Steam shortcut (TruckersMP's multiplayer start: `vos ext
 	// truckersmp mp ets2`). Optional; the shortcuts are listed anyway.
 	SunshineApps []SunshineApp
+}
+
+// BetaRequest is one request to switch an app's branch. prepare applies
+// each Request once, so a branch the user picks in Steam afterwards stays
+// theirs; a helper asks again with a new Request (any id it likes,
+// [A-Za-z0-9._-], 1 to 64 characters, not starting with . _ or -).
+type BetaRequest struct {
+	Branch  string `json:"branch"`  // "" for the public branch
+	Request string `json:"request"` // this request's id
 }
 
 // ShortcutTarget is a shortcut's executable and start directory, canonical

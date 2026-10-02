@@ -13,32 +13,51 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
-// steamWatchEvery is how often watchSteam looks for launch messages; it
-// looks at Steam's accounts every accountsEvery-th time. Variables for
-// tests.
+// steamWatchEvery is how often WatchSteam looks for launch messages; it
+// looks at Steam's accounts every accountsEvery-th time and writes
+// steam.json again every syncEvery-th time (about once a minute).
+// Variables for tests.
 var (
 	steamWatchEvery = 3 * time.Second
 	accountsEvery   = 5
+	syncEvery       = 20
 )
 
-// watchSteam publishes what `vos ext launch` left for the user and asks
-// for a Steam restart when Steam has an account prepare has not set up,
-// until ctx ends.
-func (s *Service) watchSteam(ctx context.Context) {
+// WatchSteam publishes what `vos ext launch` left for the user, asks for
+// a Steam restart when Steam has an account prepare has not set up, and
+// writes steam.json again when the slots change (SlotsChanged) and about
+// once a minute, which catches a `vos update` or `vos rollback` run from a
+// shell, until ctx ends. vosd runs and restarts it apart from Run, so a
+// pass that cannot start or panics leaves it alone.
+func (s *Service) WatchSteam(ctx context.Context) {
+	if config.IsLive() {
+		return
+	}
+	accounts, syncs := max(accountsEvery, 1), max(syncEvery, 1)
 	t := time.NewTicker(steamWatchEvery)
 	defer t.Stop()
 	for i := 0; ; i++ {
 		s.pollMessages()
-		if i%accountsEvery == 0 {
+		if i%accounts == 0 {
 			s.checkAccounts()
+		}
+		if i%syncs == 0 {
+			s.syncSteam()
 		}
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.slotsKick:
+			s.syncSteam()
 		case <-t.C:
 		}
 	}
 }
+
+// SlotsChanged tells WatchSteam that what the other slot boots may have
+// changed (update.Service.SetSlotsChanged): steam.json's dispatcher
+// follows it. It never blocks.
+func (s *Service) SlotsChanged() { s.signal(s.slotsKick) }
 
 // checkAccounts asks for a Steam restart when loginusers.vdf lists an
 // account prepare's record lacks: someone signed in to Steam after

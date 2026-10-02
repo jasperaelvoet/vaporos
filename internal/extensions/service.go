@@ -45,9 +45,10 @@ const slotLockWait = 10 * time.Second
 // the store's sets, collects its garbage, and once per boot reads the
 // mounted images through to find damaged ones.
 type Service struct {
-	cfg  *config.Config // shared: read through Snapshot
-	kick chan struct{}  // Reconcile: someone changed something
-	wake chan struct{}  // the re-read deleted an image: fetch it again
+	cfg       *config.Config // shared: read through Snapshot
+	kick      chan struct{}  // Reconcile: someone changed something
+	wake      chan struct{}  // the re-read deleted an image: fetch it again
+	slotsKick chan struct{}  // SlotsChanged: WatchSteam writes steam.json again
 
 	mu        sync.Mutex
 	receiving time.Time            // when the download under way last got bytes; zero before its first
@@ -71,7 +72,7 @@ type Service struct {
 	// Steam (steamdesired.go, steamwatch.go): steamMu serialises writes of
 	// steam.json; steamRestart (under mu) asks for a Steam restart;
 	// publish sends events; missingAccounts is the last set of accounts
-	// prepare lacked (watchSteam's goroutine only).
+	// prepare lacked (WatchSteam's goroutine only).
 	steamMu         sync.Mutex
 	steamRestart    func(reason string)
 	publish         func(topic string, data any)
@@ -86,16 +87,17 @@ func NewService(cfg *config.Config) *Service {
 		cfg = config.Defaults()
 	}
 	s := &Service{
-		cfg:      cfg,
-		kick:     make(chan struct{}, 1),
-		wake:     make(chan struct{}, 1),
-		progress: map[string]*Progress{},
-		errs:     map[string]string{},
-		damaged:  map[string]bool{},
-		bad:      map[string]bool{},
-		full:     map[string]int64{},
-		publish:  events.Publish,
-		cc:       newCCState(events.Publish),
+		cfg:       cfg,
+		kick:      make(chan struct{}, 1),
+		wake:      make(chan struct{}, 1),
+		slotsKick: make(chan struct{}, 1),
+		progress:  map[string]*Progress{},
+		errs:      map[string]string{},
+		damaged:   map[string]bool{},
+		bad:       map[string]bool{},
+		full:      map[string]int64{},
+		publish:   events.Publish,
+		cc:        newCCState(events.Publish),
 	}
 	s.options = s.moduleOptions
 	return s
@@ -131,22 +133,13 @@ func loadBooted() (*booted, error) {
 // something a later one could do, again after retryBase, doubling up to
 // retryMax. After the first pass it re-reads the mounted images once,
 // beside the passes; a damaged image it deletes brings on another pass. The
-// live system has no store: Run returns at once.
+// live system has no store: Run returns at once. WatchSteam runs beside it.
 func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
 	}
 	// steam.json first: vosd's first gamescope start waits for it.
 	s.syncSteam()
-	steamCtx, stopSteam := context.WithCancel(ctx)
-	var watch sync.WaitGroup
-	watch.Add(1)
-	go func() {
-		defer watch.Done()
-		s.watchSteam(steamCtx)
-	}()
-	defer watch.Wait()
-	defer stopSteam()
 	if err := store.CleanTemp(); err != nil {
 		log.Printf("extensions: %v", err)
 	}

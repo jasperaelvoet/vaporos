@@ -468,6 +468,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `settings/<id>.json` | the extension's settings (never in config.json): one JSON object of its descriptor's setting keys, written whole (temp + rename) when it is added and on each change. A key missing, or with a value its setting does not take, reads as the default: the descriptor's `default` when the setting takes it, else `false`, the first choice, or `""` (no disk). Purging the extension deletes it |
 | `settings/<id>.installed` | present: the extension's helper finished its `Install` and no `Remove` came after (see Control center) |
 | `steam.json` | what the mounted extensions want in Steam, written by vosd for `vos steam prepare` (see Steam) |
+| `steam-owned.json` | `{"ids":["<id>",...]}` (sorted, at most 256): every extension that was wanted (with core and requirements) or mounted on this box at some point, so the only ones that may have set something in Steam (`release`, see Steam). vosd adds to it (atomically, before it writes `steam.json`) and never removes from it; ids that are not extension ids are dropped when read, and a file that cannot be read counts as empty |
 | `autorestart.json` | `{"restarts":[{"at","set","fingerprint","version"}]}`: the auto-restarts vosd made (RFC 3339 UTC; the pending set's number and fingerprint; the VaporOS version it restarted from), the last 32, written atomically. A file that cannot be read counts as empty |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
@@ -700,12 +701,18 @@ never edits those files for an extension.
 
 *Desired state,* `/var/lib/vos/ext/steam.json` (root's, 0644), written by
 vosd atomically and only when its bytes change: at start before its first
-reconcile, after every reconcile, and when the control center adds or
-removes an extension or changes its settings. When the file changes vosd
-asks for a Steam restart (see Units, Display policy).
+reconcile, after every reconcile, when the control center adds or
+removes an extension or changes its settings, when what the other slot
+boots may have changed (a stage of vosd's once it recorded the idle slot's
+`slots/<slot>.json`, and again when that stage ends; a rollback; an
+activation, before its restart), and about once a minute (which also
+catches `vos update` and `vos rollback` run from a shell). The minute's
+check, the launch messages and the account check run on their own in
+vosd, apart from the reconciles. When the file changes vosd asks for a
+Steam restart (see Units, Display policy).
 ```json
 {"set":"<n>","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
- "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":"temporary_1_61"}],
+ "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":{"branch":"temporary_1_61","request":"1759400000"}}],
  "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":"/usr/lib/vos/ext/star-citizen/art"}],
  "release":[{"app":227300}]}
 ```
@@ -725,8 +732,13 @@ asks for a Steam restart (see Units, Display policy).
 - `apps`: one entry per app id. `compat_tool` is `steam.compat_tool` of the
   extension whose `steam.force_compat_tool` lists the app; `hooks` are the
   extensions whose `steam.hooks` name it, in catalog order; `beta` is the
-  branch a helper's `SteamParts.Beta` asks for (`""` the public branch),
-  `null` when none does.
+  request a helper's `SteamParts.Beta` makes, `null` when none does:
+  `branch` the branch to switch to (`""` the public branch) and `request`
+  the helper's id for this request (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`).
+  prepare applies each request once, so a branch the user picks in Steam
+  afterwards stays theirs until the helper makes a request with a new id.
+  A request vosd would not take (a branch or id of another form, app 0)
+  is left out, with a log line.
 - `shortcuts`: each descriptor `steam.shortcuts` entry whose helper's
   `SteamParts.Shortcuts` gives it a target (`exe`, `start_dir`: canonical
   absolute paths; one without a target yet is left out), with `compat_tool`
@@ -734,10 +746,12 @@ asks for a Steam restart (see Units, Display policy).
   and `art` its `art` directory in the mounted image
   (`/usr/lib/vos/ext/<owner>/<art>`) when that directory exists, else `""`.
 - `release`: apps a removed extension used to force: those the shipped
-  descriptors of the catalog's extensions no longer wanted force, unless a
-  listed extension forces them (empty while `wanted` cannot be read).
-  prepare hands their mapping to the user: it stays, and VaporOS no longer
-  owns it.
+  descriptors of the catalog's extensions no longer wanted force, of the
+  extensions `steam-owned.json` lists (once wanted or mounted on this box,
+  so one never added releases nothing), unless a listed extension forces
+  them (empty while `wanted` cannot be read). prepare hands over only the
+  mappings its record owns: such a mapping stays, and VaporOS no longer
+  owns it; an app whose mapping VaporOS does not own is left alone.
 - `dispatcher`: true only when every VaporOS the box can boot has
   `vos ext launch`: the booted catalog has `dispatcher` 1 or more, and the
   other slot has no boot entry, or its `slots/<other>.json` is for its
@@ -745,7 +759,9 @@ asks for a Steam restart (see Units, Display policy).
   write slot files, images built before extensions list none, and every
   image built with them has the dispatcher); an ESP that cannot be read
   makes it false. While it is false no launch options are wrapped, and
-  those that were are unwrapped.
+  those that were are unwrapped. So staging an image built before
+  extensions (a downgrade) turns it false at once, and the Steam restart
+  that follows (at the next quiet moment) unwraps them.
 - prepare ignores, with a log line, entries that are not well formed: ids
   and keys `^[a-z][a-z0-9-]{0,31}$`, tools and branches
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, app ids above 0 and listed once,

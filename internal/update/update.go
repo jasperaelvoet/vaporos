@@ -45,6 +45,9 @@ type Service struct {
 	cancel   context.CancelCauseFunc // ends the running stage's context
 	stages   sync.WaitGroup          // stages StartStage runs
 	reboot   func(context.Context) error
+	// slotsChanged runs whenever what the other slot boots may have
+	// changed (SetSlotsChanged).
+	slotsChanged func()
 }
 
 var (
@@ -60,6 +63,27 @@ func NewService(cfg *config.Config) *Service {
 		cfg = config.Defaults()
 	}
 	return &Service{cfg: cfg, reboot: sysd.Reboot}
+}
+
+// SetSlotsChanged sets f, which must return at once, to run whenever the
+// image the other slot boots may have changed: after a stage records the
+// idle slot's extensions (Write order 1) and again when it ends, after a
+// rollback and before an activation's restart. The extensions decide
+// from it whether Steam may start games through `vos ext launch`, which
+// an image built before extensions lacks.
+func (s *Service) SetSlotsChanged(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.slotsChanged = f
+}
+
+func (s *Service) notifySlots() {
+	s.mu.Lock()
+	f := s.slotsChanged
+	s.mu.Unlock()
+	if f != nil {
+		f()
+	}
 }
 
 // Routes registers /update/* (see CONTRACTS.md).
@@ -312,6 +336,7 @@ func (s *Service) doStage(ctx context.Context, opts Options) error {
 		s.mu.Unlock()
 		events.Publish("update.progress", p)
 	}
+	opts.SlotsChanged = s.notifySlots
 	res, err := Stage(ctx, s.config(), opts)
 	if err == nil {
 		return nil
@@ -456,6 +481,7 @@ func (s *Service) handleActivate(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusConflict, "the staged update %s is no longer bootable", st.Staged.Version)
 		return
 	}
+	s.notifySlots()
 	api.OK(w)
 	go func() {
 		time.Sleep(rebootDelay)
@@ -471,6 +497,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusConflict, "%v", err)
 		return
 	}
+	s.notifySlots()
 	api.OK(w)
 }
 

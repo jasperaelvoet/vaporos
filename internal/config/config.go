@@ -85,6 +85,7 @@ func ExtFailedPath() string      { return filepath.Join(ExtDir(), "failed") }
 func ExtSkipOncePath() string    { return filepath.Join(ExtDir(), "skip-once") }
 func ExtAutoRestartPath() string { return filepath.Join(ExtDir(), "autorestart.json") }
 func ExtSteamPath() string       { return filepath.Join(ExtDir(), "steam.json") }
+func ExtSteamOwnedPath() string  { return filepath.Join(ExtDir(), "steam-owned.json") }
 func ExtPortsPath() string       { return filepath.Join(ExtDir(), "ports") }
 func ExtBootPath() string        { return filepath.Join(RunDir, "extensions.json") }
 func ExtLockPath() string        { return filepath.Join(RunDir, "ext.lock") }

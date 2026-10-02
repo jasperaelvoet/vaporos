@@ -61,6 +61,10 @@ type Options struct {
 	// Accepted runs once the manifest has passed every check, before
 	// anything is written.
 	Accepted func(m *manifest.Manifest, slot string)
+	// SlotsChanged runs once the idle slot's entries are gone and its
+	// extension catalog recorded (Write order 1), and again when a stage
+	// that got that far returns.
+	SlotsChanged func()
 }
 
 var (
@@ -321,6 +325,10 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 	lost, err := unhookIdleSlot(ctx, esp, idle, m, append(have, fetched...))
 	if err != nil {
 		return res, err
+	}
+	if opts.SlotsChanged != nil {
+		opts.SlotsChanged()
+		defer opts.SlotsChanged() // the entry, or the slot left without one
 	}
 	if len(lost) > 0 {
 		if _, err := fetchImages(ctx, src, m, lost, nil); err != nil {

@@ -83,8 +83,11 @@ func Main(args []string) int {
 		sun := sunshine.NewService(cfg)
 		sto := storage.NewService(cfg)
 		ext := extensions.NewService(cfg)
-		// Steam restarts so `vos steam prepare` applies what changed under it.
+		// Steam restarts so `vos steam prepare` applies what changed under it,
+		// which includes whether the other slot can start games through
+		// `vos ext launch`.
 		ext.SetSteamRestarter(func(reason string) { disp.RestartSteam(reason, false) })
+		up.SetSlotsChanged(ext.SlotsChanged)
 		// The display's session only counts while Sunshine agrees a client is
 		// (or may soon be) connected: a stream abandoned without quitting,
 		// whose app Sunshine could not close, must not keep the PC awake.
@@ -110,6 +113,7 @@ func Main(args []string) int {
 			runner{"sunshine", sun.Run},
 			runner{"storage", sto.Run},
 			runner{"extensions", ext.Run},
+			runner{"extensions-steam", ext.WatchSteam},
 			runner{"power", pow.Run},
 			runner{"system", sys.Run})
 		// The session socket (vos session begin|end) is served by disp.Run.

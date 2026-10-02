@@ -73,9 +73,12 @@ func steamBox(t *testing.T) (*env, *[]string) {
 	withHelper(t, "star-citizen", testHelper{id: "star-citizen", steam: SteamParts{
 		Shortcuts: map[string]ShortcutTarget{"launcher": {Exe: scExe, StartDir: scPrefix}},
 	}})
-	withHelper(t, "truckersmp", settingsHelper{saw: &saw, parts: SteamParts{Beta: map[uint32]string{227300: "temporary_1_53"}}})
+	withHelper(t, "truckersmp", settingsHelper{saw: &saw, parts: SteamParts{Beta: map[uint32]BetaRequest{227300: ets2Beta}}})
 	return e, &saw
 }
+
+// ets2Beta is TruckersMP asking for the branch its mod supports.
+var ets2Beta = BetaRequest{Branch: "temporary_1_53", Request: "1759400000"}
 
 // settingsHelper records the Ext its Steam gets.
 type settingsHelper struct {
@@ -98,7 +101,7 @@ func loadDesired(t *testing.T) SteamDesired {
 
 func TestSteamDesired(t *testing.T) {
 	_, saw := steamBox(t)
-	beta := "temporary_1_53"
+	beta := ets2Beta
 	want := SteamDesired{Set: "3", Dispatcher: true, DefaultCompatTool: "proton-cachyos-slr",
 		Apps: []SteamApp{
 			{App: 227300, CompatTool: "proton-cachyos-slr", Hooks: []string{"truckersmp"}, Beta: &beta},
@@ -130,6 +133,89 @@ func TestSteamDesired(t *testing.T) {
 	d = loadDesired(t)
 	if len(d.Apps) != 0 || len(d.Shortcuts) != 1 || !reflect.DeepEqual(d.Release, []SteamRelease{{227300}, {270880}}) {
 		t.Errorf("after removing TruckersMP: %+v", d)
+	}
+
+	// Only mounted ∩ (wanted ∪ core) count: with nothing wanted, core
+	// Proton alone is left, and Star Citizen's shortcut goes too.
+	writeFile(t, config.ExtWantedPath(), "")
+	e, err := loadSteamEntries()
+	must(t, err)
+	if d := e.desiredSteam(true); !slices.Equal(e.ids, []string{"proton"}) || len(d.Shortcuts)+len(d.Apps) != 0 {
+		t.Errorf("with nothing wanted: ids %q, %+v", e.ids, d)
+	}
+}
+
+// Only an extension that was wanted or mounted on this box may have set
+// something in Steam, so only its apps are released: one in the catalog
+// the user never added hands nothing over.
+func TestSteamReleaseOnlyWhatVaporOSMayOwn(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	proton := newImage(t, "proton", "", 100, true)
+	sc := newImage(t, "star-citizen", "", 100, false, "proton")
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "3", Mounted: mountedAs(proton, sc)})
+	writeFile(t, config.ExtWantedPath(), "star-citizen\n")
+	if d := loadDesired(t); len(d.Release) != 0 {
+		t.Fatalf("TruckersMP was never added, yet: %+v", d.Release)
+	}
+	_, err := s.SyncSteam()
+	must(t, err)
+	var owned steamOwned
+	must(t, config.ReadJSON(config.ExtSteamOwnedPath(), &owned))
+	if !slices.Equal(owned.IDs, []string{"proton", "star-citizen"}) {
+		t.Fatalf("steam-owned.json %+v", owned)
+	}
+
+	// Added, then removed before it was ever mounted: still its apps go back.
+	writeFile(t, config.ExtWantedPath(), "star-citizen\ntruckersmp\n")
+	_, err = s.SyncSteam()
+	must(t, err)
+	writeFile(t, config.ExtWantedPath(), "star-citizen\n")
+	_, err = s.SyncSteam()
+	must(t, err)
+	d, err := readSteamDesired()
+	must(t, err)
+	if !reflect.DeepEqual(d.Release, []SteamRelease{{227300}, {270880}}) {
+		t.Fatalf("release %+v", d.Release)
+	}
+	must(t, config.ReadJSON(config.ExtSteamOwnedPath(), &owned))
+	if !slices.Equal(owned.IDs, []string{"proton", "star-citizen", "truckersmp"}) {
+		t.Fatalf("steam-owned.json %+v", owned)
+	}
+
+	// A file that is not one owns nothing more than what is wanted or
+	// mounted now, and is written anew.
+	writeFile(t, config.ExtSteamOwnedPath(), `{"ids":["../x","TRUCKERSMP"]}`)
+	if d := loadDesired(t); len(d.Release) != 0 {
+		t.Fatalf("release %+v", d.Release)
+	}
+	_, err = s.SyncSteam()
+	must(t, err)
+	must(t, config.ReadJSON(config.ExtSteamOwnedPath(), &owned))
+	if !slices.Equal(owned.IDs, []string{"proton", "star-citizen"}) {
+		t.Fatalf("steam-owned.json %+v", owned)
+	}
+}
+
+// A branch request goes to steam.json only when prepare would take it.
+func TestBetaRequestsAreChecked(t *testing.T) {
+	steamBox(t)
+	for _, bad := range []BetaRequest{
+		{Branch: "temporary_1_53"},
+		{Branch: "temporary 1.53", Request: "1"},
+		{Branch: "-x", Request: "1"},
+		{Branch: "temporary_1_53", Request: "../1"},
+		{Branch: "temporary_1_53", Request: strings.Repeat("1", 65)},
+	} {
+		withHelper(t, "truckersmp", testHelper{steam: SteamParts{Beta: map[uint32]BetaRequest{227300: bad}}})
+		if d := loadDesired(t); d.Apps[0].Beta != nil {
+			t.Errorf("%+v: listed", bad)
+		}
+	}
+	public := BetaRequest{Branch: "", Request: "2"}
+	withHelper(t, "truckersmp", testHelper{steam: SteamParts{Beta: map[uint32]BetaRequest{227300: public, 0: {Branch: "x", Request: "3"}}}})
+	if d := loadDesired(t); len(d.Apps) != 2 || d.Apps[0].Beta == nil || *d.Apps[0].Beta != public {
+		t.Errorf("the public branch: %+v", d.Apps)
 	}
 }
 
@@ -288,20 +374,10 @@ func TestRemoveSyncsSteam(t *testing.T) {
 }
 
 // Run writes steam.json before its first pass (vosd's first gamescope
-// start waits for it), and publishes what `vos ext launch` left.
+// start waits for it).
 func TestRunWritesSteamJSON(t *testing.T) {
 	e, _ := steamBox(t)
 	s, _ := e.service()
-	var mu sync.Mutex
-	var published []string
-	s.publish = func(topic string, data any) {
-		mu.Lock()
-		defer mu.Unlock()
-		published = append(published, topic)
-	}
-	every := steamWatchEvery
-	t.Cleanup(func() { steamWatchEvery = every })
-	steamWatchEvery = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { s.Run(ctx); close(done) }()
@@ -310,10 +386,104 @@ func TestRunWritesSteamJSON(t *testing.T) {
 		<-done
 	})
 	waitFor(t, func() bool { return exists(config.ExtSteamPath()) })
-	must(t, writeMessage(launchRecord{Code: codeNotMounted, ID: "star-citizen", Detail: "shortcut star-citizen/launcher: this boot did not mount it"}))
-	waitFor(t, func() bool {
+}
+
+// watching runs WatchSteam on a fast clock until the test ends, and
+// returns the topics it published and the Steam restarts it asked for.
+func watching(t *testing.T, s *Service, syncs int) (topics func() []string, restarts func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var published, asked []string
+	s.publish = func(topic string, data any) {
 		mu.Lock()
 		defer mu.Unlock()
-		return slices.Contains(published, "system.message")
+		published = append(published, topic)
+	}
+	s.SetSteamRestarter(func(reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, reason)
 	})
+	savedEvery, savedSyncs := steamWatchEvery, syncEvery
+	t.Cleanup(func() { steamWatchEvery, syncEvery = savedEvery, savedSyncs })
+	steamWatchEvery, syncEvery = 5*time.Millisecond, syncs
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.WatchSteam(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return slices.Clone(published)
+		}, func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return slices.Clone(asked)
+		}
+}
+
+// WatchSteam runs on its own, without Run: it writes steam.json and
+// publishes what `vos ext launch` left.
+func TestWatchSteam(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	topics, _ := watching(t, s, 20)
+	waitFor(t, func() bool { return exists(config.ExtSteamPath()) })
+	must(t, writeMessage(launchRecord{Code: codeNotMounted, ID: "star-citizen", Detail: "shortcut star-citizen/launcher: this boot did not mount it"}))
+	waitFor(t, func() bool { return slices.Contains(topics(), "system.message") })
+}
+
+// slotB records slot b's image, otherVersion, with Proton or, as an image
+// built before extensions has it, with none. Slot b boots otherVersion
+// (slotEntry, set before anything runs).
+func slotB(t *testing.T, withExtensions bool) {
+	t.Helper()
+	exts := map[string]manifest.Extension{}
+	if withExtensions {
+		exts["proton"] = manifest.Extension{Name: "ext-proton.raw", Size: 100, SHA256: strings.Repeat("a", 64), FSVerity: strings.Repeat("b", 64), Core: true}
+	}
+	locked(t, func() error { return store.WriteSlot("b", otherVersion, exts) })
+}
+
+func dispatcherOn() bool {
+	d, err := readSteamDesired()
+	return err == nil && d.Dispatcher
+}
+
+func bootsOtherVersion() {
+	slotEntry = func(slot string) (*boot.Entry, error) { return &boot.Entry{Version: otherVersion, Slot: slot}, nil }
+}
+
+// Staging a VaporOS built before extensions into the other slot turns the
+// dispatcher off at once, and asks for the Steam restart at which prepare
+// unwraps the launch options.
+func TestSlotsChangedFollowsTheDispatcher(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	bootsOtherVersion()
+	slotB(t, true)
+	_, restarts := watching(t, s, 1000)
+	waitFor(t, dispatcherOn)
+	asked := len(restarts())
+
+	slotB(t, false)
+	s.SlotsChanged()
+	waitFor(t, func() bool { return !dispatcherOn() && len(restarts()) == asked+1 })
+}
+
+// A slot file written behind vosd's back (`vos update` from a shell) is
+// caught by the re-check about once a minute.
+func TestWatchSteamRechecksTheDispatcher(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	bootsOtherVersion()
+	slotB(t, true)
+	_, restarts := watching(t, s, 2)
+	waitFor(t, dispatcherOn)
+	asked := len(restarts())
+	slotB(t, false)
+	waitFor(t, func() bool { return !dispatcherOn() && len(restarts()) == asked+1 })
 }
