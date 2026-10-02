@@ -2438,11 +2438,39 @@ function checkExtSettings(x, set) {
   return out;
 }
 
-// moduleSetting stands in for "key feeds x's kernel module options".
+// moduleSetting is "key feeds x's kernel module options": changing it
+// takes the password.
 function moduleSetting(x, key) {
   const s = extSetting(x, key);
-  return !!s && s.restart === true && x.needs_password === true;
+  return !!s && s.needs_password === true;
 }
+
+// ownPassword is whether adding x itself takes the password: it runs as
+// root or sets kernel module options.
+const ownPassword = (x) => x.runs_as_root === true || x.module_options === true;
+
+// needsPassword is whether adding x takes the password: it, or a
+// requirement not added yet (directly or not), does.
+function needsPassword(doc, x) {
+  const seen = new Set();
+  const walk = (m, own) => {
+    const id = asStr(m.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (ownPassword(m) && (own || (m.wanted !== true && m.core !== true))) return true;
+    return asList(m.requires).some((r) => {
+      const dep = findExt(doc, asStr(r));
+      return !!dep && walk(dep, false);
+    });
+  };
+  return walk(x, true);
+}
+
+// MAX_ACTION_ARGS is extensions.maxActionArgs, in bytes.
+const MAX_ACTION_ARGS = 64 << 10;
+
+// STARTED_OFF is a card's reason after a start without extensions.
+const STARTED_OFF = 'VaporOS started without extensions this time. Restart to start them again.';
 
 // settingDefault is a setting's value without a settings file.
 function settingDefault(s) {
@@ -2525,8 +2553,9 @@ function joinNames(names) {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-// refreshExtensions recomputes who requires whom and the restart a
-// restart-needed card waits for.
+// refreshExtensions recomputes who requires whom, whether adding one takes
+// the password, and the restart a restart-needed card waits for, which may
+// happen by itself unless the next start leaves the extensions out.
 function refreshExtensions(doc) {
   const cards = extList(doc);
   const adding = [];
@@ -2534,13 +2563,13 @@ function refreshExtensions(doc) {
   const changing = [];
   for (const m of cards) {
     m.required_by = cards.filter((o) => (o.wanted === true || o.core === true) && asList(o.requires).includes(asStr(m.id))).map((o) => o.id);
+    m.needs_password = needsPassword(doc, m);
     if (m.state !== 'restart-needed') continue;
     const name = asStr(m.name);
     if (m.mounted !== true) adding.push(name);
     else if (m.wanted !== true) removing.push(name);
     else changing.push(name);
   }
-  const rs = asObj(doc.restart);
   if (adding.length + removing.length + changing.length === 0) {
     doc.restart = { needed: false, auto: false, reason: '' };
     return;
@@ -2549,8 +2578,7 @@ function refreshExtensions(doc) {
   if (adding.length) parts.push(`adding ${joinNames(adding)}`);
   if (removing.length) parts.push(`removing ${joinNames(removing)}`);
   if (changing.length) parts.push(`changing the settings of ${joinNames(changing)}`);
-  const auto = rs.auto === true || rs.needed !== true;
-  doc.restart = { needed: true, auto, reason: `Restart to finish ${joinNames(parts)}.` };
+  doc.restart = { needed: true, auto: doc.skip_once !== true, reason: `Restart to finish ${joinNames(parts)}.` };
 }
 
 // extChanged brings required_by and restart up to date, publishes the
@@ -2571,20 +2599,34 @@ function extensionsRestart(restart, ext) {
 }
 
 // bootExtensions is what a restart starts: what is wanted and was waiting
-// is mounted, what is not wanted any more is gone, a download starts over.
+// (or was left out by the restart before) is mounted, what is not wanted
+// any more is gone, a download starts over. With skip_once nothing is
+// mounted, and what is wanted needs attention until the next restart.
 function bootExtensions(docs) {
-  const doc = asObj(docs.extensions);
+  if (!isObj(docs.extensions)) return;
+  const doc = docs.extensions;
+  const skip = doc.skip_once === true;
   for (const x of extList(doc)) {
+    const wanted = x.wanted === true || x.core === true;
     if (x.state === 'installing') {
       x.progress = { bytes: 0, total: extTotal(x) };
-    } else if (x.state === 'restart-needed') {
-      const wanted = x.wanted === true || x.core === true;
+    } else if (x.state === 'restart-needed' || (x.state === 'needs-attention' && x.reason === STARTED_OFF)) {
       x.mounted = wanted;
       x.progress = null;
+      x.reason = '';
       x.state = wanted ? 'installed' : 'not-installed';
     }
+    if (skip && x.mounted === true) {
+      x.mounted = false;
+      x.state = 'not-installed';
+      if (wanted) {
+        x.state = 'needs-attention';
+        x.reason = STARTED_OFF;
+      }
+    }
   }
-  if (isObj(docs.extensions)) refreshExtensions(doc);
+  doc.skip_once = false;
+  refreshExtensions(doc);
 }
 
 const EXTENSIONS = [
@@ -2592,6 +2634,13 @@ const EXTENSIONS = [
     return this.doc('extensions');
   }],
   ['POST', '/extensions/skip-once', AUTHED, function () {
+    this.doc('extensions').skip_once = true;
+    extChanged(this);
+    return {};
+  }],
+  ['DELETE', '/extensions/skip-once', AUTHED, function () {
+    this.doc('extensions').skip_once = false;
+    extChanged(this);
     return {};
   }],
   ['POST', '/extensions/{id}', AUTHED, function (r) {
@@ -2606,7 +2655,7 @@ const EXTENSIONS = [
     const values = checkExtSettings(x, v.options);
     if (isAnswer(values)) return values;
     const adding = addingExt(this, x);
-    if (Object.keys(values).some((k) => moduleSetting(x, k)) || adding.some((a) => a.needs_password === true)) {
+    if (Object.keys(values).some((k) => moduleSetting(x, k)) || adding.some(ownPassword)) {
       const no = checkExtPassword(this, v.password, `Adding ${name}`);
       if (no) return no;
     }
@@ -2658,6 +2707,7 @@ const EXTENSIONS = [
       const data = JSON.parse(text);
       const key = isObj(data) ? Object.keys(data).filter((k) => k.toLowerCase() === 'args').pop() : undefined;
       if (key !== undefined && !isObj(data[key])) return fail(400, 'args must be an object');
+      if (key !== undefined && utf8Len(JSON.stringify(data[key])) > MAX_ACTION_ARGS) return fail(400, 'args is too large');
     }
     const x = extLookup(this, r.params.id);
     if (isAnswer(x)) return x;

@@ -166,6 +166,7 @@ func (s *Service) Run(ctx context.Context) {
 	}
 	var rehash, publisher sync.WaitGroup
 	defer rehash.Wait()
+	defer s.waitInstalls()
 	pctx, stopPublishing := context.WithCancel(ctx)
 	publisher.Add(1)
 	go func() {
@@ -247,7 +248,7 @@ func (s *Service) retryAll() {
 // Busy keeps the PC awake while an image's bytes arrive (from the first
 // until the download and its seal end, unless none came for busyStall),
 // while the mounted images are re-read and while a helper sets an
-// extension up.
+// extension up, undoes it or runs one of its actions.
 func (s *Service) Busy() (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

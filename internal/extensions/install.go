@@ -81,69 +81,62 @@ func wantSet(cat *catalog.Catalog, wanted []string) map[string]bool {
 // (docs/CONTRACTS.md "Extensions", Control center): the next pass fetches
 // the images and proposes the set a restart tries. options are its first
 // settings. authorize checks the admin password, which adding an
-// extension that runs as root or sets kernel module options needs.
+// extension that runs as root or sets kernel module options needs. One
+// that is still mounted, removed before the restart, gets back the units
+// its removal stopped.
 func (s *Service) Install(ctx context.Context, id string, options map[string]any, authorize func() error) error {
-	s.cc.change.Lock()
-	defer s.cc.change.Unlock()
-	e, inCat, wanted, err := s.known(id)
+	ids, err := s.want(ctx, id, options, authorize)
 	if err != nil {
 		return err
-	}
-	name := s.name(id)
-	if !inCat {
-		return refuse(http.StatusConflict, fmt.Sprintf("This version of VaporOS does not have %s.", name))
-	}
-	if e.Core {
-		return refuse(http.StatusConflict, name+" is part of VaporOS and always on.")
-	}
-	d := s.desc(id)
-	opts, err := checkSettings(d, options)
-	if err != nil {
-		return refuse(http.StatusBadRequest, err.Error())
 	}
 	cat := s.catalog()
-	want := wantSet(cat, wanted)
-	var adding []string
-	for _, a := range cat.Closure([]string{id}) {
-		if !want[a] {
-			adding = append(adding, a)
+	for _, a := range ids {
+		s.mu.Lock()
+		_, stopped := s.cc.stopped[a]
+		s.mu.Unlock()
+		if !stopped || !bootMounted(a) {
+			continue
 		}
-	}
-	if err := s.checkConflicts(cat, want, adding); err != nil {
-		return err
-	}
-	if err := s.checkSpace(cat, adding); err != nil {
-		return err
-	}
-	needsPassword := false
-	modules := moduleSettings(d)
-	for k := range opts {
-		needsPassword = needsPassword || modules[k]
-	}
-	for _, a := range adding {
-		if ad := s.desc(a); ad != nil && (ad.RunsAsRoot() || ad.HasModuleOptions()) {
-			needsPassword = true
+		// After its removal's helper call, if one still runs.
+		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), helperTimeout)
+		if unlock, err := s.lockID(uctx, a); err != nil {
+			log.Printf("extensions: %s: starting its units again: %v", a, err)
+		} else {
+			if w, err := store.Wanted(); err == nil && wantSet(cat, w)[a] {
+				s.startUnits(uctx, a)
+			}
+			unlock()
 		}
+		cancel()
 	}
-	if needsPassword {
-		if err := authorize(); err != nil {
-			return err
-		}
+	s.syncSteam() // one removed until the restart is back in Steam at once
+	s.Reconcile()
+	return nil
+}
+
+// want checks an addition and writes it, one change at a time: id and
+// what it requires join wanted, and each of them with settings but no
+// settings file gets one. It returns the ids it added.
+func (s *Service) want(ctx context.Context, id string, options map[string]any, authorize func() error) ([]string, error) {
+	s.cc.change.Lock()
+	defer s.cc.change.Unlock()
+	ids, err := s.checkAdd(id, options, authorize)
+	if err != nil {
+		return nil, err
 	}
+	opts, _ := checkSettings(s.desc(id), options)
+	cat := s.catalog()
 
 	lctx, cancel := context.WithTimeout(ctx, lockWait)
 	defer cancel()
 	unlock, err := store.Lock(lctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlock()
-	if wanted, err = store.Wanted(); err != nil {
-		return err
-	}
-	ids := adding
-	if !slices.Contains(ids, id) {
-		ids = append(slices.Clone(adding), id)
+	wanted, err := store.Wanted()
+	if err != nil {
+		return nil, err
 	}
 	for _, a := range ids {
 		if ae, _ := cat.Get(a); !ae.Core && !slices.Contains(wanted, a) {
@@ -151,7 +144,7 @@ func (s *Service) Install(ctx context.Context, id string, options map[string]any
 		}
 	}
 	if err := store.WriteWanted(wanted); err != nil {
-		return err
+		return nil, err
 	}
 	for _, a := range ids {
 		ad := s.desc(a)
@@ -166,25 +159,82 @@ func (s *Service) Install(ctx context.Context, id string, options map[string]any
 			continue
 		}
 		if err := saveSettings(a, ad, change); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	s.forget(ids...)
 	log.Printf("extensions: adding %v", ids)
-	s.syncSteam() // one removed until the restart is back in Steam at once
-	s.Reconcile()
-	return nil
+	return ids, nil
+}
+
+// checkAdd refuses what adding id may not do, and returns what it adds:
+// id and its requirements not wanted yet.
+func (s *Service) checkAdd(id string, options map[string]any, authorize func() error) ([]string, error) {
+	e, inCat, wanted, err := s.known(id)
+	if err != nil {
+		return nil, err
+	}
+	name := s.name(id)
+	if !inCat {
+		return nil, refuse(http.StatusConflict, fmt.Sprintf("This version of VaporOS does not have %s.", name))
+	}
+	if e.Core {
+		return nil, refuse(http.StatusConflict, name+" is part of VaporOS and always on.")
+	}
+	cat := s.catalog()
+	if err := s.needDescs(cat, id); err != nil {
+		return nil, err
+	}
+	d := s.desc(id)
+	opts, err := checkSettings(d, options)
+	if err != nil {
+		return nil, refuse(http.StatusBadRequest, err.Error())
+	}
+	want := wantSet(cat, wanted)
+	var adding []string
+	for _, a := range cat.Closure([]string{id}) {
+		if !want[a] {
+			adding = append(adding, a)
+		}
+	}
+	if err := s.checkConflicts(cat, want, adding); err != nil {
+		return nil, err
+	}
+	if err := s.checkSpace(cat, adding); err != nil {
+		return nil, err
+	}
+	needsPassword := false
+	modules := moduleSettings(d)
+	for k := range opts {
+		needsPassword = needsPassword || modules[k]
+	}
+	for _, a := range adding {
+		needsPassword = needsPassword || passwordFor(s.desc(a))
+	}
+	if needsPassword {
+		if err := authorize(); err != nil {
+			return nil, err
+		}
+	}
+	if !slices.Contains(adding, id) {
+		adding = append(adding, id)
+	}
+	return adding, nil
 }
 
 // checkConflicts refuses adding what cannot run beside an extension in
 // want or beside another of adding: one names the other, or a capability
-// it provides, in conflicts, or both provide the same capability.
+// it provides, in conflicts, or both provide the same capability. Every
+// descriptor it compares must read (needDescs).
 func (s *Service) checkConflicts(cat *catalog.Catalog, want map[string]bool, adding []string) error {
 	others := slices.Clone(adding)
 	for _, id := range cat.IDs() {
 		if want[id] {
 			others = append(others, id)
 		}
+	}
+	if err := s.needDescs(cat, others...); err != nil {
+		return err
 	}
 	for _, a := range adding {
 		for _, o := range others {
@@ -288,62 +338,131 @@ func (s *Service) Retry(ctx context.Context, id string) error {
 	return nil
 }
 
+// startInstalls has the helpers' installs run beside the passes, so a
+// slow one holds back no download or proposal: one goroutine at a time,
+// which goes over them again when a pass asked while it ran. A failure
+// with tries left brings another pass after retryDelay.
+func (s *Service) startInstalls(ctx context.Context, cat *catalog.Catalog, rep *store.BootReport) {
+	s.mu.Lock()
+	if s.cc.installer.running {
+		s.cc.installer.again = true
+		s.mu.Unlock()
+		return
+	}
+	s.cc.installer.running = true
+	s.cc.installs.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.cc.installs.Done()
+		for {
+			if tries := s.runInstalls(ctx, cat, rep); tries > 0 && ctx.Err() == nil {
+				time.AfterFunc(retryDelay(tries), func() { s.signal(s.wake) })
+			}
+			s.mu.Lock()
+			again := s.cc.installer.again && ctx.Err() == nil
+			s.cc.installer.again, s.cc.installer.running = false, again
+			s.mu.Unlock()
+			if !again {
+				return
+			}
+		}
+	}()
+}
+
+// waitInstalls waits for the installs' goroutine to end.
+func (s *Service) waitInstalls() { s.cc.installs.Wait() }
+
 // runInstalls runs the helper's Install, once, for every extension this
 // boot mounted that is wanted and has not been set up (no installed
-// marker), as root, one at a time and each within helperTimeout. A
-// failure is the card's reason until a later pass's try works (at most
-// maxHelperInstalls per boot, then only "Try again"). It reports whether
-// one failed with tries left.
-func (s *Service) runInstalls(ctx context.Context, cat *catalog.Catalog, rep *store.BootReport) (retry bool) {
-	wanted, err := store.Wanted()
-	if err != nil {
-		log.Printf("extensions: %v", err)
-		return false
-	}
-	want := wantSet(cat, wanted)
+// marker), as root, one at a time and each within helperTimeout, under
+// its helper lock. A failure is the card's reason until a later try works
+// (at most maxHelperInstalls per boot, then only "Try again"); the error
+// itself goes to the log. An extension removed while its Install ran gets
+// no marker, and its helper's Remove undoes it unless the removal does.
+// It returns the most tries of one that failed with tries left, or 0.
+func (s *Service) runInstalls(ctx context.Context, cat *catalog.Catalog, rep *store.BootReport) (retry int) {
 	for _, m := range rep.Mounted {
 		if ctx.Err() != nil {
-			return false
+			return 0
 		}
-		d := s.desc(m.ID)
-		if !want[m.ID] || d == nil || isInstalled(m.ID) {
-			continue
+		if tries, failed := s.install(ctx, cat, m.ID); failed && tries < maxHelperInstalls {
+			retry = max(retry, tries)
 		}
-		s.mu.Lock()
-		tries := s.cc.tries[m.ID]
-		if tries < maxHelperInstalls {
-			s.cc.tries[m.ID]++
-			s.cc.helpers++
-		}
-		s.mu.Unlock()
-		if tries >= maxHelperInstalls {
-			continue
-		}
-		s.changed()
-		hctx, cancel := context.WithTimeout(ctx, helperTimeout)
-		err := HelperFor(m.ID).Install(hctx, s.ext(m.ID, d))
-		cancel()
-		s.cc.change.Lock()
-		// A removal while it ran wins: no marker, so a later add sets it up again.
-		if w, werr := store.Wanted(); err == nil && werr == nil && wantSet(cat, w)[m.ID] {
-			err = markInstalled(m.ID)
-		}
-		s.cc.change.Unlock()
-		s.mu.Lock()
-		s.cc.helpers--
-		if err != nil {
-			s.cc.notes[m.ID] = installNoteText + err.Error()
-		} else {
-			delete(s.cc.notes, m.ID)
-		}
-		s.mu.Unlock()
-		if err != nil {
-			log.Printf("extensions: setting up %s: %v", m.ID, err)
-			retry = retry || tries+1 < maxHelperInstalls
-		} else {
-			log.Printf("extensions: set up %s", m.ID)
-		}
-		s.changed()
 	}
 	return retry
+}
+
+// stillWanted reports whether id is in wanted ∪ core with their
+// requirements now.
+func stillWanted(cat *catalog.Catalog, id string) (bool, error) {
+	w, err := store.Wanted()
+	return err == nil && wantSet(cat, w)[id], err
+}
+
+// install runs id's helper Install when it is due, and reports its tries
+// this boot and whether it failed.
+func (s *Service) install(ctx context.Context, cat *catalog.Catalog, id string) (int, bool) {
+	d := s.desc(id)
+	if ok, _ := stillWanted(cat, id); !ok || d == nil || isInstalled(id) {
+		return 0, false
+	}
+	unlock, err := s.lockID(ctx, id)
+	if err != nil {
+		return 0, false
+	}
+	defer unlock()
+	s.mu.Lock()
+	tries := s.cc.tries[id]
+	s.mu.Unlock()
+	// Again under the lock: a removal or another install may have come first.
+	if ok, _ := stillWanted(cat, id); !ok || isInstalled(id) || tries >= maxHelperInstalls {
+		return 0, false
+	}
+	hctx, cancel := context.WithTimeout(ctx, helperTimeout)
+	defer cancel()
+	s.mu.Lock()
+	s.cc.tries[id]++
+	s.cc.installing[id] = cancel
+	s.mu.Unlock()
+	s.helperBusy(1)
+	err = HelperFor(id).Install(hctx, s.ext(id, d))
+	s.mu.Lock()
+	delete(s.cc.installing, id)
+	removing := s.cc.removing[id] > 0
+	s.mu.Unlock()
+
+	wanted, werr := stillWanted(cat, id)
+	switch {
+	case !wanted && werr == nil:
+		// Removed while it ran: no marker, so adding it again sets it up again.
+		log.Printf("extensions: %s was removed while it was set up (%v)", id, err)
+		if !removing {
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), helperTimeout)
+			if err := HelperFor(id).Remove(rctx, s.ext(id, d), false); err != nil {
+				log.Printf("extensions: undoing the setup of %s: %v", id, err)
+			}
+			rcancel()
+		}
+		err = nil
+	case err == nil && werr != nil:
+		err = werr
+	case err == nil:
+		err = markInstalled(id)
+	}
+	s.mu.Lock()
+	if err != nil && wanted {
+		s.cc.notes[id] = installNote(s.name(id), d.Core)
+	} else {
+		delete(s.cc.notes, id)
+	}
+	s.mu.Unlock()
+	s.helperBusy(-1)
+	if err != nil {
+		log.Printf("extensions: setting up %s: %v", id, err)
+		return tries + 1, true
+	}
+	if wanted {
+		log.Printf("extensions: set up %s", id)
+	}
+	return tries + 1, false
 }

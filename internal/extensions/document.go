@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -18,8 +19,9 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
-// StateInstalling is a card's state while its image downloads or seals, or
-// waits for the pass that fetches it (GET /extensions).
+// StateInstalling is a card's state while its image downloads or seals or
+// its helper sets it up, or while it waits for the pass that fetches or
+// proposes it (GET /extensions).
 const StateInstalling = "installing"
 
 // Document is GET /extensions and the extensions.state event
@@ -27,6 +29,7 @@ const StateInstalling = "installing"
 type Document struct {
 	Extensions []ExtensionDoc `json:"extensions"`
 	Restart    RestartDoc     `json:"restart"`
+	SkipOnce   bool           `json:"skip_once"` // the next start leaves the extensions out
 }
 
 // RestartDoc says whether a restart would try a change to the extensions
@@ -64,6 +67,29 @@ type ExtensionDoc struct {
 	Requires      []string            `json:"requires"`
 	RequiredBy    []string            `json:"required_by"`
 	NeedsPassword bool                `json:"needs_password"`
+	ModuleOptions bool                `json:"module_options"`
+	Steam         *SteamDoc           `json:"steam"`
+}
+
+// SteamDoc is what an extension changes in Steam, by the names Steam shows
+// (an app's name from its installed appmanifest, "" when it is not
+// installed): the compatibility tool it runs its forced apps and
+// shortcuts with, the apps it forces that tool on, the apps whose launch
+// it hooks and the shortcuts it adds.
+type SteamDoc struct {
+	CompatTool string        `json:"compat_tool"`
+	Forces     []SteamAppDoc `json:"forces"`
+	Hooks      []SteamAppDoc `json:"hooks"`
+	Shortcuts  []ShortcutDoc `json:"shortcuts"`
+}
+
+type SteamAppDoc struct {
+	App  uint32 `json:"app"`
+	Name string `json:"name"`
+}
+
+type ShortcutDoc struct {
+	Name string `json:"name"`
 }
 
 type DownloadDoc struct {
@@ -75,13 +101,14 @@ type DownloadDoc struct {
 }
 
 type SettingDoc struct {
-	Key     string   `json:"key"`
-	Type    string   `json:"type"`
-	Label   string   `json:"label"`
-	Help    string   `json:"help"`
-	Restart bool     `json:"restart"`
-	Choices []string `json:"choices"`
-	Value   any      `json:"value"`
+	Key           string   `json:"key"`
+	Type          string   `json:"type"`
+	Label         string   `json:"label"`
+	Help          string   `json:"help"`
+	Restart       bool     `json:"restart"`
+	Choices       []string `json:"choices"`
+	Value         any      `json:"value"`
+	NeedsPassword bool     `json:"needs_password"` // it feeds kernel module options: changing it takes the admin password
 }
 
 type ActionDoc struct {
@@ -113,9 +140,28 @@ const (
 	blockedText      = "It kept VaporOS from starting properly, so VaporOS started without it. Try again, or remove it."
 	notInVersionText = "This version of VaporOS does not have it. It comes back with an update that has it."
 	startedOffText   = "VaporOS started without extensions this time. Restart to start them again."
-	installNoteText  = "Setting it up did not finish: "
-	removeNoteText   = "Removing it did not finish: "
+	notTriedText     = "VaporOS couldn't get ready to start it this time. Restart to try again, or remove it."
 )
+
+// installNote is a card's reason when its helper's Install failed (the
+// error itself goes to the log): core cannot be removed.
+func installNote(name string, core bool) string {
+	if core {
+		return "Setting up " + name + " didn't finish. Try again."
+	}
+	return "Setting up " + name + " didn't finish. Try again, or remove it."
+}
+
+// removeNote is a card's reason when its helper's Remove failed.
+func removeNote(name string) string {
+	return "Removing " + name + " didn't finish. Try removing it again."
+}
+
+// needsText is the reason of a wanted extension whose requirement's image
+// cannot be had.
+func needsText(name string) string {
+	return "It needs " + name + ", which VaporOS can't add right now. See " + name + " for why."
+}
 
 var skipText = map[string]string{
 	store.SkipRequires:     "An extension it needs did not start. Restart to try again, or remove it.",
@@ -141,32 +187,44 @@ func (s *Service) Document(ctx context.Context) Document {
 	st := s.Status()
 	s.mu.Lock()
 	v := s.view
-	notes := maps.Clone(s.cc.notes)
+	notes, tries := maps.Clone(s.cc.notes), maps.Clone(s.cc.tries)
+	running := map[string]bool{}
+	for id := range s.cc.installing {
+		running[id] = true
+	}
 	s.mu.Unlock()
 	wanted := v.wanted
 	if w, err := store.Wanted(); err == nil {
 		wanted = w
 	}
-	want := map[string]bool{}
-	for _, id := range v.cat.Closure(append(slices.Clone(wanted), v.cat.Core()...)) {
-		want[id] = true
+	want := wantSet(v.cat, wanted)
+	byID := map[string]ExtensionStatus{}
+	for _, x := range st.Extensions {
+		byID[x.ID] = x
 	}
-	doc := Document{Extensions: []ExtensionDoc{}}
+	names := appNames(s.steamApps(st.Extensions))
+	doc := Document{Extensions: []ExtensionDoc{}, SkipOnce: skipOnce()}
 	var adding, removing, changing []string
 	for _, x := range st.Extensions {
 		e, inCat := v.cat.Get(x.ID)
 		d := s.desc(x.ID)
-		xd := s.card(ctx, x.ID, e, inCat, d)
+		xd := s.card(ctx, x.ID, e, inCat, d, names)
 		xd.Wanted = x.Core || slices.Contains(wanted, x.ID)
 		xd.Mounted, xd.Progress = x.Mounted, x.Progress
 		xd.RequiredBy = requiredBy(v.cat, want, x.ID)
-		inWant := want[x.ID] || xd.Wanted
-		xd.State, xd.Reason = s.cardState(x, &v, inWant, notes[x.ID], xd.Status)
+		xd.NeedsPassword = s.needsPassword(v.cat, want, x.ID)
+		f := cardFacts{inWant: want[x.ID] || xd.Wanted, note: notes[x.ID], lines: xd.Status}
+		f.settingUp = running[x.ID] || (x.Mounted && f.inWant && d != nil && f.note == "" &&
+			tries[x.ID] < maxHelperInstalls && !isInstalled(x.ID))
+		if f.inWant && !x.Mounted {
+			f.blocker = s.blocker(v.cat, byID, x.ID)
+		}
+		xd.State, xd.Reason = s.cardState(x, &v, f)
 		if xd.State == StateRestartNeeded {
 			switch {
 			case !x.Mounted:
 				adding = append(adding, xd.Name)
-			case !inWant:
+			case !f.inWant:
 				removing = append(removing, xd.Name)
 			default:
 				changing = append(changing, xd.Name)
@@ -182,10 +240,40 @@ func (s *Service) Document(ctx context.Context) Document {
 	return doc
 }
 
+// needsPassword reports whether adding id takes the admin password again:
+// it, or a requirement not wanted yet (directly or not), runs as root or
+// sets kernel module options.
+func (s *Service) needsPassword(cat *catalog.Catalog, want map[string]bool, id string) bool {
+	if passwordFor(s.desc(id)) {
+		return true
+	}
+	for _, r := range cat.Closure([]string{id}) {
+		if r != id && !want[r] && passwordFor(s.desc(r)) {
+			return true
+		}
+	}
+	return false
+}
+
+func passwordFor(d *descriptor.Descriptor) bool {
+	return d != nil && (d.RunsAsRoot() || d.HasModuleOptions())
+}
+
+// blocker is the name of a requirement of id (directly or not) that is
+// not running and whose image cannot be had, or "".
+func (s *Service) blocker(cat *catalog.Catalog, byID map[string]ExtensionStatus, id string) string {
+	for _, r := range cat.Closure([]string{id}) {
+		if x := byID[r]; r != id && x.Error != "" && !x.Mounted {
+			return s.name(r)
+		}
+	}
+	return ""
+}
+
 // card is what a card shows besides its state: the descriptor's words,
-// the catalog's size and requirements, the settings' values and the
-// helper's status lines.
-func (s *Service) card(ctx context.Context, id string, e catalog.Entry, inCat bool, d *descriptor.Descriptor) ExtensionDoc {
+// the catalog's size and requirements, the settings' values, what it
+// changes in Steam and the helper's status lines.
+func (s *Service) card(ctx context.Context, id string, e catalog.Entry, inCat bool, d *descriptor.Descriptor, names map[uint32]string) ExtensionDoc {
 	x := ExtensionDoc{ID: id, Name: id, Caveats: []string{}, Permissions: []string{}, Downloads: []DownloadDoc{},
 		Settings: []SettingDoc{}, Actions: []ActionDoc{}, Status: []StatusLine{}, Requires: []string{},
 		Core: e.Core, Size: e.Size}
@@ -216,18 +304,20 @@ func (s *Service) card(ctx context.Context, id string, e catalog.Entry, inCat bo
 		x.Web = &WebDoc{Port: d.Web.Port, Label: d.Web.Label}
 	}
 	x.RunsAsRoot = d.RunsAsRoot()
-	x.NeedsPassword = d.RunsAsRoot() || d.HasModuleOptions()
+	x.ModuleOptions = d.HasModuleOptions()
+	x.Steam = steamDoc(d, names)
 	for _, dl := range d.Downloads {
 		x.Downloads = append(x.Downloads, DownloadDoc{What: dl.What, From: dl.From, Checked: dl.Checked, RunsCode: dl.RunsCode, When: dl.When})
 	}
 	ext := s.ext(id, d)
+	modules := moduleSettings(d)
 	for _, st := range d.Settings {
 		choices := []string{}
 		if len(st.Choices) > 0 {
 			choices = slices.Clone(st.Choices)
 		}
 		x.Settings = append(x.Settings, SettingDoc{Key: st.Key, Type: st.Type, Label: st.Label, Help: st.Help,
-			Restart: st.Restart, Choices: choices, Value: ext.Settings[st.Key]})
+			Restart: st.Restart, Choices: choices, Value: ext.Settings[st.Key], NeedsPassword: modules[st.Key]})
 	}
 	for _, a := range d.Actions {
 		ad := ActionDoc{Name: a.Name, Label: a.Label}
@@ -247,51 +337,82 @@ func (s *Service) card(ctx context.Context, id string, e catalog.Entry, inCat bo
 	return x
 }
 
-// cardState is a card's state and why, from what the last pass saw and
-// the changes since: a download under way is installing; an image that
-// cannot be had, a set that failed its trial or an extension its trial
-// could not start, a helper that could not set it up or a status line of
-// tone error needs attention; a change a restart applies is
-// restart-needed; and what this boot runs is installed. A wanted
-// extension the last pass did not see yet, or whose image is still to
-// come, is installing.
-func (s *Service) cardState(x ExtensionStatus, v *view, inWant bool, note string, lines []StatusLine) (string, string) {
-	switch {
-	case x.State == StateDownloading:
+// cardFacts is what a card's state follows from besides the last pass's
+// view.
+type cardFacts struct {
+	inWant    bool         // wanted or core, or required by one
+	note      string       // why its helper did not finish
+	lines     []StatusLine // its helper's status lines
+	settingUp bool         // its helper's Install runs, or waits for its turn
+	blocker   string       // a requirement whose image cannot be had, by name
+}
+
+// cardState is a card's state and why: the first that applies of
+// installing (its image downloads or seals, or its helper sets it up),
+// needs-attention, restart-needed, installed, not-in-this-version and
+// not-installed. A wanted extension that is none of these is installing
+// too: its image is still to come or the pass that proposes it still to
+// run. One that cannot get there by itself needs attention instead
+// (attention), so installing never lasts.
+func (s *Service) cardState(x ExtensionStatus, v *view, f cardFacts) (string, string) {
+	if x.State == StateDownloading || f.settingUp {
 		return StateInstalling, ""
-	case !inWant && !x.Mounted:
-		return StateNotInstalled, "" // also one removed before the restart that would have added it
-	case x.State == StateNotInThisVersion:
-		return StateNotInThisVersion, notInVersionText
-	case x.State == StateNeedsAttention:
-		return StateNeedsAttention, attentionReason(x, v)
-	case note != "" && (inWant || x.Mounted):
-		return StateNeedsAttention, note
 	}
-	if inWant && x.Mounted {
-		for _, l := range lines {
-			if l.Tone == "error" {
-				return StateNeedsAttention, l.Text
-			}
-		}
+	if why := attention(x, v, f); why != "" {
+		return StateNeedsAttention, why
 	}
 	switch {
-	case x.State == StateRestartNeeded:
+	case x.State == StateRestartNeeded && (x.Mounted || f.inWant):
 		return StateRestartNeeded, ""
-	case x.Mounted && !inWant:
+	case x.Mounted && !f.inWant:
 		return StateRestartNeeded, "" // removed: its files stay until the restart
 	case x.Mounted && v.restart && s.optionsChange(x.ID, v):
 		return StateRestartNeeded, ""
 	case x.Mounted:
 		return StateInstalled, ""
-	case !slices.Contains(v.plan.Want, x.ID) || slices.ContainsFunc(v.plan.Missing, func(e catalog.Entry) bool { return e.ID == x.ID }):
+	case x.State == StateNotInThisVersion:
+		return StateNotInThisVersion, notInVersionText
+	case f.inWant:
 		return StateInstalling, ""
-	case v.rep.HasReason(store.ReasonCmdline) || v.rep.HasReason(store.ReasonSkipOnce):
-		return StateNeedsAttention, startedOffText
-	case skipText[x.Skipped] != "":
-		return StateNeedsAttention, skipText[x.Skipped]
 	}
-	return StateInstalling, "" // the next pass proposes it
+	return StateNotInstalled, "" // also one removed before the restart that would have added it
+}
+
+// attention is why a card needs attention, or "": its image cannot be had,
+// its set failed its trial or this boot could not start it, its helper did
+// not finish, a status line of tone error while it runs, or, wanted and not
+// running, nothing it waits for will bring it (a requirement whose image
+// cannot be had, a start without extensions, tries that could not be
+// written, no boot report).
+func attention(x ExtensionStatus, v *view, f cardFacts) string {
+	switch {
+	case x.State == StateNeedsAttention:
+		return attentionReason(x, v)
+	case f.note != "" && (f.inWant || x.Mounted):
+		return f.note
+	case x.Mounted:
+		if f.inWant {
+			for _, l := range f.lines {
+				if l.Tone == "error" {
+					return l.Text
+				}
+			}
+		}
+		return ""
+	case !f.inWant || x.State == StateNotInThisVersion || x.State == StateRestartNeeded:
+		return ""
+	case slices.ContainsFunc(v.plan.Missing, func(e catalog.Entry) bool { return e.ID == x.ID }):
+		return "" // its image is still to come
+	case f.blocker != "":
+		return needsText(f.blocker)
+	case !slices.Contains(v.plan.Want, x.ID):
+		return "" // the next pass sees it
+	case v.rep.HasReason(store.ReasonCmdline) || v.rep.HasReason(store.ReasonSkipOnce):
+		return startedOffText
+	case v.rep.HasReason(store.ReasonTriesWrite) || v.rep.HasReason(store.ReasonNoReport):
+		return notTriedText
+	}
+	return skipText[x.Skipped]
 }
 
 func attentionReason(x ExtensionStatus, v *view) string {
@@ -360,29 +481,61 @@ func joinNames(names []string) string {
 	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
-// desc returns id's shipped descriptor, read once per Service (the image
-// never changes during a boot); nil when the image ships none.
+// desc returns id's shipped descriptor, nil when the image ships none or
+// it cannot be read (descOf says which).
 func (s *Service) desc(id string) *descriptor.Descriptor {
+	d, _ := s.descOf(id)
+	return d
+}
+
+// descOf returns id's shipped descriptor, read once per Service (the image
+// never changes during a boot): nil without an error when the image ships
+// none. A descriptor that could not be read is tried again next time.
+func (s *Service) descOf(id string) (*descriptor.Descriptor, error) {
 	if !manifest.ValidExtensionID(id) {
-		return nil // never a path outside the descriptors
+		return nil, nil // never a path outside the descriptors
 	}
 	s.cc.descMu.Lock()
 	defer s.cc.descMu.Unlock()
 	if d, ok := s.cc.descs[id]; ok {
-		return d
+		return d, nil
 	}
 	d, err := Shipped(id)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("extensions: %s: %v", id, err)
-		}
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		d = nil
+	case err != nil:
+		log.Printf("extensions: %s: %v", id, err)
+		return nil, err
 	}
 	if s.cc.descs == nil {
 		s.cc.descs = map[string]*descriptor.Descriptor{}
 	}
 	s.cc.descs[id] = d
-	return d
+	return d, nil
+}
+
+// unreadableText is why a change is refused when a descriptor it must
+// check cannot be read.
+const unreadableText = "VaporOS couldn't read the details it needs to check this change, so nothing changed. Restart VaporOS, then try again."
+
+// needDescs fails closed: every id of ids the booted catalog lists must
+// have a shipped descriptor that reads, or the change is refused (409),
+// rather than taken as one that runs nothing as root and conflicts with
+// nothing.
+func (s *Service) needDescs(cat *catalog.Catalog, ids ...string) error {
+	for _, id := range ids {
+		if _, ok := cat.Get(id); !ok {
+			continue
+		}
+		if d, err := s.descOf(id); err != nil || d == nil {
+			if err == nil {
+				log.Printf("extensions: %s: the image ships no descriptor for it", id)
+			}
+			return refuse(http.StatusConflict, unreadableText)
+		}
+	}
+	return nil
 }
 
 // publishGap is the least time between two extensions.state events, and

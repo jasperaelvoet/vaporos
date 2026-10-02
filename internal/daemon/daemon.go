@@ -97,7 +97,7 @@ func Main(args []string) int {
 		pow := power.NewService(cfg, streaming, sun.Busy, up.Busy, ext.Busy)
 		// Someone using the web UI keeps the machine from idling off.
 		srv.OnActivity(pow.Touch)
-		wireAutoRestart(ext, sys, up, pow)
+		wireAutoRestart(ext, sys.Reboot, up.View, pow.OnTick)
 		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow, ext} {
 			r.Routes(srv)
 		}
@@ -150,20 +150,34 @@ func Main(args []string) int {
 	return 0
 }
 
+// autoRestarter is the extensions' side of the auto-restart.
+type autoRestarter interface {
+	SetAutoRestart(reboot func(ctx context.Context, message string) (bool, error), nextBoot func() extensions.NextBoot)
+	IdleTick(ctx context.Context, t extensions.IdleTick)
+}
+
 // wireAutoRestart lets the extensions restart the PC by themselves once it
 // is idle (docs/CONTRACTS.md "Extensions"): they decide in the idle
-// policy's pass and restart through the system service's guard.
-func wireAutoRestart(ext *extensions.Service, sys *system.Service, up *update.Service, pow *power.Service) {
-	ext.SetAutoRestart(sys.Reboot, func() string {
-		v := up.View()
-		if v.NextBoot != nil && boot.CompareVersions(v.NextBoot.Version, v.Booted) > 0 {
-			return v.NextBoot.Version
-		}
-		return ""
-	})
-	pow.OnTick(func(ctx context.Context, t power.Tick) {
+// policy's pass (onTick, power.Service.OnTick) and restart through the
+// system service's guard (reboot, system.Service.Reboot), saying which
+// VaporOS starts first when the update service's view has a staged update
+// or rollback.
+func wireAutoRestart(ext autoRestarter, reboot func(context.Context, string) (bool, error),
+	view func() update.View, onTick func(func(context.Context, power.Tick))) {
+	ext.SetAutoRestart(reboot, func() extensions.NextBoot { return nextBootOf(view()) })
+	onTick(func(ctx context.Context, t power.Tick) {
 		ext.IdleTick(ctx, extensions.IdleTick{Idle: t.Idle, ShutdownIn: t.ShutdownIn, PoweringOff: t.PoweringOff})
 	})
+}
+
+// nextBootOf is the VaporOS a restart starts instead of the running one:
+// newer is an update, anything else a rollback (as restartFor says).
+func nextBootOf(v update.View) extensions.NextBoot {
+	if v.NextBoot == nil || v.NextBoot.Version == "" {
+		return extensions.NextBoot{}
+	}
+	return extensions.NextBoot{Version: v.NextBoot.Version,
+		Rollback: boot.CompareVersions(v.NextBoot.Version, v.Booted) <= 0}
 }
 
 // stopTimeout bounds how long vosd waits for services to wind down (drop

@@ -43,6 +43,7 @@ multi-call:
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher, run as `vapor` from the launch options `vos steam prepare` writes (see Extensions, Steam). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. What starts is, in order: `--app` or `--shortcut`; the `AppId=` of Steam's reaper line when CMD is one (as in Units, Display policy); `SteamAppId`, then `SteamGameId` in its environment. An id with the top bit set, or a shortcut's game id (`(appid << 32) \| 0x02000000`), names an extension's shortcut when `/var/lib/vos/ext/steam.json` lists one with that app id (`crc32("<owner>/<key>") \| 0x80000000`) or prepare's record holds it, and nothing otherwise. For an app it runs the launch hooks of the extensions steam.json lists in that app's `hooks` and `/run/vos/extensions.json` names as mounted, in that file's (catalog) order; for a shortcut, its extension's hook, refusing when that extension is not mounted (also when the report cannot be read). A hook is Go in `vos` (`Helper.LaunchHook`) that may rewrite the command and add to its environment; the programs a hook starts run without `LD_PRELOAD`, while the command keeps Steam's environment. It then execs the command (looked up in `PATH` unless absolute; `argv[0]` as given); with no hook to run that is CMD with ARGS and the environment unchanged. A refusal, a hook's error or a hook that leaves no command is exit 1, with the reason on stderr and in a message for vosd: `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json` (`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`), `{"level":"warning","text"}`, written to a temp file and renamed. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
+| `vos ext action ID NAME [--args JSON]` | runs action NAME of extension ID through its helper (Go in `vos`, `Helper.Action`) in this process, with its shipped descriptor, its settings and its data areas; vosd runs it as `vapor` for every action whose `run_as` is not `root` (see Extensions, Control center). `--args` (or `--args=JSON`) is a JSON object. It refuses an extension `/run/vos/extensions.json` does not name as mounted, and an action with `run_as` `root` when it does not run as root. Exit 0 when the action ran, 1 when it failed (why, as the last line on stderr), 2 on bad arguments, 3 when the extension has no such action |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam (`vos-gamescope.service`): brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
@@ -461,7 +462,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `enabled`, `pending` | symlinks `sets/<n>` (relative): the last good set, and the set on trial. Renaming `pending` into place is the commit of a change |
 | `proven` | `<id> <fsverity>` lines: images that passed a boot, pruned by GC |
 | `failed` | `<fingerprint>` lines: sets whose trial failed. The fingerprint is the hex sha256 of the set's sorted, unique `<id> <fsverity>` lines (digests from the booted catalog) followed by its sorted, unique option lines, each ending in `\n` |
-| `skip-once` | present: the next boot mounts no extension, then the initramfs removes it (vosd writes it for POST `/extensions/skip-once`) |
+| `skip-once` | present: the next boot mounts no extension, then the initramfs removes it (vosd writes it for POST `/extensions/skip-once` and removes it for DELETE) |
 | `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest (`vos update` writes the idle slot's at Write order 1, the installer `a.json` through `vos ext fetch --seed`), or, for the booted slot, from the booted catalog (vosd) |
 | `settings/<id>.json` | the extension's settings (never in config.json): one JSON object of its descriptor's setting keys, written whole (temp + rename) when it is added and on each change. A key missing, or with a value its setting does not take, reads as the default: the descriptor's `default` when the setting takes it, else `false`, the first choice, or `""` (no disk). Purging the extension deletes it |
 | `settings/<id>.installed` | present: the extension's helper finished its `Install` and no `Remove` came after (see Control center) |
@@ -666,7 +667,8 @@ the image, at most once per digest per boot, and a reconcile follows that
 fetches it again: the desired set keeps it meanwhile, so the next boot mounts
 the new copy. A missing file is not damage. Idle shutdown counts as busy
 (`adding an extension`) a download from its first bytes until it and its seal
-end, unless no bytes came for 2 minutes, and the re-read.
+end, unless no bytes came for 2 minutes, the re-read, and every helper call
+(`Install`, `Remove`, an action; see Control center).
 
 **Install** (the `configure` step, after slot a is written and the target is
 mounted): the installer runs the new image's own
@@ -923,35 +925,64 @@ not it runs (vosd serves it only while the extension is mounted); `status`
 is its helper's lines (`tone` `warning` or `error`, or none); `requires` its
 direct requirements; `required_by` the wanted or core extensions that
 require it, directly or not; `needs_password` whether adding it takes the
-admin password again (it runs as root, or sets kernel module options);
-`wanted` whether the user added it or it is core. `state` is the first that
-applies, with `reason` (at most two sentences: what happened, then what to
-do) only for `needs-attention` and `not-in-this-version`:
-1. `installing` while its image downloads or seals (`progress`: its bytes so far);
-2. `not-installed` when it is neither wanted, core nor mounted (also one
-   removed before the restart that would have added it);
-3. `not-in-this-version` when it is wanted and the booted catalog lacks it;
-4. `needs-attention` when it is wanted or core and its image cannot be had
+admin password again (it, or a requirement not wanted or core yet, directly
+or not, runs as root or sets kernel module options); `module_options`
+whether it can set kernel module options (its descriptor lists
+`module_options`), and a setting's `needs_password` whether changing it
+takes the admin password (a `module_options` entry names it); `steam` what
+it changes in Steam, null when none of these: `compat_tool` (its
+`steam.compat_tool`, the tool its forced apps and shortcuts run with, or
+""), `forces` (the apps of `steam.force_compat_tool`) and `hooks` (the apps
+of `steam.hooks`, each once) as `{"app","name"}`, and `shortcuts` (each
+`steam.shortcuts` entry as `{"name"}`); an app's `name` is the one in its
+`steamapps/appmanifest_<app>.acf` in Steam's own library
+(`~vapor/.local/share/Steam`) or the first other library its
+`steamapps/libraryfolders.vdf` lists that has one (read through gamerfs,
+on one line, at most 128 characters), else ""; `wanted` whether the user
+added it or it is core. The document's `skip_once` says whether the next
+boot mounts no extension (`skip-once` exists). `state` is the first of these
+that applies, with `reason` (at most two sentences: what happened, then what
+to do) only for `needs-attention` and `not-in-this-version`:
+1. `installing` while its image downloads or seals (`progress`: its bytes so
+   far), or while its helper's `Install` runs or waits for its turn (this
+   boot mounted it, it is wanted or core, without `settings/<id>.installed`
+   and with tries left; `progress` null);
+2. `needs-attention` when it is wanted or core and its image cannot be had
    (the source failed, no space, a disk that cannot seal, damaged), the
    desired set it is in failed its trial (its fingerprint is in `failed`;
-   "Try again"), its trial or this boot could not start it (a skip reason, or
-   a boot with `vos.ext=0` or `skip-once`), or, while it runs, one of its
-   helper's status lines has tone `error` (a Steam shortcut the user deleted,
-   say); and when its helper's `Install` or `Remove` did not finish while it
-   is wanted, core or mounted;
-5. `restart-needed` when a restart changes it: the pending set adds it, it
-   is mounted and no longer wanted, or the module options its settings
-   render differ from those this boot started it with;
-6. `installed` when this boot mounted it;
-7. `installing` otherwise: wanted, with its image still to come or the
-   reconcile that proposes it still to run (`progress` null).
+   "Try again"), or its trial or this boot could not start it (a skip
+   reason); when its helper's `Install` or `Remove` did not finish while it
+   is wanted, core or mounted ("Setting up <name> didn't finish. Try again,
+   or remove it." without "or remove it" for core, or "Removing <name>
+   didn't finish. Try removing it again."; the error goes to the journal);
+   while it runs and is wanted or core, when one of its helper's status
+   lines has tone `error` (a Steam shortcut the user deleted, say); and when
+   it is wanted or core and not running and what it waits for will not come
+   by itself: a requirement whose image cannot be had, or a boot with
+   `vos.ext=0` or `skip-once`, or with reason `tries-write` or `no-report`
+   (after those a restart is not needed, see Reconcile);
+3. `restart-needed` when a restart changes it: the pending set adds it (it
+   is wanted or core), it is mounted and no longer wanted, or the module
+   options its settings render differ from those this boot started it with;
+4. `installed` when this boot mounted it;
+5. `not-in-this-version` when it is wanted and the booted catalog lacks it;
+6. `not-installed` when it is neither wanted, core nor mounted (also one
+   removed before the restart that would have added it).
 
-So a core extension is never `not-installed`. `restart.needed` is `/status`'s
+A wanted or core extension of the booted catalog that none of these fit is
+`installing` too (`progress` null): its image is still to come, or the
+reconcile that proposes it still to run. One that cannot get there by itself
+needs attention (2), so a card never stays `installing`, and a core
+extension is never `not-installed`. `restart.needed` is `/status`'s
 restart kind `extensions` (a restart would try `pending`, see Reconcile);
 `restart.reason` says what a restart finishes, by name ("Restart to finish
 adding CoolerControl."), "" while none is needed; `restart.auto` whether
-VaporOS may still restart by itself for it (below). One change runs at a
-time; each answers the document and asks for a reconcile:
+VaporOS may still restart by itself for it (below). One change to `wanted`
+or the settings runs at a time; each answers the document and asks for a
+reconcile. Add, remove and settings fail closed: when a shipped descriptor
+they check (of the extension, of what an add brings with it, or of a wanted
+or core extension an add is checked against) cannot be read, they change
+nothing (409).
 - **Add** (POST `/extensions/{id}`) refuses an id the booted catalog lacks
   (404, or 409 when it is wanted: not in this version), a core one (409),
   `options` that are not values of its settings (400), adding an extension
@@ -964,16 +995,25 @@ time; each answers the document and asks for a reconcile:
   POST `/auth/password`: 429, 503). Then, under ext.lock, it and what it
   requires (less core) join `wanted`, and each of them that has settings but
   no `settings/<id>.json` gets one (the `options`, for it, and the defaults).
+  One still mounted, removed before the restart, gets back the units its
+  removal stopped (`systemctl start`, or `systemctl --user -M vapor@ start`,
+  template instances by name) once its helper lock is free, if it is still
+  wanted then, and its helper's `Install` runs again.
 - **Remove** (DELETE `/extensions/{id}`, `purge` `0` or `1`, else 400)
   refuses core and an extension a wanted or core one requires (409). It
-  leaves `wanted` (under ext.lock); then, when this boot mounted it, its
-  `services` stop now (`systemctl stop`, or `systemctl --user -M vapor@
-  stop`; every instance of a template), its helper's `Remove` runs (with
-  `purge`), `settings/<id>.installed` goes and, with `purge`, its system data
-  area, its home data area (as vapor) and `settings/<id>.json` are deleted
-  (library areas are its helper's to delete). Its files stay mounted until
-  the restart. A helper that fails becomes the card's `reason`; the removal
-  stands.
+  leaves `wanted` (under ext.lock); then it takes the extension's helper
+  lock, stopping (cancelling) its helper's `Install` under way and waiting
+  for it, and, unless it was added back meanwhile: when this boot mounted
+  it, its `services` stop now (`systemctl stop`, or `systemctl --user -M
+  vapor@ stop`; every instance of a template), noting first which of them
+  run (`systemctl list-units --state=active,activating,reloading`; when that
+  fails, its units that are not templates); its helper's `Remove` runs (with
+  `purge`) only when this boot mounted it or `settings/<id>.installed`
+  exists; `settings/<id>.installed` goes; and, with `purge`, whether or not
+  the helper ran, its system data area, its home data area (as vapor) and
+  `settings/<id>.json` are deleted (library areas are its helper's to
+  delete). Its files stay mounted until the restart. A helper that fails
+  becomes the card's `reason`; the removal stands.
 - **Settings** (PUT `/extensions/{id}/settings`): every key one of its
   settings and every value one it takes (`bool` true or false, `choice` one of
   `choices`, `disk` "" or an absolute clean path), else 400; changing a
@@ -982,43 +1022,59 @@ time; each answers the document and asks for a reconcile:
   its extensions' helpers render from their settings, less any line for a
   `module param` its descriptor does not list, so changing one is a new
   `pending` set, which the next restart tries.
-- **Actions** (POST `/extensions/{id}/actions/{name}`, `args` an object or
-  absent, else 400) run one of its descriptor's actions (else 404) through its
-  helper, only while this boot mounted it (409), within 10 minutes and even
-  when the page goes away; a failure is 500 with why.
+- **Actions** (POST `/extensions/{id}/actions/{name}`, `args` an object of
+  at most 64 KiB, or absent, else 400) run one of its descriptor's actions
+  (else 404) through its helper, only while this boot mounted it (409),
+  under its helper lock, within 10 minutes (the wait for the lock included)
+  and even when the page goes away: one with `run_as` `root` in vosd, every
+  other as `vapor` through `vos ext action <id> <name> [--args <json>]`
+  (exit 3 is 404). A failure is 500 with why (that command's last line).
 - **Try again** (POST `/extensions/{id}/retry`) removes the desired set's
   fingerprint from `failed` and lets its helper's `Install` run again.
 - **Start without extensions** (POST `/extensions/skip-once`) writes
-  `skip-once`.
+  `skip-once`; DELETE `/extensions/skip-once` removes it.
 
-After each reconcile vosd runs the helper's `Install` (as root, one at a time,
-within 10 minutes, counting as busy `adding an extension`) for every extension
-this boot mounted that is wanted or core and has no `settings/<id>.installed`,
-which it writes after (unless the extension was removed meanwhile); on an
-extension trial, only once `vos health` passed it. A failure
-is the card's `reason`; later reconciles try again, at most 3 times a boot,
-then only "Try again". `extensions.state` carries the document whenever it
-changes (vosd also builds it every 5 s, for its helpers' status lines), at
-most every 250 ms and never the same one twice in a row.
+After each reconcile vosd has the helper's `Install` run (as root, within 10
+minutes) for every extension this boot mounted that is wanted or core and
+has no `settings/<id>.installed`, which it writes after; on an extension
+trial, only once `vos health` passed it. These run one at a time, beside the
+reconciles (which go on fetching and proposing), and a reconcile that asks
+while they run has them looked at again after. A failure is the card's
+`reason`; it is tried again after 1 minute (2 after the second), at most 3
+times a boot, then only "Try again". Each extension's helper calls
+(`Install`, `Remove`, actions) take its helper lock, held across the call,
+so they run one at a time, and count as busy `adding an extension`. An
+`Install` checks under the lock that the extension is still wanted and not
+set up; one that ends with the extension no longer wanted writes no marker,
+and its helper's `Remove` undoes it unless a removal waits to.
+`extensions.state` carries the document whenever it changes (vosd also
+builds it every 5 s, for its helpers' status lines), at most every 250 ms
+and never the same one twice in a row.
 
-**Auto-restart:** while a restart would try `pending` and `restart.auto`
-holds, vosd restarts the PC at the end of a pass of the idle-shutdown policy
-that saw the PC idle (every busy reason checked in that pass) for 2 minutes,
-when `vos-health.service` is active (it passed this boot) or the boot is older
-than 5 minutes, with no idle shutdown on its way or due within 5 minutes (the
-wake boot tries the set anyway). Under the update lock and then ext.lock (each
-waited for at most 5 s), it checks again that a restart would try `pending`,
-records the restart in `autorestart.json` and reboots through the guard of
-POST `/system/reboot` (nothing while a restart or power off is on its way;
-the record is then dropped). It first publishes the `system.message` the
-welcome screen shows: "Restarting to finish adding <name>" (or removing, or
-changing extension settings), or, when the restart starts a newer staged
-VaporOS first, "Restarting to install VaporOS <v>; <name> is added after the
-next restart". Like idle shutdown and wake, it thus also boots a staged update
-or rollback. `restart.auto`, the circuit breaker: none yet for the pending
-set's fingerprint, or one from another VaporOS version (an OS trial does not
-try `pending`), and fewer than 3 in the last 24 hours (one timed in the
-future counts). After that only a restart from the control center applies it.
+**Auto-restart:** while a restart would try `pending`, `restart.auto` holds
+and `skip-once` does not exist, vosd restarts the PC at the end of a pass of
+the idle-shutdown policy that saw the PC idle (every busy reason checked in
+that pass) for 2 minutes, when `vos-health.service` is active (it passed
+this boot; asked within 5 s) or the boot is older than 5 minutes, with no
+idle shutdown on its way or due within 5 minutes (the wake boot tries the
+set anyway). Under the update lock and then ext.lock (each waited for at
+most 5 s, the second from when the first was had), it checks again that a
+restart would try `pending` and `skip-once` does not exist, records the
+restart in `autorestart.json` and reboots through the guard of POST
+`/system/reboot` (asked within 30 s; nothing while a restart or power off is
+on its way, and the record is then dropped). It first publishes the
+`system.message` the welcome screen shows: "Restarting to finish adding
+<name>" (or removing, or changing extension settings), or, when the restart
+starts another VaporOS first (GET `/update` `next_boot`), "Restarting to
+install VaporOS <v>; <name> is added after the next restart" for a newer
+one and "Restarting to go back to VaporOS <v>; <name> is added after the
+next restart" for any other (as `/status` tells `update` from `rollback`).
+Like idle shutdown and wake, it thus also boots a staged update or rollback.
+`restart.auto`, the circuit breaker: none yet for the pending set's
+fingerprint, or one from another VaporOS version (an OS trial does not try
+`pending`), and fewer than 3 in the last 24 hours (one timed in the future
+counts); it is false while `skip-once` exists. After that only a restart
+from the control center applies it.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
@@ -1092,13 +1148,14 @@ future counts). After that only a restart from the control center applies it.
 | GET/PUT `/power` | Authed | `{"idle_shutdown","idle_minutes","keep_awake_until"?,"wol":[{"iface","mac","enabled","supported","ipv4"?,"prefix"?,"broadcast"?}],"busy":{"reason","web"?}\|null,"web_until"?,"idle_seconds","shutdown_in"}`. PUT takes `idle_shutdown` and/or `idle_minutes` (1–1440) and answers the same document. `wol`: every wired NIC; `enabled`: magic-packet wake is armed; `supported`: the NIC can wake on a magic packet; `ipv4`, `prefix`, `broadcast`: its first IPv4 address that is neither loopback nor link-local, the prefix length and the subnet's broadcast address (all omitted without one; `broadcast` is also omitted on a /31 or /32). `busy`: why the machine stays awake, null when idle. `busy.web`: web-UI activity is the only reason. `web_until`: when web-UI activity stops keeping it awake (UTC, whole seconds), present whenever that activity counts, whatever the reason, and omitted otherwise. `idle_seconds` and `shutdown_in`: the idle timer in seconds (`0` and null while busy; `shutdown_in` is also null with idle shutdown off) |
 | POST `/power/keep-awake` | Authed | `{"minutes"}` (0 = clear) → `{}` |
 | GET/PUT `/ssh` | Authed | `{"enabled","keys":[…]}` |
-| GET `/extensions` | Authed | installed system only. `{"extensions":[{"id","name","summary","category":"runtime\|system\|app","core":bool,"upstream":{"name","url","license"},"caveats":["…"],"state":"installed\|not-installed\|installing\|restart-needed\|needs-attention\|not-in-this-version","wanted":bool,"mounted":bool,"size","progress":null\|{"bytes","total"},"reason","permissions":["…"],"runs_as_root":bool,"downloads":[{"what","from","checked":"pinned\|publisher-hash\|none","runs_code":bool,"when":"install\|update\|launch"}],"settings":[{"key","type":"bool\|choice\|disk","label","help","restart":bool,"choices":["…"],"value"}],"actions":[{"name","label","confirm":{"title","body","button","tone"}\|null}],"web":{"port","label"}\|null,"status":[{"text","tone"?}],"copy":{"install","remove"},"requires":["…"],"required_by":["…"],"needs_password":bool}],"restart":{"needed":bool,"auto":bool,"reason"}}` (every list is a list, never null; `value` is a bool, or a string for `choice` and `disk`; the states, `reason` and `restart`: see Extensions, Control center) |
-| POST `/extensions/{id}` | Authed | `{"options"?:{"<setting>":value},"password"?}` → the GET `/extensions` document: adds the extension and what it requires. 400 for a bad body or options; 403 for a missing or wrong password when it needs one (`needs_password`, or an option that feeds module options), 429 and 503 as POST `/auth/password`; 404 for an unknown id; 409 with the reason when this version lacks it, it is core, it conflicts with a wanted or core extension, or its images do not fit |
-| DELETE `/extensions/{id}` | Authed | query `purge=0\|1` (else 400) → the GET `/extensions` document: stops its units, undoes what its helper set up (`purge`: and deletes its data) and removes it at the next restart. 404 for an unknown id; 409 for core, or while a wanted extension requires it |
-| PUT `/extensions/{id}/settings` | Authed | `{"settings":{"<setting>":value},"password"?}` → the GET `/extensions` document. 400 for an unknown setting or a value it does not take; 403, 429, 503 for the password a changed setting that feeds module options needs; 404 for an unknown id |
-| POST `/extensions/{id}/actions/{name}` | Authed | `{"args"?:{…}}` → the GET `/extensions` document, once the action ran. 400 when `args` is not an object; 404 for an unknown id or action; 409 while the extension is not running (mounted); 500 when the action failed |
+| GET `/extensions` | Authed | installed system only. `{"extensions":[{"id","name","summary","category":"runtime\|system\|app","core":bool,"upstream":{"name","url","license"},"caveats":["…"],"state":"installed\|not-installed\|installing\|restart-needed\|needs-attention\|not-in-this-version","wanted":bool,"mounted":bool,"size","progress":null\|{"bytes","total"},"reason","permissions":["…"],"runs_as_root":bool,"downloads":[{"what","from","checked":"pinned\|publisher-hash\|none","runs_code":bool,"when":"install\|update\|launch"}],"settings":[{"key","type":"bool\|choice\|disk","label","help","restart":bool,"choices":["…"],"value","needs_password":bool}],"actions":[{"name","label","confirm":{"title","body","button","tone"}\|null}],"web":{"port","label"}\|null,"status":[{"text","tone"?}],"copy":{"install","remove"},"requires":["…"],"required_by":["…"],"needs_password":bool,"module_options":bool,"steam":{"compat_tool","forces":[{"app","name"}],"hooks":[{"app","name"}],"shortcuts":[{"name"}]}\|null}],"restart":{"needed":bool,"auto":bool,"reason"},"skip_once":bool}` (every list is a list, never null; `value` is a bool, or a string for `choice` and `disk`; the states, `reason`, `steam`, `restart` and `skip_once`: see Extensions, Control center) |
+| POST `/extensions/{id}` | Authed | `{"options"?:{"<setting>":value},"password"?}` → the GET `/extensions` document: adds the extension and what it requires. 400 for a bad body or options; 403 for a missing or wrong password when it needs one (`needs_password`, or an option whose setting `needs_password`), 429 and 503 as POST `/auth/password`; 404 for an unknown id; 409 with the reason when this version lacks it, it is core, it conflicts with a wanted or core extension, its images do not fit, or a descriptor it checks cannot be read |
+| DELETE `/extensions/{id}` | Authed | query `purge=0\|1` (else 400) → the GET `/extensions` document: stops its units, undoes what its helper set up (`purge`: and deletes its data) and removes it at the next restart. 404 for an unknown id; 409 for core, while a wanted extension requires it, or when its descriptor cannot be read |
+| PUT `/extensions/{id}/settings` | Authed | `{"settings":{"<setting>":value},"password"?}` → the GET `/extensions` document. 400 for an unknown setting or a value it does not take; 403, 429, 503 for the password a changed setting that `needs_password` needs; 404 for an unknown id; 409 when its descriptor cannot be read |
+| POST `/extensions/{id}/actions/{name}` | Authed | `{"args"?:{…}}` → the GET `/extensions` document, once the action ran. 400 when `args` is not an object or is larger than 64 KiB; 404 for an unknown id or action; 409 while the extension is not running (mounted); 500 when the action failed |
 | POST `/extensions/{id}/retry` | Authed | → the GET `/extensions` document ("Try again": forgets the failed set, sets the extension up again). 404 for an unknown id |
 | POST `/extensions/skip-once` | Authed | → `{}`: the next boot mounts no extension |
+| DELETE `/extensions/skip-once` | Authed | → `{}`: the next boot mounts the extensions again (takes POST's flag back) |
 | GET `/install/probe` | Setup | query `?source=&channel=` (optional); returns `"source","channel","version","min_size","source_error"` plus `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","hostname"?,"steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}`; `hostname` is the name the VaporOS install on that disk answers to (`<hostname>.local`, the one a repair keeps), read from `etc/upper/hostname` on its vos_data (mounted read-only without journal replay, never while an install runs); omitted when unknown |
 | POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`); in repair, an empty hostname or timezone keeps the installed one; `hostname` (lower-cased first) follows PUT `/system/hostname`'s rule, so `localhost` is a 400 |
 | GET `/install/status` | Setup | `{"state":"idle\|running\|done\|failed","step","percent","message","error"}`; `step` is one of `probe`, `partition`, `write`, `verify`, `bootloader`, `configure`, `done` (empty while `idle`) |

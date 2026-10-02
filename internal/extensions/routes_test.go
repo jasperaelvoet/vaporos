@@ -227,7 +227,7 @@ func TestHelperInstall(t *testing.T) {
 	}
 	r.boot()
 	x := r.card("truckersmp")
-	if x.State != StateNeedsAttention || x.Reason != "Setting it up did not finish: api.truckersmp.com did not answer" {
+	if x.State != StateNeedsAttention || x.Reason != "Setting up TruckersMP didn't finish. Try again, or remove it." {
 		t.Fatalf("after a failed setup = %+v", x)
 	}
 	r.pass()
@@ -417,8 +417,16 @@ func TestSkipOnce(t *testing.T) {
 	if code, body := r.do("POST", "/extensions/skip-once", ""); code != 200 || body != "{}" {
 		t.Fatalf("skip-once: %d %s", code, body)
 	}
-	if !exists(config.ExtSkipOncePath()) {
+	if !exists(config.ExtSkipOncePath()) || !r.doc().SkipOnce {
 		t.Fatal("no skip-once flag")
+	}
+	for range 2 { // taking it back twice is fine
+		if code, body := r.do("DELETE", "/extensions/skip-once", ""); code != 200 || body != "{}" {
+			t.Fatalf("taking skip-once back: %d %s", code, body)
+		}
+	}
+	if exists(config.ExtSkipOncePath()) || r.doc().SkipOnce {
+		t.Fatal("the skip-once flag stayed")
 	}
 }
 

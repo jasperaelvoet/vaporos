@@ -32,8 +32,16 @@ const (
 	autoShutdown = 5 * time.Minute // an idle shutdown due this soon goes first
 	autoPerDay   = 3
 	autoKeep     = 32 // records kept in the file
-	autoLockWait = 5 * time.Second
 	maxAutoFile  = 64 << 10
+)
+
+// The auto-restart runs in the idle policy's pass, which must go on: the
+// wait for each lock, asking systemd whether `vos health` passed and
+// asking for the reboot each get their own bound. Variables for tests.
+var (
+	autoLockWait   = 5 * time.Second
+	autoHealthWait = 5 * time.Second
+	autoRebootWait = 30 * time.Second
 )
 
 // healthUnit is `vos health`'s unit; RemainAfterExit keeps it active once
@@ -50,9 +58,17 @@ type IdleTick struct {
 	PoweringOff bool          // an idle shutdown is on its way
 }
 
+// NextBoot is the VaporOS a restart starts instead of the running one: a
+// staged update, or a rollback (an older version, or the same one again).
+// Version is "" when a restart starts the running one.
+type NextBoot struct {
+	Version  string
+	Rollback bool
+}
+
 type autoState struct {
 	reboot     func(ctx context.Context, message string) (bool, error)
-	nextBoot   func() string // a newer version a restart starts first, or ""
+	nextBoot   func() NextBoot
 	healthDone func(ctx context.Context) bool
 	uptime     func() (time.Duration, error)
 	tripped    string // the fingerprint the breaker last held back, logged once
@@ -67,9 +83,10 @@ func newAutoState() autoState {
 
 // SetAutoRestart wires the auto-restart: reboot restarts the PC behind the
 // guard the web UI's restart and power off share (system.Service.Reboot),
-// and nextBoot names a newer VaporOS version a restart starts first (a
-// staged update), or "". Without it VaporOS never restarts by itself.
-func (s *Service) SetAutoRestart(reboot func(ctx context.Context, message string) (bool, error), nextBoot func() string) {
+// and nextBoot names the VaporOS a restart starts instead of this one (a
+// staged update or rollback), if any. Without it VaporOS never restarts by
+// itself.
+func (s *Service) SetAutoRestart(reboot func(ctx context.Context, message string) (bool, error), nextBoot func() NextBoot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cc.auto.reboot, s.cc.auto.nextBoot = reboot, nextBoot
@@ -151,21 +168,24 @@ func pendingFingerprint(v *view) string {
 }
 
 // autoAllowed is the document's restart.auto: VaporOS may still restart by
-// itself for the pending set.
+// itself for the pending set (not while the next start leaves the
+// extensions out).
 func (s *Service) autoAllowed(v *view) bool {
 	s.mu.Lock()
 	wired := s.cc.auto.reboot != nil
 	s.mu.Unlock()
-	return wired && v.restart && v.pending != nil && loadAuto().allows(pendingFingerprint(v), v.version, now())
+	return wired && v.restart && v.pending != nil && !skipOnce() &&
+		loadAuto().allows(pendingFingerprint(v), v.version, now())
 }
 
 // IdleTick runs in the idle policy's pass, with what it just saw. It
 // restarts the PC when a restart would try the pending set, the PC has
 // been idle for autoIdle, `vos health` finished this boot (or the boot is
 // older than autoBootAge), nothing is powering it off, no idle shutdown is
-// due within autoShutdown, and the breaker allows it. The decision is
-// taken again under the update lock and the store lock, which the reboot
-// holds, so no stage or set change slips in between.
+// due within autoShutdown, the next start does not leave the extensions
+// out (skip-once), and the breaker allows it. The decision is taken again
+// under the update lock and the store lock, which the reboot holds, so no
+// stage or set change slips in between.
 func (s *Service) IdleTick(ctx context.Context, t IdleTick) {
 	if t.PoweringOff || t.Idle < autoIdle || (t.ShutdownIn >= 0 && t.ShutdownIn <= autoShutdown) {
 		return
@@ -173,13 +193,15 @@ func (s *Service) IdleTick(ctx context.Context, t IdleTick) {
 	s.mu.Lock()
 	a, restart := s.cc.auto, s.view.restart
 	s.mu.Unlock()
-	if a.reboot == nil || !restart || !s.bootSettled(ctx, a) {
+	if a.reboot == nil || !restart || skipOnce() || !s.bootSettled(ctx, a) {
 		return
 	}
-	lctx, cancel := context.WithTimeout(ctx, autoLockWait)
+	uctx, cancel := context.WithTimeout(ctx, autoLockWait)
 	defer cancel()
-	err := update.WithLock(lctx, func() error {
-		unlock, err := store.Lock(lctx)
+	err := update.WithLock(uctx, func() error {
+		sctx, cancel := context.WithTimeout(ctx, autoLockWait)
+		defer cancel()
+		unlock, err := store.Lock(sctx)
 		if err != nil {
 			return err
 		}
@@ -197,7 +219,9 @@ func (s *Service) bootSettled(ctx context.Context, a autoState) bool {
 	if up, err := a.uptime(); err == nil && up > autoBootAge {
 		return true
 	}
-	return a.healthDone(ctx)
+	hctx, cancel := context.WithTimeout(ctx, autoHealthWait)
+	defer cancel()
+	return a.healthDone(hctx)
 }
 
 // autoRestart is the decision under the locks, on the store as it is now.
@@ -211,7 +235,7 @@ func (s *Service) autoRestart(ctx context.Context, a autoState) error {
 		return err
 	}
 	cat := s.catalog()
-	if !store.RestartNeeded(rep, pending, func(id string) bool {
+	if skipOnce() || !store.RestartNeeded(rep, pending, func(id string) bool {
 		e, ok := cat.Get(id)
 		return ok && sealed(e)
 	}) {
@@ -238,13 +262,15 @@ func (s *Service) autoRestart(ctx context.Context, a autoState) error {
 	if err := saveAuto(autoFile{Restarts: append(slices.Clone(f.Restarts), rec)}); err != nil {
 		return fmt.Errorf("recording it: %w", err)
 	}
-	next := ""
+	var next NextBoot
 	if a.nextBoot != nil {
 		next = a.nextBoot()
 	}
 	msg := s.restartMessage(rep, pending, next)
 	log.Printf("extensions: idle for %v with set %s pending: %s", autoIdle, pending.Name, msg)
-	ok, err := a.reboot(ctx, msg)
+	rctx, cancel := context.WithTimeout(ctx, autoRebootWait)
+	defer cancel()
+	ok, err := a.reboot(rctx, msg)
 	if !ok || err != nil {
 		// Not restarted: the record must not hold the next try back.
 		if serr := saveAuto(f); serr != nil {
@@ -255,9 +281,9 @@ func (s *Service) autoRestart(ctx context.Context, a autoState) error {
 }
 
 // restartMessage is what the welcome screen and the control center say
-// as the PC restarts: what it adds or removes, or, when a staged update
-// boots first, that the change follows the restart after.
-func (s *Service) restartMessage(rep *store.BootReport, pending *store.Set, next string) string {
+// as the PC restarts: what it adds or removes, or, when a staged update or
+// rollback boots first, that the change follows the restart after.
+func (s *Service) restartMessage(rep *store.BootReport, pending *store.Set, next NextBoot) string {
 	var adding, removing []string
 	for _, id := range pending.IDs {
 		if !rep.IsMounted(id) {
@@ -269,7 +295,7 @@ func (s *Service) restartMessage(rep *store.BootReport, pending *store.Set, next
 			removing = append(removing, s.name(m.ID))
 		}
 	}
-	if next != "" {
+	if next.Version != "" {
 		var after []string
 		if len(adding) > 0 {
 			after = append(after, joinNames(adding)+" "+be(adding)+" added")
@@ -281,7 +307,11 @@ func (s *Service) restartMessage(rep *store.BootReport, pending *store.Set, next
 		if len(after) > 0 {
 			tail = joinNames(after)
 		}
-		return fmt.Sprintf("Restarting to install VaporOS %s; %s after the next restart", next, tail)
+		verb := "install"
+		if next.Rollback {
+			verb = "go back to"
+		}
+		return fmt.Sprintf("Restarting to %s VaporOS %s; %s after the next restart", verb, next.Version, tail)
 	}
 	var parts []string
 	if len(adding) > 0 {
