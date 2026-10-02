@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -63,13 +64,14 @@ func (b *BetaWant) UnmarshalJSON(data []byte) error {
 
 // Shortcut is a non-Steam game an extension adds.
 type Shortcut struct {
-	Owner      string `json:"owner"`
-	Key        string `json:"key"`
-	Name       string `json:"name"`
-	Exe        string `json:"exe"`
-	StartDir   string `json:"start_dir"`
-	CompatTool string `json:"compat_tool"`
-	Art        string `json:"art"`
+	Owner      string   `json:"owner"`
+	Key        string   `json:"key"`
+	Name       string   `json:"name"`
+	Exe        string   `json:"exe"`
+	StartDir   string   `json:"start_dir"`
+	Args       []string `json:"args,omitempty"`
+	CompatTool string   `json:"compat_tool"`
+	Art        string   `json:"art"`
 }
 
 // Ref is the shortcut's "<owner>/<key>".
@@ -87,6 +89,8 @@ var (
 	nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)               // extension ids, shortcut keys
 	toolRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)    // compatibility tools
 	betaRe = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$`) // "" is the public branch
+	reqRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)    // branch request ids
+	argRe  = regexp.MustCompile(`^[A-Za-z0-9._/:=+-]{1,128}$`)          // a word of a shortcut's args
 )
 
 // parseDesired reads steam.json and drops, with a log line, any entry that
@@ -168,6 +172,8 @@ func checkShortcut(s Shortcut) error {
 		return fmt.Errorf("bad name")
 	case !cleanAbs(s.Exe) || !cleanAbs(s.StartDir):
 		return fmt.Errorf("exe and start_dir must be absolute paths")
+	case len(s.Args) > 16 || slices.ContainsFunc(s.Args, func(a string) bool { return !argRe.MatchString(a) }):
+		return fmt.Errorf("args must be at most 16 plain words")
 	case s.CompatTool != "" && !toolRe.MatchString(s.CompatTool):
 		return fmt.Errorf("%q is not a tool name", s.CompatTool)
 	case s.Art != "" && (!cleanAbs(s.Art) || !strings.HasPrefix(s.Art, filepath.Join(config.ExtMountedLibDir, s.Owner)+"/")):
@@ -176,11 +182,9 @@ func checkShortcut(s Shortcut) error {
 	return nil
 }
 
-// requestOK accepts a branch request's id: opaque, but short and
-// printable, since it goes into prepare's record.
-func requestOK(id string) bool {
-	return id != "" && len(id) <= 128 && !strings.ContainsFunc(id, unicode.IsControl)
-}
+// requestOK accepts a branch request's id: opaque, but short and plain,
+// since it goes into prepare's record.
+func requestOK(id string) bool { return reqRe.MatchString(id) }
 
 // cleanAbs accepts an absolute, clean path that Steam can keep in quotes.
 func cleanAbs(p string) bool {

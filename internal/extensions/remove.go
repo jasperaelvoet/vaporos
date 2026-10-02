@@ -349,5 +349,6 @@ func (s *Service) Action(ctx context.Context, id, name string, args json.RawMess
 		return fmt.Errorf("%s: %w", s.name(id), err)
 	}
 	log.Printf("extensions: %s: ran %s", id, name)
+	s.syncSteam() // a helper's Steam parts may follow its actions (TruckersMP's branch)
 	return nil
 }

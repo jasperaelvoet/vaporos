@@ -3,6 +3,7 @@ package extensions
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -20,14 +21,16 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
-// Messages from `vos ext launch` to the person at the control center. The
-// dispatcher runs as the gaming user inside Steam, where nobody sees its
-// output: when it refuses a launch it leaves a record in the user's runtime
-// directory, $XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json,
-// saying what happened and to which extension. vosd words it from its own
-// sentences and the shipped descriptor's name, publishes it as a
-// system.message and deletes the file: whatever a game writes there, the
-// person only ever reads VaporOS's words.
+// Messages from `vos ext launch`, and from a helper's own commands, to the
+// person at the control center. The dispatcher runs as the gaming user
+// inside Steam, where nobody sees its output: when it refuses a launch it
+// leaves a record in the user's runtime directory,
+// $XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json, saying what
+// happened and to which extension. vosd words it from its own sentences
+// (a helper's code from its helper's, MessageWords) and the shipped
+// descriptor's name, publishes it as a system.message and deletes the
+// file: whatever a game writes there, the person only ever reads
+// VaporOS's words.
 
 // messagesRel is the message directory in the user's runtime directory.
 const messagesRel = "vos/ext-messages"
@@ -57,6 +60,29 @@ type launchRecord struct {
 	Code   string `json:"code"`
 	ID     string `json:"id"`
 	Detail string `json:"detail"`
+}
+
+// MessageWords is a helper whose own commands run as the gaming user
+// where nobody sees their output (TruckersMP's multiplayer start, from
+// Steam or Moonlight) and leave vosd coded records through WriteMessage.
+// vosd words each record with MessageText, never with the file's text.
+type MessageWords interface {
+	// MessageText is the sentence for code, false for a code it has none
+	// for.
+	MessageText(code string) (string, bool)
+}
+
+// helperCodeRe is a helper's message code.
+var helperCodeRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// WriteMessage leaves vosd a record that a command of extension id's
+// helper refused with code, one its helper's MessageText words; detail
+// goes to the journal only. It runs as the gaming user.
+func WriteMessage(id, code, detail string) error {
+	if !manifest.ValidExtensionID(id) || !helperCodeRe.MatchString(code) || code == codeNotMounted || code == codeHookFailed {
+		return fmt.Errorf("message %q of %q is not a helper's", code, id)
+	}
+	return writeMessage(launchRecord{Code: code, ID: id, Detail: detail})
 }
 
 // writeMessage leaves r for vosd. It runs as the gaming user.
@@ -131,16 +157,37 @@ func (s *Service) pollMessages() {
 // with the detail on one line and bounded.
 func parseLaunchRecord(b []byte) (launchRecord, bool) {
 	var r launchRecord
-	if json.Unmarshal(b, &r) != nil || (r.Code != codeNotMounted && r.Code != codeHookFailed) || !manifest.ValidExtensionID(r.ID) {
+	if json.Unmarshal(b, &r) != nil || !manifest.ValidExtensionID(r.ID) {
 		return launchRecord{}, false
+	}
+	if r.Code != codeNotMounted && r.Code != codeHookFailed {
+		if _, ok := helperText(r); !ok {
+			return launchRecord{}, false
+		}
 	}
 	r.Detail = oneLine(r.Detail, maxMessageDetail)
 	return r, true
 }
 
+// helperText is the sentence r's extension's helper has for its code.
+func helperText(r launchRecord) (string, bool) {
+	w, ok := HelperFor(r.ID).(MessageWords)
+	if !ok || !helperCodeRe.MatchString(r.Code) {
+		return "", false
+	}
+	text, ok := w.MessageText(r.Code)
+	return text, ok && text != ""
+}
+
 // text is what the person reads: VaporOS's sentence, with the extension's
-// name from its shipped descriptor (root's, in the image).
+// name from its shipped descriptor (root's, in the image), or the one its
+// helper has for its own code.
 func (r launchRecord) text() string {
+	if r.Code != codeNotMounted && r.Code != codeHookFailed {
+		if text, ok := helperText(r); ok {
+			return text
+		}
+	}
 	name := ""
 	if d, err := Shipped(r.ID); err == nil {
 		name = d.Name

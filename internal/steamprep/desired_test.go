@@ -21,7 +21,8 @@ func TestParseDesired(t *testing.T) {
 		{"app":2,"beta":{"branch":"","request":"9"}},
 		{"app":3,"beta":null},
 		{"app":4,"beta":"temporary_1_61"},
-		{"app":5,"beta":{"branch":"b"}}
+		{"app":5,"beta":{"branch":"b"}},
+		{"app":6,"beta":{"branch":"b","request":"not an id"}}
 	],
 	"shortcuts":[
 		{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/g/setup.exe","start_dir":"/var/mnt/g","compat_tool":"","art":"` + art + `"},
@@ -30,7 +31,9 @@ func TestParseDesired(t *testing.T) {
 		{"owner":"x","key":"z","name":"quote","exe":"/a\"b","start_dir":"/"},
 		{"owner":"x","key":"w","name":"art elsewhere","exe":"/a","start_dir":"/","art":"/etc"},
 		{"owner":"x","key":"v","name":"other's art","exe":"/a","start_dir":"/","art":"` + art + `"},
-		{"owner":"X","key":"v","name":"bad id","exe":"/a","start_dir":"/"}
+		{"owner":"X","key":"v","name":"bad id","exe":"/a","start_dir":"/"},
+		{"owner":"truckersmp","key":"ets2","name":"TruckersMP (ETS2)","exe":"/usr/bin/vos","start_dir":"/var/home/vapor","args":["ext","truckersmp","mp","ets2"]},
+		{"owner":"x","key":"u","name":"spaced args","exe":"/a","start_dir":"/","args":["a b"]}
 	],
 	"release":[{"app":0},{"app":270880}]}`
 	var logs []string
@@ -40,12 +43,12 @@ func TestParseDesired(t *testing.T) {
 	}
 	// A branch request that is not well formed goes alone, and the app's
 	// branch is then left as it is.
-	if len(d.Apps) != 6 || d.Apps[0].App != 227300 || d.Apps[1].App != 1 || d.Apps[2].App != 2 || d.Apps[3].App != 3 ||
+	if len(d.Apps) != 7 || d.Apps[0].App != 227300 || d.Apps[1].App != 1 || d.Apps[2].App != 2 || d.Apps[3].App != 3 ||
 		strings.Join(d.Apps[0].Hooks, ",") != "truckersmp" || *d.Apps[0].Beta != (BetaWant{Branch: "temporary_1_61", Request: "7"}) ||
 		*d.Apps[2].Beta != (BetaWant{Request: "9"}) || d.Apps[3].Beta != nil || d.Apps[3].keepBranch {
 		t.Errorf("apps %+v", d.Apps)
 	}
-	for _, a := range []AppWant{d.Apps[1], d.Apps[4], d.Apps[5]} {
+	for _, a := range []AppWant{d.Apps[1], d.Apps[4], d.Apps[5], d.Apps[6]} {
 		if a.Beta != nil || !a.keepBranch {
 			t.Errorf("app %d: %+v", a.App, a)
 		}
@@ -59,13 +62,13 @@ func TestParseDesired(t *testing.T) {
 	if d.names("X") || d.names("Bad Hook") || d.names("nobody") {
 		t.Error("names what is not an extension id")
 	}
-	if len(d.Shortcuts) != 1 || d.Shortcuts[0].Name != "Star Citizen" {
+	if len(d.Shortcuts) != 2 || d.Shortcuts[0].Name != "Star Citizen" || strings.Join(d.Shortcuts[1].Args, " ") != "ext truckersmp mp ets2" {
 		t.Errorf("shortcuts %+v", d.Shortcuts)
 	}
 	if r := d.releases(); len(r) != 1 || !r[270880] {
 		t.Errorf("release %v", r)
 	}
-	if len(logs) != 12 {
+	if len(logs) != 14 {
 		t.Errorf("%d log lines: %q", len(logs), logs)
 	}
 	if _, err := parseDesired([]byte(`{"set":`), func(string, ...any) {}); err == nil {

@@ -107,6 +107,49 @@ func TestParseLaunchRecord(t *testing.T) {
 	}
 }
 
+// wordsHelper words one code of its own.
+type wordsHelper struct{ NopHelper }
+
+func (wordsHelper) MessageText(code string) (string, bool) {
+	if code == "starting" {
+		return "TruckersMP is already starting. Wait for the game to open.", true
+	}
+	return "", false
+}
+
+// A helper's command leaves a code its helper words; vosd shows the
+// helper's sentence, never the file's, and drops codes it has none for.
+func TestHelperMessages(t *testing.T) {
+	e := newEnv(t)
+	s, _ := e.service()
+	got := capture(s)
+	withHelper(t, "truckersmp", wordsHelper{})
+	dir := filepath.Join(config.GamerRuntimeDir, messagesRel)
+	must(t, WriteMessage("truckersmp", "starting", "a handoff unit is loaded"))
+	time.Sleep(time.Microsecond)
+	must(t, WriteMessage("truckersmp", "pwned", ""))
+	time.Sleep(time.Microsecond)
+	must(t, WriteMessage("star-citizen", "starting", "no words"))
+	writeFile(t, filepath.Join(dir, "105.json"), `{"code":"starting","id":"truckersmp","text":"Call 555-0100"}`)
+	for _, bad := range [][2]string{{"truckersmp", codeHookFailed}, {"truckersmp", "Bad Code"}, {"../x", "starting"}} {
+		if WriteMessage(bad[0], bad[1], "") == nil {
+			t.Errorf("WriteMessage(%q, %q) wrote", bad[0], bad[1])
+		}
+	}
+	s.pollMessages()
+	if len(*got) != 2 {
+		t.Fatalf("published %+v", *got)
+	}
+	for _, p := range *got {
+		if p.data["text"] != "TruckersMP is already starting. Wait for the game to open." || p.data["welcome"] != false {
+			t.Errorf("published %+v", p)
+		}
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Errorf("left behind: %v", ents)
+	}
+}
+
 func TestPollMessagesRefusesASymlinkedDirectory(t *testing.T) {
 	e := newEnv(t)
 	s, _ := e.service()

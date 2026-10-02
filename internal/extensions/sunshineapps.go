@@ -24,7 +24,9 @@ const sessionLaunch = "/usr/bin/vos session launch steam://rungameid/"
 
 // SunshineApps returns the apps the extensions add to Sunshine, for those
 // mounted and still wanted: each of their shortcuts whose game id prepare
-// recorded, then the helpers' own entries.
+// recorded, then the helpers' own entries. A helper's entry with the name
+// of one of its extension's shortcuts stands for that shortcut (it starts
+// the same thing without going through Steam's shortcut).
 func SunshineApps() []SunshineApp {
 	if config.IsLive() {
 		return nil
@@ -34,25 +36,31 @@ func SunshineApps() []SunshineApp {
 		log.Printf("extensions: Sunshine apps: %v", err)
 		return nil
 	}
-	var out []SunshineApp
-	if d := e.desiredSteam(false); len(d.Shortcuts) > 0 {
-		st := readPrepareState()
-		for _, sc := range d.Shortcuts {
-			if id, ok := st.gameID(sc.Owner, sc.Key); ok {
-				out = append(out, SunshineApp{Name: sc.Name, Detached: []string{sessionLaunch + strconv.FormatUint(id, 10)}})
-			}
-		}
-	}
+	var own []SunshineApp
+	direct := map[string]bool{} // "<owner>\x00<lower-case name>"
 	for _, id := range e.ids {
 		for _, a := range e.parts[id].SunshineApps {
 			if !validSunshineApp(a) {
 				log.Printf("extensions: %s: Sunshine app %q is not valid", id, a.Name)
 				continue
 			}
-			out = append(out, a)
+			own = append(own, a)
+			direct[id+"\x00"+strings.ToLower(a.Name)] = true
 		}
 	}
-	return out
+	var out []SunshineApp
+	if d := e.desiredSteam(false); len(d.Shortcuts) > 0 {
+		st := readPrepareState()
+		for _, sc := range d.Shortcuts {
+			if direct[sc.Owner+"\x00"+strings.ToLower(sc.Name)] {
+				continue
+			}
+			if id, ok := st.gameID(sc.Owner, sc.Key); ok {
+				out = append(out, SunshineApp{Name: sc.Name, Detached: []string{sessionLaunch + strconv.FormatUint(id, 10)}})
+			}
+		}
+	}
+	return append(out, own...)
 }
 
 func validSunshineApp(a SunshineApp) bool {

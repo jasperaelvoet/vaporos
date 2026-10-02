@@ -71,6 +71,12 @@ func newLauncher(stderr io.Writer) *launcher {
 	}
 }
 
+// Launch is `vos session launch` for a caller that needs to know whether
+// Steam got url (TruckersMP's handoff); it logs to stderr.
+func Launch(ctx context.Context, url string, stderr io.Writer) bool {
+	return newLauncher(stderr).run(ctx, url)
+}
+
 // validSteamURL accepts steam:// URLs only, without spaces or control
 // characters (they end up as one argument of the Steam launcher).
 func validSteamURL(u string) bool {

@@ -3,4 +3,7 @@
 // cmd/vos imports this package for its side effects.
 package all
 
-import _ "github.com/jasperaelvoet/vaporos/internal/extensions/coolercontrol"
+import (
+	_ "github.com/jasperaelvoet/vaporos/internal/extensions/coolercontrol"
+	_ "github.com/jasperaelvoet/vaporos/internal/extensions/truckersmp"
+)

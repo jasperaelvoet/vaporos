@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -488,4 +489,66 @@ func TestWatchSteamRechecksTheDispatcher(t *testing.T) {
 	asked := len(restarts())
 	slotB(t, false)
 	waitFor(t, func() bool { return !dispatcherOn() && len(restarts()) == asked+1 })
+}
+
+// A shortcut's arguments reach steam.json as plain words; a target with
+// anything else is left out.
+func TestShortcutArgs(t *testing.T) {
+	steamBox(t)
+	home := filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, "truckersmp")
+	args := []string{"ext", "truckersmp", "mp", "ets2"}
+	withHelper(t, "truckersmp", testHelper{steam: SteamParts{Shortcuts: map[string]ShortcutTarget{
+		"ets2-mp": {Exe: "/usr/bin/vos", StartDir: home, Args: args}}}})
+	d := loadDesired(t)
+	i := slices.IndexFunc(d.Shortcuts, func(s SteamShortcut) bool { return s.Owner == "truckersmp" })
+	if i < 0 || !slices.Equal(d.Shortcuts[i].Args, args) || d.Shortcuts[i].Exe != "/usr/bin/vos" || d.Shortcuts[i].CompatTool != "" {
+		t.Fatalf("shortcuts %+v", d.Shortcuts)
+	}
+	for _, bad := range [][]string{{"mp", "ets 2"}, {`"x"`}, {""}, {"a;b"}, make([]string, 17)} {
+		withHelper(t, "truckersmp", testHelper{steam: SteamParts{Shortcuts: map[string]ShortcutTarget{
+			"ets2-mp": {Exe: "/usr/bin/vos", StartDir: home, Args: bad}}}})
+		if d := loadDesired(t); slices.ContainsFunc(d.Shortcuts, func(s SteamShortcut) bool { return s.Owner == "truckersmp" }) {
+			t.Errorf("args %q: listed", bad)
+		}
+	}
+}
+
+// branchHelper's Steam parts follow its action, as TruckersMP's branch does.
+type branchHelper struct {
+	NopHelper
+	beta *string
+}
+
+func (h branchHelper) Steam(*Ext) SteamParts {
+	if *h.beta == "" {
+		return SteamParts{}
+	}
+	return SteamParts{Beta: map[uint32]BetaRequest{227300: {Branch: *h.beta, Request: "1"}}}
+}
+
+func (h branchHelper) Action(_ context.Context, _ *Ext, name string, _ json.RawMessage) error {
+	*h.beta = "temporary_1_61"
+	return nil
+}
+
+// An action whose helper changes what it asks of Steam rewrites
+// steam.json at once.
+func TestActionSyncsSteam(t *testing.T) {
+	e, _ := steamBox(t)
+	writeFile(t, filepath.Join(config.ExtDescriptorsDir, "truckersmp.json"), strings.Replace(truckersmpDesc,
+		`"shares":`, `"actions":[{"name":"switch-branch","label":"Switch to supported version","run_as":"root"}],"shares":`, 1))
+	beta := ""
+	withHelper(t, "truckersmp", branchHelper{beta: &beta})
+	s, _ := e.service()
+	var restarts []string
+	s.SetSteamRestarter(func(reason string) { restarts = append(restarts, reason) })
+	if _, err := s.SyncSteam(); err != nil {
+		t.Fatal(err)
+	}
+	must(t, s.Action(t.Context(), "truckersmp", "switch-branch", nil))
+	d, err := readSteamDesired()
+	must(t, err)
+	if d.Apps[0].App != 227300 || d.Apps[0].Beta == nil || d.Apps[0].Beta.Branch != "temporary_1_61" || len(restarts) != 2 {
+		t.Errorf("after the action: %+v, restarts %q", d.Apps, restarts)
+	}
 }

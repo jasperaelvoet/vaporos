@@ -52,6 +52,16 @@ type shortcutResult struct {
 	kept    []uint32
 }
 
+// launchOptions is the shortcut's LaunchOptions: the dispatcher with its
+// id, then its args, which Steam passes to Exe after %command%.
+func (w Shortcut) launchOptions() string {
+	o := steam.ShortcutLaunchOptions(w.Owner, w.Key)
+	if len(w.Args) > 0 {
+		o += " " + strings.Join(w.Args, " ")
+	}
+	return o
+}
+
 // decideShortcuts decides an account's shortcuts. A VaporOS shortcut is
 // the one whose launch options carry its `--shortcut <owner>/<key>` (or,
 // once --unwrap took that off, whose app id the record holds), whatever
@@ -142,7 +152,7 @@ func decideShortcuts(in shortcutInput) shortcutResult {
 			s := &list[i]
 			s.AppName = w.Name
 			s.Exe, s.StartDir = `"`+w.Exe+`"`, `"`+w.StartDir+`"`
-			s.LaunchOptions = steam.ShortcutLaunchOptions(w.Owner, w.Key)
+			s.LaunchOptions = w.launchOptions()
 			if !slices.Contains(s.Tags, VaporOSTag) {
 				s.Tags = append(s.Tags, VaporOSTag)
 			}
@@ -162,8 +172,7 @@ func decideShortcuts(in shortcutInput) shortcutResult {
 			res.next[ref] = &c
 			continue
 		}
-		s := steam.NewShortcut(steam.ShortcutAppID(w.Owner, w.Key), w.Name, w.Exe, w.StartDir,
-			steam.ShortcutLaunchOptions(w.Owner, w.Key))
+		s := steam.NewShortcut(steam.ShortcutAppID(w.Owner, w.Key), w.Name, w.Exe, w.StartDir, w.launchOptions())
 		s.Tags = []string{VaporOSTag}
 		if in.icon != nil {
 			s.Icon = in.icon(w, s.AppID)

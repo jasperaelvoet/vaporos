@@ -585,3 +585,25 @@ func TestFetchImageByDigest(t *testing.T) {
 		t.Fatalf("directory: %v", err)
 	}
 }
+
+// busyHelper has work of its own under way.
+type busyHelper struct {
+	NopHelper
+	busy bool
+}
+
+func (h busyHelper) Busy() (bool, string) { return h.busy, "updating TruckersMP" }
+
+// A helper's own work keeps the PC awake too.
+func TestHelperBusy(t *testing.T) {
+	e := newEnv(t)
+	s, _ := e.service()
+	withHelper(t, "truckersmp", busyHelper{})
+	if busy, why := s.Busy(); busy || why != "" {
+		t.Fatalf("idle: %v %q", busy, why)
+	}
+	withHelper(t, "truckersmp", busyHelper{busy: true})
+	if busy, why := s.Busy(); !busy || why != "updating TruckersMP" {
+		t.Fatalf("busy: %v %q", busy, why)
+	}
+}

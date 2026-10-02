@@ -48,13 +48,14 @@ type SteamApp struct {
 
 // SteamShortcut is a non-Steam game an extension adds.
 type SteamShortcut struct {
-	Owner      string `json:"owner"`
-	Key        string `json:"key"`
-	Name       string `json:"name"`
-	Exe        string `json:"exe"`
-	StartDir   string `json:"start_dir"`
-	CompatTool string `json:"compat_tool"`
-	Art        string `json:"art"`
+	Owner      string   `json:"owner"`
+	Key        string   `json:"key"`
+	Name       string   `json:"name"`
+	Exe        string   `json:"exe"`
+	StartDir   string   `json:"start_dir"`
+	Args       []string `json:"args,omitempty"`
+	CompatTool string   `json:"compat_tool"`
+	Art        string   `json:"art"`
 }
 
 // SteamRelease is an app a removed extension forced a compatibility tool
@@ -242,7 +243,11 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 					log.Printf("extensions: %s/%s: the shortcut's target %q in %q is not a clean absolute path", id, sc.Key, t.Exe, t.StartDir)
 					continue
 				}
-				out := SteamShortcut{Owner: id, Key: sc.Key, Name: sc.Name, Exe: t.Exe, StartDir: t.StartDir}
+				if !validArgs(t.Args) {
+					log.Printf("extensions: %s/%s: the shortcut's arguments %q are not plain words", id, sc.Key, t.Args)
+					continue
+				}
+				out := SteamShortcut{Owner: id, Key: sc.Key, Name: sc.Name, Exe: t.Exe, StartDir: t.StartDir, Args: slices.Clone(t.Args)}
 				if sc.CompatTool {
 					out.CompatTool = tool
 				}
@@ -297,6 +302,23 @@ var steamNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 func validPath(p string) bool {
 	return len(p) < 4096 && filepath.IsAbs(p) && filepath.Clean(p) == p &&
 		!strings.ContainsFunc(p, unicode.IsControl)
+}
+
+// shortcutArgRe is one word of a shortcut's arguments: Steam splits launch
+// options at spaces and reads quotes, so only words without either go in.
+var shortcutArgRe = regexp.MustCompile(`^[A-Za-z0-9._/:=+-]{1,128}$`)
+
+// validArgs accepts up to 16 plain words.
+func validArgs(args []string) bool {
+	if len(args) > 16 {
+		return false
+	}
+	for _, a := range args {
+		if !shortcutArgRe.MatchString(a) {
+			return false
+		}
+	}
+	return true
 }
 
 // slotEntry is the boot entry of slot (a variable for tests).

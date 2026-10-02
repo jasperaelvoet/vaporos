@@ -234,6 +234,29 @@ func TestDecideShortcutsKeepsTheUsers(t *testing.T) {
 	}
 }
 
+// A shortcut's args follow %command% in its launch options, which still
+// name it; --unwrap leaves them after %command%.
+func TestShortcutArgs(t *testing.T) {
+	want := []Shortcut{{Owner: "truckersmp", Key: "ets2", Name: "TruckersMP (ETS2)", Exe: "/usr/bin/vos", StartDir: "/home",
+		Args: []string{"ext", "truckersmp", "mp", "ets2"}}}
+	res := decideShortcuts(shortcutInput{want: want, names: func(string) bool { return true }})
+	opts := "/usr/bin/vos ext launch --shortcut truckersmp/ets2 %command% ext truckersmp mp ets2"
+	if len(res.list) != 1 || res.list[0].LaunchOptions != opts {
+		t.Fatalf("%+v", res.list)
+	}
+	if owner, key, ok := steam.ShortcutRef(opts); !ok || owner != "truckersmp" || key != "ets2" {
+		t.Errorf("ref %q %q %v", owner, key, ok)
+	}
+	again := decideShortcuts(shortcutInput{list: res.list, existed: true, want: want, st: res.next, names: func(string) bool { return true }})
+	if len(again.list) != 1 || again.list[0].LaunchOptions != opts {
+		t.Errorf("a second run: %+v", again.list)
+	}
+	un := decideShortcuts(shortcutInput{list: again.list, existed: true, st: again.next, unwrap: true})
+	if len(un.list) != 1 || un.list[0].LaunchOptions != "%command% ext truckersmp mp ets2" {
+		t.Errorf("unwrapped: %+v", un.list)
+	}
+}
+
 // listStarCitizen is steam.json without the Star Citizen shortcut, with
 // its extension still named (a hook of its own), as when its install has
 // no target for the shortcut yet.

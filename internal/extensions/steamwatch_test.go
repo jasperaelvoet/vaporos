@@ -167,3 +167,29 @@ func TestSteamExtSettings(t *testing.T) {
 		t.Errorf("settings %v", x.Settings)
 	}
 }
+
+// A helper's entry with its shortcut's name stands for the shortcut:
+// Moonlight lists TruckersMP's multiplayer start once.
+func TestSunshineAppsDirectEntry(t *testing.T) {
+	steamBox(t)
+	home := filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, "truckersmp")
+	withHelper(t, "truckersmp", testHelper{steam: SteamParts{
+		Shortcuts:    map[string]ShortcutTarget{"ets2-mp": {Exe: "/usr/bin/vos", StartDir: home, Args: []string{"ext", "truckersmp", "mp", "ets2"}}},
+		SunshineApps: []SunshineApp{{Name: "ETS2 multiplayer", Detached: []string{"/usr/bin/vos ext truckersmp mp ets2"}}},
+	}})
+	tmpID := ShortcutGameID(ShortcutAppID("truckersmp", "ets2-mp"))
+	scID := ShortcutGameID(ShortcutAppID("star-citizen", "launcher"))
+	writePrepareState(t, prepareState{Accounts: []string{acctFan}, Shortcuts: map[string]map[string]preparedShortcut{
+		acctFan: {
+			"truckersmp/ets2-mp":    {AppID: int64(int32(uint32(tmpID >> 32))), GameID: itoa(tmpID)},
+			"star-citizen/launcher": {AppID: int64(int32(uint32(scID >> 32))), GameID: itoa(scID)},
+		},
+	}})
+	want := []SunshineApp{
+		{Name: "Star Citizen", Detached: []string{"/usr/bin/vos session launch steam://rungameid/" + itoa(scID)}},
+		{Name: "ETS2 multiplayer", Detached: []string{"/usr/bin/vos ext truckersmp mp ets2"}},
+	}
+	if got := SunshineApps(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("apps %+v\nwant %+v", got, want)
+	}
+}

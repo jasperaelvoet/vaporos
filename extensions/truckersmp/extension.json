@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "id": "truckersmp",
+  "name": "TruckersMP",
+  "summary": "Multiplayer for Euro Truck Simulator 2 and American Truck Simulator.",
+  "category": "app",
+  "upstream": {
+    "name": "TruckersMP",
+    "url": "https://truckersmp.com",
+    "license": "Proprietary"
+  },
+  "caveats": [
+    "TruckersMP doesn't support Linux; it runs here through Proton.",
+    "TruckersMP supports one version of each game. When Steam updates ETS2 or ATS before TruckersMP does, switch the game to the supported version until it catches up."
+  ],
+  "copy": {
+    "install": "Steam downloads ETS2 and ATS again as their Windows version. Profiles saved only on this PC stay with the Linux version; copy them over from this card.",
+    "remove": "ETS2 and ATS keep running with Proton. To go back to their Linux version, turn off the compatibility tool in each game's Steam properties; Steam downloads it again."
+  },
+  "fetch": [
+    {
+      "url": "https://github.com/truckersmp-cli/truckersmp-cli/releases/download/0.11.0/truckersmp-cli-0.11.0.tar.xz",
+      "sha256": "54e7a8ac596e6a9c534edad003e0922ab46b8311fdca30af895c26be128a7e3c",
+      "license": "MIT",
+      "extract": "truckersmp-cli-0.11.0/truckersmp_cli/truckersmp-cli.exe",
+      "license_file": "truckersmp-cli-0.11.0/LICENSE",
+      "dest": "truckersmp-cli.exe"
+    }
+  ],
+  "requires": ["proton"],
+  "steam": {
+    "compat_tool": "proton-cachyos-slr",
+    "force_compat_tool": [227300, 270880],
+    "hooks": [{"apps": [227300, 270880]}],
+    "shortcuts": [
+      {"key": "ets2", "name": "TruckersMP (ETS2)"},
+      {"key": "ats", "name": "TruckersMP (ATS)"}
+    ]
+  },
+  "data": [
+    {"name": "files", "where": "home"},
+    {"name": "state", "where": "system"}
+  ],
+  "shares": [{"steam_app": 227300}, {"steam_app": 270880}],
+  "downloads": [
+    {
+      "what": "the TruckersMP mod",
+      "from": "download.ets2mp.com",
+      "checked": "publisher-hash",
+      "runs_code": true,
+      "when": "update"
+    }
+  ],
+  "actions": [
+    {
+      "name": "copy-profiles",
+      "label": "Copy Linux profiles",
+      "confirm": {
+        "title": "Copy your Linux profiles?",
+        "body": "Profiles saved only on this PC are copied to the Windows version of ETS2 and ATS. Profiles already there stay as they are.",
+        "button": "Copy profiles"
+      }
+    },
+    {
+      "name": "switch-branch",
+      "label": "Switch to supported version",
+      "run_as": "root",
+      "confirm": {
+        "title": "Switch to the version TruckersMP supports?",
+        "body": "Steam downloads the version of ETS2 or ATS that TruckersMP supports when it next restarts. Your profiles stay. Switch back once TruckersMP supports the latest version.",
+        "button": "Switch version"
+      }
+    },
+    {
+      "name": "latest-branch",
+      "label": "Switch to latest version",
+      "run_as": "root",
+      "confirm": {
+        "title": "Switch to the latest version?",
+        "body": "Steam updates ETS2 and ATS to their latest version when it next restarts. TruckersMP may not support it yet.",
+        "button": "Switch version"
+      }
+    }
+  ]
+}

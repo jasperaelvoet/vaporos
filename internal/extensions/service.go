@@ -254,15 +254,17 @@ func (s *Service) retryAll() {
 
 // Busy keeps the PC awake while an image's bytes arrive (from the first
 // until the download and its seal end, unless none came for busyStall),
-// while the mounted images are re-read and while a helper sets an
-// extension up, undoes it or runs one of its actions.
+// while the mounted images are re-read, while a helper sets an extension
+// up, undoes it or runs one of its actions, and while a helper's own work
+// runs (Busier).
 func (s *Service) Busy() (bool, string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.busyLocked() {
+	busy := s.busyLocked()
+	s.mu.Unlock()
+	if busy {
 		return true, busyReason
 	}
-	return false, ""
+	return helpersBusy()
 }
 
 func (s *Service) busyLocked() bool {
