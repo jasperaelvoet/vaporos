@@ -1,6 +1,9 @@
 // Package steam reads the few Steam client files VaporOS cares about:
 // libraryfolders.vdf (where the game libraries are), appmanifest_*.acf
 // (which games are installed) and the on-disk markers of a library.
+// It also edits the ones `vos steam prepare` changes (config.vdf,
+// localconfig.vdf, shortcuts.vdf, an app's BetaKey) without disturbing
+// anything else in them; see "Steam" under Extensions in docs/CONTRACTS.md.
 // It never talks to Steam itself, so it works while Steam is not running
 // and on disks that are not mounted where Steam expects them.
 package steam
@@ -19,6 +22,11 @@ type Node struct {
 	Value    string
 	Children []*Node
 	Block    bool
+
+	// Byte offsets in the parsed text, for edits that splice it
+	// (vdfedit.go): the key token, the value token (for a block its '{'
+	// and '}'), and the end of the entry, a conditional included.
+	start, valStart, valEnd, end int
 }
 
 // Child returns the first child whose key matches (case-insensitively).
@@ -54,7 +62,11 @@ const (
 // ParseVDF parses Valve KeyValues text. It returns a synthetic root block
 // whose children are the top-level entries.
 func ParseVDF(data []byte) (*Node, error) {
-	if len(data) > maxVDFSize {
+	return parseVDF(data, maxVDFSize)
+}
+
+func parseVDF(data []byte, limit int) (*Node, error) {
+	if len(data) > limit {
 		return nil, fmt.Errorf("vdf: file too large (%d bytes)", len(data))
 	}
 	p := &vdfParser{s: string(data)}
@@ -68,6 +80,7 @@ func ParseVDF(data []byte) (*Node, error) {
 type vdfParser struct {
 	s   string
 	pos int
+	tok int // where the last token starts
 }
 
 type tokKind int
@@ -91,6 +104,7 @@ func (p *vdfParser) block(parent *Node, depth int, nested bool) error {
 		if err != nil {
 			return err
 		}
+		start := p.tok
 		switch kind {
 		case tokEOF:
 			if nested {
@@ -110,21 +124,24 @@ func (p *vdfParser) block(parent *Node, depth int, nested bool) error {
 		if err != nil {
 			return err
 		}
+		var n *Node
 		switch kind {
 		case tokEOF:
 			return errUnexpectedEOF
 		case tokClose:
 			return fmt.Errorf("vdf: key %q has no value", key)
 		case tokOpen:
-			child := &Node{Key: key, Block: true}
-			if err := p.block(child, depth+1, true); err != nil {
+			n = &Node{Key: key, Block: true, start: start, valStart: p.tok}
+			if err := p.block(n, depth+1, true); err != nil {
 				return err
 			}
-			parent.Children = append(parent.Children, child)
+			n.valEnd = p.pos - 1 // the '}'
 		default:
-			parent.Children = append(parent.Children, &Node{Key: key, Value: val})
+			n = &Node{Key: key, Value: val, start: start, valStart: p.tok, valEnd: p.pos}
 		}
 		p.skipConditional()
+		n.end = p.pos
+		parent.Children = append(parent.Children, n)
 	}
 }
 
@@ -162,6 +179,7 @@ func (p *vdfParser) skipSpace() {
 
 func (p *vdfParser) next() (tokKind, string, error) {
 	p.skipSpace()
+	p.tok = p.pos
 	if p.pos >= len(p.s) {
 		return tokEOF, "", nil
 	}

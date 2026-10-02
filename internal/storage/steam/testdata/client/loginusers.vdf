@@ -1,0 +1,25 @@
+"users"
+{
+	"76561198012345678"
+	{
+		"AccountName"		"jasperae"
+		"PersonaName"		"Jasper \"Vapor\" A."
+		"RememberPassword"		"1"
+		"WantsOfflineMode"		"0"
+		"SkipOfflineModeWarning"		"0"
+		"AllowAutoLogin"		"1"
+		"MostRecent"		"1"
+		"Timestamp"		"1790611500"
+	}
+	"76561198087654321"
+	{
+		"AccountName"		"truckfan"
+		"PersonaName"		"Truck \\ Driver"
+		"RememberPassword"		"1"
+		"WantsOfflineMode"		"0"
+		"SkipOfflineModeWarning"		"0"
+		"AllowAutoLogin"		"0"
+		"MostRecent"		"0"
+		"Timestamp"		"1789000000"
+	}
+}

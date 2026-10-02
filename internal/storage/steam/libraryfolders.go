@@ -140,10 +140,13 @@ func libraryFoldersBlock(data []byte) (*Node, int, error) {
 	}
 }
 
-// vdfQuote writes s as a KeyValues string, escaped the way quoted reads it.
+// vdfQuote writes s as a KeyValues string the way Steam's writer does:
+// only a backslash and a quote are escaped.
 func vdfQuote(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`).Replace(s) + `"`
+	return `"` + vdfEscaper.Replace(s) + `"`
 }
+
+var vdfEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
 func isDigits(s string) bool {
 	if s == "" || len(s) > 20 {

@@ -209,6 +209,12 @@ func isLibraryDir(dir string) bool {
 // ReadFileLimited reads a small Steam metadata file, refusing anything
 // larger than a real one could be.
 func ReadFileLimited(path string) ([]byte, error) {
+	return ReadFileMax(path, maxVDFSize)
+}
+
+// ReadFileMax is ReadFileLimited with its own cap, for the files that
+// grow larger (LocalConfigMax).
+func ReadFileMax(path string, limit int) ([]byte, error) {
 	// Steam's files belong to the gaming user and vosd reads them as root:
 	// never follow a final symlink, never block on a FIFO, and read only
 	// regular files.
@@ -222,11 +228,11 @@ func ReadFileLimited(path string) ([]byte, error) {
 	} else if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxVDFSize+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxVDFSize {
+	if len(data) > limit {
 		return nil, fmt.Errorf("%s: too large", path)
 	}
 	return data, nil

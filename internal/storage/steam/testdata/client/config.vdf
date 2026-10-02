@@ -1,0 +1,83 @@
+"InstallConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"AutoUpdateWindowEnabled"		"0"
+				"ipv6check_http_state"		"bad"
+				"ipv6check_udp_state"		"bad"
+				"ShaderCacheManager"
+				{
+					"HasCurrentBucket"		"1"
+					"CurrentBucketGPU"		"b5b0f4d2c1e6a3f7;1002:744c"
+					"CurrentBucketDriver"		"W2:c4d6e0f1a2b3c4d5e6f7a8b9c0d1e2f3;W2:f3e2d1c0b9a8f7e6d5c4b3a2f1e0d6c4"
+				}
+				"RecentWebSocket443Failures"		""
+				"RecentWebSocketNon443Failures"		""
+				"RecentUDPFailures"		""
+				"RecentTCPFailures"		""
+				"cip"		"02000000f1c3b4a9e7d64b1a8f00e2c95ab3d714c8"
+				"SurveyDate"		"2026-09-14"
+				"SurveyDateVersion"		"-3185532740125436733"
+				"Accounts"
+				{
+					"jasperae"
+					{
+						"SteamID"		"76561198012345678"
+					}
+				}
+				"MachineName"		"vaporos \"living room\""
+				"CompatToolMapping"
+				{
+					"0"
+					{
+						"name"		"proton_experimental"
+						"config"		""
+						"priority"		"75"
+					}
+					"1091500"
+					{
+						"name"		"proton_9"
+						"config"		""
+						"priority"		"250"
+					}
+					"2483190"
+					{
+						"name"		""
+						"config"		""
+						"priority"		"250"
+					}
+				}
+				"DownloadThrottleKbps"		"0"
+				"AllowDownloadsDuringGameplay"		"0"
+				"StreamingThrottleEnabled"		"1"
+				"ClientBrowserAuth"		"0"
+				"LastConfigstoreUploadTime"		"1790611002"
+				"PlayedWith"
+				{
+					"DoNotShowAgain"		"1"
+				}
+			}
+		}
+	}
+	"Music"
+	{
+		"LocalLibrary"
+		{
+			"Directories"
+			{
+				"0"		"C:\\Users\\jasper\\Music"
+				"1"		"/home/vapor/Music"
+			}
+		}
+		"CrawlSteamInstallFolders"		"1"
+	}
+	"streaming"
+	{
+		"ClientID"		"-6121391740536113517"
+		"QuitTimeoutSeconds"		"600"
+	}
+}
