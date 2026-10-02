@@ -84,6 +84,11 @@ func putFrom(ctx context.Context, e catalog.Entry, progress func(int64), downloa
 		}
 		return fetchErr
 	})
+	if fetchErr == nil && errors.Is(err, syscall.ENOSPC) && !errors.As(err, new(*writeError)) {
+		// Put's own writes filled the disk: its sync, close or rename, or
+		// the Merkle tree the seal writes.
+		err = &writeError{err}
+	}
 	return fetchErr, err
 }
 
@@ -109,7 +114,8 @@ func (e *writeError) Error() string { return "writing it to the disk: " + e.err.
 func (e *writeError) Unwrap() error { return e.err }
 
 // noSpace reports whether err says the image does not fit: no room for it
-// and the reserve before the download, or a full disk during it.
+// and the reserve before the download, or a full disk during it or its
+// seal (putFrom).
 func noSpace(err error) bool {
 	var we *writeError
 	return errors.Is(err, store.ErrNoSpace) || (errors.As(err, &we) && errors.Is(we, syscall.ENOSPC))

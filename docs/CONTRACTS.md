@@ -610,7 +610,8 @@ for nothing else in that reconcile (only a registry or an HTTP(S) source
 stops answering: a file of a directory source that ends early fails that
 image alone). A source that served other bytes for an
 image is not asked for it again until a reconcile is asked for; an image that
-does not fit (2 GiB to spare, also a disk that filled up during its download)
+does not fit (2 GiB to spare, also a disk that filled up during its download
+or its seal: the fsync, close and rename, or the Merkle tree fs-verity writes)
 is not fetched again until more space is free or a reconcile is asked for, and
 its card says so; on a disk that cannot seal (boot reason `no-verity`, or a
 seal refused as unsupported) nothing is fetched until the next boot. Once per

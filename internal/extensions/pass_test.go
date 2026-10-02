@@ -58,6 +58,7 @@ func TestPassWaitsForFreeSpace(t *testing.T) {
 	}{
 		{"no room for it", func(f *fakeSealer) { f.before = fmt.Errorf("%w: 1 GiB free", store.ErrNoSpace) }},
 		{"disk full while writing", func(f *fakeSealer) { f.writeErr = syscall.ENOSPC }},
+		{"disk full while sealing", func(f *fakeSealer) { f.err = fmt.Errorf("enable fs-verity: %w", syscall.ENOSPC) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := newEnv(t)
@@ -93,7 +94,7 @@ func TestPassWaitsForFreeSpace(t *testing.T) {
 			if attempts() != 2 {
 				t.Fatalf("%d attempts after Reconcile", attempts())
 			}
-			e.sealer.set(func(f *fakeSealer) { f.free, f.before, f.writeErr = 100<<30, nil, nil })
+			e.sealer.set(func(f *fakeSealer) { f.free, f.before, f.writeErr, f.err = 100<<30, nil, nil, nil })
 			if retry := s.pass(t.Context(), b); retry {
 				t.Fatal("retry with room")
 			}

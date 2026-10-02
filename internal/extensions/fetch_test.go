@@ -138,7 +138,8 @@ func TestFetchImageFallback(t *testing.T) {
 		byName    map[string]served
 		blobs     map[string]served
 		writeErr  error
-		local     bool // a directory source
+		putErr    error // Put fails with it after the download (its sync, close or seal)
+		local     bool  // a directory source
 		wantCalls []string
 		ok        bool
 		bad       bool
@@ -172,11 +173,15 @@ func TestFetchImageFallback(t *testing.T) {
 			writeErr: syscall.ENOSPC, wantCalls: []string{"name " + name}, full: true},
 		{name: "failing disk: no blob", byName: map[string]served{name: good}, blobs: map[string]served{proton.entry.SHA256: good},
 			writeErr: syscall.EIO, wantCalls: []string{"name " + name}},
+		{name: "disk full on sync: no blob", byName: map[string]served{name: good}, blobs: map[string]served{proton.entry.SHA256: good},
+			putErr: &fs.PathError{Op: "sync", Path: "/images/.tmp-proton", Err: syscall.ENOSPC}, wantCalls: []string{"name " + name}, full: true},
+		{name: "disk full sealing: no blob", byName: map[string]served{name: good}, blobs: map[string]served{proton.entry.SHA256: good},
+			putErr: fmt.Errorf("enable fs-verity: %w", syscall.ENOSPC), wantCalls: []string{"name " + name}, full: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
-			e.sealer.writeErr = tt.writeErr
+			e.sealer.writeErr, e.sealer.err = tt.writeErr, tt.putErr
 			src := &fakeSource{byName: tt.byName, blobs: tt.blobs, local: tt.local}
 			err := fetchImage(t.Context(), src, proton.entry, nil)
 			if got := src.asked(); !slices.Equal(got, tt.wantCalls) {
