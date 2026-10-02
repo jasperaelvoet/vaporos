@@ -31,7 +31,7 @@
     {"module": "it87", "param": "ignore_resource_conflict", "setting": "it87_conflicts"}
   ],
   "network": {
-    "ports": [{"proto": "tcp", "port": 11987, "mode": "proxied", "upstream": "127.0.0.1:11986"}]
+    "ports": [{"proto": "tcp", "port": 11987, "mode": "proxied", "upstream": "127.0.0.1:11985"}]
   },
   "web": {"port": 11987, "label": "CoolerControl"},
   "data": [{"name": "config", "where": "system"}],

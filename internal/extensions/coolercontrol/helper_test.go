@@ -41,7 +41,7 @@ func newFakeHelper() *fakeHelper {
 		f.states++
 		return f.state
 	}
-	f.helper.handshake = func(_ context.Context, up string) bool { return up == "127.0.0.1:11986" && f.answers }
+	f.helper.handshake = func(_ context.Context, up string) bool { return up == "127.0.0.1:11985" && f.answers }
 	f.helper.systemctl = func(_ context.Context, args ...string) error {
 		f.systemctl = append(f.systemctl, strings.Join(args, " "))
 		return nil
@@ -56,7 +56,7 @@ func (f *fakeHelper) status() []extensions.StatusLine {
 
 func ccDesc() *descriptor.Descriptor {
 	return &descriptor.Descriptor{ID: id, Network: &descriptor.Network{Ports: []descriptor.Port{
-		{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11986"}}}}
+		{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11985"}}}}
 }
 
 func TestStatus(t *testing.T) {

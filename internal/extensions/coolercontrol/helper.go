@@ -124,7 +124,7 @@ func upstream(x *extensions.Ext) string {
 			}
 		}
 	}
-	return "127.0.0.1:11986"
+	return "127.0.0.1:" + daemonPort
 }
 
 // Status says when CoolerControl does not run while it should: its unit
@@ -261,9 +261,18 @@ func (h *helper) Remove(ctx context.Context, x *extensions.Ext, purge bool) erro
 // PasswordChanged gives CoolerControl a new VaporOS admin password at once
 // (coolercontrold reads .passwd again when its mtime changes), on the
 // terms of each start's prepare: only while .passwd is still the copy
-// VaporOS made. Without a .passwd, the next start writes one.
-func (h *helper) PasswordChanged(_ context.Context, x *extensions.Ext) error {
+// VaporOS made. Without a .passwd, the next start writes one. It waits
+// for a start's prepare to finish with the password.
+func (h *helper) PasswordChanged(ctx context.Context, x *extensions.Ext) error {
 	d := areaDirs(x.DataDir)
+	unlock, err := lockArea(ctx, d)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // no data area: CoolerControl never started
+	}
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if _, err := os.Lstat(filepath.Join(d.config, ".passwd")); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil

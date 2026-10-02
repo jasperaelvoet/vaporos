@@ -454,8 +454,17 @@ func (d *Descriptor) Validate() error {
 			}
 			switch p.Mode {
 			case "proxied":
-				if p.Proto != "tcp" || !loopbackUpstream(p.Upstream) {
+				up := upstreamPort(p.Upstream)
+				if p.Proto != "tcp" || up == 0 {
 					bad("network.ports[%d] is proxied, so it is tcp with an upstream on 127.0.0.1", i)
+				}
+				// vosd or the extension's service listens on each declared
+				// port on every address: an upstream there takes it away.
+				for _, q := range d.Network.Ports {
+					if up != 0 && q.Port == up {
+						bad("network.ports[%d]'s upstream port %d is also one of network.ports", i, up)
+						break
+					}
 				}
 			case "lan":
 				if p.Upstream != "" {
@@ -607,20 +616,25 @@ func cleanRel(p string) bool {
 	return p != "" && !path.IsAbs(p) && path.Clean(p) == p && p != "." && !strings.HasPrefix(p, "../") && p != ".."
 }
 
-func loopbackUpstream(s string) bool {
+// upstreamPort is the port of a proxied upstream, "127.0.0.1:<1024-65535>",
+// and 0 for anything else.
+func upstreamPort(s string) int {
 	host, port, ok := strings.Cut(s, ":")
 	if !ok || (host != "127.0.0.1") {
-		return false
+		return 0
 	}
 	n := 0
 	for _, r := range port {
 		if r < '0' || r > '9' {
-			return false
+			return 0
 		}
 		n = n*10 + int(r-'0')
 		if n > 65535 {
-			return false
+			return 0
 		}
 	}
-	return n >= 1024
+	if n < 1024 {
+		return 0
+	}
+	return n
 }

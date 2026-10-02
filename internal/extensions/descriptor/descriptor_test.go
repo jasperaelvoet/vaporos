@@ -20,7 +20,7 @@ func valid() *Descriptor {
 		Permissions:   []string{PermService, PermModules},
 		Services:      []Service{{Unit: "coolercontrold.service", Scope: "system"}},
 		ModuleOptions: []ModuleOption{{Module: "amdgpu", Param: "ppfeaturemask", Setting: "gpu_fan_curves"}},
-		Network:       &Network{Ports: []Port{{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11986"}}},
+		Network:       &Network{Ports: []Port{{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11985"}}},
 		Web:           &Web{Port: 11987, Label: "Open CoolerControl"},
 		Data:          []Data{{Name: "config", Where: "system"}},
 		Settings:      []Setting{{Key: "gpu_fan_curves", Type: "bool", Label: "GPU fan curves", Restart: true}},
@@ -124,6 +124,30 @@ func TestValidateRejects(t *testing.T) {
 				t.Fatal("accepted")
 			}
 		})
+	}
+}
+
+// vosd or the extension's service listens on each declared port, so no
+// proxied upstream may be one of them, whatever its proto. CoolerControl's
+// on 11986 had its gRPC server take vosd's 11987.
+func TestValidateRejectsUpstreamOnADeclaredPort(t *testing.T) {
+	for name, ports := range map[string][]Port{
+		"itself": {{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11987"}},
+		"a lan port": {{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11985"},
+			{Proto: "udp", Port: 11985, Mode: "lan"}},
+		"another proxied port, with a leading zero": {{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11985"},
+			{Proto: "tcp", Port: 11988, Mode: "proxied", Upstream: "127.0.0.1:011987"}},
+	} {
+		d := valid()
+		d.Network.Ports = ports
+		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "also one of network.ports") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	d := valid()
+	d.Network.Ports = append(d.Network.Ports, Port{Proto: "tcp", Port: 11988, Mode: "proxied", Upstream: "127.0.0.1:11986"})
+	if err := d.Validate(); err != nil {
+		t.Fatalf("two proxied ports, each with its own upstream: %v", err)
 	}
 }
 
