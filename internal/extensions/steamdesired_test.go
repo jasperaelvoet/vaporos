@@ -111,7 +111,8 @@ func TestSteamDesired(t *testing.T) {
 		// ETS2 Multiplayer has no target yet, so it is left out.
 		Shortcuts: []SteamShortcut{{Owner: "star-citizen", Key: "launcher", Name: "Star Citizen", Exe: scExe, StartDir: scPrefix,
 			CompatTool: "proton-cachyos-slr", Art: filepath.Join(config.ExtMountedLibDir, "star-citizen", "art")}},
-		Release: []SteamRelease{}}
+		Release: []SteamRelease{},
+		Owners:  []string{"proton", "star-citizen", "truckersmp"}}
 	if got := loadDesired(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steam.json:\n%+v\nwant\n%+v", got, want)
 	}
@@ -225,8 +226,50 @@ func TestSteamDesiredWithNothingMounted(t *testing.T) {
 	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonSkipOnce})
 	d := loadDesired(t)
 	// Still wanted: nothing is released, prepare keeps what it set.
-	if d.Set != "" || len(d.Apps)+len(d.Shortcuts)+len(d.Release) != 0 || d.DefaultCompatTool != "" {
+	if d.Set != "" || len(d.Apps)+len(d.Shortcuts)+len(d.Release) != 0 || d.DefaultCompatTool != "" ||
+		!slices.Equal(d.Owners, []string{"proton", "star-citizen", "truckersmp"}) {
 		t.Errorf("skip-once: %+v", d)
+	}
+}
+
+// Owners are the extensions whose shortcuts stay while this boot lists
+// none of theirs: wanted ∪ core ∪ mounted, wanted as it is.
+func TestSteamOwners(t *testing.T) {
+	e, _ := steamBox(t)
+	proton := newImage(t, "proton", "", 100, true)
+	tmp := newImage(t, "truckersmp", "", 100, false, "proton")
+
+	// A trial with Star Citizen fell back to a set without it: it is
+	// still wanted, so its shortcut stays.
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "2", Mounted: mountedAs(proton, tmp)})
+	if d := loadDesired(t); len(d.Shortcuts) != 0 || !slices.Equal(d.Owners, []string{"proton", "star-citizen", "truckersmp"}) {
+		t.Errorf("fallback: %+v", d)
+	}
+	// Removed but mounted until the restart: its entries go at once,
+	// while its shortcut waits for the boot that no longer mounts it.
+	// One the booted catalog lacks still counts while it is wanted.
+	sc := newImage(t, "star-citizen", "", 100, false, "proton")
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "3", Mounted: mountedAs(proton, tmp, sc)})
+	writeFile(t, config.ExtWantedPath(), "gone-from-catalog\ntruckersmp\n")
+	if d := loadDesired(t); len(d.Shortcuts) != 0 ||
+		!slices.Equal(d.Owners, []string{"gone-from-catalog", "proton", "star-citizen", "truckersmp"}) {
+		t.Errorf("removed: %+v", d)
+	}
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "4", Mounted: mountedAs(proton, tmp)})
+	if d := loadDesired(t); !slices.Equal(d.Owners, []string{"gone-from-catalog", "proton", "truckersmp"}) {
+		t.Errorf("after the restart: %+v", d.Owners)
+	}
+	// wanted cannot be read: nothing is known, so prepare removes none.
+	must(t, os.Remove(config.ExtWantedPath()))
+	must(t, os.Mkdir(config.ExtWantedPath(), 0o755))
+	d := loadDesired(t)
+	if d.Owners != nil {
+		t.Errorf("unknown wanted: %+v", d.Owners)
+	}
+	b, err := marshalSteamDesired(d)
+	must(t, err)
+	if !strings.Contains(string(b), `"owners": null`) {
+		t.Errorf("steam.json:\n%s", b)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,7 +27,7 @@ type shortcutPlan struct {
 	f       *file
 	out     []byte                    // the new file, nil when unchanged
 	next    map[string]*ShortcutState // the account's records after it
-	removed []uint32                  // app ids of shortcuts VaporOS took out
+	removed []*ShortcutState          // the shortcuts VaporOS took out
 	written bool
 }
 
@@ -35,7 +36,7 @@ type shortcutInput struct {
 	list    []steam.Shortcut
 	existed bool // the account had a shortcuts.vdf
 	want    []Shortcut
-	names   func(owner string) bool // steam.json names the extension anywhere
+	keep    func(owner string) bool // the extension's shortcuts stay unlisted
 	st      map[string]*ShortcutState
 	unwrap  bool
 	// icon is the icon to give a shortcut that has none, "" for none.
@@ -43,12 +44,12 @@ type shortcutInput struct {
 }
 
 // shortcutResult is the account's shortcuts as they should be, the
-// records of VaporOS's ones, the app ids of those it removed, and those
-// it kept although steam.json does not list them.
+// records of VaporOS's ones, those of the ones it removed, and the app
+// ids of those it kept although steam.json does not list them.
 type shortcutResult struct {
 	list    []steam.Shortcut
 	next    map[string]*ShortcutState
-	removed []uint32
+	removed []*ShortcutState
 	kept    []uint32
 }
 
@@ -66,10 +67,11 @@ func (w Shortcut) launchOptions() string {
 // the one whose launch options carry its `--shortcut <owner>/<key>` (or,
 // once --unwrap took that off, whose app id the record holds), whatever
 // Steam or the user did to the rest. One steam.json does not list stays,
-// untouched and recorded, while steam.json names its extension at all: a
-// shortcut missing for one run (an extension not mounted on this boot,
-// one whose install has no target for it yet) is neither taken out nor
-// added again. A record the user deleted always stays.
+// untouched and recorded, while its extension is kept (in.keep): a
+// shortcut missing for one run (a boot without extensions, a trial that
+// fell back, one whose install has no target for it yet) is neither
+// taken out nor added again. A record the user deleted always stays. A
+// record keeps the art VaporOS wrote for its shortcut.
 func decideShortcuts(in shortcutInput) shortcutResult {
 	list := in.list
 	res := shortcutResult{next: map[string]*ShortcutState{}}
@@ -100,14 +102,13 @@ func decideShortcuts(in shortcutInput) shortcutResult {
 	if in.unwrap {
 		for _, ref := range refs {
 			if _, ok := byRef[ref]; !ok {
-				c := *in.st[ref]
-				res.next[ref] = &c
+				res.next[ref] = in.st[ref].clone()
 			}
 		}
 		for ref, i := range byRef {
 			s := &list[i]
 			s.LaunchOptions = strings.Replace(s.LaunchOptions, steam.Dispatcher+" --shortcut "+ref+" ", "", 1)
-			res.next[ref] = newShortcutState(s.AppID)
+			res.next[ref] = carried(in.st[ref], s.AppID)
 		}
 		res.list = list
 		return res
@@ -119,18 +120,19 @@ func decideShortcuts(in shortcutInput) shortcutResult {
 	}
 	owned := func(ref string) bool {
 		owner, _, _ := strings.Cut(ref, "/")
-		return in.names(owner)
+		return in.keep != nil && in.keep(owner)
 	}
 	drop := map[int]bool{}
-	for ref, i := range byRef {
+	for _, ref := range slices.Sorted(maps.Keys(byRef)) {
+		i := byRef[ref]
 		switch {
 		case wanted[ref]:
 		case owned(ref):
-			res.next[ref] = newShortcutState(list[i].AppID)
+			res.next[ref] = carried(in.st[ref], list[i].AppID)
 			res.kept = append(res.kept, list[i].AppID)
 		default:
 			drop[i] = true
-			res.removed = append(res.removed, list[i].AppID)
+			res.removed = append(res.removed, carried(in.st[ref], list[i].AppID))
 		}
 	}
 	for _, ref := range refs {
@@ -138,11 +140,9 @@ func decideShortcuts(in shortcutInput) shortcutResult {
 			continue
 		}
 		if ss := in.st[ref]; ss.Deleted || owned(ref) {
-			c := *ss
-			res.next[ref] = &c
+			res.next[ref] = ss.clone()
 		}
 	}
-	slices.Sort(res.removed)
 	slices.Sort(res.kept)
 
 	var added []steam.Shortcut
@@ -162,14 +162,14 @@ func decideShortcuts(in shortcutInput) shortcutResult {
 			if s.Icon == "" && in.icon != nil {
 				s.Icon = in.icon(w, s.AppID)
 			}
-			res.next[ref] = newShortcutState(s.AppID)
+			res.next[ref] = carried(in.st[ref], s.AppID)
 			continue
 		}
 		if ss := in.st[ref]; ss != nil && in.existed {
 			// VaporOS added it and it is gone: the user removed it.
-			c := *ss
+			c := ss.clone()
 			c.Deleted = true
-			res.next[ref] = &c
+			res.next[ref] = c
 			continue
 		}
 		s := steam.NewShortcut(steam.ShortcutAppID(w.Owner, w.Key), w.Name, w.Exe, w.StartDir, w.launchOptions())
@@ -211,7 +211,7 @@ func (p *prep) planShortcuts() {
 		}
 		grid := gridDir(p.root, acct)
 		res := decideShortcuts(shortcutInput{
-			list: list, existed: !f.missing, want: p.want.Shortcuts, names: p.want.names,
+			list: list, existed: !f.missing, want: p.want.Shortcuts, keep: p.keepShortcuts,
 			st: p.st.Shortcuts[acctKey(acct)], unwrap: p.o.Unwrap,
 			icon: func(w Shortcut, appid uint32) string {
 				if w.Art == "" || !regularFile(filepath.Join(w.Art, iconArt)) {
@@ -304,9 +304,13 @@ func regularFile(path string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
+// artNameRe is a grid file VaporOS writes, as its record names it.
+var artNameRe = regexp.MustCompile(`^[0-9]{1,10}(p|_hero|_logo|_icon)?\.png$`)
+
 // art is step 4: each VaporOS shortcut's art, where the account has none
-// for it yet (the user may have picked their own), and none for the
-// shortcuts VaporOS removed.
+// for it yet (the user may have picked their own), recorded with its size
+// and mtime; and for the shortcuts VaporOS removed, the files it wrote
+// that are still as it wrote them.
 func (p *prep) art() {
 	if p.o.Unwrap {
 		return
@@ -320,13 +324,8 @@ func (p *prep) art() {
 			continue
 		}
 		grid := gridDir(p.root, plan.acct)
-		for _, id := range plan.removed {
-			for _, a := range artFiles {
-				err := os.Remove(filepath.Join(grid, gridName(id, a.suffix)))
-				if err != nil && !errors.Is(err, fs.ErrNotExist) {
-					p.fail(relName(p.root, grid), err)
-				}
-			}
+		for _, rec := range plan.removed {
+			p.removeArt(grid, rec)
 		}
 		for _, ref := range slices.Sorted(maps.Keys(plan.next)) {
 			w, ss := byRef[ref], plan.next[ref]
@@ -337,7 +336,8 @@ func (p *prep) art() {
 				return
 			}
 			for _, a := range artFiles {
-				dst := filepath.Join(grid, gridName(ss.AppID, a.suffix))
+				name := gridName(ss.AppID, a.suffix)
+				dst := filepath.Join(grid, name)
 				if _, err := os.Lstat(dst); err == nil {
 					continue
 				}
@@ -348,10 +348,42 @@ func (p *prep) art() {
 				if err == nil {
 					err = config.WriteFileAtomic(dst, data, 0o644)
 				}
+				var fi fs.FileInfo
+				if err == nil {
+					fi, err = os.Lstat(dst)
+				}
 				if err != nil {
 					p.fail(relName(p.root, dst), err)
+					continue
 				}
+				if ss.Art == nil {
+					ss.Art = map[string]ArtFile{}
+				}
+				ss.Art[name] = ArtFile{Size: fi.Size(), MTime: fi.ModTime().UnixNano()}
 			}
+			p.commit()
 		}
 	}
 }
+
+// removeArt deletes the grid files VaporOS wrote for a shortcut it
+// removed, each only while it is as VaporOS wrote it: art the user put in
+// its place stays, as does art of a shortcut VaporOS has no record of.
+func (p *prep) removeArt(grid string, rec *ShortcutState) {
+	for _, name := range slices.Sorted(maps.Keys(rec.Art)) {
+		path := filepath.Join(grid, name)
+		fi, err := os.Lstat(path)
+		if !artNameRe.MatchString(name) || err != nil || !fi.Mode().IsRegular() ||
+			(ArtFile{Size: fi.Size(), MTime: fi.ModTime().UnixNano()}) != rec.Art[name] {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			p.fail(relName(p.root, path), err)
+		}
+	}
+}
+
+// keepShortcuts reports whether owner's VaporOS shortcuts stay though
+// steam.json does not list them: always on a boot without extensions,
+// else while steam.json names or owns their extension.
+func (p *prep) keepShortcuts(owner string) bool { return p.extOff || p.want.keeps(owner) }

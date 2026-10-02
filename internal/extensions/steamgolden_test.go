@@ -13,7 +13,8 @@ import (
 var goldenSteamJSON = filepath.Join("..", "steamprep", "testdata", "steam.json")
 
 // goldenSteamDesired has one of each kind of entry: a branch request, an
-// app without one, a shortcut with art and one with arguments, a release.
+// app without one, a shortcut with art and one with arguments, a release,
+// and an owner that lists nothing this boot.
 func goldenSteamDesired() SteamDesired {
 	return SteamDesired{
 		Set: "3", Dispatcher: true, DefaultCompatTool: "proton-cachyos-slr",
@@ -32,6 +33,7 @@ func goldenSteamDesired() SteamDesired {
 				StartDir: "/var/home/vapor/.local/share/vaporos/ext/truckersmp", Args: []string{"ext", "truckersmp", "mp", "ets2"}},
 		},
 		Release: []SteamRelease{{App: 292030}},
+		Owners:  []string{"coolercontrol", "proton", "star-citizen", "truckersmp"},
 	}
 }
 

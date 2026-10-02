@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,15 +79,40 @@ type BetaState struct {
 
 // ShortcutState is one of an account's VaporOS shortcuts: the app id
 // Steam keeps for it and the game id steam://rungameid/ takes. Deleted:
-// the user removed it in Steam, and it is not added again.
+// the user removed it in Steam, and it is not added again. Art is the
+// grid files VaporOS wrote for it, by name.
 type ShortcutState struct {
-	AppID   uint32 `json:"appid"`
-	GameID  string `json:"gameid"`
-	Deleted bool   `json:"deleted"`
+	AppID   uint32             `json:"appid"`
+	GameID  string             `json:"gameid"`
+	Deleted bool               `json:"deleted"`
+	Art     map[string]ArtFile `json:"art,omitempty"`
+}
+
+// ArtFile is a grid file as VaporOS wrote it: its size and mtime (Unix
+// nanoseconds). It goes with its shortcut only while it is still so.
+type ArtFile struct {
+	Size  int64 `json:"size"`
+	MTime int64 `json:"mtime"`
 }
 
 func newShortcutState(appid uint32) *ShortcutState {
 	return &ShortcutState{AppID: appid, GameID: strconv.FormatUint(steam.GameID(appid), 10)}
+}
+
+// carried is the record of a shortcut found again with app id appid: the
+// art VaporOS wrote for it stays recorded, whatever app id it has now.
+func carried(prev *ShortcutState, appid uint32) *ShortcutState {
+	ss := newShortcutState(appid)
+	if prev != nil {
+		ss.Art = maps.Clone(prev.Art)
+	}
+	return ss
+}
+
+func (ss *ShortcutState) clone() *ShortcutState {
+	c := *ss
+	c.Art = maps.Clone(ss.Art)
+	return &c
 }
 
 // StatePath is the record's place in the gaming user's home.

@@ -43,6 +43,10 @@ type prep struct {
 	// keptShortcuts are the app ids of VaporOS shortcuts kept although
 	// steam.json does not list them this run.
 	keptShortcuts map[uint32]bool
+	// extOff: the boot report's mode is off (vos.ext=0, skip-once, no
+	// report), a boot without extensions that says nothing about which
+	// ones stay: no shortcut goes.
+	extOff bool
 }
 
 func prepare(ctx context.Context, o Options) {
@@ -100,6 +104,7 @@ func prepare(ctx context.Context, o Options) {
 			p.skip(skipOtherSet, fmt.Sprintf("steam.json is for set %q, not this boot's; waiting for vosd to write it", p.want.Set))
 			return
 		}
+		p.extOff = rep.Mode == store.ModeOff
 	}
 
 	fp := p.fingerprint(raw.data)

@@ -728,12 +728,13 @@ vosd asks for a Steam restart (see Units, Display policy).
  "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":{"branch":"temporary_1_61","request":"<id>"}}],
  "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/installer/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":""},
               {"owner":"truckersmp","key":"ets2","name":"TruckersMP (ETS2)","exe":"/usr/bin/vos","start_dir":"/var/home/vapor/.local/share/vaporos/ext/truckersmp","args":["ext","truckersmp","mp","ets2"],"compat_tool":"","art":""}],
- "release":[{"app":227300}]}
+ "release":[{"app":227300}],
+ "owners":["proton","star-citizen","truckersmp"]}
 ```
 - `set`: the boot report's `set` (`""` when it has none). prepare applies
   the file only while it names this boot's set, and otherwise changes
   nothing (vosd writes it anew and restarts Steam).
-- Only extensions this boot mounted contribute, and of those only the ones
+- Only extensions this boot mounted contribute (`owners` aside), and of those only the ones
   `wanted` ∪ core (with their requirements, in the booted catalog) still
   wants, so one removed until the restart drops out at once: each from its
   shipped descriptor and its helper's `SteamParts` (settings from
@@ -771,6 +772,12 @@ vosd asks for a Steam restart (see Units, Display policy).
   them (empty while `wanted` cannot be read). prepare hands over only the
   mappings its record owns: such a mapping stays, and VaporOS no longer
   owns it; an app whose mapping VaporOS does not own is left alone.
+- `owners`: the extensions whose shortcuts stay while this boot lists
+  none of theirs, sorted: `wanted` as it is (ids the booted catalog lacks
+  included), `wanted` ∪ core with their requirements in the booted
+  catalog, and every id this boot mounted (one removed stays until the
+  boot that no longer mounts it). `null` while `wanted` cannot be read,
+  and then prepare removes no shortcut (step 5.3).
 - `dispatcher`: true only when every VaporOS the box can boot has
   `vos ext launch`: the booted catalog has `dispatcher` 1 or more, and the
   other slot has no boot entry, or its `slots/<other>.json` is for its
@@ -785,7 +792,7 @@ vosd asks for a Steam restart (see Units, Display policy).
   and keys `^[a-z][a-z0-9-]{0,31}$`, tools, branches and branch request
   ids `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, app ids above 0 and listed once,
   paths absolute and clean without `"`, `args` as vosd writes them, `art`
-  under `/usr/lib/vos/ext/<owner>/`. A `beta` that is not such an object goes
+  under `/usr/lib/vos/ext/<owner>/`, `owners` ids. A `beta` that is not such an object goes
   alone: the rest of its app applies, and that app's branch and its record
   are left as they are. An extension an ignored entry names still counts
   as named (step 5.3).
@@ -800,7 +807,8 @@ trusts it for display only:
  "apps":{"227300":{"mapping":{"wrote":"proton-cachyos-slr","before":{"name":"proton_9","config":"","priority":"250"},"suspended":false},
                    "launch":{"<accountid>":{"wrote":"<launch options VaporOS wrote>","before":"<the user's>"}},
                    "beta":{"wrote":"temporary_1_61","before":"temporary_1_53","request":"<id>"}}},
- "shortcuts":{"<accountid>":{"star-citizen/launcher":{"appid":3799105208,"gameid":"16317032622456832000","deleted":false}}},
+ "shortcuts":{"<accountid>":{"star-citizen/launcher":{"appid":3799105208,"gameid":"16317032622456832000","deleted":false,
+                                                     "art":{"3799105208p.png":{"size":123456,"mtime":1759400000000000000}}}}},
  "skipped":"","error":""}
 ```
 - A mapping's `wrote` is the tool VaporOS wrote (`""`: it owns no entry),
@@ -814,6 +822,9 @@ trusts it for display only:
 - `beta.request`: the id of the request VaporOS applied (step 5.5).
 - `shortcuts.<accountid>.<owner>/<key>.deleted`: the user removed a
   shortcut VaporOS added. It is not added again, and the card says so.
+  `art` (omitted when empty): the grid files VaporOS wrote for the
+  shortcut, by name, with their size and mtime (Unix nanoseconds) as it
+  wrote them (step 4).
 - `accounts`: the accounts in loginusers.vdf at the last run, one that
   skipped included (step 3); a run that cannot read loginusers.vdf keeps
   them as they were. vosd checks every 15 s and asks for a Steam
@@ -967,26 +978,31 @@ trusts it for display only:
       in the account's grid (step 4), when its `art` has one.
 
       A VaporOS shortcut `steam.json` does not list is removed only when
-      `steam.json` names its extension nowhere: in no shortcut and no
-      `apps[].hooks`, entries prepare ignores included. While its extension
-      is named, it stays as it is with its record, and its mapping is kept
+      its extension is not in `owners` and `steam.json` names it nowhere
+      else (in no shortcut and no `apps[].hooks`, entries prepare ignores
+      included); never while `owners` is `null` or missing, and never on
+      a boot whose report has mode `off` (`vos.ext=0`, starting once
+      without extensions), which says nothing about what stays. Until
+      then it stays as it is with its record, and its mapping is kept
       like an app's no longer asked for, so a run without it (a trial that
-      fell back, `vos.ext=0`, starting once without extensions, an install
-      with no target for it yet) neither removes it nor adds it again. A
-      removed shortcut's record goes, unless it says `deleted`: those
-      always stay, so a shortcut the user deleted is not added again
-      after its extension was away. The app id Steam keeps for each
-      shortcut is read back into the record, with its game id
-      `(appid << 32) | 0x02000000`, the one `steam://rungameid/<gameid>`
-      takes.
+      fell back, a boot without extensions, an install with no target for
+      it yet) neither removes it nor adds it again. A removed shortcut's
+      record and mapping go (step 1) and its art (step 4); the record
+      stays only when it says `deleted`: those always stay, so a shortcut
+      the user deleted is not added again after its extension was away.
+      The app id Steam keeps for each shortcut is read back into the
+      record, with its game id `(appid << 32) | 0x02000000`, the one
+      `steam://rungameid/<gameid>` takes.
    4. **Grid art:** for each VaporOS shortcut with `art`, the files that
       exist there are copied into `userdata/<accountid>/config/grid/` where
       the account has none yet, so art the user picked stays:
       `capsule.png` (the portrait capsule, 600×900) to `<appid>p.png`,
       `capsule-wide.png` (the wide capsule, 920×430) to `<appid>.png`,
       `hero.png` to `<appid>_hero.png`, `logo.png` to `<appid>_logo.png`
-      and `icon.png` to `<appid>_icon.png`. A removed shortcut's five files
-      go.
+      and `icon.png` to `<appid>_icon.png`. Each file VaporOS writes goes
+      into the shortcut's record with its size and mtime, and a removed
+      shortcut takes along only those that still have both: art the user
+      put in their place, or that VaporOS has no record of, stays.
    5. **appmanifest_\<app>.acf**, `AppState/UserConfig/BetaKey`, in the
       first library that has the manifest. An app that is not installed
       waits, and loses its branch record once no library has its

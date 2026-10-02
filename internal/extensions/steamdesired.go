@@ -36,6 +36,10 @@ type SteamDesired struct {
 	Apps              []SteamApp      `json:"apps"`
 	Shortcuts         []SteamShortcut `json:"shortcuts"`
 	Release           []SteamRelease  `json:"release"`
+	// Owners are the extensions whose Steam entries stay even while this
+	// boot does not list them (wanted ∪ core ∪ mounted), sorted; nil
+	// when wanted cannot be read, and then prepare removes none.
+	Owners []string `json:"owners"`
 }
 
 // SteamApp is what extensions set for one Steam app.
@@ -87,6 +91,7 @@ type steamEntries struct {
 	report  *store.BootReport
 	catalog *catalog.Catalog
 	desired map[string]bool // wanted ∪ core with their requirements; nil when unknown
+	wanted  []string        // wanted as it is, ids the booted catalog lacks included
 	descs   map[string]*descriptor.Descriptor
 	ids     []string
 	parts   map[string]SteamParts
@@ -138,6 +143,7 @@ func loadSteamEntries() (*steamEntries, error) {
 		}
 	}
 	if wanted, err := store.Wanted(); err == nil {
+		e.wanted = wanted
 		e.desired = map[string]bool{}
 		for _, id := range cat.Closure(append(wanted, cat.Core()...)) {
 			e.desired[id] = true
@@ -289,8 +295,25 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 			d.Release = append(d.Release, SteamRelease{App: a})
 		}
 		slices.SortFunc(d.Release, func(a, b SteamRelease) int { return cmp.Compare(a.App, b.App) })
+		d.Owners = e.owners()
 	}
 	return d
+}
+
+// owners are the extensions whose shortcuts prepare keeps though this
+// boot does not list them: a boot without extensions, a trial that fell
+// back, an image whose catalog lacks one or an install with no target
+// yet must not take the user's shortcut (with its art and collections)
+// away. wanted as it is, so an extension the booted catalog lacks counts.
+func (e *steamEntries) owners() []string {
+	ids := slices.Concat(e.wanted, slices.Collect(maps.Keys(e.desired)))
+	for _, m := range e.report.Mounted {
+		if manifest.ValidExtensionID(m.ID) {
+			ids = append(ids, m.ID)
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 // steamNameRe is a branch or a branch request's id, as prepare accepts
