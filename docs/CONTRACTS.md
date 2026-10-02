@@ -305,15 +305,17 @@ and directory sources serve it by that name next to `manifest.json`.
 | --- | --- |
 | `images/<sha256>.raw` | A sealed image: written to a temp file, fsynced, sha256-checked, closed, reopened read-only, `FS_IOC_ENABLE_VERITY` (sha256, 4096, no salt), `FS_IOC_MEASURE_VERITY` compared with the catalog, then renamed into place and the directory fsynced. A file under its final name is always sealed; one without fs-verity, or with another digest, is deleted and fetched again |
 | `wanted` | the ids the user added, one per line (core ids are always wanted) |
-| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines), boots left to try it (0-9). Written into a temp directory, fsynced, renamed |
+| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines, module and param `[A-Za-z0-9_-]+`, value `[0-9A-Za-z_x.-]+`; other lines are dropped), boots left to try it (one digit; anything else reads as 0). `<n>` is one more than any set in `sets/` or named by a link or the boot report. Written into `sets/.tmp-<n>`, fsynced, renamed |
 | `enabled`, `pending` | symlinks `sets/<n>` (relative): the last good set, and the set on trial. Renaming `pending` into place is the commit of a change |
 | `proven` | `<id> <fsverity>` lines: images that passed a boot |
-| `failed` | `<fingerprint>` lines: sets whose trial failed (sha256 of their sorted `id fsverity` lines and module options) |
+| `failed` | `<fingerprint>` lines: sets whose trial failed. The fingerprint is the hex sha256 of the set's sorted, unique `<id> <fsverity>` lines (digests from the booted catalog) followed by its sorted, unique option lines, each ending in `\n` |
 | `skip-once` | present: the next boot mounts no extension, then the initramfs removes it |
 | `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest |
 | `settings/<id>.json` | the extension's settings (never in config.json) |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
+Images are sealed without the lock (a final name is always sealed), and GC
+leaves a temp image (`images/.tmp-*`) alone for an hour after its last write.
 `/run/vos/ext.lock` (flock) serialises every write to `wanted`, the sets,
 `enabled`, `pending`, `proven`, `failed` and the store's garbage collection.
 GC keeps the images that `wanted` ∪ core resolve to in the booted catalog and
@@ -343,8 +345,10 @@ never in live mode; never `vos_die`):
 6. It writes `/run/vos/extensions.json`:
    `{"mode":"pending|enabled|os-trial|off","set":"<n>","tries_left":N,"reason":"...","mounted":[{"id","sha256","fsverity"}],"skipped":[{"id","reason"}]}`.
    Skip reasons: `requires`, `not-in-catalog`, `missing`, `size`, `fsverity`,
-   `unproven`, `mount`, `no-usr`, `overlay`. Everything at runtime (generator,
-   Steam settings, the control center) follows this file, not intent.
+   `unproven`, `mount`, `no-usr`, `overlay`. With `vos.ext=0` or `skip-once`,
+   `mode` is `off` and `reason` is `vos.ext=0` or `skip-once`; a missing file
+   reads as `off`. Everything at runtime (generator, Steam settings, the
+   control center) follows this file, not intent.
 
 **Trial and promotion:** a boot in mode `pending` is an extension trial. `vos
 health` treats it like a counted boot with a fallback: a failure exits 1 (so
@@ -361,7 +365,8 @@ with `JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
 desired set is `wanted` ∪ core, with their requirements, as the booted catalog
 lists them, limited to images sealed in the store, plus the module options
 their settings render. Equal to the booted set (ids, digests, options): no
-`pending`. Equal to `pending`: left alone. Its fingerprint in `failed`: not
+`pending`, unless this boot is that `pending` set's trial (`vos health` promotes
+it). Equal to `pending`: left alone. Its fingerprint in `failed`: not
 proposed (the extension needs attention; "Try again" removes the fingerprint).
 Otherwise a new set becomes `pending` with `tries` 2. A `pending` with `tries` 0
 that this boot did not use moves to `failed`. Missing images are fetched for
