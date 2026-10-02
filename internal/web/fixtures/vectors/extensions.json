@@ -1,0 +1,54 @@
+{
+  "description": "Extensions: what installing, removing, a setting and an action refuse, the VaporOS password, a download that waits for a restart, and the restart that adds it.",
+  "vectors": [
+    {
+      "name": "extensions-refusals",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"restart": {"needed": false}}}},
+        {"req": "POST /extensions/nope", "body": {}, "expect": {"status": 404, "body": {"error": "no extension \"nope\""}}},
+        {"req": "POST /extensions/coolercontrol", "raw": "{", "expect": {"status": 400}},
+        {"req": "POST /extensions/coolercontrol", "body": {"options": 7}, "expect": {"status": 400}},
+        {"req": "POST /extensions/proton", "body": {}, "expect": {"status": 409, "body": {"error": "CachyOS Proton is part of VaporOS and always on."}}},
+        {"req": "POST /extensions/coolercontrol", "body": {}, "expect": {"status": 403, "body": {"error": "Adding CoolerControl needs the admin password"}, "copy": "Enter the VaporOS password."}},
+        {"req": "POST /extensions/coolercontrol", "body": {"password": "nope-nope"}, "expect": {"status": 403, "body": {"error": "the password is wrong"}, "copy": "That's not the VaporOS password."}},
+        {"req": "POST /extensions/coolercontrol", "body": {"options": {"fan_speed": true}, "password": "vaporvapor"}, "expect": {"status": 400, "body": {"error": "unknown setting \"fan_speed\""}}},
+        {"req": "POST /extensions/coolercontrol", "body": {"options": {"poll_rate": "never"}, "password": "vaporvapor"}, "expect": {"status": 400, "body": {"error": "poll_rate must be one of every_second, every_two_seconds, every_five_seconds"}}},
+        {"req": "DELETE /extensions/proton", "expect": {"status": 409, "body": {"error": "CachyOS Proton is part of VaporOS and cannot be removed."}}},
+        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"library": "-x"}}, "expect": {"status": 400, "body": {"error": "library must be a folder on a disk (an absolute path), or empty"}}},
+        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"library": "/var/mnt/games"}}, "expect": {"status": 200}},
+        {"req": "POST /extensions/truckersmp/actions/fly", "body": {}, "expect": {"status": 404, "body": {"error": "TruckersMP has no action \"fly\""}}},
+        {"req": "POST /extensions/truckersmp/actions/copy-profiles", "body": {}, "expect": {"status": 409, "body": {"error": "TruckersMP is not running yet. Restart VaporOS first."}}},
+        {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "body": {}}}
+      ]
+    },
+    {
+      "name": "extensions-needed-by",
+      "preset": "extensions-attention",
+      "steps": [
+        {"req": "DELETE /extensions/proton", "expect": {"status": 409}},
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"poll_rate": "every_five_seconds"}}, "expect": {"status": 200, "events": [["extensions.state", {"restart": {"needed": false}}]]}},
+        {"req": "POST /extensions/coolercontrol/actions/restore-fans", "body": {}, "expect": {"status": 200}},
+        {"req": "DELETE /extensions/coolercontrol?purge=1", "expect": {"status": 200, "events": [["extensions.state", {"restart": {"needed": true}}]]}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "extensions"}]}}}}
+      ]
+    },
+    {
+      "name": "extensions-install-and-restart",
+      "slow": true,
+      "preset": "idle",
+      "steps": [
+        {"req": "POST /extensions/truckersmp", "body": {}, "expect": {"status": 200}},
+        {"wait": {"topic": "extensions.state", "data": {"restart": {"needed": true}}}, "expect": {"matched": true}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "extensions"}]}}}},
+        {"req": "POST /system/reboot", "passive": true},
+        {"wait": {"until": "down"}},
+        {"wake": true},
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"restart": {"needed": false}}}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": false, "reasons": []}}}},
+        {"req": "DELETE /extensions/truckersmp", "expect": {"status": 200}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "extensions"}]}}}}
+      ]
+    }
+  ]
+}

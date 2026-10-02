@@ -16,6 +16,7 @@
   [data-vt="updates"] { view-transition-name: sys-updates; }
   [data-vt="power"] { view-transition-name: sys-power; }
   [data-vt="storage"] { view-transition-name: sys-storage; }
+  [data-vt="extensions"] { view-transition-name: sys-extensions; }
   [data-vt="settings"] { view-transition-name: sys-settings; }
   [data-vt="logs"] { view-transition-name: sys-logs; }
   [data-vt="about"] { view-transition-name: sys-about; }

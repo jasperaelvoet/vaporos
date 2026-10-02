@@ -2,16 +2,19 @@
 // from the shell's one GET /status and the events after it (R1): the
 // nameplate, a summary per row, and the hold rule on Restart and Power off.
 // Live update.progress and power.idle move the Updates and Power rows
-// without a request. The pure modules and the hold load beside /auth/me,
+// without a request. The Extensions row is the one exception: /status does
+// not carry them, so it asks GET /extensions once and follows
+// extensions.state. The pure modules and the hold load beside /auth/me,
 // keeping the first paint's scripts to the shell's.
 
 import { api, serverNow } from '../core/api.js';
 import { byId } from '../core/dom.js';
-import { on } from '../core/live.js';
+import { on, onReconnect } from '../core/live.js';
 import { region } from '../ui/region.js';
 import { current, onStatus, scene, shell, signOut } from '../ui/shell.js';
 
 const pure = Promise.all([import('../state.js'), import('../fmt.js'), import('../ui/hold.js')]).then((mods) => Object.assign({}, ...mods));
+const extWords = import('../ext.js');
 const dialog = () => import('../ui/dialog.js');
 
 const HOLD = 'Hold to confirm, or tap to be asked first.';
@@ -73,6 +76,24 @@ function storageLine(sys) {
   const used = 1 - d.data_free / d.data_total;
   const full = used >= 0.95;
   return [`${M.bytes(d.data_free)} free on the system drive${full ? ' · almost full' : ''}`, full ? 'cold' : used >= 0.85 ? 'hot' : ''];
+}
+
+// extDoc is GET /extensions: undefined until it answers, null when it
+// failed. A refresh that fails keeps what the row says.
+let extDoc;
+
+async function renderExtensions() {
+  if (extDoc !== undefined) sum('extensions', (await extWords).rowLine(extDoc));
+}
+
+function loadExtensions(opts) {
+  api('GET', '/extensions', undefined, opts)
+    .then((d) => {
+      extDoc = d;
+    }, () => {
+      if (extDoc === undefined) extDoc = null;
+    })
+    .then(renderExtensions);
 }
 
 function renderPlate() {
@@ -146,6 +167,13 @@ shell('system').then(async () => {
     failed = true;
     render();
   });
+  loadExtensions();
+  on('extensions.state', (d) => {
+    if (!d || !Array.isArray(d.extensions)) return;
+    extDoc = d;
+    renderExtensions();
+  });
+  onReconnect(() => loadExtensions({ passive: true }));
   M = await pure;
   wireKeys();
   onStatus(status);

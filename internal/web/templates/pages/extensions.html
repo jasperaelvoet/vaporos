@@ -1,0 +1,88 @@
+{{- /*
+  System › Extensions (docs/CONTRACTS.md "Extensions"): software that isn't
+  part of VaporOS, each a sealed image of its own. One generic card per
+  extension from GET /extensions, moved along by the extensions.state
+  event; a chip only for a real state (Installing, Restart needed, Needs
+  attention), plain words for the facts. A restart applies every change,
+  so the page has one Restart now above the cards. Install and Remove ask
+  in the page's own dialog (the shared confirm's look), which also takes
+  the VaporOS password and the choice to delete an extension's data.
+  pages/extensions.js fills it; styles/pages/extensions.css is its look.
+*/ -}}
+{{define "content"}}
+<div class="ext">
+  <p class="ext-intro">Extensions add software that isn't part of VaporOS. Each one is a sealed, read-only package that updates and rolls back together with VaporOS, and its settings and downloads are kept apart. Removing one removes its files; its card lists anything it changed in Steam or downloaded.</p>
+
+  <section class="ext-restart" id="ext-restart" aria-labelledby="ext-restart-title" hidden>
+    <h2 class="ext-restart-title" id="ext-restart-title" tabindex="-1">Restart to finish</h2>
+    <p class="ext-restart-text" id="ext-restart-text"></p>
+    <p class="ext-restart-note" id="ext-restart-auto" hidden>VaporOS restarts by itself when nobody is playing.</p>
+    <div class="ext-restart-actions"><button class="btn primary" id="ext-restart-go" type="button">{{icon "restart"}}Restart now</button></div>
+  </section>
+
+  <ul class="ext-list" id="ext-list" data-region="ext-list" aria-busy="true" aria-label="Extensions" role="list">
+    <li class="ext-card" aria-hidden="true"><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span><span class="skel skel-line"></span></li>
+    <li class="ext-card" aria-hidden="true"><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span><span class="skel skel-line"></span></li>
+    <li class="ext-card" aria-hidden="true"><span class="skel skel-line skel-short"></span><span class="skel skel-line"></span><span class="skel skel-line"></span></li>
+  </ul>
+  <div class="region-error" id="ext-error" role="alert" hidden><p class="region-error-text" id="ext-error-text"></p><button class="btn small" id="ext-retry" type="button">Try again</button></div>
+
+  <section class="rack" aria-labelledby="ext-skip-title">
+    <h2 class="rack-title" id="ext-skip-title">If VaporOS doesn't start</h2>
+    <div class="ext-skip-card">
+      <p class="ext-skip-text">When an extension keeps VaporOS from starting, it goes back by itself. You can also leave every extension out of the next start.</p>
+      <button class="btn small ghost" id="ext-skip" type="button" disabled>Start once without extensions</button>
+    </div>
+  </section>
+</div>
+
+<template id="tpl-ext">
+  <li class="ext-card" data-state="">
+    <div class="ext-head">
+      <h2 class="ext-name" data-part="name" tabindex="-1"></h2>
+      <p class="ext-chip" data-part="chip" data-state="" hidden></p>
+      <p class="ext-plain" data-part="plain" hidden></p>
+    </div>
+    <p class="ext-from" data-part="from"></p>
+    <p class="ext-summary" data-part="summary"></p>
+    <div class="heat-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-part="bar" hidden><i class="heat-bar-fill"></i></div>
+    <p class="ext-reason" data-part="reason" hidden></p>
+    <ul class="ext-lines" data-part="lines" role="list" hidden></ul>
+    <div class="ext-settings" data-part="settings" hidden></div>
+    <div class="ext-actions" data-part="actions" hidden></div>
+    <details class="ext-more" data-part="more">
+      <summary class="ext-more-summary" data-part="more-label">What it can do</summary>
+      <div class="ext-more-body">
+        <h3 class="ext-more-title">What it can do</h3>
+        <ul class="ext-facts" data-part="can" role="list"></ul>
+        <div class="ext-more-part" data-part="downloads-box" hidden><h3 class="ext-more-title">What it downloads</h3><ul class="ext-facts" data-part="downloads" role="list"></ul></div>
+        <div class="ext-more-part" data-part="caveats-box" hidden><h3 class="ext-more-title">Good to know</h3><ul class="ext-facts" data-part="caveats" role="list"></ul></div>
+      </div>
+    </details>
+  </li>
+</template>
+
+<dialog class="dialog ext-dialog" id="ext-dialog" aria-labelledby="ext-dialog-title" aria-describedby="ext-dialog-body">
+  <form class="dialog-form" id="ext-dialog-form" method="dialog" novalidate>
+    <h2 class="dialog-title" id="ext-dialog-title">Install?</h2>
+    <p class="dialog-body" id="ext-dialog-body"></p>
+    <div class="ext-dialog-can" id="ext-dialog-can-box" hidden>
+      <p class="ext-dialog-label" id="ext-dialog-can-label">What it can do</p>
+      <ul class="ext-facts" id="ext-dialog-can" aria-labelledby="ext-dialog-can-label" role="list"></ul>
+    </div>
+    <p class="ext-dialog-note" id="ext-dialog-note" hidden></p>
+    <label class="ext-check" id="ext-dialog-purge-row" hidden><input class="ext-check-input" type="checkbox" id="ext-dialog-purge"><span>Also delete its settings and downloads</span></label>
+    <div class="field" id="ext-dialog-pw-field" hidden>
+      <label class="field-label" for="ext-dialog-pw">VaporOS password</label>
+      <input class="input" id="ext-dialog-pw" type="password" autocomplete="current-password" aria-describedby="ext-dialog-pw-hint ext-dialog-pw-error">
+      <p class="field-hint" id="ext-dialog-pw-hint">The one you sign in with.</p>
+      <p class="field-error" id="ext-dialog-pw-error" hidden></p>
+    </div>
+    <p class="form-error" id="ext-dialog-error" role="alert"></p>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="ext-dialog-cancel" type="button">Cancel</button>
+      <button class="btn primary" id="ext-dialog-ok" type="submit">Install</button>
+    </div>
+  </form>
+</dialog>
+{{end}}

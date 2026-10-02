@@ -54,7 +54,7 @@ export default [
           assert.equal(await named(name, summary).getAttribute('href'), href);
         }
         const nav = page.getByRole('navigation', { name: 'System pages' });
-        assert.equal(await nav.getByRole('link').count(), 6);
+        assert.equal(await nav.getByRole('link').count(), 7);
       });
       await step('a live download moves the Updates row without a request', async () => {
         await live(page);

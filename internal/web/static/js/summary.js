@@ -7,12 +7,18 @@ import { busyReason, pairPrompt } from './copy.js';
 import { clock, compareVersions, duration, modeLabel, parseMode, percent, phaseLabel } from './fmt.js';
 import { isStreaming, pairings, pendingReasons, session, stagedVersion, updateProgress } from './state.js';
 
-const REASON_TITLE = { rollback: 'Restart to go back', next: 'Restart to switch', display: 'Restart to finish setup' };
+const REASON_TITLE = { rollback: 'Restart to go back', next: 'Restart to switch', display: 'Restart to finish setup', extensions: 'Restart to finish' };
 const REASON_DETAIL = {
   rollback: (r) => `Version ${r.version} starts on the next restart.`,
   next: (r) => `Version ${r.version} starts on the next restart.`,
   display: () => 'Display changes are waiting.',
+  extensions: () => 'Extension changes are waiting.',
 };
+const REASON_KEY = { rollback: 'rollback', next: 'rollback', display: 'display', extensions: 'extensions' };
+// A kind this page does not know yet (a newer VaporOS) still asks for the
+// restart, in general words.
+const reasonTitle = (r) => REASON_TITLE[r.kind] || 'Restart to finish';
+const reasonDetail = (r) => (REASON_DETAIL[r.kind] ? REASON_DETAIL[r.kind](r) : 'Changes are waiting.');
 
 // IDLE_SOON: from this many seconds before the idle power-off, Home warns.
 export const IDLE_SOON = 300;
@@ -85,9 +91,9 @@ export function heroModel(snap) {
   const reasons = pendingReasons(snap);
   if (reasons.length) {
     const first = reasons[0];
-    return hero('restart-needed', 'restart-needed', reasons.length === 1 ? REASON_TITLE[first.kind] : 'Restart to finish',
-      reasons.map((r) => REASON_DETAIL[r.kind](r)).join(' '), {
-        reason: first.kind === 'display' ? 'display' : 'rollback',
+    return hero('restart-needed', 'restart-needed', reasons.length === 1 ? reasonTitle(first) : 'Restart to finish',
+      [...new Set(reasons.map(reasonDetail))].join(' '), {
+        reason: REASON_KEY[first.kind] || 'restart',
         actions: [{ id: 'reboot', label: 'Restart now' }],
       });
   }

@@ -94,15 +94,19 @@ export function restartRowText(reasons) {
     rollback: (r) => `Restart to go back to ${r.version}.`,
     next: (r) => `Version ${r.version} starts on the next restart.`,
     display: () => 'Restart to apply screen changes.',
+    extensions: () => 'Restart to apply extension changes.',
   };
   const part = {
     update: (r) => `version ${r.version} is ready`,
     rollback: (r) => `going back to ${r.version}`,
     next: (r) => `starting version ${r.version}`,
     display: () => 'display changes are waiting',
+    extensions: () => 'extension changes are waiting',
   };
-  const list = (reasons || []).filter((r) => one[r.kind]);
+  // A kind this page does not know yet (a newer VaporOS) still gets words.
+  const list = (reasons || []).filter((r) => r && r.kind);
   if (list.length === 0) return '';
-  if (list.length === 1) return one[list[0].kind](list[0]);
-  return `Restart to finish: ${list.map((r) => part[r.kind](r)).join(' and ')}.`;
+  if (list.length === 1) return one[list[0].kind] ? one[list[0].kind](list[0]) : 'Restart to finish.';
+  const parts = [...new Set(list.map((r) => (part[r.kind] ? part[r.kind](r) : 'other changes are waiting')))];
+  return `Restart to finish: ${parts.join(' and ')}.`;
 }

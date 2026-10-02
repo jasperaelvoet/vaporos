@@ -177,6 +177,9 @@ func (f *devFake) start(ctx context.Context) {
 		return
 	}
 	go f.powerLoop(ctx)
+	f.mu.Lock()
+	f.resumeExtInstallsLocked()
+	f.mu.Unlock()
 	if s := f.preset.Sim.Stage; s != nil {
 		f.mu.Lock()
 		f.startStageLocked("", *s)

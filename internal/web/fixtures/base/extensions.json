@@ -1,119 +1,68 @@
 {
   "extensions": [
     {
-      "id": "proton",
-      "name": "CachyOS Proton",
-      "summary": "Runs Windows games in Steam, with CachyOS's own fixes and tuning.",
-      "category": "runtime",
-      "core": true,
+      "id": "proton", "name": "CachyOS Proton", "summary": "Runs Windows games in Steam, with CachyOS's own fixes and tuning.",
+      "category": "runtime", "core": true,
       "upstream": {"name": "CachyOS", "url": "https://github.com/CachyOS/proton-cachyos", "license": "LGPL-2.1-or-later and others"},
-      "caveats": ["VaporOS adds it for you and keeps it apart like every extension. Pick another Proton for a single game in that game's Steam properties."],
-      "state": "installed",
-      "wanted": true,
-      "mounted": true,
-      "size": 412090368,
-      "progress": null,
-      "reason": "",
-      "permissions": ["modules", "compat-tool"],
-      "runs_as_root": false,
-      "downloads": [],
-      "settings": [],
-      "actions": [],
-      "web": null,
-      "status": [{"text": "Steam runs Windows games with it."}],
-      "copy": {"install": "", "remove": ""},
-      "requires": [],
-      "required_by": [],
-      "needs_password": false
+      "caveats": ["Pick another Proton for a single game in that game's Steam properties."],
+      "state": "installed", "wanted": true, "mounted": true, "size": 431000000, "progress": null, "reason": "",
+      "permissions": ["modules", "compat-tool"], "runs_as_root": false,
+      "downloads": [], "settings": [], "actions": [], "web": null, "status": [],
+      "copy": {"install": "", "remove": ""}, "requires": [], "required_by": [], "needs_password": false
     },
     {
-      "id": "coolercontrol",
-      "name": "CoolerControl",
-      "summary": "Fan curves for your graphics card, CPU and case fans, from a web page.",
-      "category": "system",
-      "core": false,
+      "id": "coolercontrol", "name": "CoolerControl", "summary": "Fan curves and cooling for this PC, on a page of its own.",
+      "category": "system", "core": false,
       "upstream": {"name": "CoolerControl", "url": "https://gitlab.com/coolercontrol/coolercontrol", "license": "GPL-3.0-or-later"},
-      "caveats": ["It controls fans directly. VaporOS puts them back to automatic when it stops."],
-      "state": "not-installed",
-      "wanted": false,
-      "mounted": false,
-      "size": 31457280,
-      "progress": null,
-      "reason": "",
-      "permissions": ["service", "udev", "modules"],
-      "runs_as_root": true,
+      "caveats": ["Fans go back to how they were whenever it stops.", "Sign in to its page with your VaporOS password."],
+      "state": "not-installed", "wanted": false, "mounted": false, "size": 38400000, "progress": null, "reason": "",
+      "permissions": ["service", "udev", "modules"], "runs_as_root": true,
       "downloads": [],
       "settings": [
-        {"key": "overdrive", "type": "bool", "label": "Graphics card overclocking", "help": "Lets CoolerControl change the card's clocks and power limit. Takes a restart.", "restart": true, "choices": [], "value": false},
-        {"key": "poll", "type": "choice", "label": "Sensor updates", "help": "", "restart": false, "choices": ["normal", "slow"], "value": "normal"}
+        {"key": "gpu_overdrive", "type": "bool", "label": "Control the graphics card's fans", "help": "Turns on AMD overdrive in the graphics driver.", "restart": true, "choices": [], "value": false},
+        {"key": "poll_rate", "type": "choice", "label": "Sensor updates", "help": "How often it reads temperatures and fan speeds.", "restart": false, "choices": ["every_second", "every_two_seconds", "every_five_seconds"], "value": "every_second"}
       ],
-      "actions": [],
-      "web": {"port": 11987, "label": "Open CoolerControl"},
-      "status": [],
-      "copy": {"install": "CoolerControl runs as root to reach your fans. It starts after the next restart.", "remove": "Your fans go back to automatic. Its fan curves stay unless you delete them."},
-      "requires": [],
-      "required_by": [],
-      "needs_password": true
+      "actions": [
+        {"name": "restore-fans", "label": "Restore fans", "confirm": {"title": "Give the fans back to the hardware?", "body": "CoolerControl stops driving them until it starts again.", "button": "Restore fans", "tone": ""}}
+      ],
+      "web": {"port": 11987, "label": "CoolerControl"}, "status": [],
+      "copy": {"install": "CoolerControl runs as root to reach the fan and pump controllers.", "remove": "Its service stops now, and the fans go back to how they were."},
+      "requires": [], "required_by": [], "needs_password": true
     },
     {
-      "id": "truckersmp",
-      "name": "TruckersMP",
-      "summary": "Multiplayer for Euro Truck Simulator 2 and American Truck Simulator.",
-      "category": "app",
-      "core": false,
-      "upstream": {"name": "TruckersMP", "url": "https://truckersmp.com", "license": "MIT"},
+      "id": "truckersmp", "name": "TruckersMP", "summary": "Multiplayer for Euro Truck Simulator 2 and American Truck Simulator.",
+      "category": "app", "core": false,
+      "upstream": {"name": "TruckersMP", "url": "https://truckersmp.com", "license": "Proprietary"},
       "caveats": ["Steam downloads ETS2 and ATS again as their Windows version. Profiles saved only on this PC stay with the Linux version."],
-      "state": "not-installed",
-      "wanted": false,
-      "mounted": false,
-      "size": 2097152,
-      "progress": null,
-      "reason": "",
-      "permissions": [],
-      "runs_as_root": false,
+      "state": "not-installed", "wanted": false, "mounted": false, "size": 4100000, "progress": null, "reason": "",
+      "permissions": [], "runs_as_root": false,
       "downloads": [
-        {"what": "The TruckersMP mod files", "from": "update.ets2mp.com", "checked": "publisher-hash", "runs_code": true, "when": "update"}
+        {"what": "the TruckersMP mod", "from": "truckersmp.com", "checked": "publisher-hash", "runs_code": true, "when": "update"}
       ],
       "settings": [],
       "actions": [
-        {"name": "copy-profiles", "label": "Copy profiles", "confirm": {"title": "Copy your profiles?", "body": "Profiles saved on this PC are copied to the Windows version. Profiles already there stay.", "button": "Copy", "tone": ""}}
+        {"name": "copy-profiles", "label": "Copy Linux profiles", "confirm": {"title": "Copy your Linux profiles?", "body": "Profiles saved only on this PC are copied to the Windows version. Profiles already there stay.", "button": "Copy profiles", "tone": ""}}
       ],
-      "web": null,
-      "status": [],
-      "copy": {"install": "Steam downloads ETS2 and ATS again as their Windows version.", "remove": "ETS2 and ATS stay on Proton. Switch them back in their Steam properties."},
-      "requires": ["proton"],
-      "required_by": [],
-      "needs_password": false
+      "web": null, "status": [],
+      "copy": {"install": "Steam downloads ETS2 and ATS again as their Windows version. Profiles saved only on this PC stay with the Linux version.", "remove": "ETS2 and ATS keep running with Proton. Switch them back in their Steam properties."},
+      "requires": ["proton"], "required_by": [], "needs_password": false
     },
     {
-      "id": "star-citizen",
-      "name": "Star Citizen",
-      "summary": "The RSI Launcher, set up to install Star Citizen on a disk you pick.",
-      "category": "app",
-      "core": false,
+      "id": "star-citizen", "name": "Star Citizen", "summary": "The RSI Launcher, set up to install Star Citizen on a game drive.",
+      "category": "app", "core": false,
       "upstream": {"name": "Cloud Imperium Games", "url": "https://robertsspaceindustries.com", "license": "Proprietary"},
-      "caveats": ["Easy Anti-Cheat isn't tested on VaporOS yet."],
-      "state": "not-installed",
-      "wanted": false,
-      "mounted": false,
-      "size": 1048576,
-      "progress": null,
-      "reason": "",
-      "permissions": ["udev"],
-      "runs_as_root": false,
+      "caveats": ["Easy Anti-Cheat isn't tested on VaporOS yet.", "Needs a game drive with at least 150 GB free."],
+      "state": "not-installed", "wanted": false, "mounted": false, "size": 2600000, "progress": null, "reason": "",
+      "permissions": [], "runs_as_root": false,
       "downloads": [
-        {"what": "The RSI Launcher", "from": "install.robertsspaceindustries.com", "checked": "publisher-hash", "runs_code": true, "when": "install"}
+        {"what": "the RSI Launcher", "from": "robertsspaceindustries.com", "checked": "publisher-hash", "runs_code": true, "when": "install"}
       ],
       "settings": [
-        {"key": "library", "type": "disk", "label": "Install on", "help": "A game disk with 150 GB free.", "restart": false, "choices": [], "value": ""}
+        {"key": "library", "type": "disk", "label": "Game drive", "help": "Where Star Citizen is installed.", "restart": false, "choices": [], "value": ""}
       ],
-      "actions": [],
-      "web": null,
-      "status": [{"text": "Star Citizen needs 150 GB free on a game disk.", "tone": "warning"}],
-      "copy": {"install": "", "remove": ""},
-      "requires": ["proton"],
-      "required_by": [],
-      "needs_password": false
+      "actions": [], "web": null, "status": [],
+      "copy": {"install": "", "remove": "The game stays on its drive until you delete it there."},
+      "requires": ["proton"], "required_by": [], "needs_password": false
     }
   ],
   "restart": {"needed": false, "auto": false, "reason": ""}

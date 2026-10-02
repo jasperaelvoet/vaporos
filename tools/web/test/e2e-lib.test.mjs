@@ -11,15 +11,15 @@ import { APP_TOPICS, flowRuns, hasAlias, KEY_PRESETS, loads, pagesFor, PRESETS, 
 import { parseArgs, slug } from '../e2e/lib/run-helpers.mjs';
 
 // MASTER-PLAN Appendix B, the one list of preset names, plus rollback-forward
-// (a newer next_boot with nothing staged) and the extensions' presets
-// (internal/web/contract_test.go).
+// (a newer next_boot with nothing staged; internal/web/contract_test.go) and
+// System › Extensions' three (devserver_extensions_test.go).
 const APPENDIX_B = [
   'idle', 'headless', 'streaming', 'pairing-1', 'pairing-2', 'keep-awake', 'busy-web', 'idle-countdown', 'no-wol', 'empty', 'ssh-on', 'signed-out', 'first-run',
   'update-available', 'update-staging', 'update-staged', 'update-stale-check', 'update-error', 'update-check-failed', 'update-failed-newer', 'update-held', 'update-trial', 'rollback-pending', 'rollback-forward',
   'no-gpu', 'sunshine-starting', 'sunshine-stopped', 'sunshine-unreachable', 'reboot-needed',
   'disk-low', 'storage-missing', 'storage-pending', 'logs-empty', 'logs-error',
-  'installer-code', 'installer-waived', 'installer-one-disk', 'installer-no-disk', 'installer-source-error', 'installer-two-vaporos', 'installer-failed',
   'extensions-installing', 'extensions-restart', 'extensions-attention',
+  'installer-code', 'installer-waived', 'installer-one-disk', 'installer-no-disk', 'installer-source-error', 'installer-two-vaporos', 'installer-failed',
 ];
 
 test('the presets are exactly Appendix B, each once', () => {
@@ -44,10 +44,10 @@ test('the pre-v2 switches are the aliases Appendix B names', () => {
   assert.deepEqual(presetEnv(preset('streaming')), { VOS_WEB_PRESET: 'streaming', VOS_WEB_STREAMING: '1' });
 });
 
-test('every topic has a route in both UIs, and the new UI has its ten app pages', () => {
+test('every topic has a route in both UIs, and the new UI has its eleven app pages', () => {
   assert.deepEqual(Object.keys(ROUTES.legacy).sort(), Object.keys(ROUTES.next).sort());
   assert.deepEqual(APP_TOPICS.next.map((t) => ROUTES.next[t]), [
-    '/', '/devices', '/screen', '/system', '/system/updates', '/system/power', '/system/storage', '/system/settings', '/system/logs', '/system/about',
+    '/', '/devices', '/screen', '/system', '/system/updates', '/system/power', '/system/storage', '/system/extensions', '/system/settings', '/system/logs', '/system/about',
   ]);
   assert.deepEqual(pagesFor(preset('idle'), 'legacy').map((p) => p.path), ['/', '/pair', '/streaming', '/display', '/storage', '/updates', '/power', '/advanced']);
   assert.deepEqual(pagesFor(preset('no-wol'), 'next').map((p) => p.path), ['/', '/system/power']);
@@ -63,7 +63,7 @@ test('smoke covers every preset at phone/dark and the key presets at desktop/lig
   assert.ok(smoke.some((l) => l.viewport === 'small'));
   assert.ok(!smoke.some((l) => l.viewport === 'tablet'));
   const full = loads('next', 'full', [preset('idle')]);
-  assert.equal(full.length, 10 * (5 * 2 + 2));
+  assert.equal(full.length, 11 * (5 * 2 + 2));
   assert.ok(full.some((l) => l.forcedColors === 'active') && full.some((l) => l.motion === 'reduce'));
   assert.deepEqual(flowRuns('smoke'), [{ viewport: 'phone', scheme: 'dark' }]);
   assert.throws(() => loads('next', 'huge'), /unknown matrix/);

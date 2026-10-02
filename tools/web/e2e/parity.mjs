@@ -24,6 +24,10 @@ export const PARITY_FILE = join(here, 'parity.json');
 export const OWNERS = { 'HOME-': 'C1', 'DEV-': 'C2', 'SCR-': 'C3', 'SYS-': 'C4', 'ENTRY-': 'C5', 'SHELL-': 'C0b' };
 export const ID_RE = /^(HOME|DEV|SCR|SYS|ENTRY|SHELL)-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+// BEYOND_PARITY: flows of what the eight-page UI never had (System ›
+// Extensions) have no parity row: GATE-2b is about the switch.
+export const BEYOND_PARITY = /^SYS-ext-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export function owner(id) {
   const p = Object.keys(OWNERS).find((k) => id.startsWith(k));
   return p ? OWNERS[p] : '';

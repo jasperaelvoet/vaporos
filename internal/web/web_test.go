@@ -610,8 +610,11 @@ const (
 	budgetLegacyRaw = 136_208 // static/legacy/**: 135,208 bytes when it was set aside, plus 1 kB; frozen
 	budgetSharedRaw = 45_000  // the files at the root of static/ that every set shares (icons, manifest)
 	budgetIconRaw   = 12_000  // each PNG icon at the root of static/
-	budgetTotalRaw  = 700_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
-	budgetNextRaw   = 460_000 // the next set's own files (static/app.css, static/pages/, static/js/)
+	// Total and next were 700,000 and 460,000, 120 B and 2 kB from full, when
+	// System › Extensions came: its page, dialog, words (ext.js) and
+	// stylesheet are about 40 kB raw (12 kB gzipped), only on that page.
+	budgetTotalRaw = 750_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
+	budgetNextRaw  = 510_000 // the next set's own files (static/app.css, static/pages/, static/js/)
 
 	// The next set (ARCH §3.3): what one page needs before it can paint and
 	// work, as served. Re-baselined when the page stylesheets and the web
@@ -1158,7 +1161,7 @@ func TestHeadScript(t *testing.T) {
 
 // pureModules touch no DOM, storage, location or network, and import only
 // each other, so jstest runs them under Node.
-var pureModules = []string{"js/fmt.js", "js/validate.js", "js/state.js", "js/summary.js", "js/copy.js", "js/confirms.js", "js/messages.js", "js/heatmap.js"}
+var pureModules = []string{"js/fmt.js", "js/validate.js", "js/state.js", "js/summary.js", "js/copy.js", "js/confirms.js", "js/messages.js", "js/heatmap.js", "js/ext.js"}
 
 func TestPureModules(t *testing.T) {
 	impure := regexp.MustCompile(`\b(?:document|window|localStorage|sessionStorage|location|navigator|EventSource)\b|\bfetch\(`)

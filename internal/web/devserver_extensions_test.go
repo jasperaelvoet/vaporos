@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,18 +15,25 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 )
 
 // The dev server's fake of the extensions (internal/extensions routes.go):
-// one document, base/extensions.json, as GET /extensions answers it. Every
-// change answers the document and publishes it as extensions.state, as
-// vosd does; an added extension downloads for a few seconds while the dev
-// server runs, then waits for a restart, which starts it (bootExtensions).
-// The fake knows the cards only: an extension's conflicts and its kernel
-// module options are not in them, so it refuses no conflict and asks the
-// password for a restart setting of an extension that needs one.
+// one document, base/extensions.json, as GET /extensions answers it. It
+// refuses what the real handlers refuse, in their words (TestValidationParity
+// holds it to them), and demo/engine.js does the same (TestFakeEnginesAgree).
+// Every change answers the document and publishes it as extensions.state;
+// an added extension downloads in eight steps while the dev server runs (a
+// preset's download too), then waits for a restart, which mounts what is
+// wanted and drops the rest (bootExtensions). The cards do not say what an
+// extension conflicts with or which settings feed kernel module options:
+// the fake refuses no conflict, and takes a setting that needs a restart, of
+// an extension that needs the password, for a module option.
+
+// extTick is how often a download moves on.
+const extTick = 400 * time.Millisecond
 
 func (f *devFake) extensionsRoutes(add fakeAdder) {
 	add("GET", "/extensions", api.Authed, func(w http.ResponseWriter, r *http.Request) any { return f.doc("extensions") })
@@ -61,8 +69,18 @@ func (f *devFake) extLocked(id string) map[string]any {
 	return nil
 }
 
-// checkExtSettings is the real check (extensions.CheckSetting) against a
-// card's settings.
+// extSetting is x's setting key, or nil.
+func extSetting(x map[string]any, key string) map[string]any {
+	for _, s := range asList(x["settings"]) {
+		if m := asObj(s); asStr(m["key"]) == key {
+			return m
+		}
+	}
+	return nil
+}
+
+// checkExtSettings is the real check (extensions.CheckSetting, keys in
+// order) against a card's settings; it returns the values as stored.
 func checkExtSettings(x map[string]any, change map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 	keys := make([]string, 0, len(change))
@@ -71,52 +89,61 @@ func checkExtSettings(x map[string]any, change map[string]any) (map[string]any, 
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		v := change[k]
-		var st *descriptor.Setting
-		for _, s := range asList(x["settings"]) {
-			if m := asObj(s); asStr(m["key"]) == k {
-				st = &descriptor.Setting{Key: k, Type: asStr(m["type"]), Restart: m["restart"] == true}
-				for _, c := range asList(m["choices"]) {
-					st.Choices = append(st.Choices, asStr(c))
-				}
-			}
-		}
-		if st == nil {
+		m := extSetting(x, k)
+		if m == nil {
 			return nil, fmt.Errorf("unknown setting %q", k)
 		}
-		c, err := extensions.CheckSetting(*st, v)
+		st := descriptor.Setting{Key: k, Type: asStr(m["type"]), Restart: m["restart"] == true}
+		for _, c := range asList(m["choices"]) {
+			st.Choices = append(st.Choices, asStr(c))
+		}
+		v, err := extensions.CheckSetting(st, change[k])
 		if err != nil {
 			return nil, err
 		}
-		out[k] = c
+		out[k] = v
 	}
 	return out, nil
 }
 
-// setExtValues stores values on x's settings and reports whether one that
-// takes a restart changed.
-func setExtValues(x map[string]any, values map[string]any) (restart bool) {
-	for _, s := range asList(x["settings"]) {
-		m := asObj(s)
-		if v, ok := values[asStr(m["key"])]; ok {
-			restart = restart || (m["restart"] == true && m["value"] != v)
-			m["value"] = v
-		}
-	}
-	return restart
+// moduleSetting stands in for "key feeds x's kernel module options": the
+// card only says that x needs the password and that key takes a restart.
+func moduleSetting(x map[string]any, key string) bool {
+	s := extSetting(x, key)
+	return s != nil && s["restart"] == true && x["needs_password"] == true
 }
 
-// extPassword is the admin password check: none, or a wrong one, is 403.
+// settingDefault is a setting's value without a settings file, as far as
+// the card tells: false, the first choice, or no disk.
+func settingDefault(s map[string]any) any {
+	switch asStr(s["type"]) {
+	case "bool":
+		return false
+	case "choice":
+		if c := asList(s["choices"]); len(c) > 0 {
+			return c[0]
+		}
+	}
+	return ""
+}
+
+// extPassword is the admin password check the real handlers make through
+// api.Server.Reauth, less the login limit.
 func extPassword(w http.ResponseWriter, given, what string) bool {
-	switch given {
-	case devPassword:
-		return true
-	case "":
+	if given == "" {
 		api.Error(w, http.StatusForbidden, "%s needs the admin password", what)
-	default:
+		return false
+	}
+	ok, err := auth.VerifyAdmin(given)
+	switch {
+	case errors.Is(err, auth.ErrNoAdmin):
+		api.Error(w, http.StatusConflict, "no admin password is set yet; finish setup first")
+	case err != nil:
+		api.Error(w, http.StatusServiceUnavailable, "the password was not checked: %v", err)
+	case !ok:
 		api.Error(w, http.StatusForbidden, "the password is wrong")
 	}
-	return false
+	return err == nil && ok
 }
 
 func (f *devFake) extInstall(w http.ResponseWriter, r *http.Request) any {
@@ -143,23 +170,54 @@ func (f *devFake) extInstall(w http.ResponseWriter, r *http.Request) any {
 	if err != nil {
 		return refused(w, http.StatusBadRequest, err.Error())
 	}
-	if x["needs_password"] == true && x["wanted"] != true && !extPassword(w, req.Password, "Adding "+name) {
+	adding := f.addingLocked(x)
+	needs := false
+	for k := range values {
+		needs = needs || moduleSetting(x, k)
+	}
+	for _, a := range adding {
+		needs = needs || a["needs_password"] == true
+	}
+	if needs && !extPassword(w, req.Password, "Adding "+name) {
 		return nil
 	}
-	setExtValues(x, values)
-	for _, r := range asList(x["requires"]) {
-		if dep := f.extLocked(asStr(r)); dep != nil && dep["core"] != true && dep["wanted"] != true {
-			f.addExtLocked(dep)
-		}
+	for k, v := range values {
+		extSetting(x, k)["value"] = v
 	}
-	if x["wanted"] != true {
-		f.addExtLocked(x)
+	for _, a := range adding {
+		f.addExtLocked(a)
 	}
 	return f.extChangedLocked()
 }
 
-// addExtLocked marks x wanted: a removed one that still runs is back, and
-// any other downloads while the dev server runs (else it is downloaded).
+// addingLocked is what adding x adds: x and what it requires, directly or
+// not, less what is wanted or core.
+func (f *devFake) addingLocked(x map[string]any) []map[string]any {
+	var out []map[string]any
+	seen := map[string]bool{}
+	var walk func(m map[string]any)
+	walk = func(m map[string]any) {
+		id := asStr(m["id"])
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		for _, r := range asList(m["requires"]) {
+			if dep := f.extLocked(asStr(r)); dep != nil {
+				walk(dep)
+			}
+		}
+		if m["wanted"] != true && m["core"] != true {
+			out = append(out, m)
+		}
+	}
+	walk(x)
+	return out
+}
+
+// addExtLocked marks x wanted: one this boot mounted (removed until the
+// restart) is back at once, any other downloads while the dev server runs
+// (and without one it is downloaded already).
 func (f *devFake) addExtLocked(x map[string]any) {
 	x["wanted"], x["reason"], x["progress"] = true, "", nil
 	switch {
@@ -167,21 +225,23 @@ func (f *devFake) addExtLocked(x map[string]any) {
 		x["state"] = extensions.StateInstalled
 	case f.d != nil:
 		x["state"] = extensions.StateInstalling
-		x["progress"] = map[string]any{"bytes": 0, "total": x["size"]}
-		go f.downloadExt(asStr(x["id"]))
+		x["progress"] = map[string]any{"bytes": 0.0, "total": extTotal(x)}
+		go f.runExtInstall(asStr(x["id"]))
 	default:
 		x["state"] = extensions.StateRestartNeeded
 	}
 }
 
-// downloadExt walks an added extension's download in eight steps, then it
+func extTotal(x map[string]any) float64 { return math.Max(asNum(x["size"]), 1) }
+
+// runExtInstall moves a download on by an eighth every extTick until it
 // waits for a restart.
-func (f *devFake) downloadExt(id string) {
-	for step := 1; step <= 8; step++ {
+func (f *devFake) runExtInstall(id string) {
+	for {
 		select {
 		case <-f.ctx.Done():
 			return
-		case <-time.After(400 * time.Millisecond):
+		case <-time.After(extTick):
 		}
 		f.mu.Lock()
 		x := f.extLocked(id)
@@ -189,19 +249,42 @@ func (f *devFake) downloadExt(id string) {
 			f.mu.Unlock()
 			return
 		}
-		total := int64(asNum(x["size"]))
-		x["progress"] = map[string]any{"bytes": total * int64(step) / 8, "total": total}
-		if step == 8 {
+		p := asObj(x["progress"])
+		total := asNum(p["total"])
+		if total <= 0 {
+			total = extTotal(x)
+		}
+		done := math.Min(total, asNum(p["bytes"])+math.Ceil(total/8))
+		x["progress"] = map[string]any{"bytes": done, "total": total}
+		if done >= total {
 			x["state"], x["progress"] = extensions.StateRestartNeeded, nil
 		}
 		f.extChangedLocked()
 		f.mu.Unlock()
+		if done >= total {
+			return
+		}
+	}
+}
+
+// resumeExtInstallsLocked moves the downloads of a preset or a new boot on.
+func (f *devFake) resumeExtInstallsLocked() {
+	if f.d == nil {
+		return
+	}
+	for _, x := range asList(f.doc("extensions")["extensions"]) {
+		if m := asObj(x); m["state"] == extensions.StateInstalling {
+			go f.runExtInstall(asStr(m["id"]))
+		}
 	}
 }
 
 func (f *devFake) extRemove(w http.ResponseWriter, r *http.Request) any {
+	purge := false
 	switch r.URL.Query().Get("purge") {
-	case "", "0", "1":
+	case "", "0":
+	case "1":
+		purge = true
 	default:
 		return refused(w, http.StatusBadRequest, "purge must be 0 or 1")
 	}
@@ -227,6 +310,13 @@ func (f *devFake) extRemove(w http.ResponseWriter, r *http.Request) any {
 	if x["mounted"] == true {
 		x["state"] = extensions.StateRestartNeeded
 	}
+	// Purging deletes settings/<id>.json: the settings read as defaults.
+	if purge {
+		for _, s := range asList(x["settings"]) {
+			m := asObj(s)
+			m["value"] = settingDefault(m)
+		}
+	}
 	return f.extChangedLocked()
 }
 
@@ -247,15 +337,19 @@ func (f *devFake) extSettings(w http.ResponseWriter, r *http.Request) any {
 	if err != nil {
 		return refused(w, http.StatusBadRequest, err.Error())
 	}
-	before := deepCopyJSON(x["settings"])
-	if setExtValues(x, values) {
-		if x["needs_password"] == true && !extPassword(w, req.Password, "Changing this setting") {
-			x["settings"] = before
-			return nil
-		}
-		if x["mounted"] == true && x["wanted"] == true {
-			x["state"] = extensions.StateRestartNeeded
-		}
+	modules := false
+	for k, v := range values {
+		modules = modules || (moduleSetting(x, k) && !reflect.DeepEqual(extSetting(x, k)["value"], v))
+	}
+	if modules && !extPassword(w, req.Password, "Changing this setting") {
+		return nil
+	}
+	for k, v := range values {
+		extSetting(x, k)["value"] = v
+	}
+	// New module options are a new set, which the next restart tries.
+	if modules && x["mounted"] == true && x["wanted"] == true {
+		x["state"] = extensions.StateRestartNeeded
 	}
 	return f.extChangedLocked()
 }
@@ -285,23 +379,22 @@ func (f *devFake) extAction(w http.ResponseWriter, r *http.Request) any {
 	return f.doc("extensions")
 }
 
+// extRetry is "Try again": the failure is forgotten, so the extension
+// downloads again and waits for the restart that tries it (one that runs
+// is set up again).
 func (f *devFake) extRetry(w http.ResponseWriter, r *http.Request) any {
 	id := r.PathValue("id")
 	x := f.extLocked(id)
 	if x == nil {
 		return refused(w, http.StatusNotFound, fmt.Sprintf("no extension %q", id))
 	}
-	if x["state"] == extensions.StateNeedsAttention {
-		x["reason"] = ""
-		x["state"] = extensions.StateRestartNeeded
-		if x["mounted"] == true {
-			x["state"] = extensions.StateInstalled
-		}
+	if x["state"] == extensions.StateNeedsAttention && (x["wanted"] == true || x["core"] == true) {
+		f.addExtLocked(x)
 	}
 	return f.extChangedLocked()
 }
 
-// requiredByLocked is the wanted cards that require id.
+// requiredByLocked is the wanted or core cards that require id.
 func (f *devFake) requiredByLocked(id string) []string {
 	var out []string
 	for _, c := range asList(f.doc("extensions")["extensions"]) {
@@ -323,7 +416,9 @@ func (f *devFake) extChangedLocked() any {
 }
 
 // refreshExtensions recomputes what follows from the cards: who requires
-// whom, and the restart a restart-needed card waits for.
+// whom, and the restart a restart-needed card waits for. A restart that is
+// newly needed may happen by itself (restart.auto), as the circuit breaker
+// of a fresh set allows.
 func refreshExtensions(doc map[string]any) {
 	cards := asList(doc["extensions"])
 	var adding, removing, changing []string
@@ -350,8 +445,7 @@ func refreshExtensions(doc map[string]any) {
 		}
 	}
 	rs := asObj(doc["restart"])
-	needed := len(adding)+len(removing)+len(changing) > 0
-	if !needed {
+	if len(adding)+len(removing)+len(changing) == 0 {
 		doc["restart"] = map[string]any{"needed": false, "auto": false, "reason": ""}
 		return
 	}
@@ -369,33 +463,31 @@ func refreshExtensions(doc map[string]any) {
 	doc["restart"] = map[string]any{"needed": true, "auto": auto, "reason": "Restart to finish " + joinNames(parts) + "."}
 }
 
+// joinNames is "A", "A and B" or "A, B and C" (extensions.joinNames).
 func joinNames(names []string) string {
-	switch len(names) {
-	case 0:
-		return ""
-	case 1:
-		return names[0]
+	if len(names) < 2 {
+		return strings.Join(names, "")
 	}
-	out := names[0]
-	for _, n := range names[1 : len(names)-1] {
-		out += ", " + n
-	}
-	return out + " and " + names[len(names)-1]
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
-// bootExtensions is what a restart starts: the extensions a restart-needed
-// card waited for are added or gone, and nothing waits any more.
+// bootExtensions is what a restart starts: what is wanted and was waiting
+// is mounted, what is not wanted any more is gone, and a download under way
+// starts over (resumeExtInstallsLocked).
 func bootExtensions(docs map[string]any) {
 	doc := asObj(docs["extensions"])
 	for _, c := range asList(doc["extensions"]) {
 		m := asObj(c)
-		if m["state"] != extensions.StateRestartNeeded {
-			continue
-		}
-		if m["wanted"] == true {
-			m["state"], m["mounted"] = extensions.StateInstalled, true
-		} else {
-			m["state"], m["mounted"] = extensions.StateNotInstalled, false
+		switch m["state"] {
+		case extensions.StateInstalling:
+			m["progress"] = map[string]any{"bytes": 0.0, "total": extTotal(m)}
+		case extensions.StateRestartNeeded:
+			wanted := m["wanted"] == true || m["core"] == true
+			m["mounted"], m["progress"] = wanted, nil
+			m["state"] = extensions.StateNotInstalled
+			if wanted {
+				m["state"] = extensions.StateInstalled
+			}
 		}
 	}
 	refreshExtensions(doc)
@@ -410,6 +502,10 @@ func extensionsRestart(doc map[string]any) bool {
 // "Extensions", Control center), publishes each change, puts the restart
 // kind into GET /status, and a restart applies what waited for it.
 func TestFakeExtensions(t *testing.T) {
+	redirectConfig(t, t.TempDir())
+	if err := auth.SetAdminPassword("", devPassword); err != nil {
+		t.Fatal(err)
+	}
 	f, _ := fakeWorld(t, "idle")
 	mux := http.NewServeMux()
 	for _, routes := range []func(fakeAdder){f.extensionsRoutes, f.statusRoutes} {
@@ -447,10 +543,20 @@ func TestFakeExtensions(t *testing.T) {
 	if code, ans := do("POST", "/extensions/coolercontrol", `{}`); code != 403 || ans["error"] != "Adding CoolerControl needs the admin password" {
 		t.Fatalf("without the password: %d %v", code, ans)
 	}
-	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"overdrive":1}}`); code != 400 || ans["error"] != "overdrive must be true or false" {
+	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"nope-nope"}`); code != 403 || ans["error"] != "the password is wrong" {
+		t.Fatalf("a wrong password: %d %v", code, ans)
+	}
+	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_overdrive":1}}`); code != 400 || ans["error"] != "gpu_overdrive must be true or false" {
 		t.Fatalf("bad option: %d %v", code, ans)
 	}
-	code, doc := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"overdrive":true}}`)
+	if code, ans := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"library":"-x"}}`); code != 400 ||
+		ans["error"] != "library must be a folder on a disk (an absolute path), or empty" {
+		t.Fatalf("a disk that is no path: %d %v", code, ans)
+	}
+	if code, _ := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"library":"/var/mnt/games"}}`); code != 200 {
+		t.Fatalf("a disk: %d", code)
+	}
+	code, doc := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_overdrive":true}}`)
 	if c := card(doc, "coolercontrol"); code != 200 || c["state"] != "restart-needed" || c["wanted"] != true {
 		t.Fatalf("added: %d %v", code, c)
 	}
@@ -466,7 +572,7 @@ func TestFakeExtensions(t *testing.T) {
 	if code, ans := do("DELETE", "/extensions/proton", ""); code != 409 || ans["error"] != "CachyOS Proton is part of VaporOS and cannot be removed." {
 		t.Fatalf("removing core: %d %v", code, ans)
 	}
-	if code, _ := do("POST", "/extensions/truckersmp", `{}`); code != 200 {
+	if code, _ := do("POST", "/extensions/truckersmp", ``); code != 200 {
 		t.Fatal("adding truckersmp")
 	}
 	_, doc = do("GET", "/extensions", "")
@@ -487,16 +593,21 @@ func TestFakeExtensions(t *testing.T) {
 	if code, ans := do("POST", "/extensions/coolercontrol/actions/copy-profiles", `{}`); code != 404 || ans["error"] != `CoolerControl has no action "copy-profiles"` {
 		t.Fatalf("unknown action: %d %v", code, ans)
 	}
-	if code, ans := do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"overdrive":false}}`); code != 403 {
-		t.Fatalf("restart setting without the password: %d %v", code, ans)
+	if code, ans := do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"gpu_overdrive":false}}`); code != 403 {
+		t.Fatalf("a module setting without the password: %d %v", code, ans)
 	}
-	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"poll":"slow"}}`)
-	if c := card(doc, "coolercontrol"); c["state"] != "installed" || asObj(asList(c["settings"])[1])["value"] != "slow" {
+	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"poll_rate":"every_five_seconds"}}`)
+	if c := card(doc, "coolercontrol"); c["state"] != "installed" || extSetting(c, "poll_rate")["value"] != "every_five_seconds" {
 		t.Fatalf("plain setting: %v", c)
+	}
+	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"password":"`+devPassword+`","settings":{"gpu_overdrive":false}}`)
+	if c := card(doc, "coolercontrol"); c["state"] != "restart-needed" ||
+		asObj(doc["restart"])["reason"] != "Restart to finish changing the settings of CoolerControl." {
+		t.Fatalf("module setting: %v, restart %v", c, doc["restart"])
 	}
 	_, doc = do("DELETE", "/extensions/coolercontrol?purge=1", "")
 	if c := card(doc, "coolercontrol"); c["state"] != "restart-needed" || c["wanted"] != false ||
-		asObj(doc["restart"])["reason"] != "Restart to finish removing CoolerControl." {
+		extSetting(c, "poll_rate")["value"] != "every_second" || asObj(doc["restart"])["reason"] != "Restart to finish removing CoolerControl." {
 		t.Fatalf("removed: %v, restart %v", c, doc["restart"])
 	}
 	if code, _ := do("POST", "/extensions/skip-once", ""); code != 200 {

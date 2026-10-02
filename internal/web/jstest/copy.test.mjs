@@ -65,4 +65,12 @@ test('pairing prompt and restart row', () => {
   assert.equal(restartRowText([{ kind: 'update', version: '2' }, { kind: 'display' }]), 'Restart to finish: version 2 is ready and display changes are waiting.');
   assert.equal(restartRowText([]), '');
   assert.equal(restartRowText([{ kind: 'next', version: '3' }]), 'Version 3 starts on the next restart.');
+  assert.equal(restartRowText([{ kind: 'extensions' }]), 'Restart to apply extension changes.');
+  assert.equal(restartRowText([{ kind: 'display' }, { kind: 'extensions' }]), 'Restart to finish: display changes are waiting and extension changes are waiting.');
+});
+
+test('a restart kind this page does not know still has words', () => {
+  assert.equal(restartRowText([{ kind: 'firmware' }]), 'Restart to finish.');
+  assert.equal(restartRowText([{ kind: 'display' }, { kind: 'firmware' }, { kind: 'bios' }]), 'Restart to finish: display changes are waiting and other changes are waiting.');
+  assert.equal(restartRowText([{}, null]), '');
 });
