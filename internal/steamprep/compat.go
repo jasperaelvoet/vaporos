@@ -207,6 +207,7 @@ func (p *prep) compatTools() {
 			p.fail("config.vdf", err)
 			return
 		}
+		p.wrote(f.path)
 	}
 	for _, r := range results {
 		if r.key == 0 {

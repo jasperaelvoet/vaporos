@@ -151,6 +151,7 @@ func (p *prep) branches() {
 				p.fail(name, err)
 				continue
 			}
+			p.wrote(f.path)
 			p.o.Log.Printf("prepare: %s: branch %q", name, branch)
 		}
 		if next != nil {

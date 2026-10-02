@@ -215,6 +215,12 @@ func (b *box) runWith(o Options) {
 	Run(context.Background(), o)
 }
 
+// lastLine is the last line the runs logged.
+func (b *box) lastLine() string {
+	lines := strings.Split(strings.TrimRight(b.logs.String(), "\n"), "\n")
+	return lines[len(lines)-1]
+}
+
 func (b *box) state() *State {
 	b.t.Helper()
 	st, err := loadState(StatePath(b.home))

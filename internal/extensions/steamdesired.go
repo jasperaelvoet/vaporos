@@ -3,7 +3,6 @@ package extensions
 import (
 	"bytes"
 	"cmp"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +24,6 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
-	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
 // SteamDesired is /var/lib/vos/ext/steam.json: what VaporOS wants in Steam
@@ -496,7 +494,8 @@ func (s *Service) SyncSteam() (bool, error) {
 		s.restartSteam("what the extensions set in Steam changed")
 	}
 	if was != nil && was.Dispatcher && !d.Dispatcher {
-		go unwrapNow(gamescopeState, prepareAsGamer)
+		u := unwrap{gamescopeState, prepareAsGamer, settleEvery, settleFor}
+		go u.run()
 	}
 	return true, nil
 }
@@ -511,37 +510,6 @@ func sameButOwners(a, b SteamDesired) bool {
 	x, errA := marshalSteamDesired(a)
 	y, errB := marshalSteamDesired(b)
 	return errA == nil && errB == nil && bytes.Equal(x, y)
-}
-
-// gamescopeUnit is the gaming user's unit that runs gamescope and Steam.
-const gamescopeUnit = "vos-gamescope.service"
-
-// What unwrapNow asks and runs; variables for tests.
-var (
-	gamescopeState = func(ctx context.Context) string { return sysd.ActiveState(ctx, gamescopeUnit, true) }
-	prepareAsGamer = func(ctx context.Context) error {
-		_, err := sysd.AsGamer(ctx, vosBinary, "steam", "prepare")
-		return err
-	}
-)
-
-// unwrapNow runs `vos steam prepare` as vapor once the dispatcher turned
-// off while gamescope is down (inactive or failed): a Steam restart has
-// nothing to restart then, and the box may next boot a VaporOS without
-// `vos ext launch`, whose games would not start with it in their launch
-// options. A running gamescope gets the same from its stop
-// (ExecStopPost) or the restart, and one starting from its own prepare.
-func unwrapNow(state func(context.Context) string, prepare func(context.Context) error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if st := state(ctx); st != "inactive" && st != "failed" {
-		return
-	}
-	if err := prepare(ctx); err != nil {
-		log.Printf("extensions: taking the dispatcher out of Steam's launch options: %v", err)
-		return
-	}
-	log.Print("extensions: took the dispatcher out of Steam's launch options")
 }
 
 // marshalSteamDesired is steam.json's bytes as vosd writes them, which

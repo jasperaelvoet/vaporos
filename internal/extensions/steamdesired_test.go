@@ -84,13 +84,14 @@ func steamBox(t *testing.T) (*env, *[]string) {
 func fakeGamescope(t *testing.T, state string) <-chan struct{} {
 	t.Helper()
 	ran := make(chan struct{}, 10)
-	st, prep := gamescopeState, prepareAsGamer
-	t.Cleanup(func() { gamescopeState, prepareAsGamer = st, prep })
+	st, prep, every, limit := gamescopeState, prepareAsGamer, settleEvery, settleFor
+	t.Cleanup(func() { gamescopeState, prepareAsGamer, settleEvery, settleFor = st, prep, every, limit })
 	gamescopeState = func(context.Context) string { return state }
-	prepareAsGamer = func(context.Context) error {
+	prepareAsGamer = func(context.Context) (string, error) {
 		ran <- struct{}{}
-		return nil
+		return "vos steam: prepare: done (dispatcher off); nothing needed changing", nil
 	}
+	settleEvery, settleFor = 5*time.Millisecond, 50*time.Millisecond
 	return ran
 }
 
@@ -651,7 +652,8 @@ func TestSlotsChangedFollowsTheDispatcher(t *testing.T) {
 
 // The dispatcher turning off while gamescope is down: vosd runs prepare
 // as vapor at once, since no Steam start or restart is coming that would.
-// While gamescope runs (or starts, or stops) it leaves that to the unit,
+// While gamescope runs it leaves that to the unit, a unit that never
+// settles runs nothing (TestUnwrapWaitsForGamescope has those that do),
 // and a dispatcher that stays off runs nothing more.
 func TestDispatcherOffRunsPrepare(t *testing.T) {
 	for state, runs := range map[string]bool{"inactive": true, "failed": true, "active": false, "activating": false, "deactivating": false, "": false} {
