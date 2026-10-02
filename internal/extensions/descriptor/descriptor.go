@@ -113,13 +113,15 @@ type Copy struct {
 
 // Fetch is a file the build downloads into usr/lib/vos/ext/<id>/<dest>,
 // pinned by sha256. With extract, url is a tar archive and extract the
-// member to take from it.
+// member to take from it; license_file is then the archive member holding
+// the licence text, which the build installs into usr/share/licenses/<id>/.
 type Fetch struct {
-	URL     string `json:"url"`
-	SHA256  string `json:"sha256"`
-	License string `json:"license"`
-	Extract string `json:"extract,omitempty"`
-	Dest    string `json:"dest"`
+	URL         string `json:"url"`
+	SHA256      string `json:"sha256"`
+	License     string `json:"license"`
+	Extract     string `json:"extract,omitempty"`
+	LicenseFile string `json:"license_file,omitempty"`
+	Dest        string `json:"dest"`
 }
 
 type Service struct {
@@ -340,6 +342,9 @@ func (d *Descriptor) Validate() error {
 		}
 		if f.Extract != "" && !cleanRel(f.Extract) {
 			bad("fetch[%d].extract must be a relative path inside the archive", i)
+		}
+		if f.LicenseFile != "" && (f.Extract == "" || !cleanRel(f.LicenseFile)) {
+			bad("fetch[%d].license_file must be a relative path inside the archive named by extract", i)
 		}
 		if !cleanRel(f.Dest) || dests[f.Dest] {
 			bad("fetch[%d].dest must be a unique relative path", i)
