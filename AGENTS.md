@@ -37,6 +37,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/extensions/descriptor` | `extension.json` (schema 1, unknown fields rejected), from the source tree and as shipped in the image. |
 | `internal/extensions/fsverity` | Pure-Go fs-verity file digest (sha256, 4096-byte blocks, no salt): what the kernel measures. |
 | `internal/extensions/store` | The store in `/var/lib/vos/ext`: sealed images, sets, the `enabled`/`pending` links, `wanted`/`proven`/`failed`, slot catalogs, the boot report, the pure reconcile plan, promotion and GC, under `ext.lock`. |
+| `internal/extensions/truckersmp` | TruckersMP's helper (linked in by `internal/extensions/all`): `vos ext truckersmp sync` keeps the mod's files in vapor's home (MD5 against files.json and the version API), `mp` and `handoff` start multiplayer through Steam, the launch hook swaps the game's executable for the injector, and the card shows the versions TruckersMP supports, the branch switch and profile copying. |
 | `internal/gameproc` | The one "a Steam game runs" probe idle shutdown and the display policy share (Steam's reaper, `SteamAppId`, the extension handoff unit), and the Steam client holding `steam.pipe`. |
 | `internal/install` | `vos install` and the web installer (shared `Install`): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |

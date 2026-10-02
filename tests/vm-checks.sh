@@ -525,6 +525,19 @@ check_extensions() {
         have=$(stat -c %a /dev/ntsync 2>/dev/null)
         if [[ $have == 666 ]]; then ok ext-ntsync "/dev/ntsync is 0666"; else warn ext-ntsync "/dev/ntsync mode '${have:-missing}'"; fi
     fi
+    if [[ " $* " == *" truckersmp "* ]]; then
+        local exe=/usr/lib/vos/ext/truckersmp/truckersmp-cli.exe
+        if [[ $(head -c2 "$exe" 2>/dev/null) == MZ ]]; then
+            ok ext-truckersmp-injector "$exe is a Windows program"
+        else
+            bad ext-truckersmp-injector "$exe is missing or not a Windows program"
+        fi
+        if [[ -s /usr/share/licenses/truckersmp/LICENSE ]]; then
+            ok ext-truckersmp-license "the injector's licence text is in /usr/share/licenses/truckersmp"
+        else
+            bad ext-truckersmp-license "no /usr/share/licenses/truckersmp/LICENSE"
+        fi
+    fi
 }
 
 # ------------------------------------------------------------------ main ----

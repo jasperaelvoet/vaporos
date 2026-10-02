@@ -47,6 +47,12 @@ type message struct {
 	Text  string `json:"text"`
 }
 
+// WriteMessage leaves text for vosd to show at the control center, as
+// `vos ext launch` does: for a helper's own command that runs as the
+// gaming user where nobody sees its output (TruckersMP's multiplayer
+// start, from Steam or Moonlight).
+func WriteMessage(text string) error { return writeMessage(text) }
+
 // writeMessage leaves text for vosd. It runs as the gaming user.
 func writeMessage(text string) error {
 	rt := os.Getenv("XDG_RUNTIME_DIR")

@@ -43,6 +43,7 @@ multi-call:
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher, run as `vapor` from the launch options `vos steam prepare` writes (see Extensions, Steam). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. What starts is, in order: `--app` or `--shortcut`; the `AppId=` of Steam's reaper line when CMD is one (as in Units, Display policy); `SteamAppId`, then `SteamGameId` in its environment. An id with the top bit set, or a shortcut's game id (`(appid << 32) \| 0x02000000`), names an extension's shortcut when `/var/lib/vos/ext/steam.json` lists one with that app id (`crc32("<owner>/<key>") \| 0x80000000`) or prepare's record holds it, and nothing otherwise. For an app it runs the launch hooks of the extensions steam.json lists in that app's `hooks` and `/run/vos/extensions.json` names as mounted, in that file's (catalog) order; for a shortcut, its extension's hook, refusing when that extension is not mounted (also when the report cannot be read). A hook is Go in `vos` (`Helper.LaunchHook`) that may rewrite the command and add to its environment; the programs a hook starts run without `LD_PRELOAD`, while the command keeps Steam's environment. It then execs the command (looked up in `PATH` unless absolute; `argv[0]` as given); with no hook to run that is CMD with ARGS and the environment unchanged. A refusal, a hook's error or a hook that leaves no command is exit 1, with the reason on stderr and in a message for vosd: `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json` (`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`), `{"level":"warning","text"}`, written to a temp file and renamed. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
+| `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (exit 3 while another sync runs); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam (`vos-gamescope.service`): brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
@@ -76,7 +77,10 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
 | `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only (see Extensions, Steam) |
 | `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
-| `/run/user/1000/vos/ext-messages/` | `vos ext launch` | the dispatcher's refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
+| `/run/user/1000/vos/ext-messages/` | `vos ext launch`, `vos ext truckersmp mp\|handoff` | the dispatcher's and helper commands' refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
+| `/run/user/1000/vos/truckersmp-mp.json` | `vos ext truckersmp mp` | the multiplayer flag TruckersMP's launch hook takes once (see Extensions, TruckersMP) |
+| `~vapor/.local/share/vaporos/ext/truckersmp/` | `vos ext truckersmp` | TruckersMP's home data area: `bin/truckersmp-cli.exe`, the mod in `files/`, `manifest.json`, `partial/`, `.sync.lock` (see Extensions, TruckersMP) |
+| `/var/lib/vos/ext/data/truckersmp/branch.json` | vosd | the Steam branch each game stays on for TruckersMP (see Extensions, TruckersMP) |
 | `/run/vos/ext-trial-ok` | `vos health` | the number of the set whose extension trial passed health this boot (one line, written atomically), so vosd can promote it when health could not (see Health) |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
 | `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
@@ -666,7 +670,9 @@ the image, at most once per digest per boot, and a reconcile follows that
 fetches it again: the desired set keeps it meanwhile, so the next boot mounts
 the new copy. A missing file is not damage. Idle shutdown counts as busy
 (`adding an extension`) a download from its first bytes until it and its seal
-end, unless no bytes came for 2 minutes, and the re-read.
+end, unless no bytes came for 2 minutes, and the re-read; and, with its own
+reason, a helper's own work while the helper says so (`Busier`; TruckersMP's
+sync: `updating TruckersMP`).
 
 **Install** (the `configure` step, after slot a is written and the target is
 mounted): the installer runs the new image's own
@@ -699,12 +705,14 @@ never edits those files for an extension.
 *Desired state,* `/var/lib/vos/ext/steam.json` (root's, 0644), written by
 vosd atomically and only when its bytes change: at start before its first
 reconcile, after every reconcile, and when the control center adds or
-removes an extension or changes its settings. When the file changes vosd
-asks for a Steam restart (see Units, Display policy).
+removes an extension, changes its settings or runs one of its actions.
+When the file changes vosd asks for a Steam restart (see Units, Display
+policy).
 ```json
 {"set":"<n>","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
  "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":"temporary_1_61"}],
- "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":"/usr/lib/vos/ext/star-citizen/art"}],
+ "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":"/usr/lib/vos/ext/star-citizen/art"},
+              {"owner":"truckersmp","key":"ets2","name":"TruckersMP (ETS2)","exe":"/usr/bin/vos","start_dir":"/var/home/vapor/.local/share/vaporos/ext/truckersmp","args":["ext","truckersmp","mp","ets2"],"compat_tool":"","art":""}],
  "release":[{"app":227300}]}
 ```
 - `set`: the boot report's `set` (`""` when it has none). prepare applies
@@ -727,7 +735,9 @@ asks for a Steam restart (see Units, Display policy).
   `null` when none does.
 - `shortcuts`: each descriptor `steam.shortcuts` entry whose helper's
   `SteamParts.Shortcuts` gives it a target (`exe`, `start_dir`: canonical
-  absolute paths; one without a target yet is left out), with `compat_tool`
+  absolute paths; one without a target yet is left out; `args`, omitted
+  when there are none: up to 16 words of `[A-Za-z0-9._/:=+-]`, at most 128
+  characters each, else the shortcut is left out), with `compat_tool`
   the extension's `steam.compat_tool` when the shortcut sets `compat_tool`,
   and `art` its `art` directory in the mounted image
   (`/usr/lib/vos/ext/<owner>/<art>`) when that directory exists, else `""`.
@@ -868,7 +878,10 @@ trusts it for display only:
       `LaunchOptions` carry
       `/usr/bin/vos ext launch --shortcut <owner>/<key> %command%` (after
       `--unwrap` took that off, the entry with the app id the record holds),
-      never one matched by name. For each shortcut in `steam.json`:
+      never one matched by name. Its `LaunchOptions` are those words,
+      then, when the shortcut has `args`, a space and the `args` joined by
+      spaces (Steam passes them to `Exe` after `%command%`). For each
+      shortcut in `steam.json`:
       - an existing one gets its `AppName`, `Exe` and `StartDir` (in double
         quotes, as Steam keeps them), those `LaunchOptions` and the tag
         `VaporOS`; its other keys, tags and app id stay;
@@ -904,7 +917,9 @@ trusts it for display only:
    stays as it is otherwise. Branches and art are left alone. The next run
    without `--unwrap` applies everything again.
 
-*Dispatcher messages:* `vos ext launch` (as vapor) writes each refusal
+*Dispatcher messages:* `vos ext launch` (as vapor), and a helper's own
+command that runs as vapor where nobody sees its output (`vos ext truckersmp
+mp` and `handoff`), writes each refusal
 meant for the user to `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json`
 (`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`;
 `{"level":"warning","text":"..."}`, a temp file renamed). Every 3 s vosd
@@ -985,7 +1000,8 @@ time; each answers the document and asks for a reconcile:
 - **Actions** (POST `/extensions/{id}/actions/{name}`, `args` an object or
   absent, else 400) run one of its descriptor's actions (else 404) through its
   helper, only while this boot mounted it (409), within 10 minutes and even
-  when the page goes away; a failure is 500 with why.
+  when the page goes away; a failure is 500 with why. After one that worked,
+  `steam.json` is written again (a helper's Steam parts may follow it).
 - **Try again** (POST `/extensions/{id}/retry`) removes the desired set's
   fingerprint from `failed` and lets its helper's `Install` run again.
 - **Start without extensions** (POST `/extensions/skip-once`) writes
@@ -1019,6 +1035,96 @@ or rollback. `restart.auto`, the circuit breaker: none yet for the pending
 set's fingerprint, or one from another VaporOS version (an OS trial does not
 try `pending`), and fewer than 3 in the last 24 hours (one timed in the
 future counts). After that only a restart from the control center applies it.
+
+**TruckersMP** (`extensions/truckersmp`, `internal/extensions/truckersmp`;
+requires `proton`). Its image holds the injector alone,
+`usr/lib/vos/ext/truckersmp/truckersmp-cli.exe` (truckersmp-cli 0.11.0, MIT,
+pinned by its release tarball's sha256). In Steam it forces
+`proton-cachyos-slr` on ETS2 (227300) and ATS (270880) and hooks both, so
+single-player and multiplayer share each game's own prefix
+(`<library>/steamapps/compatdata/<app>`); its shortcuts `ets2` "TruckersMP
+(ETS2)" and `ats` "TruckersMP (ATS)" run vos, without a compatibility tool
+(`exe` `/usr/bin/vos`, `start_dir` its home data area, `args` `ext
+truckersmp mp <key>`). Sunshine lists `/usr/bin/vos ext truckersmp mp
+ets2|ats` under the shortcuts' names, standing for them.
+- *Files* (the home data area, `vapor`'s): `bin/truckersmp-cli.exe` (a copy
+  of the image's, which Proton's container cannot see; `setup` and the
+  launch hook make it equal), `files/` (MODDIR, laid out as files.json
+  says), `manifest.json`
+  (`{"version","checked","games","files":[{"path","type","md5","size","mtime"}]}`,
+  `mtime` in unix nanoseconds: written by a sync that finished, and deleted
+  first by one that changes files, so it always describes whole files),
+  `partial/<md5>.part` (downloads to resume) and `.sync.lock` (flock).
+- *Sync* (`vos ext truckersmp sync`, as `vapor`, one at a time): it asks
+  `https://api.truckersmp.com/v2/version` and
+  `https://update.ets2mp.com/files.json` (`{"Files":[{"Md5","Type","FilePath"}]}`),
+  takes the `system` files and those of each game a library has
+  (`appmanifest_<app>.acf`) or the manifest holds, and refuses a list with a
+  path that leaves `files/` or whose `core_ets2mp.dll` (`core_atsmp.dll`)
+  MD5 is not the API's `ets2mp_checksum.dll` (`atsmp_checksum.dll`). A file
+  the manifest recorded with that MD5, size and mtime, or whose MD5 matches,
+  stays; the others come from `https://download.ets2mp.com/files<FilePath>`
+  (HEAD for the size, then GET, resumed with `Range`; at most 2 GiB a file
+  and 8 GiB in all; given up after 60 s without data), are MD5-checked and
+  renamed into place. Files of the old manifest no longer listed go.
+- *vosd* runs the sync as `vapor` (runuser; its progress lines read as they
+  come; within 4 hours) from `Install` (after `setup`), and, while this boot
+  mounted the extension and `settings/truckersmp.installed` exists, when it
+  builds the card and a sync is due: no manifest, the API's `name` (asked at
+  most hourly, every 10 minutes while unanswered; 15 s, 64 KiB) other than
+  the manifest's `version`, a manifest a day old, or a game installed that
+  it lacks; never two at once, nor two it starts by itself within an hour.
+  A running sync is busy `updating TruckersMP` until no bytes came for 2
+  minutes. `Remove` stops it.
+- *Multiplayer:* `vos ext truckersmp mp ets2|ats` (as `vapor`: from the
+  shortcut, through `vos ext launch --shortcut`, or from Sunshine) refuses,
+  with a message, while a reaper of 227300 or 270880 runs, while
+  `vos-ext-handoff.service` is loaded, or when the game's files fail the
+  quick check. Otherwise it writes the flag
+  `$XDG_RUNTIME_DIR/vos/truckersmp-mp.json` (`{"game","created","nonce"}`,
+  0600; valid for 15 minutes, and up to 1 minute in the future) and runs
+  `systemd-run --user --collect --quiet --unit=vos-ext-handoff -- /usr/bin/vos
+  ext truckersmp handoff <game> <id> <nonce>` without `LD_PRELOAD` and
+  `LD_LIBRARY_PATH` (Steam's overlay and runtime), `<id>`
+  the AppId of the nearest reaper above it (0 when none is); when that fails
+  the flag goes. `handoff` waits until no reaper with that AppId (as app id
+  or game id) is left, at most 30 s, then 2 s more (with 0, not at all), and hands
+  `steam://rungameid/<227300|270880>` to Steam as `vos session launch` does;
+  when Steam never takes it, the flag goes and a message says so.
+- *Launch hook* (as `vapor`, in `vos ext launch` for 227300 and 270880):
+  only when the command holds an absolute `.../bin/win_x64/eurotrucks2.exe`
+  (`amtrucks.exe`; any case) and a valid flag for that game exists does it
+  take the flag (renamed away first: once), deleting one that is not valid
+  and leaving one for the other game. Then the quick check (each `system`
+  and game file has the manifest's size and mtime, the core library its
+  MD5): stale files refuse the start ("its files are updating. Try again in
+  a few minutes."), never turning it into single-player. Otherwise the
+  executable becomes `<home data area>/bin/truckersmp-cli.exe GAMEDIR
+  MODDIR` (GAMEDIR two levels above the executable's folder), followed by
+  Steam's arguments for the game or, without any, `-rdevice gl -nointro
+  -64bit`. Every other start passes untouched. For its shortcuts it adds
+  `ext truckersmp mp <key>` when the command ends in `/usr/bin/vos` (a
+  prepare that wrote no `args`).
+- *Card* (no lines while it is not mounted and set up, but for a sync that
+  runs): the game versions the API supports, each installed game's version
+  (the last `init ver.` in `game.log.txt` of its prefix's
+  `Documents/<game>`, else of `~/.local/share/<game>`, read through
+  gamerfs) against them, and the files (downloading n %, ready, out of date,
+  or a download that failed).
+- *Actions:* `copy-profiles` (as `vapor`) copies each folder of
+  `~/.local/share/<game>/profiles` that the prefix's
+  `Documents/<game>/profiles` lacks (through a hidden folder renamed whole;
+  no symbolic links), for each game whose prefix exists. `switch-branch`
+  writes `branch.json` in its system data area
+  (`{"at","apps":{"<app>":"temporary_<major>_<minor>"}}`) for each installed
+  game whose logged version is newer than the API supports, keeping a game
+  already held on the supported branch; the helper's `SteamParts.Beta`
+  then asks prepare for those branches. `latest-branch` deletes it, so
+  prepare puts back the branch from before.
+- *Removal* stops a sync and deletes `branch.json`; steam.json then
+  releases 227300 and 270880 (they stay on Proton, the user's from now on)
+  and prepare resets the branch VaporOS set. Purging deletes the home data
+  area as `vapor`.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
@@ -1189,7 +1295,7 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - `origin_web_ui_allowed = pc`, `upnp = disabled`, `system_tray = disabled`, `gamepad = xone`
 - `global_prep_cmd = [{"do":"/usr/bin/vos session begin","undo":"/usr/bin/vos session end","elevated":false}]`. Sunshine runs prep commands on launch only, so a resumed stream keeps the mode and HDR it was launched with; vosd publishes a `system.message` when it sees a resume (a client connects with no `session.begin` since the last one left).
 
-`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, then the apps of the extensions mounted and still wanted (as steam.json has them, see Extensions, Steam): per shortcut whose game id `vos steam prepare` recorded and did not mark deleted (its record, read through gamerfs; where accounts differ, the id VaporOS gave the shortcut, else the lowest account's) `{"name":<the shortcut's name>,"detached":["/usr/bin/vos session launch steam://rungameid/<game id>"]}` with the game id as an unsigned 64-bit decimal, then the entries their helpers add (`SteamParts.SunshineApps`, such as TruckersMP's multiplayer start), never `cmd`. Names stay unique (a game's gains ` (<id>)`, an extension's ` (2)`, ` (3)`, …), and `$` is written `$$` in names and in the extensions' commands.
+`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, then the apps of the extensions mounted and still wanted (as steam.json has them, see Extensions, Steam): per shortcut whose game id `vos steam prepare` recorded and did not mark deleted (its record, read through gamerfs; where accounts differ, the id VaporOS gave the shortcut, else the lowest account's) `{"name":<the shortcut's name>,"detached":["/usr/bin/vos session launch steam://rungameid/<game id>"]}` with the game id as an unsigned 64-bit decimal (unless its extension's helper adds an entry of the same name, case aside, which stands for it), then the entries their helpers add (`SteamParts.SunshineApps`, such as TruckersMP's multiplayer start), never `cmd`. Names stay unique (a game's gains ` (<id>)`, an extension's ` (2)`, ` (3)`, …), and `$` is written `$$` in names and in the extensions' commands.
 
 **Firewall** (nftables, input policy drop):
 - accept lo, established, ICMP/ICMPv6, udp 5353, udp 67-68;

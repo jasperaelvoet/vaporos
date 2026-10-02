@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 )
@@ -67,10 +68,13 @@ type SteamParts struct {
 }
 
 // ShortcutTarget is a shortcut's executable and start directory, canonical
-// /var/... paths.
+// /var/... paths, and the arguments it runs with (TruckersMP's shortcuts
+// run `/usr/bin/vos ext truckersmp mp ets2`): plain words, which prepare
+// writes after %command% in the shortcut's launch options.
 type ShortcutTarget struct {
-	Exe      string `json:"exe"`
-	StartDir string `json:"start_dir"`
+	Exe      string   `json:"exe"`
+	StartDir string   `json:"start_dir"`
+	Args     []string `json:"args,omitempty"`
 }
 
 // Launch is one Steam launch passing through `vos ext launch`: the app or
@@ -117,4 +121,28 @@ func HelperFor(id string) Helper {
 		return h
 	}
 	return NopHelper{}
+}
+
+// Busier is a helper with work of its own that keeps the PC awake while
+// it runs, such as TruckersMP's download of its mod: Service.Busy asks
+// every registered helper that has the method.
+type Busier interface {
+	Busy() (bool, string)
+}
+
+// helpersBusy is the first busy reason of a Busier helper, in id order.
+func helpersBusy() (bool, string) {
+	ids := make([]string, 0, len(helpers))
+	for id := range helpers {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		if b, ok := helpers[id].(Busier); ok {
+			if busy, why := b.Busy(); busy {
+				return true, why
+			}
+		}
+	}
+	return false, ""
 }
