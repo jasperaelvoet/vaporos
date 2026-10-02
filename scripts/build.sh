@@ -139,7 +139,7 @@ ensure_builder
 rm -f out/.built-on
 
 # keys/ holds the release public key; .build/ the vos binary.
-rsync -rlpt --delete --exclude .DS_Store packages.txt build rootfs keys .build \
+rsync -rlpt --delete --exclude .DS_Store packages.txt build rootfs extensions keys .build \
     "$PVE_USER@$PVE_HOST:$BUILD_DIR/src/"
 
 env_args=
@@ -156,7 +156,18 @@ iso=vaporos-$VERSION.iso
 old=$(ls out/vaporos-*.iso 2>/dev/null | head -1) || true
 [[ -z $old || $old == "out/$iso" ]] || mv "$old" "out/$iso"
 rm -f out/manifest.env out/manifest.json.sig
-for f in root.erofs vmlinuz initramfs.img manifest.json "$iso"; do
+# The extension images: the builder's out/ holds exactly this build's. Their
+# names carry no version, so rsync deltas against the last build's as is;
+# only those of extensions this build no longer has go.
+ext=$(pve "cd $BUILD_DIR/out && ls ext-*.raw 2>/dev/null" || true)
+for f in out/ext-*.raw; do
+    [[ -e $f ]] || continue
+    case $'\n'$ext$'\n' in
+        *$'\n'"${f#out/}"$'\n'*) ;;
+        *) rm -f "$f" ;;
+    esac
+done
+for f in root.erofs vmlinuz initramfs.img $ext manifest.json "$iso"; do
     rsync -t --inplace --partial "$PVE_USER@$PVE_HOST:$BUILD_DIR/out/$f" "out/$f"
 done
 if pve "test -f $BUILD_DIR/out/manifest.json.sig"; then

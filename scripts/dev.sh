@@ -59,7 +59,9 @@ ADMIN_PASS=${ADMIN_PASS:-vapor-dev}
 
 ISO_NAME=vaporos-dev.iso
 # What `vos update --from http://…/` fetches, in upload order: the manifest
-# goes last, so the VM never sees a new manifest beside an old root.erofs.
+# goes last, so the VM never sees a new manifest beside an old root.erofs or
+# extension image. stage_update adds the build's out/ext-*.raw before the
+# manifest.
 UPDATE_FILES=(root.erofs vmlinuz initramfs.img manifest.json.sig manifest.json)
 
 # Set by `test`: stricter install checks, and screendumps into out/screens/.
@@ -122,7 +124,7 @@ preflight_docker() {
 # Go test files never end up in the image.
 inputs_hash() {
     local files p paths=()
-    for p in rootfs build packages.txt go.mod go.sum cmd internal keys; do
+    for p in rootfs build extensions packages.txt go.mod go.sum cmd internal keys; do
         [[ -e $p ]] && paths+=("$p")
     done
     files=$(find "${paths[@]}" -type f ! -name .DS_Store ! -name '*_test.go' | sort)
@@ -193,14 +195,26 @@ ensure_http() {
 
 # Put the update payload next to the VM, for `vos update --from http://…/`.
 stage_update() {
-    local f
+    local f e files=()
     [[ -f out/manifest.json.sig ]] ||
         die "out/manifest.json.sig is missing: the build did not sign its manifest (the dev key lives on the builder)"
     say "Staging $(build_version) for update"
     ensure_http
     # Older builds served manifest.env; a stale manifest must never be served.
     pve "rm -f $SERVE_DIR/manifest.env $SERVE_DIR/manifest.json $SERVE_DIR/manifest.json.sig"
+    # Images of extensions this build no longer has.
+    for f in $(pve "cd $SERVE_DIR && ls ext-*.raw 2>/dev/null" || true); do
+        if [[ ! -e out/$f ]]; then pve "rm -f $SERVE_DIR/$f"; fi
+    done
     for f in "${UPDATE_FILES[@]}"; do
+        if [[ $f == manifest.json.sig ]]; then
+            for e in out/ext-*.raw; do
+                if [[ -e $e ]]; then files+=("${e#out/}"); fi
+            done
+        fi
+        files+=("$f")
+    done
+    for f in "${files[@]}"; do
         push "out/$f" "$SERVE_DIR/$f"
     done
 }
