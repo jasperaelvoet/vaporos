@@ -5,5 +5,6 @@ package all
 
 import (
 	_ "github.com/jasperaelvoet/vaporos/internal/extensions/coolercontrol"
+	_ "github.com/jasperaelvoet/vaporos/internal/extensions/starcitizen"
 	_ "github.com/jasperaelvoet/vaporos/internal/extensions/truckersmp"
 )

@@ -45,6 +45,7 @@ multi-call:
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher, run as `vapor` from the launch options `vos steam prepare` writes (see Extensions, Steam). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. What starts is, in order: `--app` or `--shortcut`; the `AppId=` of Steam's reaper line when CMD is one (as in Units, Display policy); `SteamAppId`, then `SteamGameId` in its environment. An id with the top bit set, or a shortcut's game id (`(appid << 32) \| 0x02000000`), names an extension's shortcut when `/var/lib/vos/ext/steam.json` lists one with that app id (`crc32("<owner>/<key>") \| 0x80000000`) or prepare's record holds it, and nothing otherwise. For an app it runs the launch hooks of the extensions steam.json lists in that app's `hooks` and `/run/vos/extensions.json` names as mounted, in that file's (catalog) order; for a shortcut, its extension's hook, refusing when that extension is not mounted (also when the report cannot be read). A hook is Go in `vos` (`Helper.LaunchHook`) that may rewrite the command and add to its environment; the programs a hook starts run without `LD_PRELOAD`, `LD_LIBRARY_PATH` and the `STEAM_RUNTIME*` and `PRESSURE_VESSEL*` variables, while the command keeps Steam's environment. It then execs the command (looked up in `PATH` unless absolute; `argv[0]` as given); with no hook to run that is CMD with ARGS and the environment unchanged. A refusal, a hook's error or a hook that leaves no command is exit 1, with the extension, the code and the detail on stderr and in a record for vosd: `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json` (`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`), `{"code":"not-mounted\|hook-failed","id":"<extension id>","detail":"..."}` (`not-mounted`: a shortcut whose extension is not mounted; `hook-failed`: a hook's error, or a hook that left no command), written to a temp file and renamed. A hook that fails after Steam stopped the launch (SIGTERM or SIGINT) is exit 1 with no record. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
 | `vos ext action ID NAME [--args JSON]` | runs action NAME of extension ID through its helper (Go in `vos`, `Helper.Action`) in this process, with its shipped descriptor, its settings and its data areas; vosd runs it as `vapor` for every action whose `run_as` is not `root` (see Extensions, Control center). `--args` (or `--args=JSON`) is a JSON object. It refuses an extension `/run/vos/extensions.json` does not name as mounted, and an action with `run_as` `root` when it does not run as root. Exit 0 when the action ran, 1 when it failed (why, as the last line on stderr), 2 on bad arguments, 3 when the extension has no such action |
 | `vos ext coolercontrol prepare` / `fans snapshot` / `fans restore` | the steps of the CoolerControl extension's `coolercontrold.service`, as root (see Extensions, CoolerControl): exit 0, 1 on failure (a failed `prepare` stops the start), 2 on bad arguments |
+| `vos ext star-citizen fetch-installer --prefix DIR` | as `vapor` (it refuses as root), run by the star-citizen helper's install: downloads the RSI Launcher's installer that the publisher's `latest.yml` names into `DIR/installer/`, resuming and checking it, and prints `{"installer","version"}` (see Extensions, Star Citizen). DIR must be a Star Citizen prefix on its own drive. The last line on stderr says what went wrong, for the card. Exit 0, 1 on failure, 2 on bad arguments |
 | `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (exit 3 while another sync runs); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam (`vos-gamescope.service`): brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
@@ -725,7 +726,7 @@ vosd asks for a Steam restart (see Units, Display policy).
 ```json
 {"set":"<n>","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
  "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":{"branch":"temporary_1_61","request":"<id>"}}],
- "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":"/usr/lib/vos/ext/star-citizen/art"},
+ "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/installer/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":""},
               {"owner":"truckersmp","key":"ets2","name":"TruckersMP (ETS2)","exe":"/usr/bin/vos","start_dir":"/var/home/vapor/.local/share/vaporos/ext/truckersmp","args":["ext","truckersmp","mp","ets2"],"compat_tool":"","art":""}],
  "release":[{"app":227300}]}
 ```
@@ -1355,6 +1356,116 @@ ets2|ats` under the shortcuts' names, standing for them.
   releases 227300 and 270880 (they stay on Proton, the user's from now on)
   and prepare resets the branch VaporOS set. Purging deletes the home data
   area as `vapor`.
+
+**Star Citizen** (`extensions/star-citizen`, helper `internal/extensions/starcitizen`;
+requires `proton`, no packages). A Steam shortcut "Star Citizen" (`launcher`,
+run with `proton-cachyos-slr`) whose target is the RSI Launcher's installer
+in a Proton prefix on the drive the person picks; the launch hook turns it
+into the launcher's start. The image ships one udev rule,
+`usr/lib/udev/rules.d/70-vos-star-citizen-hotas.rules` (`udev` permission):
+`SUBSYSTEM=="hidraw", ATTRS{idVendor}=="231d|3344|044f", GROUP="input", MODE="0660"`,
+so vapor (group `input`) opens the hidraw nodes of VKB, Virpil and
+Thrustmaster sticks on USB. No sysctl: the base's `vm.max_map_count` is
+already 1048576.
+- *Drive.* The setting `disk` ("Game drive") is the drive's folder:
+  `/var/mnt/<name>` (`/mnt/<name>` reads the same) is a game drive, and the
+  prefix is `/var/mnt/<name>/VaporOS/star-citizen` (its `library` data
+  area); `""` (or `/var`) is the system drive, and the prefix is its home
+  data area, `/var/home/vapor/.local/share/vaporos/ext/star-citizen`. Any
+  other value is refused. The prefix is fixed at install: a drive picked
+  later applies only after removing Star Citizen and adding it again (its
+  card says so).
+- *Install* (the helper's `Install`, root, after the restart that mounts
+  it). It refuses, as the card's reason: a game drive that is not mounted
+  exactly at its folder in the mount table (`/proc/self/mountinfo`; an empty
+  mount point lies on the system drive, where 100+ GB must never land by
+  accident), a filesystem not in the `games` area's `fs` (ext4, btrfs, xfs,
+  f2fs), a prefix path with anything but `[A-Za-z0-9/._-]` (the LUG: no
+  special characters), a filesystem without a UUID (the link in
+  `/dev/disk/by-uuid` that resolves to the mount's source device), and,
+  unless the launcher is already in the prefix, less than `min_free_gb`
+  (150 GB, 10^9 bytes) free (`statfs` of the mount point). Then it makes the
+  prefix through gamerfs (vapor's, 0755, no symlink followed), writes the
+  marker `<prefix>/.vaporos-drive` (the filesystem's UUID, one line) and
+  `/var/lib/vos/ext/data/star-citizen/state.json`
+  (`{"disk","prefix","uuid","installer","version"}`, root's, atomic; vosd
+  trusts only this file), and runs `vos ext star-citizen fetch-installer
+  --prefix <prefix>` as vapor (`sysd.AsGamer`). On success `installer` and
+  `version` are recorded; a failed download keeps the prefix recorded, so
+  a removal finds it. A PC with less than 15 GiB of memory, or less than
+  46 GiB of memory and swap (what Star Citizen asks for, 16 GB and 48 GB,
+  less what firmware keeps), gets a warning line, never a refusal.
+- *fetch-installer* (vapor) checks the prefix as the launch hook does (below),
+  reads `https://install.robertsspaceindustries.com/rel/2/latest.yml`
+  (electron-builder's feed, at most 64 KiB, read line by line: top-level
+  `version`, `path`, `sha512`, and the `files` list's `url`, `sha512`,
+  `size`): the entry whose `url` is `path` (the first without one), its
+  `sha512` (else the top-level one: base64 of 64 bytes) and `size` (1 byte
+  to 4 GiB); `path` must match `RSI Launcher-Setup-[0-9A-Za-z._+-]{1,40}.exe`.
+  It downloads `https://install.robertsspaceindustries.com/rel/2/<path,
+  URL-escaped>` (https only, also through redirects) into
+  `<prefix>/installer/<path>.part`, asking with `Range` for the bytes it
+  lacks (a whole answer starts over), up to 3 times; checks size and
+  SHA-512, deletes a file that does not match, renames it to `<path>`, and
+  deletes other `RSI Launcher-Setup-*.exe(.part)` files there. A file already
+  there with the right size and hash is kept.
+- *Steam.* Once `state.json` names an installer, `SteamParts` gives the
+  shortcut `exe` `<prefix>/installer/<installer>` (always there) and
+  `start_dir` `<prefix>`.
+- *Launch hook* (vapor, `vos ext launch --shortcut star-citizen/launcher`).
+  It acts on the last argument that is an absolute
+  `<prefix>/installer/RSI Launcher-Setup-<v>.exe`; without one the command
+  passes untouched. It refuses (exit 1, "Star Citizen did not start: its
+  drive isn't connected. Connect the drive, then start it again.") unless
+  `<prefix>` is one of the two places above, resolves to itself (no
+  symlink), and its marker equals the UUID of the filesystem the mount
+  table puts it on. Then it sets `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's
+  prefix is `<prefix>/pfx`) and `UMU_ID=umu-starcitizen` (protonfixes then
+  add PowerShell and the Visual C++ runtime on the first start) in the
+  game's environment, and replaces that argument:
+  - when `<prefix>/pfx/drive_c/Program Files/Roberts Space Industries/RSI Launcher/RSI Launcher.exe`
+    is a file, with that path and `--in-process-gpu --disable-gpu` (the
+    launcher's Electron window can stay blank under gamescope otherwise; it
+    draws in software). It also makes `.../Roberts Space Industries/StarCitizen/LIVE`
+    and its `USER.cfg` (`pl_pit.forceSoftwareCursor = 1`, CRLF) when the
+    folder has no `USER.cfg` in any case;
+  - otherwise (the first start) with `C:\windows\system32\cmd.exe`, `/c`
+    and `Z:<prefix, / as \>\installer\first-start.bat`, after writing
+    `first-start.bat`, `vaporos.reg` and `USER.cfg` into `installer/`
+    (CRLF; each replaced only when it differs). The batch file waits for
+    each step (`start "" /wait`): the setup with `/S` (electron-builder's
+    silent install, per machine into `C:\Program Files\Roberts Space
+    Industries\RSI Launcher`), `reg import` of `vaporos.reg` (REGEDIT4:
+    `HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer`
+    `NoTrayItemsDisplay`=1, so closing the launcher quits it rather than
+    hiding it in a tray gamescope does not show), `StarCitizen\LIVE` and
+    its `USER.cfg` when missing, then the launcher with the flags above
+    (exit 1 when the setup left no launcher). One Proton run does it all.
+    electron-builder's own `--force-run` is not used: it starts the
+    launcher through the Explorer shell as a non-elevated user and returns
+    at once, which under Wine and gamescope may start nothing, and it
+    leaves no step for the registry and USER.cfg.
+- *Status* (root; files in the prefix only through gamerfs): "Its files are
+  on <drive>, which has N GB free.", then "The RSI Launcher is installed."
+  or "Start Star Citizen in Steam: its first start installs the RSI
+  Launcher."; with tone `warning`, a drive that is not connected (or whose
+  UUID is no longer the marker's), another drive picked since the install,
+  and too little memory (the last one also before it is installed).
+- *Remove:* without `purge` nothing goes (the shortcut leaves steam.json).
+  With `purge`, vapor runs `rm -rf --one-file-system --` on the recorded
+  prefix and on the prefix of the drive the setting names, each only while
+  its drive is mounted (a recorded one that is not is the card's reason:
+  "<drive> isn't connected, so the files in VaporOS/star-citizen on it
+  stay."), then root removes `<drive>/VaporOS` if it is empty (`rmdir`). The
+  remove dialog says the game can be more than 100 GB.
+- *Not done:* the umu fallback for an Easy Anti-Cheat that fails under
+  Steam's runtime (a shortcut without a compatibility tool whose hook runs
+  `umu-run` with `PROTONPATH=/usr/share/steam/compatibilitytools.d/proton-cachyos-slr`,
+  `GAMEID=umu-starcitizen` and `WINEPREFIX=<prefix>`) is not built: it
+  needs a second shortcut (another app id, so its art and Sunshine entry
+  change), a Steam Runtime seeded for umu (it otherwise downloads one into
+  vapor's home), and a test on hardware that umu shares Steam's `pfx`. The
+  launcher's own close-to-quit setting is not seeded either.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 

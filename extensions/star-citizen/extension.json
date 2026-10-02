@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "id": "star-citizen",
+  "name": "Star Citizen",
+  "summary": "Adds Star Citizen to Steam. Its first start installs the RSI Launcher, which then downloads the game.",
+  "category": "app",
+  "upstream": {
+    "name": "Roberts Space Industries",
+    "url": "https://robertsspaceindustries.com",
+    "license": "Proprietary"
+  },
+  "caveats": [
+    "Easy Anti-Cheat isn't tested on VaporOS yet.",
+    "Star Citizen wants 16 GB of memory, and 48 GB of memory and swap together. With less, it may stutter or close."
+  ],
+  "copy": {
+    "install": "Star Citizen needs a drive with 150 GB free, formatted as ext4, btrfs, xfs or f2fs. Pick it on its card before the restart that adds it, or it goes on the system drive. VaporOS then downloads the RSI Launcher's installer, and the first start in Steam installs the launcher.",
+    "remove": "Its shortcut leaves Steam. Deleting its downloads also deletes the RSI Launcher and the game from its drive, which can be more than 100 GB."
+  },
+  "requires": ["proton"],
+  "permissions": ["udev"],
+  "steam": {
+    "compat_tool": "proton-cachyos-slr",
+    "shortcuts": [
+      {"key": "launcher", "name": "Star Citizen", "compat_tool": true}
+    ]
+  },
+  "data": [
+    {"name": "games", "where": "library", "min_free_gb": 150, "fs": ["ext4", "btrfs", "xfs", "f2fs"]}
+  ],
+  "downloads": [
+    {"what": "The RSI Launcher", "from": "install.robertsspaceindustries.com", "checked": "publisher-hash", "runs_code": true, "when": "install"},
+    {"what": "PowerShell, which the RSI Launcher uses", "from": "github.com", "checked": "none", "runs_code": true, "when": "launch"},
+    {"what": "Microsoft's Visual C++ runtime", "from": "aka.ms", "checked": "none", "runs_code": true, "when": "launch"}
+  ],
+  "settings": [
+    {"key": "disk", "type": "disk", "label": "Game drive", "help": "Where Star Citizen keeps its game, which needs 150 GB free. Without a game drive, it goes on the system drive. Pick it before the restart that adds Star Citizen: it doesn't move later."}
+  ]
+}

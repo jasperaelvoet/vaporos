@@ -1,0 +1,4 @@
+# VaporOS star-citizen: lets vapor (group input) open the hidraw nodes of
+# VKB (231d), Virpil (3344) and Thrustmaster (044f) sticks and throttles on
+# USB, which Proton reads directly for their full set of axes and buttons.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="231d|3344|044f", GROUP="input", MODE="0660"
