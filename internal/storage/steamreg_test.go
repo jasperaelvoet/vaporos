@@ -10,8 +10,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/steamlock"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -169,6 +171,42 @@ func TestAdoptWaitsForSteamToStop(t *testing.T) {
 	var p pendingLibraries
 	if err := config.ReadJSON(pendingPath(), &p); err != nil || len(p.Pending) != 0 {
 		t.Errorf("still pending: %+v %v", p, err)
+	}
+}
+
+// `vos steam prepare` holds the Steam lock while it rewrites Steam's
+// files: a registration then waits for the next round rather than edit
+// the list under it.
+func TestRegistrationWaitsForTheSteamLock(t *testing.T) {
+	s, fs := newTestService(t)
+	list := steamHome(t)
+	mp := withLibrary(t, s, fs)
+	saved := lockSteam
+	t.Cleanup(func() { lockSteam = saved })
+	lockSteam = func() (func(), error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		return steamlock.Lock(ctx)
+	}
+	held, err := steamlock.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(list)
+	if _, out := call(t, s.handleAdopt, "POST", "/", `{"uuid":"`+sata500+`"}`); out["registered"] != false || out["registration_pending"] != true {
+		t.Fatalf("adopt under the lock: %v", out)
+	}
+	if after, _ := os.ReadFile(list); string(after) != string(before) {
+		t.Fatal("Steam's list changed under the lock")
+	}
+	held()
+	s.applyPending()
+	if got := listedIn(t, list); got[len(got)-1] != mp {
+		t.Errorf("not added once the lock was free: %q", got)
+	}
+	fi, err := os.Lstat(filepath.Join(steamlock.RuntimeDir, steamlock.Name))
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("lock file: %v %v", fi, err)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
+	"github.com/jasperaelvoet/vaporos/internal/steamlock"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -30,7 +31,9 @@ import (
 // until then the library waits in steam-libraries.json, and Run adds it
 // the next time it sees Steam stopped, at the latest on the next boot.
 // Everything is read and written through gamerfs: the home belongs to the
-// gaming user, who could otherwise plant symlinks for vosd to follow.
+// gaming user, who could otherwise plant symlinks for vosd to follow. The
+// lists are edited under the Steam lock (internal/steamlock), which `vos
+// steam prepare` holds while it rewrites Steam's files.
 
 // steamLists are Steam's library lists, relative to the gaming user's
 // home. The first must exist (Steam creates it on its first start); the
@@ -49,7 +52,18 @@ const (
 	// newLibraryDir is created on an adopted disk that holds no library
 	// yet: the folder Steam itself creates when it adds a drive.
 	newLibraryDir = "SteamLibrary"
+	// steamLockWait bounds the wait for the Steam lock. Prepare holds it
+	// for a few seconds at most; a registration that cannot have it waits
+	// in steam-libraries.json for the next round.
+	steamLockWait = 2 * time.Second
 )
+
+// lockSteam takes the Steam lock (a variable for tests).
+var lockSteam = func() (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), steamLockWait)
+	defer cancel()
+	return steamlock.Lock(ctx)
+}
 
 // errNoSteamList means Steam has never run, so there is no list to add to.
 var errNoSteamList = errors.New("Steam has not created its library list yet")
@@ -267,8 +281,14 @@ func canonMnt(p string) string {
 	return p
 }
 
-// addToSteam adds dir to Steam's library lists. Steam must not be running.
+// addToSteam adds dir to Steam's library lists, under the Steam lock.
+// Steam must not be running.
 func addToSteam(dir string) error {
+	unlock, err := lockSteam()
+	if err != nil {
+		return fmt.Errorf("Steam's files are in use: %w", err)
+	}
+	defer unlock()
 	label, contentID := libraryMarker(dir)
 	uid, gid := -1, -1
 	if os.Geteuid() == 0 {
