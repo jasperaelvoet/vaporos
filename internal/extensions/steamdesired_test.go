@@ -310,7 +310,7 @@ func TestRunWritesSteamJSON(t *testing.T) {
 		<-done
 	})
 	waitFor(t, func() bool { return exists(config.ExtSteamPath()) })
-	must(t, writeMessage("Star Citizen did not start because its extension is not active right now."))
+	must(t, writeMessage(launchRecord{Code: codeNotMounted, ID: "star-citizen", Detail: "shortcut star-citizen/launcher: this boot did not mount it"}))
 	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()

@@ -74,6 +74,8 @@ type powerIdle struct {
 type systemMessage struct {
 	Level string `json:"level"`
 	Text  string `json:"text"`
+	// Welcome false keeps a message for the control center alone.
+	Welcome *bool `json:"welcome"`
 }
 
 // apply folds one event into the overlay. It reports whether anything the
@@ -120,9 +122,10 @@ func (o *statusOverlay) apply(ev events.Event, now time.Time) bool {
 		o.pairing = nil
 	case "system.message":
 		var m systemMessage
-		if json.Unmarshal(ev.Data, &m) == nil {
-			o.message, o.messageAt = m.Text, now
+		if json.Unmarshal(ev.Data, &m) != nil || (m.Welcome != nil && !*m.Welcome) {
+			return false
 		}
+		o.message, o.messageAt = m.Text, now
 	case "power.idle":
 		var p powerIdle
 		if json.Unmarshal(ev.Data, &p) == nil {

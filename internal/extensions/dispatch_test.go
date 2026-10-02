@@ -52,25 +52,24 @@ func withHelper(t *testing.T, id string, h Helper) {
 	})
 }
 
-// launchMessages returns the texts `vos ext launch` left for vosd, oldest
-// first.
-func launchMessages(t *testing.T) []string {
+// launchMessages returns the records `vos ext launch` left for vosd,
+// oldest first.
+func launchMessages(t *testing.T) []launchRecord {
 	t.Helper()
 	dir := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), messagesRel)
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []launchRecord
 	for _, e := range ents {
-		var m message
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		must(t, err)
-		must(t, json.Unmarshal(b, &m))
-		if m.Level != "warning" {
-			t.Errorf("%s: level %q", e.Name(), m.Level)
+		r, ok := parseLaunchRecord(b)
+		if !ok {
+			t.Errorf("%s: not a record: %s", e.Name(), b)
 		}
-		out = append(out, m.Text)
+		out = append(out, r)
 	}
 	return out
 }
@@ -148,17 +147,30 @@ func dispatchBox(t *testing.T) (*env, *[]execCall, *[]string) {
 	return e, calls, &hooks
 }
 
+// What Steam sets for the game alone, which helper programs must not get.
+var steamGameEnv = map[string]string{
+	"LD_PRELOAD":                     "/var/home/vapor/.local/share/Steam/ubuntu12_64/gameoverlayrenderer.so",
+	"LD_LIBRARY_PATH":                "/var/home/vapor/.local/share/Steam/ubuntu12_32/steam-runtime/usr/lib",
+	"STEAM_RUNTIME":                  "1",
+	"STEAM_RUNTIME_LIBRARY_PATH":     "/var/home/vapor/.local/share/Steam/ubuntu12_32/steam-runtime/lib",
+	"PRESSURE_VESSEL_FILESYSTEMS_RO": "/usr/share/steam/compatibilitytools.d",
+}
+
 func TestDispatchRunsTheHooks(t *testing.T) {
 	_, calls, hooks := dispatchBox(t)
-	t.Setenv("LD_PRELOAD", "/var/home/vapor/.local/share/Steam/ubuntu12_64/gameoverlayrenderer.so")
-	stripPreload = func() { os.Unsetenv("LD_PRELOAD") }
+	for k, v := range steamGameEnv {
+		t.Setenv(k, v)
+	}
+	t.Setenv("STEAM_COMPAT_DATA_PATH", "/var/mnt/SATA1TB/SteamLibrary/steamapps/compatdata/227300")
+	stripSteamEnv = stripSteamEnvForReal
 	var helperSaw string
 	withHelper(t, "truckersmp", testHelper{id: "truckersmp", calls: hooks, hook: func(ctx context.Context, l *Launch) error {
 		if l.App != 227300 || l.Shortcut != "" || !slices.Equal(l.Argv, ets2Argv) {
 			return errors.New("wrong launch")
 		}
-		// A helper program the hook starts runs without Steam's overlay.
-		out, err := exec.CommandContext(ctx, "sh", "-c", `printf %s "$LD_PRELOAD"`).Output()
+		// A helper program the hook starts runs without Steam's overlay,
+		// libraries and runtime; what else Steam set it keeps.
+		out, err := exec.CommandContext(ctx, "sh", "-c", `printf %s "$LD_PRELOAD$LD_LIBRARY_PATH$STEAM_RUNTIME$STEAM_RUNTIME_LIBRARY_PATH$PRESSURE_VESSEL_FILESYSTEMS_RO|$STEAM_COMPAT_DATA_PATH"`).Output()
 		helperSaw = string(out)
 		l.Argv = append(l.Argv[:len(l.Argv)-1], "/var/home/vapor/.local/share/vaporos/ext/truckersmp/truckersmp-cli.exe")
 		l.Env = append(l.Env, "TRUCKERSMP=1")
@@ -178,11 +190,16 @@ func TestDispatchRunsTheHooks(t *testing.T) {
 	if c.path != ets2Argv[0] || c.argv[len(c.argv)-1] != "/var/home/vapor/.local/share/vaporos/ext/truckersmp/truckersmp-cli.exe" {
 		t.Errorf("exec %+v", c)
 	}
-	if !slices.Contains(c.env, "TRUCKERSMP=1") || !slices.Contains(c.env, "LD_PRELOAD=/var/home/vapor/.local/share/Steam/ubuntu12_64/gameoverlayrenderer.so") {
-		t.Errorf("the game lost Steam's environment: %q", c.env)
+	if !slices.Contains(c.env, "TRUCKERSMP=1") {
+		t.Errorf("the hook's variable is missing: %q", c.env)
 	}
-	if helperSaw != "" {
-		t.Errorf("a helper program got LD_PRELOAD=%q", helperSaw)
+	for k, v := range steamGameEnv {
+		if !slices.Contains(c.env, k+"="+v) {
+			t.Errorf("the game lost Steam's %s: %q", k, c.env)
+		}
+	}
+	if helperSaw != "|/var/mnt/SATA1TB/SteamLibrary/steamapps/compatdata/227300" {
+		t.Errorf("a helper program got %q", helperSaw)
 	}
 
 	// Steam's reaper line names the app when the token is gone.
@@ -231,8 +248,11 @@ func TestDispatchShortcut(t *testing.T) {
 		t.Errorf("hooks %q, calls %d", *hooks, len(*calls))
 	}
 	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonSkipOnce})
-	if rc, msg := runLaunch("/usr/bin/true"); rc != 1 || len(*calls) != 2 || !strings.Contains(msg, "Star Citizen did not start") {
+	if rc, msg := runLaunch("/usr/bin/true"); rc != 1 || len(*calls) != 2 || !strings.Contains(msg, "star-citizen: not-mounted: shortcut star-citizen/launcher") {
 		t.Errorf("exit %d, calls %d: %s", rc, len(*calls), msg)
+	}
+	if recs := launchMessages(t); len(recs) != 1 || recs[0].Code != codeNotMounted || recs[0].ID != "star-citizen" {
+		t.Errorf("records %+v", recs)
 	}
 }
 
@@ -244,11 +264,12 @@ func TestDispatchRefuses(t *testing.T) {
 		return errors.New("the TruckersMP files are out of date. Update them on the TruckersMP card")
 	}})
 	rc, msg := runLaunch("--app", "227300", "/games/ets2")
-	if rc != 1 || len(*calls) != 0 || !strings.Contains(msg, "TruckersMP did not start: the TruckersMP files are out of date") {
+	if rc != 1 || len(*calls) != 0 || !strings.Contains(msg, "truckersmp: hook-failed: the TruckersMP files are out of date") {
 		t.Fatalf("exit %d, calls %d: %s", rc, len(*calls), msg)
 	}
-	if texts := launchMessages(t); len(texts) != 1 || texts[0] != "TruckersMP did not start: the TruckersMP files are out of date. Update them on the TruckersMP card" {
-		t.Fatalf("messages %q", texts)
+	want := launchRecord{Code: codeHookFailed, ID: "truckersmp", Detail: "the TruckersMP files are out of date. Update them on the TruckersMP card"}
+	if recs := launchMessages(t); len(recs) != 1 || recs[0] != want {
+		t.Fatalf("records %+v", recs)
 	}
 
 	// A hook that leaves nothing to run refuses too.
@@ -258,6 +279,9 @@ func TestDispatchRefuses(t *testing.T) {
 	}})
 	if rc, _ := runLaunch("--app", "227300", "/games/ets2"); rc != 1 || len(*calls) != 0 {
 		t.Fatalf("exit %d, calls %d", rc, len(*calls))
+	}
+	if recs := launchMessages(t); len(recs) != 2 || recs[1].Code != codeHookFailed || recs[1].Detail != "its hook left nothing to run" {
+		t.Fatalf("records %+v", recs)
 	}
 
 	// An app no mounted extension hooks just runs, whatever steam.json says.
@@ -270,5 +294,26 @@ func TestDispatchRefuses(t *testing.T) {
 	os.Remove(config.ExtSteamPath())
 	if rc, _ := runLaunch("--app", "227300", "/games/ets2"); rc != 1 || len(*calls) != 2 {
 		t.Fatalf("exit %d, calls %d", rc, len(*calls))
+	}
+}
+
+// Steam stopping a launch while a hook waits (SIGTERM ends the context) is
+// no refusal: nobody waits for that game any more, so vosd is told nothing.
+func TestDispatchStoppedBySteam(t *testing.T) {
+	_, calls, hooks := dispatchBox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	withHelper(t, "truckersmp", testHelper{id: "truckersmp", calls: hooks, hook: func(ctx context.Context, _ *Launch) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+	l, err := parseLaunch([]string{"--app", "227300", "/games/ets2"})
+	must(t, err)
+	var stderr strings.Builder
+	if rc := dispatch(ctx, l, nil, &stderr); rc != 1 || len(*calls) != 0 || !strings.Contains(stderr.String(), "Steam stopped the launch") {
+		t.Fatalf("exit %d, calls %d: %s", rc, len(*calls), stderr.String())
+	}
+	if recs := launchMessages(t); len(recs) != 0 {
+		t.Fatalf("records %+v", recs)
 	}
 }
