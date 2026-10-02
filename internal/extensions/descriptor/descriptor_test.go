@@ -82,6 +82,7 @@ func TestValidateRejects(t *testing.T) {
 		"self require":       func(d *Descriptor) { d.Requires = []string{"coolercontrol"} },
 		"permission":         func(d *Descriptor) { d.Permissions = []string{"everything"} },
 		"repeated perm":      func(d *Descriptor) { d.Permissions = []string{PermService, PermService} },
+		"tmpfiles perm":      func(d *Descriptor) { d.Permissions = []string{PermService, "tmpfiles"} },
 		"service perm":       func(d *Descriptor) { d.Permissions = []string{PermModules} },
 		"unit":               func(d *Descriptor) { d.Services[0].Unit = "../x.service" },
 		"scope":              func(d *Descriptor) { d.Services[0].Scope = "global" },

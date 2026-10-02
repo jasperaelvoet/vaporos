@@ -73,7 +73,6 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/run/vos/ext-trial-ok` | `vos health` | the number of the set whose extension trial passed health this boot (one line, written atomically), so vosd can promote it when health could not (see Health) |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
-| `/run/vos-ext/<id>/` | the extension's `tmpfiles.d` | its runtime directory, the only place in `/run` its `tmpfiles.d` lines may use (see Extensions) |
 | `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
 | `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
@@ -273,8 +272,8 @@ manifest. Each extension is itself immutable: one sealed, read-only image.
 unknown fields rejected; `internal/extensions/descriptor`), and `files/usr/...`,
 copied into the image. Integration logic is Go in `vos`
 (`internal/extensions/<id>`). Non-goals: no `/opt` or `/usr/local` payloads, no
-AUR or DKMS, no `.ko`, no `sysusers.d`, no confext, no plugin stores that run
-code as root.
+AUR or DKMS, no `.ko`, no `sysusers.d` or `tmpfiles.d`, no confext, no plugin
+stores that run code as root.
 
 **Image** (`ext-<id>.raw`): an erofs whose only top-level directory is `usr/`,
 made with `mkfs.erofs -T0 --all-root -U <uuid>`, compressed as the root is
@@ -312,8 +311,11 @@ writes under
 not reviewed as harmless) or `usr/lib/vos/**` except
 `usr/lib/vos/ext/<id>/**`, or anything under `usr/share/vos`, beyond the categories its
 descriptor declares in `permissions` (`service`, `user-service`, `udev`,
-`sysctl`, `modules`, `tmpfiles`, `polkit`, `dbus`, `compat-tool`), with any
-difference between declared and found failing too; ships `sysusers.d`, `*.ko`,
+`sysctl`, `modules`, `polkit`, `dbus`, `compat-tool`), with any
+difference between declared and found failing too; ships `sysusers.d`,
+`tmpfiles.d` (`usr/lib/tmpfiles.d` or `usr/share/user-tmpfiles.d`: a service
+gets its directories from `StateDirectory=`, `RuntimeDirectory=`,
+`CacheDirectory=` and `LogsDirectory=`, and vosd creates the data areas), `*.ko`,
 `hwdb.d`, `ld.so.conf.d`, credentials (`usr/lib/credstore`,
 `usr/lib/credstore.encrypted`: systemd imports sysctl, tmpfiles, sysusers and
 SSH key settings from them), firmware (`usr/lib/firmware`, `updates/`
@@ -324,23 +326,7 @@ GSettings schemas (`usr/lib/gio/modules`, `usr/lib/gdk-pixbuf-2.0`,
 silently not load), network configuration (NetworkManager, networkd,
 nftables, `net.*` sysctls), setuid/setgid files or file capabilities,
 whiteouts or `trusted.overlay.*` xattrs; sets a sysctl key the base or another
-extension sets; has a `tmpfiles.d` line (read as systemd-tmpfiles reads it,
-with only the `%S %C %L %t %T %V %%` specifiers, and refused, not unescaped,
-when a backslash is in its first six fields or in the argument of an `f`,
-`w`, `L` or `C` line, which systemd-tmpfiles unescapes) whose path is outside
-the extension's own areas (`/var/lib/vos/ext/data/<id>/`,
-`/var/home/vapor/.local/share/vaporos/ext/<id>/` and `/run/vos-ext/<id>/`,
-nothing else); whose path, `L` target (relative to the link's directory; by
-default `/usr/share/factory/<path>`) or `C` source (absolute; by default the
-same) ends, as the box resolves it, outside those areas and `/usr` (every
-symlink on the way is followed and `..` goes up from where one led: in `/usr`
-those of the image, the extensions built before it and the base, topmost
-first, and in the areas those the extension's own `L` lines make), whose
-glob (`w e x X r R z Z a A h H`) reaches anywhere else through such a
-symlink, or, for an `L` line, whose link would be made through one; whose
-mode sets setuid or setgid; whose type is `c` or `b` (device nodes) or `t` or
-`T` (extended attributes); or that is an `L` or `C` line with the `~` or `^`
-modifier; has a unit, alias, drop-in or dependency directory whose name ends
+extension sets; has a unit, alias, drop-in or dependency directory whose name ends
 in `-` before `@` or its type (a systemd prefix drop-in applies to every unit
 with that prefix), or that is, or is for, a `.mount`, `.automount`, `.swap`,
 `.slice`, `.scope` or `.device` unit (systemd and generators name these at

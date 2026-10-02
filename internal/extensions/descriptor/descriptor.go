@@ -46,14 +46,13 @@ const (
 	PermUdev        = "udev"         // udev rules
 	PermSysctl      = "sysctl"       // kernel settings (sysctl.d)
 	PermModules     = "modules"      // kernel modules loaded at boot (modules-load.d)
-	PermTmpfiles    = "tmpfiles"     // tmpfiles.d for its own paths
 	PermPolkit      = "polkit"       // polkit rules
 	PermDBus        = "dbus"         // D-Bus system policy or services
 	PermCompatTool  = "compat-tool"  // a Steam compatibility tool
 )
 
 // Permissions lists every category, in the order the UI shows them.
-var Permissions = []string{PermService, PermUserService, PermUdev, PermSysctl, PermModules, PermTmpfiles, PermPolkit, PermDBus, PermCompatTool}
+var Permissions = []string{PermService, PermUserService, PermUdev, PermSysctl, PermModules, PermPolkit, PermDBus, PermCompatTool}
 
 // Descriptor is extension.json.
 type Descriptor struct {

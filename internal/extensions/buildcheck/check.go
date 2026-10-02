@@ -103,7 +103,6 @@ func CheckTree(o Options) *Report {
 	c.checkPermissions()
 	c.checkUnits()
 	c.checkSysctl()
-	c.checkTmpfiles()
 	c.checkELF()
 	c.checkStrip()
 	c.checkOwnFiles()

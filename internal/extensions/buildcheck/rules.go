@@ -21,7 +21,6 @@ var hookDirs = map[string]string{
 	"usr/lib/udev/rules.d":             descriptor.PermUdev,
 	"usr/lib/sysctl.d":                 descriptor.PermSysctl,
 	"usr/lib/modules-load.d":           descriptor.PermModules,
-	"usr/lib/tmpfiles.d":               descriptor.PermTmpfiles,
 	"usr/share/polkit-1/rules.d":       descriptor.PermPolkit,
 	"usr/share/polkit-1/actions":       descriptor.PermPolkit,
 	"usr/share/dbus-1/system.d":        descriptor.PermDBus,
@@ -33,6 +32,11 @@ var hookDirs = map[string]string{
 // with the reason it is safe.
 var reviewedDirs = map[string]string{}
 
+// noTmpfiles is why an image ships no tmpfiles.d: a line can reach any path
+// on the box through symlinks, globs and copies, while a service gets its own
+// directories from systemd and vosd makes the data areas.
+const noTmpfiles = "tmpfiles.d is not allowed in extensions; use StateDirectory= or RuntimeDirectory="
+
 // forbiddenDirs are places only the base may write to, and why.
 var forbiddenDirs = []struct{ dir, why string }{
 	{"usr/local", "usr/local is not part of any image"},
@@ -43,6 +47,8 @@ var forbiddenDirs = []struct{ dir, why string }{
 	{"usr/lib/environment.d", "the session environment belongs to the base"},
 	{"usr/lib/modprobe.d", "module options come only from module_options"},
 	{"usr/lib/sysusers.d", "users and groups belong to the base (use DynamicUser= or add the user there)"},
+	{"usr/lib/tmpfiles.d", noTmpfiles},
+	{"usr/share/user-tmpfiles.d", noTmpfiles},
 	{"usr/lib/kernel", "kernel install hooks belong to the base"},
 	{"usr/lib/initcpio", "initramfs hooks belong to the base"},
 	{"usr/share/libalpm", "pacman hooks belong to the base"},
