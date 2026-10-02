@@ -203,8 +203,8 @@ func TestMergedDirectoriesKeepTheBaseMode(t *testing.T) {
 }
 
 // An image's directories are root's (--all-root), so it cannot merge into
-// a base directory that is someone else's, such as Arch's polkit rules.d
-// (0750 root:polkitd); what the tree's own files say does not matter.
+// a base directory that is someone else's (here a polkit rules.d of group
+// 102); what the tree's own files say does not matter.
 func TestBaseDirectoriesMustBeRoots(t *testing.T) {
 	base := newBase(t)
 	writeTree(t, base, map[string]string{"usr/share/polkit-1/rules.d/": "", "usr/share/doc/base/": ""})

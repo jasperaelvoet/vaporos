@@ -302,9 +302,7 @@ wherever it is) where either has a file or symlink, or one that merges with a
 directory of theirs but has another mode, or with a directory of the base
 that is not root's (the merged directory takes the image's mode and owner,
 and every directory of an image is root's, `--all-root`; root is the owner of
-the base's `/`): such base directories cannot be extended, so polkit rules,
-for one, need a root-owned `usr/share/polkit-1/rules.d` in the base, which
-Arch's polkit package makes `root:polkitd` 0750 (no v1 extension ships any);
+the base's `/`), so a base directory not owned by root cannot be extended;
 writes under
 `usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
 `usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory (one
