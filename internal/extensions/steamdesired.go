@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
@@ -358,8 +359,9 @@ var slotEntry = func(slot string) (*boot.Entry, error) {
 // to roll back to; otherwise only an image built with extensions has the
 // dispatcher, and the updater records each image it writes in
 // slots/<slot>.json, so its slot file must be for the entry's version and
-// list extensions.
-func dispatcherReady(cat *catalog.Catalog) bool {
+// list extensions. current is what steam.json says now, which one ESP
+// read that fails does not change. Under steamMu.
+func (s *Service) dispatcherReady(cat *catalog.Catalog, current bool) bool {
 	if cat == nil || cat.Dispatcher < catalog.Dispatcher {
 		return false
 	}
@@ -367,17 +369,60 @@ func dispatcherReady(cat *catalog.Catalog) bool {
 	if slot != "a" && slot != "b" {
 		return false
 	}
-	other := config.OtherSlot(slot)
+	return s.otherSlotReady(config.OtherSlot(slot), current)
+}
+
+// slotCheck is the last reading of the other slot's boot entry.
+type slotCheck struct {
+	slot  string
+	key   string    // what the updater writes around every change of it
+	at    time.Time // when the ESP was read
+	ready bool
+	known bool
+	errs  int // ESP reads that failed in a row
+}
+
+// slotRecheck is how long a reading of the ESP stands while neither the
+// other slot's file nor update-state.json changes. A variable for tests.
+var slotRecheck = 30 * time.Minute
+
+// otherSlotReady is dispatcherReady's other slot. The minute's check must
+// not read the ESP each time: every stage writes slots/<slot>.json and
+// update-state.json around its change of the entries (also from a
+// shell), so the entry is read again only when either file changed, after
+// slotRecheck, or when the slots may have changed (forgetSlots). A read
+// that fails keeps current; only a second one in a row makes it false.
+func (s *Service) otherSlotReady(other string, current bool) bool {
+	c := &s.slots
+	key := statKey(filepath.Join(config.ExtSlotsDir(), other+".json")) + statKey(config.UpdateStatePath())
+	if c.known && c.slot == other && c.key == key && now().Sub(c.at) < slotRecheck {
+		return c.ready
+	}
 	e, err := slotEntry(other)
 	if err != nil {
-		log.Printf("extensions: slot %s's boot entry: %v", other, err)
-		return false
+		c.errs++
+		log.Printf("extensions: slot %s's boot entry (%d in a row): %v", other, c.errs, err)
+		return c.errs < 2 && current
 	}
-	if e == nil {
-		return true
+	ready := e == nil
+	if e != nil {
+		sl, err := store.ReadSlot(other)
+		ready = err == nil && sl != nil && sl.Version == e.Version && len(sl.Extensions) > 0
 	}
-	sl, err := store.ReadSlot(other)
-	return err == nil && sl != nil && sl.Version == e.Version && len(sl.Extensions) > 0
+	*c = slotCheck{slot: other, key: key, at: now(), ready: ready, known: true}
+	return ready
+}
+
+// forgetSlots makes the next check read the ESP again. Under steamMu.
+func (s *Service) forgetSlots() { s.slots.known = false }
+
+// statKey is a file's size and mtime, "-" when it cannot be read.
+func statKey(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "- "
+	}
+	return fmt.Sprintf("%d:%d ", fi.Size(), fi.ModTime().UnixNano())
 }
 
 // SetSteamRestarter sets what asks for a Steam restart when steam.json or
@@ -420,11 +465,17 @@ func (s *Service) SyncSteam() (bool, error) {
 			return false, err
 		}
 	}
-	b, err := marshalSteamDesired(e.desiredSteam(dispatcherReady(e.catalog)))
+	old, oldErr := os.ReadFile(config.ExtSteamPath())
+	var was struct{ Dispatcher bool }
+	if oldErr == nil && json.Unmarshal(old, &was) != nil {
+		was.Dispatcher = false
+	}
+	d := e.desiredSteam(s.dispatcherReady(e.catalog, was.Dispatcher))
+	b, err := marshalSteamDesired(d)
 	if err != nil {
 		return false, err
 	}
-	if old, err := os.ReadFile(config.ExtSteamPath()); err == nil && bytes.Equal(old, b) {
+	if oldErr == nil && bytes.Equal(old, b) {
 		return false, nil
 	}
 	if err := config.WriteFileAtomic(config.ExtSteamPath(), b, 0o644); err != nil {

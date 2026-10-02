@@ -304,7 +304,8 @@ func TestShortcutIDs(t *testing.T) {
 }
 
 func TestDispatcherReady(t *testing.T) {
-	steamBox(t)
+	e, _ := steamBox(t)
+	s, _ := e.service()
 	cat := loadSteamCatalog(t)
 	entry := func(e *boot.Entry, err error) {
 		slotEntry = func(slot string) (*boot.Entry, error) {
@@ -313,46 +314,99 @@ func TestDispatcherReady(t *testing.T) {
 			}
 			return e, err
 		}
+		s.forgetSlots() // as SlotsChanged does
 	}
 	slotB := func(version string, exts map[string]manifest.Extension) {
 		locked(t, func() error { return store.WriteSlot("b", version, exts) })
 	}
 	proton := map[string]manifest.Extension{"proton": {Name: "ext-proton.raw", Size: 100, SHA256: strings.Repeat("a", 64), FSVerity: strings.Repeat("b", 64), Core: true}}
+	ready := func() bool { return s.dispatcherReady(cat, false) }
 
 	entry(nil, nil)
-	if !dispatcherReady(cat) {
+	if !ready() {
 		t.Error("nothing to roll back to: not ready")
 	}
 	entry(&boot.Entry{Version: otherVersion, Slot: "b"}, nil)
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with an image in slot b nobody recorded")
 	}
 	slotB(otherVersion, map[string]manifest.Extension{})
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with an image without extensions in slot b")
 	}
 	slotB(otherVersion, proton)
-	if !dispatcherReady(cat) {
+	if !ready() {
 		t.Error("an image with extensions in slot b: not ready")
 	}
 	entry(&boot.Entry{Version: "20260701.000000", Slot: "b"}, nil)
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with slot b's file for another version")
 	}
 	entry(nil, errors.New("the ESP is not mounted"))
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready without the ESP")
 	}
 	entry(nil, nil)
 	cat.Dispatcher = 0
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with a catalog without the dispatcher")
 	}
 	cat.Dispatcher = 1
 	writeFile(t, config.ProcCmdline, "quiet\n")
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready outside a slot")
 	}
+}
+
+// The minute's check reads the ESP again only when slot b's file or
+// update-state.json changed, after 30 minutes or after SlotsChanged, and
+// one failed read does not turn the dispatcher off.
+func TestDispatcherReadsTheESPSparingly(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	cat := loadSteamCatalog(t)
+	clock := time.Date(2026, 10, 2, 20, 0, 0, 0, time.UTC)
+	savedNow := now
+	t.Cleanup(func() { now = savedNow })
+	now = func() time.Time { return clock }
+	reads := 0
+	var fail error
+	slotEntry = func(slot string) (*boot.Entry, error) {
+		reads++
+		return &boot.Entry{Version: otherVersion, Slot: slot}, fail
+	}
+	slotB(t, true)
+	check := func(current, want bool, wantReads int, what string) {
+		t.Helper()
+		if got := s.dispatcherReady(cat, current); got != want || reads != wantReads {
+			t.Errorf("%s: ready %v, %d ESP reads; want %v, %d", what, got, reads, want, wantReads)
+		}
+	}
+	check(false, true, 1, "first check")
+	check(true, true, 1, "a minute later")
+	clock = clock.Add(29 * time.Minute)
+	check(true, true, 1, "29 minutes later")
+	writeFile(t, config.UpdateStatePath(), `{"booted":"`+bootedVersion+`"}`)
+	check(true, true, 2, "update-state.json written")
+	slotB(t, false)
+	check(true, false, 3, "slot b's file written")
+	clock = clock.Add(31 * time.Minute)
+	check(false, false, 4, "after 30 minutes")
+	s.forgetSlots()
+	check(false, false, 5, "after SlotsChanged")
+
+	// A read that fails keeps what steam.json says; two in a row turn
+	// it off, and the next good read counts again.
+	slotB(t, true)
+	fail = errors.New("the ESP is not mounted")
+	s.forgetSlots()
+	check(true, true, 6, "one failed read")
+	check(true, false, 7, "two failed reads")
+	fail = nil
+	check(false, true, 8, "the ESP is back")
+	fail = errors.New("the ESP is not mounted")
+	s.forgetSlots()
+	check(true, true, 9, "one failed read again")
 }
 
 func loadSteamCatalog(t *testing.T) *catalog.Catalog {

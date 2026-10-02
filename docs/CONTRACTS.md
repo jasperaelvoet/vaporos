@@ -783,7 +783,13 @@ vosd asks for a Steam restart (see Units, Display policy).
   other slot has no boot entry, or its `slots/<other>.json` is for its
   entry's version and lists extensions (only updaters that know extensions
   write slot files, images built before extensions list none, and every
-  image built with them has the dispatcher); an ESP that cannot be read
+  image built with them has the dispatcher). The minute's check does not
+  read the ESP each time: vosd reads the other slot's entry again only
+  when `slots/<other>.json` or `update-state.json` changed (size or
+  mtime; a stage writes both around its change of the entries, also
+  from a shell), 30 minutes after the last reading, and when its own
+  update service changed the slots. An ESP that cannot be read keeps
+  `dispatcher` as `steam.json` has it, and a second failed read in a row
   makes it false. While it is false no launch options are wrapped, and
   those that were are unwrapped. So staging an image built before
   extensions (a downgrade) turns it false at once, and the Steam restart

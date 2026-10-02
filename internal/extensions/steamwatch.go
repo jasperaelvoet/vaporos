@@ -48,6 +48,9 @@ func (s *Service) WatchSteam(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.slotsKick:
+			s.steamMu.Lock()
+			s.forgetSlots()
+			s.steamMu.Unlock()
 			s.syncSteam()
 		case <-t.C:
 		}

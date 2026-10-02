@@ -70,10 +70,12 @@ type Service struct {
 	options func(ids []string) []string
 
 	// Steam (steamdesired.go, steamwatch.go): steamMu serialises writes of
-	// steam.json; steamRestart (under mu) asks for a Steam restart;
-	// publish sends events; missingAccounts is the last set of accounts
-	// prepare lacked (WatchSteam's goroutine only).
+	// steam.json and guards slots, the last reading of the other slot;
+	// steamRestart (under mu) asks for a Steam restart; publish sends
+	// events; missingAccounts is the last set of accounts prepare lacked
+	// (WatchSteam's goroutine only).
 	steamMu         sync.Mutex
+	slots           slotCheck
 	steamRestart    func(reason string)
 	publish         func(topic string, data any)
 	missingAccounts string
