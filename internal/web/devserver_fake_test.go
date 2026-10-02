@@ -97,6 +97,7 @@ func (f *devFake) routeTable(add fakeAdder) {
 	f.sunshineRoutes(add)
 	f.storageRoutes(add)
 	f.powerRoutes(add)
+	f.extensionsRoutes(add)
 	f.statusRoutes(add)
 }
 
@@ -320,6 +321,7 @@ func (f *devFake) bootState(change func(docs map[string]any)) *devBoot {
 	}
 	if !f.installer {
 		bootNext(docs)
+		bootExtensions(docs)
 	}
 	if change != nil {
 		change(docs)

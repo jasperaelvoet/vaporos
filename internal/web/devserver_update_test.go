@@ -481,7 +481,7 @@ func TestFakeUpdateRollback(t *testing.T) {
 	if nb := asObj(u["next_boot"]); nb["version"] != "20260927.190000" || nb["slot"] != "b" {
 		t.Errorf("next_boot = %v, want the other slot's version", u["next_boot"])
 	}
-	if r := restartReasons(u, map[string]any{}); r["needed"] != true || asStr(asObj(asList(r["reasons"])[0])["kind"]) != "rollback" {
+	if r := restartReasons(u, map[string]any{}, map[string]any{}); r["needed"] != true || asStr(asObj(asList(r["reasons"])[0])["kind"]) != "rollback" {
 		t.Errorf("restart reasons = %v, want a rollback", r)
 	}
 	if code, _ := f.fakeDo(t, hs, "POST", "/update/stage", `{"version":"20260929.143000"}`); code != 200 {

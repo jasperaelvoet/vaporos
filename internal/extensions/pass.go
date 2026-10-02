@@ -33,6 +33,7 @@ type view struct {
 	plan    store.Plan
 	wanted  []string
 	pending *store.Set
+	booted  *store.Set // the set the report names, for its options
 	restart bool
 	version string
 	err     string
@@ -81,6 +82,10 @@ func (s *Service) pass(ctx context.Context, b *booted) (retry bool) {
 		return true
 	}
 	s.record(b, rep, p)
+	// On a trial, helpers set up only what `vos health` passed.
+	if !awaitingHealth(rep) && s.runInstalls(ctx, b.cat, rep) {
+		retry = true
+	}
 
 	if !s.fetchOther(ctx, b) {
 		retry = true
@@ -128,9 +133,14 @@ func (s *Service) record(b *booted, rep *store.BootReport, p store.Plan) {
 		e, ok := b.cat.Get(id)
 		return ok && sealed(e)
 	})
+	var booted *store.Set
+	if rep.Set != "" {
+		booted, _ = store.ReadSet(rep.Set)
+	}
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.view = view{cat: b.cat, rep: rep, plan: p, wanted: wanted, pending: pending, restart: restart, version: b.version}
+	s.view = view{cat: b.cat, rep: rep, plan: p, wanted: wanted, pending: pending, booted: booted, restart: restart, version: b.version}
 	if s.noVerity {
 		s.view.err = noVerityText
 	}
@@ -466,6 +476,7 @@ func (s *Service) fetchable(e catalog.Entry) (ok, later bool) {
 }
 
 func (s *Service) fetchStart(e catalog.Entry, forBooted bool) {
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.receiving = time.Time{}
@@ -475,6 +486,7 @@ func (s *Service) fetchStart(e catalog.Entry, forBooted bool) {
 }
 
 func (s *Service) fetchProgress(e catalog.Entry, forBooted bool, done int64) {
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.receiving = now()
@@ -484,6 +496,7 @@ func (s *Service) fetchProgress(e catalog.Entry, forBooted bool, done int64) {
 }
 
 func (s *Service) fetchEnd(e catalog.Entry, forBooted bool) {
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.receiving = time.Time{}

@@ -77,6 +77,7 @@ var fakeResources = map[string]string{
 	"power":             "/power",
 	"install-probe":     "/install/probe",
 	"install-status":    "/install/status",
+	"extensions":        "/extensions",
 }
 
 // defaultPreset is what TestDevServer serves without VOS_WEB_PRESET.

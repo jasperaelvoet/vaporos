@@ -25,6 +25,9 @@ type statusSources struct {
 	display  func() display.Info
 	update   func() update.View
 	power    func() power.Summary
+	// extensions reports whether a restart would try the extensions'
+	// pending set; nil leaves the kind out.
+	extensions func() bool
 }
 
 // statusView is GET /status (docs/CONTRACTS.md). A part that fails is
@@ -45,7 +48,7 @@ type restartView struct {
 }
 
 type restartReason struct {
-	Kind    string `json:"kind"` // "update", "rollback" or "display"
+	Kind    string `json:"kind"` // "update", "rollback", "display" or "extensions"
 	Version string `json:"version,omitempty"`
 }
 
@@ -72,15 +75,19 @@ func (src statusSources) view(ctx context.Context) statusView {
 	part("display", func() { x := src.display(); v.Display = &x })
 	part("update", func() { x := src.update(); v.Update = &x })
 	part("power", func() { x := src.power(); v.Power = &x })
+	ext := false
+	if src.extensions != nil {
+		part("extensions", func() { ext = src.extensions() })
+	}
 	wg.Wait()
-	v.Restart = restartFor(v.Update, v.Display)
+	v.Restart = restartFor(v.Update, v.Display, ext)
 	return v
 }
 
 // restartFor says why a restart is wanted: the entry it would start is not
-// the running one (newer: an update, else a rollback), or the virtual
-// display waits for one.
-func restartFor(u *update.View, d *display.Info) restartView {
+// the running one (newer: an update, else a rollback), the virtual display
+// waits for one, or it would try a change to the extensions.
+func restartFor(u *update.View, d *display.Info, ext bool) restartView {
 	r := restartView{Reasons: []restartReason{}}
 	if u != nil && u.NextBoot != nil {
 		kind := "rollback"
@@ -91,6 +98,9 @@ func restartFor(u *update.View, d *display.Info) restartView {
 	}
 	if d != nil && d.RebootNeeded {
 		r.Reasons = append(r.Reasons, restartReason{Kind: "display"})
+	}
+	if ext {
+		r.Reasons = append(r.Reasons, restartReason{Kind: "extensions"})
 	}
 	r.Needed = len(r.Reasons) > 0
 	return r

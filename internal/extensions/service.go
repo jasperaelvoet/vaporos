@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/events"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
@@ -64,8 +65,10 @@ type Service struct {
 	down error
 
 	// options renders the module options of a set's ids from their
-	// settings; nil until an extension has any.
+	// settings (moduleOptions).
 	options func(ids []string) []string
+
+	cc ccState // the control center's side (routes.go)
 }
 
 // NewService returns the extensions service; Run does the work.
@@ -73,7 +76,7 @@ func NewService(cfg *config.Config) *Service {
 	if cfg == nil {
 		cfg = config.Defaults()
 	}
-	return &Service{
+	s := &Service{
 		cfg:      cfg,
 		kick:     make(chan struct{}, 1),
 		wake:     make(chan struct{}, 1),
@@ -82,7 +85,10 @@ func NewService(cfg *config.Config) *Service {
 		damaged:  map[string]bool{},
 		bad:      map[string]bool{},
 		full:     map[string]int64{},
+		cc:       newCCState(events.Publish),
 	}
+	s.options = s.moduleOptions
+	return s
 }
 
 // booted is the running image: its catalog (in the read-only root, so it
@@ -131,11 +137,22 @@ func (s *Service) Run(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
+	s.mu.Lock()
+	s.view.cat, s.view.version = b.cat, b.version // the document lists them before the first pass
+	s.mu.Unlock()
 	if rep, err := store.LoadBootReport(); err == nil {
 		makeDataAreas(rep)
 	}
-	var rehash sync.WaitGroup
+	var rehash, publisher sync.WaitGroup
 	defer rehash.Wait()
+	pctx, stopPublishing := context.WithCancel(ctx)
+	publisher.Add(1)
+	go func() {
+		defer publisher.Done()
+		s.publishLoop(pctx)
+	}()
+	defer publisher.Wait()
+	defer stopPublishing()
 	failures := 0
 	for first := true; ; first = false {
 		retry := s.pass(ctx, b)
@@ -206,8 +223,9 @@ func (s *Service) retryAll() {
 }
 
 // Busy keeps the PC awake while an image's bytes arrive (from the first
-// until the download and its seal end, unless none came for busyStall) and
-// while the mounted images are re-read.
+// until the download and its seal end, unless none came for busyStall),
+// while the mounted images are re-read and while a helper sets an
+// extension up.
 func (s *Service) Busy() (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -218,5 +236,5 @@ func (s *Service) Busy() (bool, string) {
 }
 
 func (s *Service) busyLocked() bool {
-	return s.rehashing || (!s.receiving.IsZero() && now().Sub(s.receiving) < busyStall)
+	return s.rehashing || s.cc.helpers > 0 || (!s.receiving.IsZero() && now().Sub(s.receiving) < busyStall)
 }

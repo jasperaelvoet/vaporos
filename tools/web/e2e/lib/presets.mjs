@@ -126,6 +126,12 @@ export const PRESETS = [
   { name: 'installer-source-error', group: 'installer', installer: true, pages: [{ path: '/setup?code=ABCD-EFGH' }] },
   { name: 'installer-two-vaporos', group: 'installer', installer: true, pages: [{ path: '/setup?code=ABCD-EFGH' }] },
   { name: 'installer-failed', group: 'installer', installer: true, pages: [{ path: '/setup?code=ABCD-EFGH' }] },
+  // GET /extensions (internal/web/fixtures/base/extensions.json): an image
+  // downloading, a change waiting for a restart (GET /status lists the
+  // restart kind extensions), and extensions that need attention.
+  { name: 'extensions-installing', group: 'extensions', topics: ['home', 'system'] },
+  { name: 'extensions-restart', group: 'extensions', topics: ['home', 'system'] },
+  { name: 'extensions-attention', group: 'extensions', topics: ['home', 'system'] },
 ];
 
 // The presets smoke runs at 1440 light as well as at 390 dark.
