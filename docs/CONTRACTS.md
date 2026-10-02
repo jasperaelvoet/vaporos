@@ -72,6 +72,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/` | vosd, initramfs, `vos health` | the extension store, sets and trial state (see Extensions) |
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
+| `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
 | `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
 | `/run/vos/medium/vos/` | initramfs (live) | ISO contents: root.erofs, vmlinuz, initramfs.img, manifest.json(.sig) |
@@ -397,8 +398,11 @@ or more (longer than any valid one) is skipped.
 
 **Boot** (the initramfs hook, after `/state`, `/var` and `/etc` are mounted;
 never in live mode; never `vos_die`):
-1. Before mounting vos_data (after e2fsck), it sets the ext4 `verity` feature
-   if missing (`tune2fs -O verity`). A failure is reason `no-verity`, nothing more.
+1. Before mounting vos_data (after e2fsck), it loads ext4 (`modprobe -q ext4`)
+   and, only if the running kernel's ext4 has verity
+   (`/sys/fs/ext4/features/verity`), sets the ext4 `verity` feature if missing
+   (`tune2fs -O verity`). A kernel without it, or a failure (no `tune2fs`
+   included), is reason `no-verity`, nothing more.
 2. It picks the set: nothing with `vos.ext=0` or `skip-once` (removed first,
    whichever applies); else, while systemd-boot counts this boot
    (`LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f` in efivars: an OS
@@ -406,18 +410,25 @@ never in live mode; never `vos_die`):
    later; else `pending` if its `tries` > 0 (decremented, temp + rename + sync,
    before anything mounts; if that fails, `enabled`); else `enabled`, mounting
    only images whose `<id> <fsverity>` line is in `proven`. A link counts only
-   as exactly `sets/<n>`, resolved in the store on vos_data, to a set with an
-   `ids` file; `tries` other than one digit is 0. With no set to use, nothing
-   mounts and the mode stays `enabled` (or `os-trial`) with reason `no-set`.
+   as exactly `sets/<n>` (`<n>` of 1 to 9 digits, no leading zero), resolved in
+   the store on vos_data, to a set directory with an `ids` file, none of the
+   store, `sets/`, the set and `ids` a symlink. Every other file the hook reads
+   in the store (`tries`, `modprobe.conf`, `proven`, the images) counts only
+   as a regular file, never through a symlink; `tries` other than one digit
+   is 0, and a `tries.new` left over is removed before the new one is
+   written. With no set to use, nothing mounts and the mode stays `enabled`
+   (or `os-trial`) with reason `no-set`.
 3. For each id of the set in catalog order (lines of `ids` that are not ids
    are ignored), the first check that fails is the skip reason: a requirement
    that did not mount (`requires`, also when it is not in the set),
-   `images/<sha256>.raw` missing (`missing`) or of another size (`size`), not in
-   `proven` (`unproven`, `enabled` mode only), `fsverity measure` other than the
-   catalog (`fsverity`), `mount -t erofs -o ro` failing, also through
+   `images/<sha256>.raw` missing or a symlink (`missing`) or of another size
+   (`size`), not in `proven` (`unproven`, `enabled` mode only), `fsverity
+   measure` other than the catalog (`fsverity`), `mount -t erofs -o ro` failing, also through
    `losetup -r` (`mount`), no `usr/` directory (`no-usr`, unmounted). Ids the
-   catalog does not list follow as `not-in-catalog`. Each image mounts at the
-   next `/run/vos/x/<n>` (n = 1, 2, ...).
+   catalog does not list follow as `not-in-catalog`; an `ext` line whose
+   sha256 or fsverity is not 64 lowercase hex digits, or whose size is not a
+   decimal number, lists nothing. Each image mounts at the next
+   `/run/vos/x/<n>` (n = 1, 2, ...).
 4. With at least one mounted, `/usr` becomes `overlay -o ro,lowerdir=/run/vos/x/<k>/usr:...:<root>/usr`
    (no upper; mounted with `LIBMOUNT_FORCE_MOUNT2=always`), the images in
    reverse catalog order, so an extension sits above those it requires. If
@@ -438,7 +449,9 @@ never in live mode; never `vos_die`):
    `fsverity`, `unproven`, `mount`, `no-usr`, `overlay`. A missing file reads
    as mode `off` with reason `no-report` (vos's own token). Readers test for a
    token, never compare the whole `reason`. Everything at runtime (generator,
-   Steam settings, the control center) follows this file, not intent.
+   Steam settings, the control center) follows this file, not intent. The same
+   goes to the serial console as one line (see "Serial lines").
+7. On a trial boot it arms a hardware watchdog (see Trial and promotion).
 
 **Trial and promotion:** a boot in mode `pending` is an extension trial. `vos
 health` treats it like a counted boot with a fallback: a failure exits 1 (so
@@ -453,6 +466,16 @@ on its own trial, and a promoter that knows the desired set's fingerprint
 promotes only when what booted has it. On trial boots (mode `pending`, or an
 OS trial) the generator gives `vos-health.service` a drop-in with
 `JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
+
+A trial that hangs the kernel or PID 1 must still reboot, so it uses up a try.
+CachyOS blacklists the hardware watchdog drivers, which only stops their
+aliases, so on trial boots (mode `pending`, or any boot systemd-boot counts,
+also with `vos.ext=0` or `skip-once`) the initramfs, after the report, loads
+them by name (`modprobe -q` `sp5100_tco`, `iTCO_wdt` and `wdat_wdt`, carried
+in the initramfs where the kernel has them) and writes
+`/run/systemd/system.conf.d/50-vos-trial.conf` (`[Manager]`
+`RuntimeWatchdogSec=60s`), which PID 1 reads when it starts. Other boots load
+no watchdog driver and leave `RuntimeWatchdogSec` as CachyOS ships it.
 
 **Reconcile** (vosd, at start and after every change, under the lock): the
 desired set is `wanted` ∪ core, with their requirements, as the booted catalog
@@ -611,6 +634,7 @@ input and exits cleanly on SIGTERM (releasing DRM master).
 - `VOS-READY mode=os version=<v> ip=<ip> code=<code|->`: the installed system is up (the code appears only when auth.json is missing).
 - `VOS-INSTALL state=<done|failed> message=<…>`
 - `VOS-HEALTH result=<ok|degraded|failed> failures=<a; b|->`: written by `vos health` on every installed boot.
+- `VaporOS: extensions mode=<mode> set=<n|-> mounted=<id,...|-> skipped=<id:reason,...|-> reason=<reason,...|->`: written by the initramfs on every installed boot, with `/run/vos/extensions.json`'s words (its space-separated reasons joined with commas, so every field is one word).
 
 vosd re-emits `VOS-READY` whenever its IP changes.
 
@@ -623,7 +647,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 - `seatd.service.d/vos.conf`
 - `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
 - every `systemd-sysext*` and `systemd-confext*` unit is masked: only the initramfs merges extensions
-- `system.conf.d/vos.conf` also sets `RuntimeWatchdogSec=60s` (a no-op without a hardware watchdog)
+- no `RuntimeWatchdogSec` in `/usr/lib/systemd/system.conf.d`: CachyOS blacklists the hardware watchdog drivers, and only trial boots load them and set it, in `/run/systemd/system.conf.d/50-vos-trial.conf` (see Extensions, Trial and promotion)
 
 No keypress, local or from a Moonlight client, reboots or suspends the box: `ctrl-alt-del.target` is masked, `system.conf.d/vos.conf` sets `CtrlAltDelBurstAction=none`, `sysctl.d/99-vos.conf` sets `kernel.sysrq = 0`, and logind ignores the reboot, suspend and hibernate keys (and their long presses).
 

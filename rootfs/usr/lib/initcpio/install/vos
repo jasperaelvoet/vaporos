@@ -25,6 +25,11 @@ build() {
     add_module exfat
     add_module 'ntfs3?'
     add_module 'nls_utf8?'
+    # The hardware watchdogs a trial boot arms (the hook loads them by name;
+    # CachyOS blacklists them, so nothing else does). Whichever the kernel has.
+    add_module 'sp5100_tco?'
+    add_module 'iTCO_wdt?'
+    add_module 'wdat_wdt?'
 
     add_binary losetup
     add_binary mount
@@ -50,8 +55,9 @@ Mounts the VaporOS root: a read-only erofs image with /etc overlaid and
 found on the disk vos.disk= names), or the same image from the ISO under a
 tmpfs overlay (live, vos.mode=live), on a written stick, a CD, or as an .iso
 file on exFAT, FAT or NTFS (Ventoy). Installed, it lays the extension
-images the store holds read-only over /usr once fs-verity vouches for them.
-Never opens a shell: failures reboot, and a slot that cannot start is marked
-bad so the other one starts next; an extension that cannot mount is skipped.
+images the store holds read-only over /usr once fs-verity vouches for them,
+and arms a hardware watchdog on a trial boot. Never opens a shell: failures
+reboot, and a slot that cannot start is marked bad so the other one starts
+next; an extension that cannot mount is skipped.
 HELPEOF
 }

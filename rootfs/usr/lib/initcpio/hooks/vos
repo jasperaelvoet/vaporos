@@ -23,7 +23,8 @@
 #
 # VaporOS never shows a shell. Anything that goes wrong here reboots the
 # machine instead. A freshly updated slot is on trial, and systemd-boot's
-# boot counting falls back to the previous one after three tries; any other
+# boot counting falls back to the previous one after three tries (a trial
+# boot arms a hardware watchdog, so a hang counts as a try too); any other
 # slot that cannot start is marked bad on the ESP first, so the other slot
 # starts next rather than this one forever. The reason goes to the serial
 # console and to the screen.
@@ -306,6 +307,29 @@ vos_mount_disk() {
         "$root/etc" || vos_die "cannot overlay /etc"
 
     vos_mount_extensions "$root"
+    vos_trial_watchdog
+}
+
+# vos_counted: does systemd-boot count this boot (an OS update on trial)?
+vos_counted() {
+    [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ]
+}
+
+# vos_trial_watchdog: a trial boot (an extension trial, or one systemd-boot
+# counts) that hangs the kernel or PID 1 must still reboot, so it uses up a
+# try instead of hanging for good. CachyOS blacklists the hardware watchdog
+# drivers, which only stops their aliases: loaded by name they load. PID 1
+# reads /run/systemd/system.conf.d when it starts. Other boots stay as
+# CachyOS ships them.
+vos_trial_watchdog() {
+    local m
+    [ "$vos_ext_mode" = pending ] || vos_counted || return 0
+    for m in sp5100_tco iTCO_wdt wdat_wdt; do
+        modprobe -q "$m" >/dev/null 2>&1
+    done
+    mkdir -p /run/systemd/system.conf.d
+    printf '# Written by the VaporOS initramfs: this boot is on trial.\n[Manager]\nRuntimeWatchdogSec=60s\n' \
+        >/run/systemd/system.conf.d/50-vos-trial.conf
 }
 
 # Extensions (docs/CONTRACTS.md "Extensions", Boot): sealed erofs images in
@@ -317,8 +341,17 @@ vos_mount_disk() {
 
 # vos_ext_verity DEV: the store seals images with fs-verity, which needs
 # ext4's verity feature. New installs are made with it; older ones get it
-# here, while DEV is not mounted yet. Failing costs only the extensions.
+# here, while DEV is not mounted yet, and only from a kernel whose ext4 has
+# verity: no other kernel changes the filesystem. Failing costs only the
+# extensions.
 vos_ext_verity() {
+    # /sys/fs/ext4 appears once ext4 is loaded (or built in).
+    modprobe -q ext4 >/dev/null 2>&1
+    if [ ! -e /sys/fs/ext4/features/verity ]; then
+        vos_ext_noverity=1
+        vos_serial "this kernel's ext4 has no fs-verity; no extension can mount"
+        return 1
+    fi
     tune2fs -l "$1" 2>/dev/null | grep -Eq '^Filesystem features:.* verity( |$)' && return 0
     msg ":: enabling fs-verity on $1"
     tune2fs -O verity "$1" >/dev/null 2>&1
@@ -348,9 +381,17 @@ vos_ext_hex() {
     [ "${#1}" -eq 64 ]
 }
 
+# vos_ext_file PATH: is PATH a regular file of the store itself? A symlink
+# could name anything, the initramfs's own files included.
+vos_ext_file() {
+    [ -f "$1" ] && [ ! -L "$1" ]
+}
+
 # vos_ext_link NAME: prints the set the store's link NAME (enabled or
-# pending) points at. Links are relative, sets/<n>, and resolved against the
-# store on vos_data, never against the initramfs's own /var.
+# pending) points at. Links are relative, sets/<n> with <n> a decimal
+# number, and resolved against the store on vos_data, never against the
+# initramfs's own /var: no step on the way (the store, sets/, the set, its
+# ids) may be a symlink.
 vos_ext_link() {
     local t
     t="$(readlink "$vos_ext/$1" 2>/dev/null)" || return 1
@@ -359,16 +400,18 @@ vos_ext_link() {
         *) return 1 ;;
     esac
     case "$t" in
-        "" | *[!0-9A-Za-z_-]*) return 1 ;;
+        "" | 0* | *[!0-9]*) return 1 ;;
     esac
-    [ -f "$vos_ext/sets/$t/ids" ] || return 1
+    [ "${#t}" -le 9 ] || return 1
+    [ ! -L "$vos_ext" ] && [ ! -L "$vos_ext/sets" ] && [ ! -L "$vos_ext/sets/$t" ] &&
+        [ -d "$vos_ext/sets/$t" ] && vos_ext_file "$vos_ext/sets/$t/ids" || return 1
     echo "$t"
 }
 
 # vos_ext_tries SET: prints SET's tries; anything but one digit is 0.
 vos_ext_tries() {
     local t=""
-    [ -f "$vos_ext/sets/$1/tries" ] && read -r t <"$vos_ext/sets/$1/tries"
+    vos_ext_file "$vos_ext/sets/$1/tries" && read -r t <"$vos_ext/sets/$1/tries"
     case "$t" in
         [0-9]) echo "$t" ;;
         *) echo 0 ;;
@@ -376,9 +419,11 @@ vos_ext_tries() {
 }
 
 # vos_ext_decrement SET TRIES: takes a try off SET before any of it mounts,
-# so a set that hangs the boot still uses its tries up.
+# so a set that hangs the boot still uses its tries up. A tries.new left
+# over is removed first: writing through it could follow a symlink.
 vos_ext_decrement() {
     local d="$vos_ext/sets/$1"
+    rm -f "$d/tries.new"
     if echo "$(($2 - 1))" >"$d/tries.new" && sync && mv -f "$d/tries.new" "$d/tries" && sync; then
         return 0
     fi
@@ -408,7 +453,7 @@ vos_ext_choose() {
     # systemd-boot counts this boot: an OS update on trial. It covers the
     # enabled set at this catalog's digests; a pending set waits, so a
     # trial never tries two new things at once.
-    if [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ]; then
+    if vos_counted; then
         vos_ext_mode=os-trial
         vos_ext_set="$(vos_ext_link enabled)" || vos_ext_why no-set
         return
@@ -450,11 +495,12 @@ vos_ext_try() {
         esac
     done
     r=missing
-    [ -f "$img" ] || return
+    vos_ext_file "$img" || return
     r=size
     [ "$(stat -c %s "$img" 2>/dev/null)" = "$size" ] || return
     r=unproven
-    [ "$vos_ext_mode" != enabled ] || grep -qxF "$id $fsv" "$vos_ext/proven" 2>/dev/null || return
+    [ "$vos_ext_mode" != enabled ] ||
+        { vos_ext_file "$vos_ext/proven" && grep -qxF "$id $fsv" "$vos_ext/proven" 2>/dev/null; } || return
     # The kernel checks every block it reads against this digest.
     r=fsverity
     m="$(fsverity measure "$img" 2>/dev/null)"
@@ -486,7 +532,7 @@ vos_ext_try() {
 # reaches a kernel module.
 vos_ext_modprobe() {
     local f="$vos_ext/sets/$vos_ext_set/modprobe.conf" line rest mod pv param val ok out="" n id sha fsv
-    [ -f "$f" ] || return 0
+    vos_ext_file "$f" || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
             "options "*) rest="${line#options }" ;;
@@ -525,7 +571,7 @@ EOF
 # digests, set names and reasons all come from alphabets checked above (or
 # are fixed words), so nothing needs escaping.
 vos_ext_report() {
-    local j sep="" n id sha fsv r list="" skipped=""
+    local j sep="" n id sha fsv r w why="" list="" skipped=""
     j="{\"mode\":\"$vos_ext_mode\",\"set\":\"$vos_ext_set\",\"tries_left\":$vos_ext_left,\"reason\":\"$vos_ext_reason\",\"mounted\":["
     while read -r n id sha fsv; do
         [ -n "$id" ] || continue
@@ -547,8 +593,12 @@ $2
 EOF
     mkdir -p /run/vos
     printf '%s]}\n' "$j" >/run/vos/extensions.json.new && mv -f /run/vos/extensions.json.new /run/vos/extensions.json
+    # One word per field on the serial line: the reasons joined with commas.
+    for w in $vos_ext_reason; do
+        why="${why:+$why,}$w"
+    done
     msg ":: extensions (${vos_ext_mode}): ${list:-none mounted}"
-    vos_serial "extensions mode=${vos_ext_mode} set=${vos_ext_set:--} mounted=${list:--} skipped=${skipped:--} reason=${vos_ext_reason:--}"
+    vos_serial "extensions mode=${vos_ext_mode} set=${vos_ext_set:--} mounted=${list:--} skipped=${skipped:--} reason=${why:--}"
 }
 
 # vos_mount_extensions ROOT: mounts the images of the set this boot uses and
