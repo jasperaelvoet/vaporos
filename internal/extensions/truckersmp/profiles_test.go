@@ -1,6 +1,7 @@
 package truckersmp
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,7 +24,8 @@ func TestCopyProfiles(t *testing.T) {
 	os.Symlink("/etc/shadow", native(ets2, "4A6F", "link.sii"))
 
 	// No game installed yet.
-	r := copyProfiles(config.GamerHome, libraries())
+	var stderr bytes.Buffer
+	r := copyProfiles(config.GamerHome, libraries(), &stderr)
 	if err := r.err(); err == nil || !strings.Contains(err.Error(), "isn't installed") || len(r.copied) != 0 {
 		t.Fatalf("%+v %v", r, err)
 	}
@@ -34,7 +36,7 @@ func TestCopyProfiles(t *testing.T) {
 	mkdir(t, filepath.Join(b.disk, prefixUserRel(ets2)))
 	prefix := filepath.Join(b.disk, prefixDocsRel(ets2), "profiles")
 	write(t, filepath.Join(prefix, "426F62", "profile.sii"), "the prefix's own")
-	r = copyProfiles(config.GamerHome, libraries())
+	r = copyProfiles(config.GamerHome, libraries(), &stderr)
 	if !slices.Equal(r.copied, []string{"ETS2: 4A6F"}) {
 		t.Errorf("copied %q", r.copied)
 	}
@@ -54,16 +56,31 @@ func TestCopyProfiles(t *testing.T) {
 
 	// Once ATS ran: its profile follows; ETS2's are there already.
 	mkdir(t, filepath.Join(b.steam, prefixUserRel(ats)))
-	r = copyProfiles(config.GamerHome, libraries())
+	r = copyProfiles(config.GamerHome, libraries(), &stderr)
 	if !slices.Equal(r.copied, []string{"ATS: 416C"}) || r.err() != nil {
 		t.Errorf("%+v %v", r, r.err())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr %q", stderr.String())
+	}
+
+	// A copy that fails: the card reads a plain sentence, the log why.
+	write(t, native(ats, "4E6577", "profile.sii"), "new")
+	os.RemoveAll(filepath.Join(b.steam, prefixDocsRel(ats)))
+	write(t, filepath.Join(b.steam, prefixDocsRel(ats)), "a file where the folder goes")
+	r = copyProfiles(config.GamerHome, libraries(), &stderr)
+	if err := r.err(); err == nil || err.Error() != "Couldn't copy the ATS profiles. Try again." {
+		t.Errorf("err %v", err)
+	}
+	if !strings.Contains(stderr.String(), "truckersmp: copying the ATS profiles: ") || !strings.Contains(stderr.String(), "not a directory") {
+		t.Errorf("stderr %q", stderr.String())
 	}
 
 	// Nothing to copy at all.
 	for _, g := range games {
 		os.RemoveAll(filepath.Join(config.GamerHome, nativeDocsRel(g)))
 	}
-	if err := copyProfiles(config.GamerHome, libraries()).err(); err == nil || !strings.Contains(err.Error(), "no Linux profiles") {
+	if err := copyProfiles(config.GamerHome, libraries(), &stderr).err(); err == nil || !strings.Contains(err.Error(), "no Linux profiles") {
 		t.Errorf("err %v", err)
 	}
 }

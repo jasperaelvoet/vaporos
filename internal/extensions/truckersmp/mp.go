@@ -35,6 +35,7 @@ type mp struct {
 	runtime string // XDG_RUNTIME_DIR
 	home    string // the home data area
 	now     func() time.Time
+	libs    func() []string // the Steam libraries
 	// handOff starts the transient unit.
 	handOff func(ctx context.Context, args []string) error
 	tell    func(code string)
@@ -43,7 +44,7 @@ type mp struct {
 func newMP() *mp {
 	return &mp{
 		procs: ownProcs(), pid: os.Getpid(), flag: flagPath(), runtime: runtimeDir(), home: homeDir(),
-		now: time.Now, handOff: systemdRun, tell: tell,
+		now: time.Now, libs: libraries, handOff: systemdRun, tell: tell,
 	}
 }
 
@@ -51,11 +52,13 @@ func newMP() *mp {
 // the code (extensions.WriteMessage), which vosd words with messageText
 // (Helper.MessageText), so the person reads only VaporOS's sentences.
 const (
-	msgRunning  = "running-" // and the game's key
-	msgStarting = "starting"
-	msgUpdating = "updating"
-	msgHandOff  = "handoff-failed"
-	msgNoSteam  = "steam-silent"
+	msgRunning      = "running-"       // and the game's key
+	msgNotInstalled = "not-installed-" // and the game's key
+	msgNoFiles      = "no-files-"      // and the game's key
+	msgStarting     = "starting"
+	msgUpdating     = "updating"
+	msgHandOff      = "handoff-failed"
+	msgNoSteam      = "steam-silent"
 )
 
 // messageText is the sentence for one of those codes.
@@ -70,9 +73,15 @@ func messageText(code string) (string, bool) {
 	case msgNoSteam:
 		return "TruckersMP didn't start because Steam didn't respond. Try again once Steam is open.", true
 	}
-	if key, ok := strings.CutPrefix(code, msgRunning); ok {
-		if g, ok := gameByKey(key); ok {
-			return fmt.Sprintf("TruckersMP didn't start because %s is already running. Quit it, then start TruckersMP again.", g.short), true
+	for _, c := range []struct{ prefix, format string }{
+		{msgRunning, "TruckersMP didn't start because %s is already running. Quit it, then start TruckersMP again."},
+		{msgNotInstalled, "TruckersMP didn't start because %s isn't installed. Install it in Steam, then try again."},
+		{msgNoFiles, "TruckersMP didn't start because its files for %s aren't downloaded yet. Try again once its card in VaporOS says it's ready."},
+	} {
+		if key, ok := strings.CutPrefix(code, c.prefix); ok {
+			if g, ok := gameByKey(key); ok {
+				return fmt.Sprintf(c.format, g.short), true
+			}
 		}
 	}
 	return "", false
@@ -102,8 +111,11 @@ func (m *mp) run(ctx context.Context, g game) error {
 	if _, err := os.Lstat(filepath.Join(m.runtime, "systemd", "transient", gameproc.HandoffUnit)); err == nil {
 		return told(m.tell, msgStarting)
 	}
+	if gameLibrary(m.libs(), g) == "" {
+		return told(m.tell, msgNotInstalled+g.key)
+	}
 	if err := quickCheck(m.home, g); err != nil {
-		return told(m.tell, msgUpdating)
+		return told(m.tell, notReady(m.home, g))
 	}
 	f, err := writeFlag(m.flag, g, m.now())
 	if err != nil {
@@ -118,6 +130,24 @@ func (m *mp) run(ctx context.Context, g game) error {
 		return told(m.tell, msgHandOff)
 	}
 	return nil
+}
+
+// notReady is the code for g's files failing the quick check: not
+// downloaded for g yet, or updating. A sync that changes files deletes
+// the manifest first, so a manifest without g means no sync has fetched
+// g's files; without a manifest, g's core library in MODDIR tells that
+// one did.
+func notReady(home string, g game) string {
+	if m, err := readManifest(home); err == nil && m != nil {
+		if m.has(g) {
+			return msgUpdating
+		}
+		return msgNoFiles + g.key
+	}
+	if _, err := os.Lstat(filepath.Join(home, filesRel, g.coreDLL)); err == nil {
+		return msgUpdating
+	}
+	return msgNoFiles + g.key
 }
 
 // runningGame is the key of ETS2 or ATS when Steam runs either:

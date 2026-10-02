@@ -46,10 +46,7 @@ func (h *Helper) startLocked() {
 		})
 		h.mu.Lock()
 		h.job, h.seenAt = nil, time.Time{}
-		h.lastErr = ""
-		if err != nil {
-			h.lastErr = err.Error()
-		}
+		h.lastErr = err
 		h.mu.Unlock()
 		if err != nil {
 			log.Printf("truckersmp: sync: %v", err)
@@ -110,32 +107,58 @@ func runSyncAsGamer(ctx context.Context, progress func(done, total int64)) error
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	readProgress(out, progress)
+	short := readProgress(out, progress)
 	err = cmd.Wait()
 	var exit *exec.ExitError
+	code := -1
+	if errors.As(err, &exit) {
+		code = exit.ExitCode()
+	}
 	switch {
 	case err == nil:
 		return nil
-	case errors.As(err, &exit) && exit.ExitCode() == exitSyncRunning:
+	case code == exitSyncRunning:
 		return nil // someone else's sync does the work
+	case code == exitUnchecked:
+		return &syncFailed{kind: errUnchecked, text: lastLine(stderr.String())}
+	case code == exitNoSpace && short > 0:
+		return &spaceError{short: short}
 	}
 	return fmt.Errorf("%w: %s", err, lastLine(stderr.String()))
 }
 
-// readProgress passes on each {"bytes","total"} line; anything else is
-// skipped.
-func readProgress(r io.Reader, progress func(done, total int64)) {
+// syncFailed is a sync that failed in a way the card words by itself
+// (kind); its text is the sync's own last line, for the journal.
+type syncFailed struct {
+	kind error
+	text string
+}
+
+func (e *syncFailed) Error() string { return e.text }
+func (e *syncFailed) Unwrap() error { return e.kind }
+
+// readProgress passes on each {"bytes","total"} line and returns the
+// last {"short":N} line's bytes (0 without one); anything else is skipped.
+func readProgress(r io.Reader, progress func(done, total int64)) (short int64) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		var p struct {
-			Bytes int64 `json:"bytes"`
-			Total int64 `json:"total"`
+			Bytes *int64 `json:"bytes"`
+			Total *int64 `json:"total"`
+			Short *int64 `json:"short"`
 		}
-		if json.Unmarshal(sc.Bytes(), &p) == nil && p.Bytes >= 0 && p.Total >= 0 {
-			progress(p.Bytes, p.Total)
+		if json.Unmarshal(sc.Bytes(), &p) != nil {
+			continue
+		}
+		switch {
+		case p.Bytes != nil && p.Total != nil && *p.Bytes >= 0 && *p.Total >= 0:
+			progress(*p.Bytes, *p.Total)
+		case p.Short != nil && *p.Short > 0:
+			short = *p.Short
 		}
 	}
 	io.Copy(io.Discard, r)
+	return short
 }
 
 // tailBuffer keeps the last 4 KiB written to it.

@@ -20,8 +20,13 @@ const usage = `usage: vos ext truckersmp <command>, as the gaming user
   setup                      copy the injector into the home data area
   copy-profiles              copy the Linux builds' profiles into the Proton prefixes`
 
-// Exit codes besides 0, 1 and 2 (bad arguments).
-const exitSyncRunning = 3
+// Exit codes besides 0, 1 and 2 (bad arguments): the sync failures the
+// card words by itself.
+const (
+	exitSyncRunning = 3 // another sync holds the lock
+	exitUnchecked   = 4 // errUnchecked
+	exitNoSpace     = 5 // a spaceError, after a {"short":N} line
+)
 
 // cli is `vos ext truckersmp`. Every command works in the gaming user's
 // files, so none runs as root.
@@ -43,9 +48,18 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	switch cmd, rest := args[0], args[1:]; {
 	case cmd == "sync" && len(rest) == 0:
 		err := newSyncer(stdout).run(ctx)
-		if errors.Is(err, errSyncRunning) {
+		var space *spaceError
+		switch {
+		case errors.Is(err, errSyncRunning):
 			fmt.Fprintln(stderr, err)
 			return exitSyncRunning
+		case errors.Is(err, errUnchecked):
+			fmt.Fprintln(stderr, err)
+			return exitUnchecked
+		case errors.As(err, &space):
+			fmt.Fprintf(stdout, "{\"short\":%d}\n", space.short)
+			fmt.Fprintln(stderr, err)
+			return exitNoSpace
 		}
 		return report(stderr, err)
 	case cmd == "mp" && len(rest) == 1:
@@ -70,7 +84,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	case cmd == "setup" && len(rest) == 0:
 		return report(stderr, ensureInjector(injectorSource(), filepath.Join(homeDir(), binRel)))
 	case cmd == "copy-profiles" && len(rest) == 0:
-		r := copyProfiles(homeDir(), libraries())
+		r := copyProfiles(homeDir(), libraries(), stderr)
 		for _, c := range r.copied {
 			fmt.Fprintln(stdout, "copied", c)
 		}

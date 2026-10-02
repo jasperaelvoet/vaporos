@@ -118,6 +118,9 @@ type tmpServer struct {
 	files    map[string][]byte // FilePath without the leading slash
 	types    map[string]string
 	badCore  string            // an MD5 the API gives core_ets2mp.dll instead of its own
+	noCore   bool              // the API gives core_ets2mp.dll no MD5
+	noHead   bool              // HEAD is refused
+	chunked  bool              // GETs say no length
 	gets     map[string]int    // by path
 	ranges   int               // GETs with a Range header
 	cut      map[string]int    // path → bytes after which the next GET breaks off
@@ -150,8 +153,11 @@ func (s *tmpServer) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/v2/version":
 		dll := sum(s.files["core_ets2mp.dll"])
-		if s.badCore != "" {
+		switch {
+		case s.badCore != "":
 			dll = s.badCore
+		case s.noCore:
+			dll = ""
 		}
 		v := map[string]any{"name": s.version, "numeric": "7790", "stage": "Release",
 			"ets2mp_checksum":        map[string]string{"dll": strings.ToUpper(dll), "adb": "x"},
@@ -176,6 +182,10 @@ func (s *tmpServer) serve(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		if r.Method == http.MethodHead && s.noHead {
+			http.Error(w, "no", http.StatusMethodNotAllowed)
+			return
+		}
 		if r.Method == http.MethodGet {
 			s.gets[p]++
 			if r.Header.Get("Range") != "" {
@@ -187,6 +197,14 @@ func (s *tmpServer) serve(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				w.Write(content[:n])
 				return // the connection ends early
+			}
+			if s.chunked {
+				w.WriteHeader(http.StatusOK)
+				for i := 0; i < len(content); i += 1000 {
+					w.Write(content[i:min(i+1000, len(content))])
+					w.(http.Flusher).Flush()
+				}
+				return
 			}
 		}
 		http.ServeContent(w, r, p, time.Time{}, bytes.NewReader(content))

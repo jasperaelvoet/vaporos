@@ -4,18 +4,22 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
 func testSyncer(srv *tmpServer, installed ...string) (*syncer, *bytes.Buffer) {
 	var out bytes.Buffer
 	s := &syncer{home: homeDir(), client: srv.srv.Client(), progress: &out,
-		games: func() []string { return installed }, now: time.Now}
+		games: func() []string { return installed }, now: time.Now,
+		free: func(string) (int64, error) { return 1 << 40, nil }}
 	return s, &out
 }
 
@@ -155,11 +159,173 @@ func TestSyncCrossChecksCore(t *testing.T) {
 	srv := newTMPServer(t)
 	srv.badCore = strings.Repeat("0", 32)
 	s, _ := testSyncer(srv, "ets2")
-	if err := s.run(context.Background()); err == nil || !strings.Contains(err.Error(), "core_ets2mp.dll") {
+	if err := s.run(context.Background()); !errors.Is(err, errUnchecked) || !strings.Contains(err.Error(), "core_ets2mp.dll") {
 		t.Fatalf("err %v", err)
 	}
 	if srv.getCount("core_ets2mp.dll") != 0 {
 		t.Error("downloaded anyway")
+	}
+}
+
+// Without the API's checksum for a wanted game's core library nothing is
+// downloaded; a game nobody wants needs none.
+func TestSyncNeedsCoreChecksum(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	srv.noCore = true
+	s, _ := testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); !errors.Is(err, errUnchecked) || !strings.Contains(err.Error(), "no checksum") {
+		t.Fatalf("err %v", err)
+	}
+	if len(srv.gets) != 0 {
+		t.Errorf("gets %v", srv.gets)
+	}
+	s, _ = testSyncer(srv, "ats")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatalf("ATS alone: %v", err)
+	}
+}
+
+// A file of no bytes is downloaded as one, and kept by the next sync.
+func TestSyncEmptyFile(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	srv.add("data/empty.txt", "ets2", nil)
+	s, _ := testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(modFilePath("data/empty.txt")); err != nil || fi.Size() != 0 {
+		t.Fatalf("%v %v", fi, err)
+	}
+	if err := quickCheck(homeDir(), games[0]); err != nil {
+		t.Error(err)
+	}
+	s, _ = testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err != nil || srv.getCount("data/empty.txt") != 1 {
+		t.Errorf("%v, gets %v", err, srv.gets)
+	}
+	// Also when the server does not answer HEAD.
+	os.Remove(modFilePath("data/empty.txt"))
+	srv.noHead = true
+	s, _ = testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(modFilePath("data/empty.txt")); err != nil {
+		t.Error(err)
+	}
+}
+
+// A server that refuses HEAD: the GET's length gives the file's size,
+// for the progress total and the bounds.
+func TestSyncWithoutHead(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	srv.noHead = true
+	s, out := testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.total != 15000 || !strings.HasSuffix(out.String(), "{\"bytes\":15000,\"total\":15000}\n") {
+		t.Errorf("total %d, progress %q", s.total, out.String())
+	}
+
+	// A file over the cap is refused before a byte of it is written.
+	newBox(t)
+	saved := [2]int64{maxFileSize, maxTotalSize}
+	t.Cleanup(func() { maxFileSize, maxTotalSize = saved[0], saved[1] })
+	maxFileSize = 6000
+	s, _ = testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err == nil || !strings.Contains(err.Error(), "larger") {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homeDir(), partialRel, sum(srv.files["ui/ui.zip"])+".part")); err == nil {
+		t.Error("a file over the cap was written")
+	}
+
+	// So is a total over the cap.
+	newBox(t)
+	maxFileSize, maxTotalSize = saved[0], 10000
+	s, _ = testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err == nil || !strings.Contains(err.Error(), "larger") {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homeDir(), partialRel, sum(srv.files["ui/ui.zip"])+".part")); err == nil || s.done > 10000 {
+		t.Errorf("done %d", s.done)
+	}
+
+	// Without any length the bytes themselves are counted.
+	newBox(t)
+	srv.chunked = true
+	s, _ = testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err == nil || !strings.Contains(err.Error(), "larger") {
+		t.Fatalf("err %v", err)
+	}
+	if s.done > 10000 {
+		t.Errorf("downloaded %d bytes", s.done)
+	}
+}
+
+// A sync that does not fit with store.ExtReserve to spare downloads
+// nothing, counting what an earlier sync left; one that learns a size
+// from the GET checks again.
+func TestSyncFreeSpace(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	s, _ := testSyncer(srv, "ets2")
+	var asked string
+	s.free = func(p string) (int64, error) { asked = p; return store.ExtReserve + 1000, nil }
+	var space *spaceError
+	if err := s.run(context.Background()); !errors.As(err, &space) || space.short != 14000 {
+		t.Fatalf("err %v", err)
+	}
+	if asked != homeDir() || len(srv.gets) != 0 {
+		t.Errorf("asked %q, gets %v", asked, srv.gets)
+	}
+	write(t, filepath.Join(homeDir(), partialRel, sum(srv.files["ui/ui.zip"])+".part"), string(srv.files["ui/ui.zip"][:3000]))
+	s, _ = testSyncer(srv, "ets2")
+	s.free = func(string) (int64, error) { return store.ExtReserve + 1000, nil }
+	if err := s.run(context.Background()); !errors.As(err, &space) || space.short != 11000 {
+		t.Fatalf("with a partial download: %v", err)
+	}
+
+	newBox(t)
+	srv.noHead = true
+	s, _ = testSyncer(srv, "ets2")
+	s.free = func(string) (int64, error) { return store.ExtReserve + 5000, nil }
+	if err := s.run(context.Background()); !errors.As(err, &space) || space.short != 2000 {
+		t.Fatalf("sized by the GET: %v", err)
+	}
+
+	// Free space nobody can tell passes.
+	s, _ = testSyncer(srv, "ets2")
+	s.free = func(string) (int64, error) { return -1, errors.New("statfs") }
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// `sync` tells vosd by its exit code what the card says by itself.
+func TestSyncExitCodes(t *testing.T) {
+	b := newBox(t)
+	b.install(b.disk, games[0])
+	srv := newTMPServer(t)
+	srv.noCore = true
+	var out, errb bytes.Buffer
+	if code := runCLI([]string{"sync"}, &out, &errb); code != exitUnchecked {
+		t.Fatalf("no checksum: %d %s", code, errb.String())
+	}
+	srv.noCore = false
+	saved := freeSpace
+	t.Cleanup(func() { freeSpace = saved })
+	freeSpace = func(string) (int64, error) { return 0, nil }
+	out.Reset()
+	if code := runCLI([]string{"sync"}, &out, &errb); code != exitNoSpace {
+		t.Fatalf("no space: %d %s", code, errb.String())
+	}
+	if want := fmt.Sprintf("{\"short\":%d}\n", 15000+store.ExtReserve); !strings.HasSuffix(out.String(), want) {
+		t.Errorf("stdout %q", out.String())
 	}
 }
 

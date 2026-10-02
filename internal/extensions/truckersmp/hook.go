@@ -38,7 +38,15 @@ func (h *Helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 		return nil
 	}
 	i := exeIndex(l.Argv, g)
-	if i < 0 || !takeFlag(flagPath(), g, now()) {
+	if i < 0 {
+		// The Linux build cannot load the mod. Its flag goes, so a later
+		// single-player start stays single-player.
+		if buildIndex(l.Argv, "linux_x64", strings.TrimSuffix(g.exe, ".exe")) >= 0 && takeFlag(flagPath(), g, now()) {
+			return fmt.Errorf("%s isn't set to run with Proton. Restart VaporOS and try again.", g.short)
+		}
+		return nil
+	}
+	if !takeFlag(flagPath(), g, now()) {
 		return nil
 	}
 	home := homeDir()
@@ -57,14 +65,18 @@ func (h *Helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 // exeIndex is where g's Windows executable (GAMEDIR/bin/win_x64/<exe>) is
 // in a launch's command, -1 when it is not there: Steam's command for
 // the Linux build, an installer step or anything else is not rewritten.
-func exeIndex(argv []string, g game) int {
+func exeIndex(argv []string, g game) int { return buildIndex(argv, "win_x64", g.exe) }
+
+// buildIndex is where an absolute GAMEDIR/bin/<build>/<exe> is in argv
+// (any case), -1 when it is not there.
+func buildIndex(argv []string, build, exe string) int {
 	for i, a := range argv {
 		if !filepath.IsAbs(a) {
 			continue
 		}
 		dir, name := filepath.Split(filepath.Clean(a))
 		dir = filepath.Clean(dir)
-		if strings.EqualFold(name, g.exe) && strings.EqualFold(filepath.Base(dir), "win_x64") &&
+		if strings.EqualFold(name, exe) && strings.EqualFold(filepath.Base(dir), build) &&
 			strings.EqualFold(filepath.Base(filepath.Dir(dir)), "bin") {
 			return i
 		}

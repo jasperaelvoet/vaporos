@@ -23,8 +23,14 @@ type copyResult struct {
 	found   bool     // any Linux profile at all
 }
 
-func copyProfiles(home string, libs []string) copyResult {
+// copyProfiles copies the profiles; why a copy failed goes to stderr, the
+// card gets a plain sentence.
+func copyProfiles(home string, libs []string, stderr io.Writer) copyResult {
 	var r copyResult
+	failed := func(g game, err error) {
+		fmt.Fprintf(stderr, "truckersmp: copying the %s profiles: %v\n", g.short, err)
+		r.note(fmt.Sprintf("Couldn't copy the %s profiles. Try again.", g.short))
+	}
 	for _, g := range games {
 		src := filepath.Join(home, nativeDocsRel(g), "profiles")
 		names, err := profileNames(src)
@@ -43,7 +49,7 @@ func copyProfiles(home string, libs []string) copyResult {
 		}
 		dst := filepath.Join(lib, prefixDocsRel(g), "profiles")
 		if err := os.MkdirAll(dst, 0o755); err != nil {
-			r.note(fmt.Sprintf("Couldn't copy the %s profiles (%v). Try again.", g.short, err))
+			failed(g, err)
 			continue
 		}
 		for _, n := range names {
@@ -51,7 +57,7 @@ func copyProfiles(home string, libs []string) copyResult {
 				continue // the prefix has one of that name: it stays
 			}
 			if err := copyTree(filepath.Join(src, n), dst, n); err != nil {
-				r.note(fmt.Sprintf("Couldn't copy the %s profiles (%v). Try again.", g.short, err))
+				failed(g, err)
 				break
 			}
 			r.copied = append(r.copied, g.short+": "+n)

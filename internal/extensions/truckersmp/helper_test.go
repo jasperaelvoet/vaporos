@@ -40,35 +40,57 @@ func TestSteamParts(t *testing.T) {
 		t.Errorf("got\n%+v\nwant\n%+v", p, want)
 	}
 
-	// The branch asked for; anything else in the file is ignored.
-	write(t, branchPath(x.DataDir), `{"at":"2026-10-02T20:00:00Z","apps":{"227300":"temporary_1_61","440":"temporary_1_1","270880":"public; x"}}`)
-	req := extensions.BetaRequest{Branch: "temporary_1_61", Request: "20261002T200000.000000000"}
-	if p := h.Steam(x); !reflect.DeepEqual(p.Beta, map[uint32]extensions.BetaRequest{227300: req}) {
-		t.Errorf("beta %v", p.Beta)
+	// The branches asked for, each with its own request; anything else in
+	// the file is ignored.
+	write(t, branchPath(x.DataDir), `{"apps":{
+		"227300":{"branch":"temporary_1_61","request":"20261002T200000.000000000","latest":"1.62.0.5s"},
+		"270880":{"branch":"","request":"20261003T080000.500000000","latest":"1.62.0.1s"},
+		"440":{"branch":"temporary_1_1","request":"x"},
+		"1":{"branch":"public; x","request":"x"}}}`)
+	want.Beta = map[uint32]extensions.BetaRequest{
+		227300: {Branch: "temporary_1_61", Request: "20261002T200000.000000000"},
+		270880: {Branch: "", Request: "20261003T080000.500000000"},
 	}
-	// A new switch is a new request.
-	write(t, branchPath(x.DataDir), `{"at":"2026-10-03T08:00:00.5Z","apps":{"227300":"temporary_1_61"}}`)
-	if p := h.Steam(x); p.Beta[227300].Request != "20261003T080000.500000000" {
-		t.Errorf("beta %v", p.Beta)
+	for range 2 {
+		if p := h.Steam(x); !reflect.DeepEqual(p.Beta, want.Beta) {
+			t.Errorf("beta %v", p.Beta)
+		}
+	}
+	for _, bad := range []string{
+		`{"apps":{"227300":{"branch":"public; x","request":"r1"}}}`,
+		`{"apps":{"227300":{"branch":"temporary_1_61","request":""}}}`,
+		`{"apps":{"227300":{"branch":"temporary_1_61","request":"-r"}}}`,
+		`{"apps":{"227300":{"branch":"temporary_1_61","request":"r1","latest":"new"}}}`,
+		`{"at":"2026-10-02T20:00:00Z","apps":{"227300":"temporary_1_61"}}`,
+	} {
+		write(t, branchPath(x.DataDir), bad)
+		if p := h.Steam(x); p.Beta != nil {
+			t.Errorf("%s: beta %v", bad, p.Beta)
+		}
 	}
 }
 
-// branchHelper is a helper whose version API says TruckersMP supports
-// ETS2 1.61 and ATS 1.61.
-func branchHelper() *Helper {
+// branchHelper is a helper whose version API answers what sup says.
+func branchHelper(sup *versionInfo) *Helper {
 	h := newHelper()
-	h.fetchAPI = func(context.Context) (*versionInfo, error) {
-		return &versionInfo{Name: "0.7.7.9", SupportedETS2: "1.61.1.1s", SupportedATS: "1.61.3.1s"}, nil
-	}
+	h.fetchAPI = func(context.Context) (*versionInfo, error) { c := *sup; return &c, nil }
 	return h
 }
 
 func TestSwitchBranch(t *testing.T) {
 	b := newBox(t)
-	h := branchHelper()
+	sup := &versionInfo{Name: "0.7.7.9", SupportedETS2: "1.61.1.1s", SupportedATS: "1.61.3.1s"}
+	h := branchHelper(sup)
 	x := testExt()
 	ctx := context.Background()
 	run := func(name string) error { return h.Action(ctx, x, name, nil) }
+	// TruckersMP moves on: the helper asks the API again.
+	support := func(ets2, ats string) {
+		sup.SupportedETS2, sup.SupportedATS = ets2, ats
+		h.mu.Lock()
+		h.api = nil
+		h.mu.Unlock()
+	}
 
 	if err := run("switch-branch"); err == nil || !strings.Contains(err.Error(), "Neither ETS2 nor ATS is installed") {
 		t.Fatalf("nothing installed: %v", err)
@@ -82,28 +104,83 @@ func TestSwitchBranch(t *testing.T) {
 		t.Fatalf("supported already: %v", err)
 	}
 
-	// Steam updated ETS2 past TruckersMP; ATS is where TruckersMP is.
-	b.log(b.disk, games[0], "1.62.0.5s")
+	// Steam updated ETS2 two versions past TruckersMP; ATS is where
+	// TruckersMP is.
+	b.log(b.disk, games[0], "1.63.0.5s")
 	b.install(b.steam, games[1])
 	b.log(b.steam, games[1], "1.61.3.1s")
 	if err := run("switch-branch"); err != nil {
 		t.Fatal(err)
 	}
-	if got := readBranch(x.DataDir); !reflect.DeepEqual(got, map[uint32]string{227300: "temporary_1_61"}) {
-		t.Fatalf("branch %v", got)
-	}
-	// On the branch, ETS2 runs 1.61 again; a second switch for ATS keeps
-	// ETS2 where it is.
-	b.log(b.disk, games[0], "1.61.1.1s")
-	b.log(b.steam, games[1], "1.62.0.1s")
-	if err := run("switch-branch"); err != nil {
-		t.Fatal(err)
-	}
-	if got := readBranch(x.DataDir); !reflect.DeepEqual(got, map[uint32]string{227300: "temporary_1_61", 270880: "temporary_1_61"}) {
-		t.Fatalf("branch %v", got)
+	got := readBranch(x.DataDir)
+	ets2 := got[227300]
+	if len(got) != 1 || ets2.Branch != "temporary_1_61" || ets2.Latest != "1.63.0.5s" || !requestRe.MatchString(ets2.Request) {
+		t.Fatalf("branch %+v", got)
 	}
 	if fi, err := os.Stat(branchPath(x.DataDir)); err != nil || fi.Mode().Perm() != 0o644 {
 		t.Errorf("branch.json %v %v", fi, err)
+	}
+	// The request stays the same at every look.
+	for range 2 {
+		if r := h.Steam(x).Beta[227300]; r != (extensions.BetaRequest{Branch: "temporary_1_61", Request: ets2.Request}) {
+			t.Fatalf("beta %+v", r)
+		}
+	}
+
+	// On the branch, ETS2 runs 1.61 again; a second switch for ATS keeps
+	// ETS2's request, so a branch picked in Steam since stays.
+	b.log(b.disk, games[0], "1.61.1.1s")
+	b.log(b.steam, games[1], "1.62.0.1s")
+	time.Sleep(time.Millisecond)
+	if err := run("switch-branch"); err != nil {
+		t.Fatal(err)
+	}
+	got = readBranch(x.DataDir)
+	ats := got[270880]
+	if got[227300] != ets2 || ats.Branch != "temporary_1_61" || ats.Latest != "1.62.0.1s" || ats.Request == ets2.Request {
+		t.Fatalf("branch %+v", got)
+	}
+	if err := run("switch-branch"); err == nil || err.Error() != "ETS2 and ATS already run a version TruckersMP supports." {
+		t.Fatalf("nothing to switch: %v", err)
+	}
+	if again := readBranch(x.DataDir); !reflect.DeepEqual(again, got) {
+		t.Fatalf("branch changed: %+v", again)
+	}
+
+	// TruckersMP supports ETS2 1.62, older than its latest 1.63: ETS2
+	// moves to that branch. ATS's 1.62 is its latest: it goes back to it.
+	support("1.62.1.1s", "1.62.0.1s")
+	time.Sleep(time.Millisecond)
+	if err := run("switch-branch"); err != nil {
+		t.Fatal(err)
+	}
+	got = readBranch(x.DataDir)
+	if e := got[227300]; e.Branch != "temporary_1_62" || e.Latest != "1.63.0.5s" || e.Request == ets2.Request {
+		t.Errorf("ETS2 %+v", e)
+	}
+	if a := got[270880]; a.Branch != "" || a.Latest != "1.62.0.1s" || a.Request == ats.Request {
+		t.Errorf("ATS %+v", a)
+	}
+	if p := h.Steam(x); p.Beta[270880].Branch != "" || p.Beta[270880].Request != got[270880].Request {
+		t.Errorf("beta %+v", p.Beta)
+	}
+
+	// TruckersMP catches up with ETS2 too.
+	support("1.63.0.5s", "1.62.0.1s")
+	if err := run("switch-branch"); err != nil {
+		t.Fatal(err)
+	}
+	if e := readBranch(x.DataDir)[227300]; e.Branch != "" {
+		t.Errorf("ETS2 %+v", e)
+	}
+	// Steam later updates ATS past TruckersMP again: held anew.
+	b.log(b.steam, games[1], "1.63.0.1s")
+	time.Sleep(time.Millisecond)
+	if err := run("switch-branch"); err != nil {
+		t.Fatal(err)
+	}
+	if a := readBranch(x.DataDir)[270880]; a.Branch != "temporary_1_62" || a.Latest != "1.63.0.1s" {
+		t.Errorf("ATS %+v", a)
 	}
 
 	if err := run("latest-branch"); err != nil {
@@ -242,5 +319,14 @@ func TestRunSyncAsGamerReadsProgress(t *testing.T) {
 	write(t, filepath.Join(dir, "runuser"), "#!/bin/sh\necho 'another sync of the TruckersMP files is running' >&2\nexit 3\n")
 	if err := runSyncAsGamer(context.Background(), func(int64, int64) {}); err != nil {
 		t.Errorf("a sync already running: %v", err)
+	}
+	write(t, filepath.Join(dir, "runuser"), "#!/bin/sh\necho 'no checksum for core_ets2mp.dll' >&2\nexit 4\n")
+	if err := runSyncAsGamer(context.Background(), func(int64, int64) {}); !errors.Is(err, errUnchecked) || err.Error() != "no checksum for core_ets2mp.dll" {
+		t.Errorf("unchecked: %v", err)
+	}
+	write(t, filepath.Join(dir, "runuser"), "#!/bin/sh\necho '{\"short\":3221225472}'\necho 'not enough free space' >&2\nexit 5\n")
+	var space *spaceError
+	if err := runSyncAsGamer(context.Background(), func(int64, int64) {}); !errors.As(err, &space) || space.short != 3<<30 {
+		t.Errorf("no space: %v", err)
 	}
 }
