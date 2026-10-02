@@ -16,9 +16,8 @@ const (
 	StateNotInThisVersion = "not-in-this-version" // wanted, but the booted image's catalog does not list it
 )
 
-// Status is the extensions as vosd sees them after its last pass.
-// Provisional: the control center's milestone serves it over the API and
-// settles its shape in docs/CONTRACTS.md.
+// Status is the extensions as vosd sees them after its last pass; the
+// control center's document (Document, GET /extensions) is built from it.
 type Status struct {
 	Version       string            `json:"version"` // the booted image's
 	Mode          string            `json:"mode"`    // the boot report's

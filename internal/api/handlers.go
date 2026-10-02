@@ -110,6 +110,21 @@ func (s *Server) checkPassword(w http.ResponseWriter, r *http.Request, password 
 	return pwRight
 }
 
+// Reauth checks the admin password a signed-in request carries for a
+// change that asks for it again (an extension that runs as root), under
+// the login limit as POST /auth/password does. It reports whether it
+// matched; otherwise it has answered: 403 for a wrong password, 429 or
+// 503 from the limit, 409 while no admin password is set.
+func (s *Server) Reauth(w http.ResponseWriter, r *http.Request, password string) bool {
+	switch s.checkPassword(w, r, password) {
+	case pwRight:
+		return true
+	case pwWrong:
+		Error(w, http.StatusForbidden, "the password is wrong")
+	}
+	return false
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req passwordRequest
 	if err := ReadJSON(r, &req); err != nil {

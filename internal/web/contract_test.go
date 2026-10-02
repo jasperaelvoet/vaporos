@@ -26,6 +26,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/power"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
@@ -116,11 +117,13 @@ var fakeTypes = map[string]func() any{
 	},
 	"install-probe":  func() any { return new(install.ProbeResult) },
 	"install-status": func() any { return new(install.Status) },
+	"extensions":     func() any { return new(extensions.Document) },
 }
 
 // eventTopics are the topics vosd publishes (grep Publish in internal/).
 var eventTopics = []string{"update.progress", "update.state", "install.progress", "session.begin", "session.end",
-	"pairing.pending", "pairing.state", "sunshine.state", "display.changed", "power.idle", "system.message"}
+	"pairing.pending", "pairing.state", "sunshine.state", "display.changed", "power.idle", "system.message",
+	"extensions.state"}
 
 func testFixtures(t *testing.T) *fixtureSet {
 	t.Helper()
@@ -132,7 +135,9 @@ func testFixtures(t *testing.T) *fixtureSet {
 }
 
 // appendixB is every preset of MASTER-PLAN Appendix B and every script,
-// plus rollback-forward (a newer next_boot with nothing staged).
+// plus rollback-forward (a newer next_boot with nothing staged) and the
+// extensions' (an image downloading, a change waiting for a restart, and
+// extensions that need attention).
 var appendixB = map[string][]string{
 	"presets": {"idle", "headless", "streaming", "pairing-1", "pairing-2", "keep-awake", "busy-web", "idle-countdown",
 		"no-wol", "empty", "ssh-on", "signed-out", "first-run",
@@ -141,13 +146,14 @@ var appendixB = map[string][]string{
 		"no-gpu", "sunshine-starting", "sunshine-stopped", "sunshine-unreachable", "reboot-needed",
 		"disk-low", "storage-missing", "storage-pending", "logs-empty", "logs-error",
 		"installer-code", "installer-waived", "installer-one-disk", "installer-no-disk",
-		"installer-source-error", "installer-two-vaporos", "installer-failed"},
+		"installer-source-error", "installer-two-vaporos", "installer-failed",
+		"extensions-installing", "extensions-restart", "extensions-attention"},
 	"scripts": {"stream", "stream-end", "pair", "update", "power-off", "wake", "reset"},
 }
 
 var (
 	heroStates   = []string{"ready", "streaming", "updating", "fault-no-gpu", "starting", "fault-stopped", "fault-not-answering", "fault-unknown", "restart-needed"}
-	restartKinds = []string{"rollback", "next", "display"} // state.js pendingReasons: a staged update is not one
+	restartKinds = []string{"rollback", "next", "display", "extensions"} // state.js pendingReasons: a staged update is not one
 	cardIDs      = []string{"pair", "idle-soon", "update-progress", "update-ready", "update-available", "update-failed", "update-stopped", "cant-check", "low-space", "cant-wake"}
 )
 
@@ -764,7 +770,7 @@ type realRoute struct {
 func realRoutes(t *testing.T) []realRoute {
 	t.Helper()
 	var out []realRoute
-	for _, pkg := range []string{"system", "display", "update", "sunshine", "storage", "power", "install", "daemon"} {
+	for _, pkg := range []string{"system", "display", "update", "sunshine", "storage", "power", "install", "daemon", "extensions"} {
 		dir := filepath.Join("..", pkg)
 		files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
 		fset := token.NewFileSet()
@@ -836,7 +842,7 @@ func TestFakeRoutesComplete(t *testing.T) {
 		switch r.Pkg {
 		case "install":
 			modes = []bool{true}
-		case "update", "sunshine", "storage", "power", "daemon": // daemon: GET /status
+		case "update", "sunshine", "storage", "power", "daemon", "extensions": // daemon: GET /status
 			modes = []bool{false}
 		}
 		for _, m := range modes {
@@ -922,6 +928,18 @@ var parityOS = []parityCase{
 	{"PUT", "/update/settings", `{"auto":"always"}`},
 	{"POST", "/storage/libraries", `{"uuid":"-x"}`},
 	{"DELETE", "/storage/libraries/-x", ``},
+	{"POST", "/extensions/nope", `{}`},
+	{"POST", "/extensions/nope", ``},
+	{"POST", "/extensions/Not_An_ID", `{"password":"x"}`},
+	{"POST", "/extensions/nope", `{"options":`},
+	{"POST", "/extensions/nope", `{"options":[]}`},
+	{"DELETE", "/extensions/nope", ``},
+	{"DELETE", "/extensions/nope?purge=2", ``},
+	{"PUT", "/extensions/nope/settings", `{"settings":{"overdrive":true}}`},
+	{"PUT", "/extensions/nope/settings", `{"settings":`},
+	{"POST", "/extensions/nope/actions/copy-profiles", `{}`},
+	{"POST", "/extensions/nope/actions/copy-profiles", `{"args":[1]}`},
+	{"POST", "/extensions/nope/retry", ``},
 }
 
 var parityInstaller = []parityCase{
@@ -961,6 +979,7 @@ func TestValidationParity(t *testing.T) {
 	sunshine.NewService(cfg).Routes(realOS)
 	storage.NewService(cfg).Routes(realOS)
 	power.NewService(cfg).Routes(realOS)
+	extensions.NewService(cfg).Routes(realOS)
 	realISO := api.New(api.Options{Installer: true})
 	realISO.SetSetupCode(devSetupCode)
 	install.NewService(cfg).Routes(realISO)

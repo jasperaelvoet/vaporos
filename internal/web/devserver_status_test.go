@@ -25,14 +25,15 @@ func (f *devFake) statusRoutes(add fakeAdder) {
 		up, disp := f.updateAnswerLocked(), f.doc("display")
 		return map[string]any{
 			"system": f.systemAnswerLocked(), "sunshine": sun, "stream": stream, "display": disp,
-			"update": up, "power": pw, "restart": restartReasons(up, disp),
+			"update": up, "power": pw, "restart": restartReasons(up, disp, f.doc("extensions")),
 		}
 	})
 }
 
 // restartReasons is daemon.restartFor: the entry a restart starts when it
-// is not the running one (newer: update, else rollback), and the display.
-func restartReasons(up, disp map[string]any) map[string]any {
+// is not the running one (newer: update, else rollback), the display, and
+// the extensions.
+func restartReasons(up, disp, ext map[string]any) map[string]any {
 	reasons := []any{}
 	if next := asObj(up["next_boot"]); asStr(next["version"]) != "" {
 		kind := "rollback"
@@ -43,6 +44,9 @@ func restartReasons(up, disp map[string]any) map[string]any {
 	}
 	if disp["reboot_needed"] == true {
 		reasons = append(reasons, map[string]any{"kind": "display"})
+	}
+	if extensionsRestart(ext) {
+		reasons = append(reasons, map[string]any{"kind": "extensions"})
 	}
 	return map[string]any{"needed": len(reasons) > 0, "reasons": reasons}
 }

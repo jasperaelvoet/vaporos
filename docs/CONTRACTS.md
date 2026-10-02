@@ -457,9 +457,11 @@ and directory sources serve it by that name next to `manifest.json`.
 | `enabled`, `pending` | symlinks `sets/<n>` (relative): the last good set, and the set on trial. Renaming `pending` into place is the commit of a change |
 | `proven` | `<id> <fsverity>` lines: images that passed a boot, pruned by GC |
 | `failed` | `<fingerprint>` lines: sets whose trial failed. The fingerprint is the hex sha256 of the set's sorted, unique `<id> <fsverity>` lines (digests from the booted catalog) followed by its sorted, unique option lines, each ending in `\n` |
-| `skip-once` | present: the next boot mounts no extension, then the initramfs removes it |
+| `skip-once` | present: the next boot mounts no extension, then the initramfs removes it (vosd writes it for POST `/extensions/skip-once`) |
 | `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest (`vos update` writes the idle slot's at Write order 1, the installer `a.json` through `vos ext fetch --seed`), or, for the booted slot, from the booted catalog (vosd) |
-| `settings/<id>.json` | the extension's settings (never in config.json) |
+| `settings/<id>.json` | the extension's settings (never in config.json): one JSON object of its descriptor's setting keys, written whole (temp + rename) when it is added and on each change. A key missing, or with a value its setting does not take, reads as the default: the descriptor's `default` when the setting takes it, else `false`, the first choice, or `""` (no disk). Purging the extension deletes it |
+| `settings/<id>.installed` | present: the extension's helper finished its `Install` and no `Remove` came after (see Control center) |
+| `autorestart.json` | `{"restarts":[{"at","set","fingerprint","version"}]}`: the auto-restarts vosd made (RFC 3339 UTC; the pending set's number and fingerprint; the VaporOS version it restarted from), the last 32, written atomically. A file that cannot be read counts as empty |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
 Images are sealed without the lock (a final name is always sealed), and may
@@ -921,6 +923,113 @@ meant for the user to `$XDG_RUNTIME_DIR/vos/ext-messages/<unix-nanos>.json`
 (`{"level":"warning","text":"..."}`). vosd reads and deletes them through
 gamerfs (under `/run/user/1000`) and publishes each as a `system.message`.
 
+**Control center** (vosd, installed systems only; the `/extensions` routes in
+HTTP API). GET `/extensions` lists the booted catalog's extensions in its
+order, then the wanted ids it lacks, each card from the shipped descriptor:
+`permissions` and `runs_as_root` are what the build verified (its `build`
+section; none without one), never the descriptor's own words; `size` is the
+image's (the catalog's); `web` is the descriptor's web UI, listed whether or
+not it runs (vosd serves it only while the extension is mounted); `status`
+is its helper's lines (`tone` `warning` or `error`, or none); `requires` its
+direct requirements; `required_by` the wanted or core extensions that
+require it, directly or not; `needs_password` whether adding it takes the
+admin password again (it runs as root, or sets kernel module options);
+`wanted` whether the user added it or it is core. `state` is the first that
+applies, with `reason` (at most two sentences: what happened, then what to
+do) only for `needs-attention` and `not-in-this-version`:
+1. `installing` while its image downloads or seals (`progress`: its bytes so far);
+2. `not-installed` when it is neither wanted, core nor mounted (also one
+   removed before the restart that would have added it);
+3. `not-in-this-version` when it is wanted and the booted catalog lacks it;
+4. `needs-attention` when it is wanted or core and its image cannot be had
+   (the source failed, no space, a disk that cannot seal, damaged), the
+   desired set it is in failed its trial (its fingerprint is in `failed`;
+   "Try again"), its trial or this boot could not start it (a skip reason, or
+   a boot with `vos.ext=0` or `skip-once`), or, while it runs, one of its
+   helper's status lines has tone `error` (a Steam shortcut the user deleted,
+   say); and when its helper's `Install` or `Remove` did not finish while it
+   is wanted, core or mounted;
+5. `restart-needed` when a restart changes it: the pending set adds it, it
+   is mounted and no longer wanted, or the module options its settings
+   render differ from those this boot started it with;
+6. `installed` when this boot mounted it;
+7. `installing` otherwise: wanted, with its image still to come or the
+   reconcile that proposes it still to run (`progress` null).
+
+So a core extension is never `not-installed`. `restart.needed` is `/status`'s
+restart kind `extensions` (a restart would try `pending`, see Reconcile);
+`restart.reason` says what a restart finishes, by name ("Restart to finish
+adding CoolerControl."), "" while none is needed; `restart.auto` whether
+VaporOS may still restart by itself for it (below). One change runs at a
+time; each answers the document and asks for a reconcile:
+- **Add** (POST `/extensions/{id}`) refuses an id the booted catalog lacks
+  (404, or 409 when it is wanted: not in this version), a core one (409),
+  `options` that are not values of its settings (400), adding an extension
+  (with what it requires) that names a wanted or core extension, or a
+  capability one provides, in `conflicts`, is named so by one, or provides a
+  capability one of them provides (409), images that do not fit with 2 GiB to
+  spare or a disk that cannot seal (409), and, when it adds an extension that
+  runs as root or sets module options, or an option feeds module options,
+  a missing or wrong admin password (403; checked under the sign-in limit as
+  POST `/auth/password`: 429, 503). Then, under ext.lock, it and what it
+  requires (less core) join `wanted`, and each of them that has settings but
+  no `settings/<id>.json` gets one (the `options`, for it, and the defaults).
+- **Remove** (DELETE `/extensions/{id}`, `purge` `0` or `1`, else 400)
+  refuses core and an extension a wanted or core one requires (409). It
+  leaves `wanted` (under ext.lock); then, when this boot mounted it, its
+  `services` stop now (`systemctl stop`, or `systemctl --user -M vapor@
+  stop`; every instance of a template), its helper's `Remove` runs (with
+  `purge`), `settings/<id>.installed` goes and, with `purge`, its system data
+  area, its home data area (as vapor) and `settings/<id>.json` are deleted
+  (library areas are its helper's to delete). Its files stay mounted until
+  the restart. A helper that fails becomes the card's `reason`; the removal
+  stands.
+- **Settings** (PUT `/extensions/{id}/settings`): every key one of its
+  settings and every value one it takes (`bool` true or false, `choice` one of
+  `choices`, `disk` "" or an absolute clean path), else 400; changing a
+  setting a `module_options` entry names takes the admin password (403, 429,
+  503). They are saved under ext.lock. The module options of a set are what
+  its extensions' helpers render from their settings, less any line for a
+  `module param` its descriptor does not list, so changing one is a new
+  `pending` set, which the next restart tries.
+- **Actions** (POST `/extensions/{id}/actions/{name}`, `args` an object or
+  absent, else 400) run one of its descriptor's actions (else 404) through its
+  helper, only while this boot mounted it (409), within 10 minutes and even
+  when the page goes away; a failure is 500 with why.
+- **Try again** (POST `/extensions/{id}/retry`) removes the desired set's
+  fingerprint from `failed` and lets its helper's `Install` run again.
+- **Start without extensions** (POST `/extensions/skip-once`) writes
+  `skip-once`.
+
+After each reconcile vosd runs the helper's `Install` (as root, one at a time,
+within 10 minutes, counting as busy `adding an extension`) for every extension
+this boot mounted that is wanted or core and has no `settings/<id>.installed`,
+which it writes after (unless the extension was removed meanwhile); on an
+extension trial, only once `vos health` passed it. A failure
+is the card's `reason`; later reconciles try again, at most 3 times a boot,
+then only "Try again". `extensions.state` carries the document whenever it
+changes (vosd also builds it every 5 s, for its helpers' status lines), at
+most every 250 ms and never the same one twice in a row.
+
+**Auto-restart:** while a restart would try `pending` and `restart.auto`
+holds, vosd restarts the PC at the end of a pass of the idle-shutdown policy
+that saw the PC idle (every busy reason checked in that pass) for 2 minutes,
+when `vos-health.service` is active (it passed this boot) or the boot is older
+than 5 minutes, with no idle shutdown on its way or due within 5 minutes (the
+wake boot tries the set anyway). Under the update lock and then ext.lock (each
+waited for at most 5 s), it checks again that a restart would try `pending`,
+records the restart in `autorestart.json` and reboots through the guard of
+POST `/system/reboot` (nothing while a restart or power off is on its way;
+the record is then dropped). It first publishes the `system.message` the
+welcome screen shows: "Restarting to finish adding <name>" (or removing, or
+changing extension settings), or, when the restart starts a newer staged
+VaporOS first, "Restarting to install VaporOS <v>; <name> is added after the
+next restart". Like idle shutdown and wake, it thus also boots a staged update
+or rollback. `restart.auto`, the circuit breaker: none yet for the pending
+set's fingerprint, or one from another VaporOS version (an OS trial does not
+try `pending`), and fewer than 3 in the last 24 hours (one timed in the
+future counts). After that only a restart from the control center applies it.
+
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
 **Middleware, in order:**
@@ -954,6 +1063,7 @@ gamerfs (under `/run/user/1000`) and publishes each as a `system.message`.
 | `display.changed` | `{}` |
 | `power.idle` | `{idle_seconds,shutdown_in,busy}` (as in GET `/power`; `busy` is null while idle; sent every 15 s while idle and whenever the busy reason changes) |
 | `system.message` | `{level,text}` (`level`: `info`, `warning` or `error`) |
+| `extensions.state` | the whole document (as in GET `/extensions`), sent whenever it changes, at most every 250 ms (see Extensions, Control center) |
 
 | Method + path | Access | Request → Response |
 | --- | --- | --- |
@@ -964,7 +1074,7 @@ gamerfs (under `/run/user/1000`) and publishes each as a `system.message`.
 | POST `/auth/setup` | Setup | `{"password"}` → `{"csrf"}`; only when auth.json is missing (first run after a CLI install); 409 in installer mode |
 | POST `/auth/password` | Authed | `{"current","new"}` → `{}`; 403 on a wrong current password; shares the login limit (429, 503) |
 | GET `/system` | Authed | `{"hostname","version","channel","booted_slot","uptime_s","cpu","gpu":{"vendor","name","driver","supported"},"ips":["…"],"mdns":"vapor.local","disk":{"data_total","data_free"},"temps":[{"name","c"}]}` |
-| GET `/status` | Authed | installed system only (404 on the installer). One summary for page loads that never waits on Sunshine or ethtool: `{"system":…,"sunshine":…,"stream":{"client","app"?,"mode","hdr","since"}\|null,"display":…,"update":…,"power":…,"restart":{"needed":bool,"reasons":[{"kind":"update\|rollback\|display","version"?}]}}`. `system`, `display` and `update`: as their GET routes. `sunshine`: GET `/sunshine` without `session`, from the 3 s poll (only `running` is asked now). `stream`: the session in progress as `session.begin` carries it, null without one. `power`: GET `/power` without `wol`; keep-awake is checked now, the other busy reasons come from the last 15 s policy pass. `restart.reasons`, in this order: `update` when `update.next_boot` is newer than the booted version, else `rollback` (both with `next_boot.version`), and `display` while `display.reboot_needed`; `needed` is true when there is one. A part that fails is null and the others still answer |
+| GET `/status` | Authed | installed system only (404 on the installer). One summary for page loads that never waits on Sunshine or ethtool: `{"system":…,"sunshine":…,"stream":{"client","app"?,"mode","hdr","since"}\|null,"display":…,"update":…,"power":…,"restart":{"needed":bool,"reasons":[{"kind":"update\|rollback\|display\|extensions","version"?}]}}`. `system`, `display` and `update`: as their GET routes. `sunshine`: GET `/sunshine` without `session`, from the 3 s poll (only `running` is asked now). `stream`: the session in progress as `session.begin` carries it, null without one. `power`: GET `/power` without `wol`; keep-awake is checked now, the other busy reasons come from the last 15 s policy pass. `restart.reasons`, in this order: `update` when `update.next_boot` is newer than the booted version, else `rollback` (both with `next_boot.version`), `display` while `display.reboot_needed`, and `extensions` while a restart would try the extensions' `pending` set (GET `/extensions` `restart.needed`); `needed` is true when there is one. Readers ignore a kind they do not know. A part that fails is null and the others still answer |
 | PUT `/system/hostname` | Authed | `{"hostname"}` → `{}`; the name (trimmed and lower-cased first) is one RFC 1123 label (1-63 of `a-z`, `0-9`, `-`, not starting or ending with `-`, no dots) and not `localhost`, else 400 |
 | POST `/system/reboot`, `/system/poweroff` | Authed | → `{}` |
 | GET `/update` | Authed | update-state (with `held`) + `{"config":config.update,"booted_slot","other_slot":{"version","bootable","counting",…}\|null,"next_boot":{"slot","version"}\|null,"busy":bool,"progress":{…}\|null}` (`next_boot`: the entry systemd-boot starts next when it is not the running slot's: a staged update, or a rollback or downgrade waiting for a restart; null when a restart boots the running slot again or the ESP cannot be read) |
@@ -992,6 +1102,13 @@ gamerfs (under `/run/user/1000`) and publishes each as a `system.message`.
 | GET/PUT `/power` | Authed | `{"idle_shutdown","idle_minutes","keep_awake_until"?,"wol":[{"iface","mac","enabled","supported","ipv4"?,"prefix"?,"broadcast"?}],"busy":{"reason","web"?}\|null,"web_until"?,"idle_seconds","shutdown_in"}`. PUT takes `idle_shutdown` and/or `idle_minutes` (1–1440) and answers the same document. `wol`: every wired NIC; `enabled`: magic-packet wake is armed; `supported`: the NIC can wake on a magic packet; `ipv4`, `prefix`, `broadcast`: its first IPv4 address that is neither loopback nor link-local, the prefix length and the subnet's broadcast address (all omitted without one; `broadcast` is also omitted on a /31 or /32). `busy`: why the machine stays awake, null when idle. `busy.web`: web-UI activity is the only reason. `web_until`: when web-UI activity stops keeping it awake (UTC, whole seconds), present whenever that activity counts, whatever the reason, and omitted otherwise. `idle_seconds` and `shutdown_in`: the idle timer in seconds (`0` and null while busy; `shutdown_in` is also null with idle shutdown off) |
 | POST `/power/keep-awake` | Authed | `{"minutes"}` (0 = clear) → `{}` |
 | GET/PUT `/ssh` | Authed | `{"enabled","keys":[…]}` |
+| GET `/extensions` | Authed | installed system only. `{"extensions":[{"id","name","summary","category":"runtime\|system\|app","core":bool,"upstream":{"name","url","license"},"caveats":["…"],"state":"installed\|not-installed\|installing\|restart-needed\|needs-attention\|not-in-this-version","wanted":bool,"mounted":bool,"size","progress":null\|{"bytes","total"},"reason","permissions":["…"],"runs_as_root":bool,"downloads":[{"what","from","checked":"pinned\|publisher-hash\|none","runs_code":bool,"when":"install\|update\|launch"}],"settings":[{"key","type":"bool\|choice\|disk","label","help","restart":bool,"choices":["…"],"value"}],"actions":[{"name","label","confirm":{"title","body","button","tone"}\|null}],"web":{"port","label"}\|null,"status":[{"text","tone"?}],"copy":{"install","remove"},"requires":["…"],"required_by":["…"],"needs_password":bool}],"restart":{"needed":bool,"auto":bool,"reason"}}` (every list is a list, never null; `value` is a bool, or a string for `choice` and `disk`; the states, `reason` and `restart`: see Extensions, Control center) |
+| POST `/extensions/{id}` | Authed | `{"options"?:{"<setting>":value},"password"?}` → the GET `/extensions` document: adds the extension and what it requires. 400 for a bad body or options; 403 for a missing or wrong password when it needs one (`needs_password`, or an option that feeds module options), 429 and 503 as POST `/auth/password`; 404 for an unknown id; 409 with the reason when this version lacks it, it is core, it conflicts with a wanted or core extension, or its images do not fit |
+| DELETE `/extensions/{id}` | Authed | query `purge=0\|1` (else 400) → the GET `/extensions` document: stops its units, undoes what its helper set up (`purge`: and deletes its data) and removes it at the next restart. 404 for an unknown id; 409 for core, or while a wanted extension requires it |
+| PUT `/extensions/{id}/settings` | Authed | `{"settings":{"<setting>":value},"password"?}` → the GET `/extensions` document. 400 for an unknown setting or a value it does not take; 403, 429, 503 for the password a changed setting that feeds module options needs; 404 for an unknown id |
+| POST `/extensions/{id}/actions/{name}` | Authed | `{"args"?:{…}}` → the GET `/extensions` document, once the action ran. 400 when `args` is not an object; 404 for an unknown id or action; 409 while the extension is not running (mounted); 500 when the action failed |
+| POST `/extensions/{id}/retry` | Authed | → the GET `/extensions` document ("Try again": forgets the failed set, sets the extension up again). 404 for an unknown id |
+| POST `/extensions/skip-once` | Authed | → `{}`: the next boot mounts no extension |
 | GET `/install/probe` | Setup | query `?source=&channel=` (optional); returns `"source","channel","version","min_size","source_error"` plus `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","hostname"?,"steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}`; `hostname` is the name the VaporOS install on that disk answers to (`<hostname>.local`, the one a repair keeps), read from `etc/upper/hostname` on its vos_data (mounted read-only without journal replay, never while an install runs); omitted when unknown |
 | POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`); in repair, an empty hostname or timezone keeps the installed one; `hostname` (lower-cased first) follows PUT `/system/hostname`'s rule, so `localhost` is a 400 |
 | GET `/install/status` | Setup | `{"state":"idle\|running\|done\|failed","step","percent","message","error"}`; `step` is one of `probe`, `partition`, `write`, `verify`, `bootloader`, `configure`, `done` (empty while `idle`) |

@@ -95,6 +95,12 @@ func TestStatusView(t *testing.T) {
 	if got := obj(getStatus(t, src), "stream"); !reflect.DeepEqual(got, want) {
 		t.Errorf("stream = %v, want %v", got, want)
 	}
+
+	src.extensions = func() bool { return true }
+	wantRestart := map[string]any{"needed": true, "reasons": []any{map[string]any{"kind": "extensions"}}}
+	if r := obj(getStatus(t, src), "restart"); !reflect.DeepEqual(r, wantRestart) {
+		t.Errorf("restart with an extension change pending = %v", r)
+	}
 }
 
 func TestStatusPartFails(t *testing.T) {
@@ -122,17 +128,20 @@ func TestRestartReasons(t *testing.T) {
 		name string
 		u    *update.View
 		d    *display.Info
+		ext  bool
 		want []restartReason
 	}{
-		{"nothing", up(""), &display.Info{}, []restartReason{}},
-		{"parts missing", nil, nil, []restartReason{}},
-		{"staged update", up("20260930.101010"), nil, []restartReason{{"update", "20260930.101010"}}},
-		{"rollback", up("20260928.090000"), nil, []restartReason{{"rollback", "20260928.090000"}}},
-		{"same version", up("20260929.120000"), nil, []restartReason{{"rollback", "20260929.120000"}}},
-		{"virtual display", up(""), reboot, []restartReason{{Kind: "display"}}},
-		{"both", up("20260930.101010"), reboot, []restartReason{{"update", "20260930.101010"}, {Kind: "display"}}},
+		{"nothing", up(""), &display.Info{}, false, []restartReason{}},
+		{"parts missing", nil, nil, false, []restartReason{}},
+		{"staged update", up("20260930.101010"), nil, false, []restartReason{{"update", "20260930.101010"}}},
+		{"rollback", up("20260928.090000"), nil, false, []restartReason{{"rollback", "20260928.090000"}}},
+		{"same version", up("20260929.120000"), nil, false, []restartReason{{"rollback", "20260929.120000"}}},
+		{"virtual display", up(""), reboot, false, []restartReason{{Kind: "display"}}},
+		{"both", up("20260930.101010"), reboot, false, []restartReason{{"update", "20260930.101010"}, {Kind: "display"}}},
+		{"extensions", up(""), &display.Info{}, true, []restartReason{{Kind: "extensions"}}},
+		{"all", up("20260928.090000"), reboot, true, []restartReason{{"rollback", "20260928.090000"}, {Kind: "display"}, {Kind: "extensions"}}},
 	} {
-		r := restartFor(c.u, c.d)
+		r := restartFor(c.u, c.d, c.ext)
 		if !reflect.DeepEqual(r.Reasons, c.want) || r.Needed != (len(c.want) > 0) {
 			t.Errorf("%s: %+v, want %+v", c.name, r, c.want)
 		}

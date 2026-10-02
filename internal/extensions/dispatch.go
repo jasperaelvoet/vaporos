@@ -124,7 +124,7 @@ func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int
 	switch {
 	case id.owner != "":
 		if repErr != nil || !rep.IsMounted(id.owner) {
-			return refuse(stderr, fmt.Sprintf("%s did not start because its extension is not active right now (%s/%s). Check Extensions in VaporOS.",
+			return refuseLaunch(stderr, fmt.Sprintf("%s did not start because its extension is not active right now (%s/%s). Check Extensions in VaporOS.",
 				displayName(id.owner), id.owner, id.key))
 		}
 		hooks = []string{id.owner}
@@ -140,18 +140,18 @@ func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int
 	}
 	for _, h := range hooks {
 		if err := HelperFor(h).LaunchHook(ctx, run); err != nil {
-			return refuse(stderr, fmt.Sprintf("%s did not start: %v", displayName(h), err))
+			return refuseLaunch(stderr, fmt.Sprintf("%s did not start: %v", displayName(h), err))
 		}
 		if len(run.Argv) == 0 {
-			return refuse(stderr, fmt.Sprintf("%s did not start: its hook left nothing to run.", displayName(h)))
+			return refuseLaunch(stderr, fmt.Sprintf("%s did not start: its hook left nothing to run.", displayName(h)))
 		}
 	}
 	return execLaunch(run, stderr)
 }
 
-// refuse tells the person at the control center (writeMessage) and Steam's
-// log why a launch does not start.
-func refuse(stderr io.Writer, text string) int {
+// refuseLaunch tells the person at the control center (writeMessage) and
+// Steam's log why a launch does not start.
+func refuseLaunch(stderr io.Writer, text string) int {
 	fmt.Fprintf(stderr, "vos ext launch: %s\n", text)
 	if err := writeMessage(text); err != nil {
 		fmt.Fprintf(stderr, "vos ext launch: telling VaporOS: %v\n", err)

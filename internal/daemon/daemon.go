@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
@@ -96,12 +97,13 @@ func Main(args []string) int {
 		pow := power.NewService(cfg, streaming, sun.Busy, up.Busy, ext.Busy)
 		// Someone using the web UI keeps the machine from idling off.
 		srv.OnActivity(pow.Touch)
-		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow} {
+		wireAutoRestart(ext, sys, up, pow)
+		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow, ext} {
 			r.Routes(srv)
 		}
 		srv.Handle("GET", "/status", api.Authed, statusSources{
 			system: sys.Info, sunshine: sun.Summary, stream: disp.CurrentSession,
-			display: disp.Info, update: up.View, power: pow.Summary,
+			display: disp.Info, update: up.View, power: pow.Summary, extensions: ext.RestartNeeded,
 		}.handle)
 		runners = append(runners,
 			runner{"update", up.Run},
@@ -146,6 +148,22 @@ func Main(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// wireAutoRestart lets the extensions restart the PC by themselves once it
+// is idle (docs/CONTRACTS.md "Extensions"): they decide in the idle
+// policy's pass and restart through the system service's guard.
+func wireAutoRestart(ext *extensions.Service, sys *system.Service, up *update.Service, pow *power.Service) {
+	ext.SetAutoRestart(sys.Reboot, func() string {
+		v := up.View()
+		if v.NextBoot != nil && boot.CompareVersions(v.NextBoot.Version, v.Booted) > 0 {
+			return v.NextBoot.Version
+		}
+		return ""
+	})
+	pow.OnTick(func(ctx context.Context, t power.Tick) {
+		ext.IdleTick(ctx, extensions.IdleTick{Idle: t.Idle, ShutdownIn: t.ShutdownIn, PoweringOff: t.PoweringOff})
+	})
 }
 
 // stopTimeout bounds how long vosd waits for services to wind down (drop

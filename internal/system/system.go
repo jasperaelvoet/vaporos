@@ -181,6 +181,24 @@ func mdnsName(hostname string) string {
 
 // ---- reboot / poweroff
 
+// Reboot restarts the PC now for a reason of vosd's own (the extensions'
+// auto-restart), behind the guard POST /system/reboot and /system/poweroff
+// share: while one of them is on its way it does nothing and reports
+// false. message goes out as a system.message first. A reboot that fails
+// clears the guard.
+func (s *Service) Reboot(ctx context.Context, message string) (bool, error) {
+	if !s.powerPending.CompareAndSwap(false, true) {
+		return false, nil
+	}
+	log.Printf("system: reboot: %s", message)
+	s.publishEvent("system.message", map[string]string{"level": "info", "text": message})
+	if err := s.reboot(ctx); err != nil {
+		s.powerPending.Store(false)
+		return true, err
+	}
+	return true, nil
+}
+
 // handlePower answers first and acts a second later, so the browser gets
 // its response (and can show "restarting…") before the network goes away.
 func (s *Service) handlePower(what, message string, act func(ctx context.Context) error) http.HandlerFunc {

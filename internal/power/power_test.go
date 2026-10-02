@@ -615,3 +615,40 @@ func TestPowerSummaryIsCached(t *testing.T) {
 		t.Errorf("%d busy checks, want only the one pass's", calls-n)
 	}
 }
+
+// OnTick hears every pass with what it just saw: the idle time, the time
+// left before an idle shutdown, and a shutdown on its way.
+func TestOnTickSeesEveryPass(t *testing.T) {
+	r := newRig(t, 2, true)
+	var got []Tick
+	r.OnTick(func(_ context.Context, tk Tick) { got = append(got, tk) })
+	r.steps(2) // 30 s idle
+	r.busyNow = true
+	r.step()
+	r.busyNow = false
+	r.steps(8) // 120 s idle: the shutdown fires
+	want := []Tick{
+		{Idle: 15 * time.Second, ShutdownIn: 105 * time.Second},
+		{Idle: 30 * time.Second, ShutdownIn: 90 * time.Second},
+		{ShutdownIn: -1},
+	}
+	if len(got) != 11 {
+		t.Fatalf("%d ticks, want 11", len(got))
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("tick %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+	if last := got[10]; last.Idle != 2*time.Minute || last.ShutdownIn != 0 || !last.PoweringOff {
+		t.Errorf("last tick = %+v, want the shutdown on its way", last)
+	}
+
+	off := newRig(t, 2, false)
+	var seen Tick
+	off.OnTick(func(_ context.Context, tk Tick) { seen = tk })
+	off.step()
+	if seen != (Tick{Idle: interval, ShutdownIn: -1}) {
+		t.Errorf("with idle shutdown off: %+v", seen)
+	}
+}
