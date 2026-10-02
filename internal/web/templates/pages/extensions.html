@@ -6,10 +6,10 @@
   attention), plain words for the facts. A restart applies every change,
   so the page has one Restart now above the cards. Install and Remove ask
   in the page's own dialog (the shared confirm's look), which also takes
-  the VaporOS password and the choice to delete an extension's data. The
-  last section leaves every extension out of the next start (skip_once),
-  and calls that off again. pages/extensions.js fills it;
-  styles/pages/extensions.css is its look.
+  the drive an extension needs, the VaporOS password and the choice to
+  delete an extension's data. The last section leaves every extension out
+  of the next start (skip_once), and calls that off again.
+  pages/extensions.js fills it; styles/pages/extensions.css is its look.
 */ -}}
 {{define "content"}}
 <div class="ext">
@@ -74,6 +74,7 @@
       <ul class="ext-facts" id="ext-dialog-can" aria-labelledby="ext-dialog-can-label" role="list"></ul>
     </div>
     <p class="ext-dialog-note" id="ext-dialog-note" hidden></p>
+    <div class="ext-dialog-choose" id="ext-dialog-choose" hidden></div>
     <label class="ext-check" id="ext-dialog-purge-row" hidden><input class="ext-check-input" type="checkbox" id="ext-dialog-purge"><span>Also delete its settings and downloads</span></label>
     <div class="field" id="ext-dialog-pw-field" hidden>
       <label class="field-label" for="ext-dialog-pw">VaporOS password</label>

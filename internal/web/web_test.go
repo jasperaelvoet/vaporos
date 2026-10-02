@@ -613,7 +613,9 @@ const (
 	// Total and next were 700,000 and 460,000, 120 B and 2 kB from full, when
 	// System › Extensions came: its page, dialog, words (ext.js) and
 	// stylesheet are about 40 kB raw (12 kB gzipped), only on that page.
-	budgetTotalRaw = 750_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
+	// Total took 2 kB more, 1.2 kB from full, when its install dialog began
+	// to ask for the drive an extension needs.
+	budgetTotalRaw = 752_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
 	budgetNextRaw  = 510_000 // the next set's own files (static/app.css, static/pages/, static/js/)
 
 	// The next set (ARCH §3.3): what one page needs before it can paint and

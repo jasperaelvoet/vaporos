@@ -205,11 +205,15 @@ test('install and remove', () => {
 });
 
 test('why adding asks for the password', () => {
-  assert.equal(X.passwordHint(ext(base, 'coolercontrol'), ctx(base)), 'CoolerControl runs as root, so VaporOS asks for its password.');
-  assert.equal(X.passwordHint({ id: 'k', name: 'Kernel thing', module_options: true }, ctx(base)), 'Kernel thing changes kernel settings, so VaporOS asks for its password.');
+  assert.equal(X.passwordHint(ext(base, 'coolercontrol'), ctx(base)), 'CoolerControl runs as root, so VaporOS asks for your password.');
+  // Kernel module options in What it can do's words, never "kernel settings" (sysctl's).
+  const mod = { id: 'k', name: 'Kernel thing', permissions: ['sysctl'], module_options: true };
+  assert.equal(X.passwordHint(mod, ctx(base)), 'Kernel thing sets kernel module options, so VaporOS asks for your password.');
+  assert.ok(X.can(mod).includes('Sets kernel module options (takes effect after a restart).'));
+  assert.equal(X.moduleHint(ext(base, 'coolercontrol')), 'CoolerControl sets kernel module options, so VaporOS asks for your password.', 'a setting that feeds them');
   // needs_password covers what it also installs: the hint names that one.
   const doc = { extensions: [{ id: 'app', name: 'App', requires: ['fans'] }, { id: 'fans', name: 'Fans', runs_as_root: true }] };
-  assert.equal(X.passwordHint(ext(doc, 'app'), ctx(doc)), 'Fans runs as root, so VaporOS asks for its password.');
+  assert.equal(X.passwordHint(ext(doc, 'app'), ctx(doc)), 'Fans runs as root, so VaporOS asks for your password.');
   ext(doc, 'fans').wanted = true;
   assert.equal(X.passwordHint(ext(doc, 'app'), ctx(doc)), '', 'already in: the default hint');
   assert.equal(X.wantsPassword({ status: 403, message: 'Adding CoolerControl needs the admin password' }), true);
@@ -221,9 +225,11 @@ test('why adding asks for the password', () => {
 
 test('the drives a drive setting offers', () => {
   const storage = read(join(FIXTURES, 'base', 'storage.json'));
+  // A game drive by its folder, the system drive as /var: never vos_data's
+  // own mount point (/state), and never "".
   assert.deepEqual(X.drives(storage.disks), [
     { path: '/var/mnt/Games', text: 'Games · 420 GB free', system: false },
-    { path: '/state', text: 'System drive · 612 GB free', system: true },
+    { path: '/var', text: 'System drive · 612 GB free', system: true },
   ]);
   const disks = [
     { label: 'Old', adopted: true, missing: true, mounted_at: '/var/mnt/Old' },
@@ -232,9 +238,49 @@ test('the drives a drive setting offers', () => {
     { label: 'vos_data', is_system: true },
     { model: 'WD Blue', adopted: true, mounted_at: '/var/mnt/wd' },
     { label: 'Twice', adopted: true, mounted_at: '/var/mnt/wd' },
+    { label: 'Odd', adopted: true, mounted_at: '/var' },
   ];
-  assert.deepEqual(X.drives(disks), [{ path: '/var/mnt/wd', text: 'WD Blue', system: false }]);
-  assert.deepEqual(X.drives(null), []);
+  assert.deepEqual(X.drives(disks), [
+    { path: '/var/mnt/wd', text: 'WD Blue', system: false },
+    { path: '/var', text: 'System drive', system: true },
+  ]);
+  // The system drive is always there, even when GET /storage leaves it out.
+  assert.deepEqual(X.drives(null), [{ path: '/var', text: 'System drive', system: true }]);
+});
+
+test('a drive setting: "" is no drive, which a required one never takes', () => {
+  const ds = X.drives(read(join(FIXTURES, 'base', 'storage.json')).disks);
+  const drives = [
+    { value: '/var/mnt/Games', text: 'Games · 420 GB free' },
+    { value: '/var', text: 'System drive · 612 GB free' },
+  ];
+  // Optional: "" stays a choice.
+  assert.deepEqual(X.driveChoices({ type: 'disk', value: '' }, ds), [{ value: '', text: 'Choose a drive', disabled: false }, ...drives]);
+  assert.deepEqual(X.driveChoices({ type: 'disk', value: '/var' }, ds), [{ value: '', text: 'Choose a drive', disabled: false }, ...drives]);
+  // Required: "" only names the empty select, and goes once a drive is picked.
+  assert.deepEqual(X.driveChoices({ type: 'disk', required: true, value: '' }, ds), [{ value: '', text: 'Choose a drive', disabled: true }, ...drives]);
+  assert.deepEqual(X.driveChoices({ type: 'disk', required: true, value: '/var/mnt/Games' }, ds), drives);
+  assert.deepEqual(X.driveChoices({ type: 'disk', required: true, value: '/var' }, ds), drives);
+  assert.deepEqual(X.driveChoices({ type: 'disk', required: true, value: '/var/mnt/Old' }, ds), [...drives, { value: '/var/mnt/Old', text: "A drive that isn't connected" }]);
+  // What adding asks for first: a required drive, and only a drive.
+  const sc = { settings: [{ key: 'disk', type: 'disk', required: true, value: '' }, { key: 'x', type: 'bool', required: true }, { key: 'y', type: 'disk' }] };
+  assert.deepEqual(X.required(sc).map((s) => s.key), ['disk']);
+  assert.deepEqual(X.required({}), []);
+});
+
+test('what the install dialog says of when it comes', () => {
+  const auto = 'It downloads now and is added at the next restart, which VaporOS does by itself when nobody is playing.';
+  assert.equal(X.installNote(ext(base, 'coolercontrol'), base, ctx(base)), auto);
+  const waiting = { restart: { needed: true, auto: false } };
+  assert.equal(X.installNote(ext(base, 'coolercontrol'), waiting, ctx(base)), 'It downloads now and is added at the next restart.');
+  // Removed until the restart, it comes back at once: it stays and is set up again.
+  const gone = { id: 'cc', name: 'CoolerControl', state: 'restart-needed', wanted: false, mounted: true };
+  assert.equal(X.installNote(gone, base, ctx(base)), 'It stays, and VaporOS sets it up again.');
+  assert.equal(X.installedText(gone), 'CoolerControl stays, and VaporOS sets it up again.');
+  assert.equal(X.installedText(ext(base, 'coolercontrol')), "CoolerControl is downloading. It's added at the next restart.");
+  const lone = structuredClone(base);
+  Object.assign(ext(lone, 'proton'), { core: false, wanted: false, mounted: false });
+  assert.equal(X.installNote(ext(lone, 'truckersmp'), lone, ctx(lone)), `It also installs CachyOS Proton. ${auto}`);
 });
 
 test('the restart card names what the next restart changes', () => {
@@ -285,4 +331,16 @@ test('settings, choices and the web page', () => {
   assert.equal(X.webURL(ext(base, 'proton'), 'vapor.local'), '');
   assert.equal(X.webURL({ web: { port: 70000 } }, 'vapor.local'), '');
   assert.equal(X.webURL({ web: { port: 11987 } }, ''), '');
+});
+
+test('Open <label> only while the extension and its page run', () => {
+  const on = { ...ext(base, 'coolercontrol'), state: 'installed', mounted: true, wanted: true, web_running: true };
+  assert.equal(X.webLink(on, 'vapor.local'), 'http://vapor.local:11987/');
+  assert.equal(X.webLink({ ...on, web_running: false }, 'vapor.local'), '', 'its services are down');
+  assert.equal(X.webLink({ ...on, web_running: undefined }, 'vapor.local'), '', 'a document that does not say');
+  assert.equal(X.webLink({ ...on, wanted: false }, 'vapor.local'), '', 'removed until the restart');
+  assert.equal(X.webLink({ ...on, wanted: false, core: true }, 'vapor.local'), 'http://vapor.local:11987/', 'core is always wanted');
+  assert.equal(X.webLink({ ...on, mounted: false }, 'vapor.local'), '', 'not added yet');
+  assert.equal(X.webLink({ ...on, web: null }, 'vapor.local'), '');
+  assert.equal(X.webLink(null, 'vapor.local'), '');
 });

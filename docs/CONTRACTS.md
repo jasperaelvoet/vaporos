@@ -1371,8 +1371,8 @@ already 1048576.
 - *Drive.* The setting `disk` ("Game drive") is the drive's folder:
   `/var/mnt/<name>` (`/mnt/<name>` reads the same) is a game drive, and the
   prefix is `/var/mnt/<name>/VaporOS/star-citizen` (its `library` data
-  area); `""` (or `/state`, the system drive's folder System › Extensions
-  offers, or `/var`) is the system drive, and the prefix is its home
+  area); `""` (or `/var`, the system drive's folder System › Extensions
+  offers, or `/state`) is the system drive, and the prefix is its home
   data area, `/var/home/vapor/.local/share/vaporos/ext/star-citizen`. Any
   other value is refused. The prefix is fixed at install: a drive picked
   later applies only after removing Star Citizen and adding it again (its

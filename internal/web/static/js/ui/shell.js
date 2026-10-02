@@ -181,14 +181,10 @@ function listen() {
     if (live && ['done', 'error', 'idle', 'cancelled'].includes(p && p.phase)) soon();
   });
   // Only when the extensions start or stop asking for a restart does the
-  // restart row need a new /status: the first event against /status, then
-  // each against the one before.
-  let extNeed = null;
+  // restart row need a new /status.
   on('extensions.state', (d) => {
     const want = !!(d && d.restart && d.restart.needed);
-    const was = extNeed ?? (snap.restart ? pending(snap).some((r) => r.kind === 'extensions') : want);
-    extNeed = want;
-    if (want !== was) soon();
+    if (snap.restart && want !== pending(snap).some((r) => r.kind === 'extensions')) soon();
   });
   on('power.idle', (p) => {
     if (p && p.shutdown_in != null && p.shutdown_in <= 30) idleWarnedAt = Date.now();

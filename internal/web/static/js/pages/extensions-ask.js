@@ -1,8 +1,8 @@
 // pages/extensions-ask.js: System › Extensions' own dialog, in the shared
 // confirm's look and manners (ui/dialog.js: a danger one focuses Cancel).
-// Beyond a confirm it lists what an extension can do, takes the VaporOS
-// password and the choice to delete an extension's data, and stays open
-// while the request runs, so a wrong password is said under its field.
+// Beyond a confirm it lists what an extension can do, takes a drive, the
+// VaporOS password and the choice to delete an extension's data, and stays
+// open while the request runs, so a wrong password is said under its field.
 // When the box asks for a password the card did not announce, the field
 // appears with why, and the next press sends it.
 
@@ -13,10 +13,11 @@ import { fieldError, markBusy } from '../ui/form.js';
 
 let pending = null;
 
-// ask shows c: {title, body, can: [sentences], note, purge, password,
-// passwordHint, confirm, tone, run}. It resolves true once
-// run({password, purge}) succeeded, false when the viewer cancels; an
-// error run throws keeps it open and says why.
+// ask shows c: {title, body, can: [sentences], note, choose: [{key, sel,
+// field}] (picked before the confirm), purge, password, passwordHint,
+// confirm, tone, run}. It resolves true once run({password, purge,
+// chosen}) succeeded, false when the viewer cancels; an error run throws
+// keeps it open and says why.
 export function ask(c) {
   const dlg = byId('ext-dialog');
   if (pending) pending(false);
@@ -32,6 +33,13 @@ export function ask(c) {
   const can = c.can || [];
   byId('ext-dialog-can').replaceChildren(...can.map((t) => h('li', { class: 'ext-fact', text: t })));
   byId('ext-dialog-can-box').hidden = !can.length;
+  const picks = c.choose || [];
+  byId('ext-dialog-choose').replaceChildren(...picks.map((p) => p.field));
+  byId('ext-dialog-choose').hidden = !picks.length;
+  const empty = () => picks.find((p) => !p.sel.value);
+  const gate = () => (ok.disabled = !!empty());
+  for (const p of picks) p.sel.addEventListener('change', gate);
+  gate();
   purge.checked = false;
   byId('ext-dialog-purge-row').hidden = !c.purge;
   pw.value = '';
@@ -82,7 +90,7 @@ export function ask(c) {
       }
       markBusy(ok, true);
       try {
-        await c.run({ password: needPw ? pw.value : '', purge: !!c.purge && purge.checked });
+        await c.run({ password: needPw ? pw.value : '', purge: !!c.purge && purge.checked, chosen: Object.fromEntries(picks.map((p) => [p.key, p.sel.value])) });
         markBusy(ok, false);
         done(true);
       } catch (e2) {
@@ -109,7 +117,7 @@ export function ask(c) {
     dlg.addEventListener('cancel', onEscape);
     dlg.addEventListener('click', onBackdrop);
     if (!dlg.open) dlg.showModal();
-    (needPw ? pw : danger ? cancel : ok).focus();
+    (empty()?.sel || (needPw ? pw : danger ? cancel : ok)).focus();
   });
 }
 
