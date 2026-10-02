@@ -127,6 +127,7 @@ func newRig(t *testing.T) *rig {
 	r.s, r.b = e.service()
 	r.wire()
 	r.pass()
+	t.Cleanup(func() { r.s.waitTrash() }) // before the temp dirs go
 	return r
 }
 
@@ -230,6 +231,7 @@ func (r *rig) boot() {
 	rep := store.BootReport{Mode: store.ModePending, Set: p.Name, TriesLeft: p.Tries - 1, Mounted: mountedAs(imgs...)}
 	r.report(rep)
 	writeFile(r.t, config.ExtTrialOKPath(), p.Name+"\n")
+	r.s.waitTrash()
 	r.s, r.b = r.service()
 	r.wire()
 	makeDataAreas(&rep) // as Run does first

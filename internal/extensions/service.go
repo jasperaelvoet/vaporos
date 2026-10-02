@@ -158,6 +158,7 @@ func (s *Service) Run(ctx context.Context) {
 	if err := store.CleanTemp(); err != nil {
 		log.Printf("extensions: %v", err)
 	}
+	s.emptyLeftoverTrash()
 	b, err := loadBooted()
 	if err != nil {
 		log.Printf("extensions: %v", err)

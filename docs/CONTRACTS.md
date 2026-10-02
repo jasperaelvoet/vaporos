@@ -484,7 +484,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `steam-owned.json` | `{"ids":["<id>",...]}` (sorted, at most 256): every extension that was wanted (with core and requirements) or mounted on this box at some point, so the only ones that may have set something in Steam (`release`, see Steam). vosd adds to it (atomically, before it writes `steam.json`) and never removes from it; ids that are not extension ids are dropped when read, and a file that cannot be read counts as empty |
 | `ports` | `<proto> <port>` lines (`tcp` or `udp`, 1024-65535, sorted, each once), `tcp <port> upstream <upstream port>` for a `proxied` one (its `upstream`'s port on 127.0.0.1, which only root may connect to; see Firewall): the descriptors' `network.ports` of the extensions this boot mounted that `wanted` ∪ core (with their requirements) still wants, never 47990, also not as an upstream. vosd writes it (0644, atomically) at start, after every reconcile and when the control center adds or removes an extension, only when its bytes change, and then reloads `vos-firewall.service` (a reload that failed is tried again at the next of those moments). A missing file opens nothing, as an empty one (see Firewall) |
 | `autorestart.json` | `{"restarts":[{"at","set","fingerprint","version"}]}`: the auto-restarts vosd made (RFC 3339 UTC; the pending set's number and fingerprint; the VaporOS version it restarted from), the last 32, written atomically. A file that cannot be read counts as empty |
-| `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
+| `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`). A purge moves the system and home areas to `.trash-<id>-<n>` beside them before it deletes them (see Control center) |
 
 Images are sealed without the lock (a final name is always sealed), and may
 be fetched before the `wanted`, set or slot file that keeps them, so GC
@@ -1194,16 +1194,28 @@ nothing (409).
   fails, its units that are not templates); its helper's `Remove` runs (with
   `purge`, unless it was added back by then) only when this boot mounted it
   or `settings/<id>.installed` exists; `settings/<id>.installed` goes; and,
-  with `purge`, whether or not the helper ran, its system data area, its
-  home data area (as vapor) and `settings/<id>.json` are deleted (library
-  areas are its helper's to delete), under the lock of the changes to
-  `wanted` and the settings, unless it was added back by then. When it was
-  added back while all this ran, the removal ends by making its `system` and
-  `home` data areas and starting the units it stopped (what it stops after
-  that the add starts); the next reconcile has its helper's `Install` run
-  again. Its files stay mounted until the restart. A helper that fails
-  becomes the card's `reason` (not when it was added back); the removal
-  stands.
+  with `purge`, whether or not the helper ran, its data goes (library areas
+  are its helper's to delete), unless it was added back by then. Under the
+  lock of the changes to `wanted` and the settings it is only moved aside,
+  each area renamed to `.trash-<id>-<unix nanoseconds>` beside it (the
+  system area by root; the home area through gamerfs, which never follows
+  a link in vapor's tree), and `settings/<id>.json` deleted; after that
+  lock, in the background and counting as busy `adding an extension`, the
+  system trash is deleted as root and the home trash as vapor (`rm -rf`),
+  within 30 minutes. So a change through the API never waits for a large
+  deletion, and adding the extension again meanwhile gets new, empty
+  areas. vosd deletes the trash left in `data/` and in
+  `~vapor/.local/share/vaporos/ext/` at its start (listed under that lock,
+  so a purge after it moves aside names it did not list). When its helper's
+  `Remove` failed, the system data area and `settings/<id>.json` stay: they
+  record where what is left is (Star Citizen's drive), so removing it again
+  once that is fixed still finds it; the home area goes all the same. When
+  it was added back while all this ran, the removal ends by making its
+  `system` and `home` data areas and starting the units it stopped (what it
+  stops after that the add starts); the next reconcile has its helper's
+  `Install` run again. Its files stay mounted until the restart. A helper
+  that fails becomes the card's `reason` (not when it was added back); the
+  removal stands.
 - **Settings** (PUT `/extensions/{id}/settings`): every key one of its
   settings and every value one it takes (`bool` true or false, `choice` one of
   `choices`, `disk` `/var` for the system drive, `/var/mnt/<name>` for a
@@ -1749,7 +1761,7 @@ already 1048576.
 | GET/PUT `/ssh` | Authed | `{"enabled","keys":[…]}` |
 | GET `/extensions` | Authed | installed system only. `{"extensions":[{"id","name","summary","category":"runtime\|system\|app","core":bool,"upstream":{"name","url","license"},"caveats":["…"],"state":"installed\|not-installed\|installing\|restart-needed\|needs-attention\|not-in-this-version","wanted":bool,"mounted":bool,"size","progress":null\|{"bytes","total"},"reason","permissions":["…"],"runs_as_root":bool,"downloads":[{"what","from","checked":"pinned\|publisher-hash\|none","runs_code":bool,"when":"install\|update\|launch"}],"settings":[{"key","type":"bool\|choice\|disk","label","help","restart":bool,"choices":["…"],"value","needs_password":bool,"required":bool}],"actions":[{"name","label","confirm":{"title","body","button","tone"}\|null}],"web":{"port","label"}\|null,"web_running":bool,"status":[{"text","tone"?}],"copy":{"install","remove"},"requires":["…"],"required_by":["…"],"needs_password":bool,"module_options":bool,"steam":{"compat_tool","forces":[{"app","name"}],"hooks":[{"app","name"}],"shortcuts":[{"name"}]}\|null}],"restart":{"needed":bool,"auto":bool,"reason"},"skip_once":bool}` (every list is a list, never null; `value` is a bool, or a string for `choice` and `disk`; the states, `reason`, `steam`, `restart` and `skip_once`: see Extensions, Control center) |
 | POST `/extensions/{id}` | Authed | `{"options"?:{"<setting>":value},"password"?}` → the GET `/extensions` document: adds the extension and what it requires. 400 for a bad body or options, or no drive for a `required` disk setting of what it adds; 403 for a missing or wrong password when it needs one (`needs_password`, or an option whose setting `needs_password`), 429 and 503 as POST `/auth/password`; 404 for an unknown id; 409 with the reason when this version lacks it, it is core, it conflicts with a wanted or core extension, its images do not fit, or a descriptor it checks cannot be read |
-| DELETE `/extensions/{id}` | Authed | query `purge=0\|1` (else 400) → the GET `/extensions` document: stops its units, undoes what its helper set up (`purge`: and deletes its data) and removes it at the next restart. 404 for an unknown id; 409 for core, while a wanted extension requires it, or when its descriptor cannot be read |
+| DELETE `/extensions/{id}` | Authed | query `purge=0\|1` (else 400) → the GET `/extensions` document: stops its units, undoes what its helper set up (`purge`: and deletes its data, moved aside first and deleted in the background; its system data and settings stay when its helper failed) and removes it at the next restart. 404 for an unknown id; 409 for core, while a wanted extension requires it, or when its descriptor cannot be read |
 | PUT `/extensions/{id}/settings` | Authed | `{"settings":{"<setting>":value},"password"?}` → the GET `/extensions` document. 400 for an unknown setting or a value it does not take; 403, 429, 503 for the password a changed setting that `needs_password` needs; 404 for an unknown id; 409 when its descriptor cannot be read |
 | POST `/extensions/{id}/actions/{name}` | Authed | `{"args"?:{…}}` → the GET `/extensions` document, once the action ran. 400 when `args` is not an object or is larger than 64 KiB; 404 for an unknown id or action; 409 while the extension is not running (mounted); 500 when the action failed ("<label> didn't finish. Try again.", or "… in time …") |
 | POST `/extensions/{id}/retry` | Authed | → the GET `/extensions` document ("Try again": forgets the failed set, sets the extension up again). 404 for an unknown id |
