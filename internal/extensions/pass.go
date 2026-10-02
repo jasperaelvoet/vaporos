@@ -24,6 +24,10 @@ const maxSettleSteps = 8
 const (
 	noVerityText = "The disk cannot seal extension images (no fs-verity), so VaporOS cannot add extensions."
 	noSpaceText  = "There is not enough free space for it: VaporOS keeps 2 GiB free on its disk. It is added once there is room."
+	// A card never shows a download's own error (URLs, digests): it goes to
+	// the log.
+	badImageText   = "Its download didn't match what this version of VaporOS expects, so VaporOS didn't use it. Try again later."
+	noDownloadText = "VaporOS couldn't download it. Check the internet connection, then select Try again."
 )
 
 // view is what the last pass saw, for Status.
@@ -536,13 +540,14 @@ func (s *Service) note(e catalog.Entry, forBooted bool, err error) {
 		text = noSpaceText
 	case errors.Is(err, store.ErrMismatch), errors.Is(err, update.ErrChecksum):
 		s.bad[e.SHA256] = true
+		text = badImageText
 	}
 	if s.noVerity {
 		text = noVerityText
 	}
 	if forBooted {
 		if text == "" {
-			text = err.Error()
+			text = noDownloadText
 		}
 		s.errs[e.ID] = text
 	}

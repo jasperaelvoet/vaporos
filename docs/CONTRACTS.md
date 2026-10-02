@@ -1152,7 +1152,11 @@ to do) only for `needs-attention` and `not-in-this-version`:
    `progress` null);
 2. `needs-attention` when it is wanted or core (one removed since the last
    reconcile goes on to 3 or 6) and its image cannot be had
-   (the source failed, no space, a disk that cannot seal, damaged), the
+   (the source failed: "VaporOS couldn't download it. Check the internet
+   connection, then select Try again."; the source served other bytes: "Its
+   download didn't match what this version of VaporOS expects, so VaporOS
+   didn't use it. Try again later."; no space; a disk that cannot seal;
+   damaged; the error itself only goes to the journal), the
    desired set it is in failed its trial (its fingerprint is in `failed`;
    "Try again"), or its trial or this boot could not start it (a skip
    reason); when its helper's `Install` did not finish after its last try

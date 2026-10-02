@@ -201,6 +201,16 @@ func TestFetchImageFallback(t *testing.T) {
 			if _, full := s.full[proton.entry.SHA256]; full != tt.full {
 				t.Errorf("full = %v", full)
 			}
+			want := noDownloadText
+			switch {
+			case tt.full:
+				want = noSpaceText
+			case tt.bad:
+				want = badImageText
+			}
+			if text := s.errs[proton.entry.ID]; text != want {
+				t.Errorf("card reason %q, want %q (never the error %v)", text, want, err)
+			}
 		})
 	}
 }

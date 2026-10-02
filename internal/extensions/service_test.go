@@ -101,7 +101,7 @@ func TestPassKeepsWhatBootedWhileAnImageIsMissing(t *testing.T) {
 		t.Fatalf("proposed %+v while what booted is still desired", p)
 	}
 	x := e.state(s, "proton")
-	if x.State != StateNeedsAttention || !strings.Contains(x.Error, "ext-proton.raw") || !x.Mounted {
+	if x.State != StateNeedsAttention || x.Error != noDownloadText || !x.Mounted {
 		t.Fatalf("proton = %+v", x)
 	}
 	if x := e.state(s, "coolercontrol"); x.State != StateInstalled || !x.Wanted {
@@ -268,7 +268,7 @@ func TestPassStopsRetryingWhatCannotSeal(t *testing.T) {
 	if retry := s.pass(t.Context(), b); retry {
 		t.Fatal("the same bytes are fetched again")
 	}
-	if x := e.state(s, "proton"); x.State != StateNeedsAttention || !strings.Contains(x.Error, "checksum") {
+	if x := e.state(s, "proton"); x.State != StateNeedsAttention || x.Error != badImageText {
 		t.Fatalf("proton = %+v", x)
 	}
 	s.retryAll() // someone asked: Reconcile

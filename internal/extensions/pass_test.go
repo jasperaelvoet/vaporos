@@ -364,7 +364,7 @@ func TestPassProbesTheSourceOnce(t *testing.T) {
 		t.Fatalf("asked %q", got)
 	}
 	for _, id := range []string{"proton", "coolercontrol"} {
-		if x := e.state(s, id); x.State != StateNeedsAttention || !strings.Contains(x.Error, "cannot be reached") {
+		if x := e.state(s, id); x.State != StateNeedsAttention || x.Error != noDownloadText {
 			t.Errorf("%s = %+v", id, x)
 		}
 	}
@@ -376,7 +376,7 @@ func TestPassProbesTheSourceOnce(t *testing.T) {
 	if got := src.asked(); !slices.Equal(got, []string{"manifest", "name ext-proton.raw"}) {
 		t.Fatalf("asked %q", got)
 	}
-	if x := e.state(s, "coolercontrol"); !strings.Contains(x.Error, "stopped answering") {
+	if x := e.state(s, "coolercontrol"); x.Error != noDownloadText {
 		t.Fatalf("coolercontrol = %+v", x)
 	}
 }
@@ -441,7 +441,7 @@ func TestRunReconcileRetriesBadBytes(t *testing.T) {
 	s, _ := e.service()
 	stop := run(t, s)
 	defer stop()
-	waitFor(t, func() bool { x, _ := find(s, "proton"); return strings.Contains(x.Error, "checksum") })
+	waitFor(t, func() bool { x, _ := find(s, "proton"); return x.Error == badImageText })
 	e.serve(proton)
 	s.Reconcile()
 	waitFor(t, func() bool { x, _ := find(s, "proton"); return x.State == StateRestartNeeded })
