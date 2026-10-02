@@ -10,6 +10,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/daemon"
 	"github.com/jasperaelvoet/vaporos/internal/display"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/session"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
@@ -48,6 +49,8 @@ func main() {
 		os.Exit(update.CLI(cmd, args))
 	case "generator":
 		os.Exit(storage.CLIGenerator(args))
+	case "ext":
+		os.Exit(extensions.CLI(args))
 	case "version", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -72,6 +75,7 @@ func usage() {
   edid generate|decode       virtual display EDID
   health                     boot health check
   sign | keygen              update signing
+  ext <command>              extensions: fetch, launch, and the build's checks
   version
 `)
 }
