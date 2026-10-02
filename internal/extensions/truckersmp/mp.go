@@ -50,15 +50,20 @@ func newMP() *mp {
 
 // What mp and handoff tell the person when they refuse: they leave vosd
 // the code (extensions.WriteMessage), which vosd words with messageText
-// (Helper.MessageText), so the person reads only VaporOS's sentences.
+// (Helper.MessageText), so the person reads only VaporOS's sentences. The
+// launch hook and Install refuse with codes of their own the same way
+// (extensions.Refuse).
 const (
 	msgRunning      = "running-"       // and the game's key
 	msgNotInstalled = "not-installed-" // and the game's key
 	msgNoFiles      = "no-files-"      // and the game's key
+	msgLinux        = "linux-"         // and the game's key: the hook, for the Linux build
 	msgStarting     = "starting"
 	msgUpdating     = "updating"
 	msgHandOff      = "handoff-failed"
 	msgNoSteam      = "steam-silent"
+	msgLauncher     = "launcher-failed" // the hook could not copy the injector
+	msgSetup        = "setup-failed"    // Install could not copy the injector
 )
 
 // messageText is the sentence for one of those codes.
@@ -72,11 +77,16 @@ func messageText(code string) (string, bool) {
 		return "TruckersMP didn't start because VaporOS couldn't pass the start on to Steam. Try again.", true
 	case msgNoSteam:
 		return "TruckersMP didn't start because Steam didn't respond. Try again once Steam is open.", true
+	case msgLauncher:
+		return "TruckersMP didn't start because VaporOS couldn't set up its launcher. Restart VaporOS and try again.", true
+	case msgSetup:
+		return "Setting up TruckersMP didn't finish because VaporOS couldn't copy its launcher. Try again, or remove it.", true
 	}
 	for _, c := range []struct{ prefix, format string }{
 		{msgRunning, "TruckersMP didn't start because %s is already running. Quit it, then start TruckersMP again."},
 		{msgNotInstalled, "TruckersMP didn't start because %s isn't installed. Install it in Steam, then try again."},
 		{msgNoFiles, "TruckersMP didn't start because its files for %s aren't downloaded yet. Try again once its card in VaporOS says it's ready."},
+		{msgLinux, "TruckersMP didn't start because %s isn't set to run with Proton. Restart VaporOS and try again."},
 	} {
 		if key, ok := strings.CutPrefix(code, c.prefix); ok {
 			if g, ok := gameByKey(key); ok {
@@ -96,11 +106,11 @@ func tell(code string) {
 	}
 }
 
-// told tells code and returns its sentence as an error.
+// told tells code and returns it as a refusal with its sentence.
 func told(tell func(string), code string) error {
 	tell(code)
 	text, _ := messageText(code)
-	return errors.New(text)
+	return extensions.Refuse(code, errors.New(text))
 }
 
 // run starts multiplayer for g. A refusal is told and is an error.
@@ -133,10 +143,10 @@ func (m *mp) run(ctx context.Context, g game) error {
 }
 
 // notReady is the code for g's files failing the quick check: not
-// downloaded for g yet, or updating. A sync that changes files deletes
-// the manifest first, so a manifest without g means no sync has fetched
-// g's files; without a manifest, g's core library in MODDIR tells that
-// one did.
+// downloaded for g yet, or updating. A sync deletes the manifest only
+// while it moves files into place, so a manifest without g means no sync
+// has fetched g's files; without a manifest, g's core library in MODDIR
+// tells that one did.
 func notReady(home string, g game) string {
 	if m, err := readManifest(home); err == nil && m != nil {
 		if m.has(g) {

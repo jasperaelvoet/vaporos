@@ -123,7 +123,9 @@ func TestMPRefuses(t *testing.T) {
 	ctx := context.Background()
 
 	// ATS isn't installed; then it is, but its files are not there.
-	if err := m.run(ctx, games[1]); err == nil || (*told)[0] != "TruckersMP didn't start because ATS isn't installed. Install it in Steam, then try again." {
+	err := m.run(ctx, games[1])
+	if code, text := refused(err); code != "not-installed-ats" || (*told)[0] != text ||
+		text != "TruckersMP didn't start because ATS isn't installed. Install it in Steam, then try again." {
 		t.Fatalf("ATS not installed: %v %q", err, *told)
 	}
 	b.install(b.steam, games[1])
@@ -169,7 +171,7 @@ func TestNotReady(t *testing.T) {
 	if got := notReady(homeDir(), ets2); got != msgUpdating {
 		t.Errorf("a changed file: %q", got)
 	}
-	// A sync that changes files deleted the manifest.
+	// A sync that moves files into place deleted the manifest.
 	os.Remove(filepath.Join(homeDir(), manifestRel))
 	if got := notReady(homeDir(), ets2); got != msgUpdating {
 		t.Errorf("during a sync: %q", got)

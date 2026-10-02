@@ -16,11 +16,13 @@ import (
 )
 
 // gameState is what the card says about one game: the library that has
-// it ("" when none does) and the version it last started with.
+// it ("" when none does), the version it last started with and where
+// Steam has it.
 type gameState struct {
 	g       game
 	lib     string
 	version string
+	steam   steamView
 }
 
 // Status is the card's lines: the versions TruckersMP supports, each
@@ -81,6 +83,8 @@ func (h *Helper) Status(ctx context.Context, x *extensions.Ext) []extensions.Sta
 	switch {
 	case j != nil && total > 0:
 		add("", "Downloading the TruckersMP mod: %d %%", min(done*100/total, 100))
+	case j != nil && done > 0:
+		add("", "Downloading the TruckersMP mod: %s so far", sizeText(done))
 	case j != nil:
 		add("", "Checking the TruckersMP mod for updates")
 	case len(installed) == 0:
@@ -122,7 +126,8 @@ func supportedLine(info *versionInfo) string {
 
 // versionLine is one installed game's line: on the branch VaporOS holds
 // it on (hold, nil when none), or its version against the one TruckersMP
-// supports.
+// supports. It promises a switch only while prepare has yet to make it:
+// a game moved off its branch in Steam since needs a new request.
 func versionLine(s gameState, supported string, hold *branchHold) (tone, text string) {
 	name := s.g.short
 	if hold != nil && hold.Branch != "" {
@@ -133,14 +138,30 @@ func versionLine(s gameState, supported string, hold *branchHold) (tone, text st
 			}
 			return "warning", fmt.Sprintf("TruckersMP now supports %s %s. Switch to the supported version.", name, minorOf(supported))
 		}
-		if c, ok := compareMinor(s.version, v); ok && c != 0 {
+		c, ok := compareMinor(s.version, v)
+		differs := ok && c != 0
+		switch {
+		case s.steam.pending(*hold) && differs:
 			return "", fmt.Sprintf("%s switches to version %s when Steam restarts.", name, v)
+		case s.steam.on(*hold) && differs:
+			return "", fmt.Sprintf("%s runs version %s from its next start.", name, v)
+		case s.steam.left(*hold) && !differs:
+			return "warning", fmt.Sprintf("%s was moved off version %s in Steam. Switch to the supported version.", name, v)
+		case s.steam.pending(*hold) || !differs:
+			return "", fmt.Sprintf("%s stays on version %s for TruckersMP.", name, v)
+		case c < 0:
+			return "warning", fmt.Sprintf("%s %s is older than TruckersMP supports. Switch to the supported version.", name, s.version)
 		}
-		return "", fmt.Sprintf("%s stays on version %s for TruckersMP.", name, v)
+		return "warning", fmt.Sprintf("%s %s is newer than TruckersMP supports. Switch to the supported version.", name, s.version)
 	}
 	if hold != nil {
 		if c, ok := compareMinor(s.version, supported); ok && c < 0 {
-			return "", fmt.Sprintf("%s updates to its latest version when Steam restarts.", name)
+			switch {
+			case s.steam.pending(*hold):
+				return "", fmt.Sprintf("%s updates to its latest version when Steam restarts.", name)
+			case s.steam.on(*hold):
+				return "", fmt.Sprintf("%s runs its latest version from its next start.", name)
+			}
 		}
 	}
 	if s.version == "" {
@@ -183,11 +204,13 @@ func (h *Helper) games() []gameState {
 	}
 	h.mu.Unlock()
 	libs := libraries()
+	applied := appliedRequests()
 	var gs []gameState
 	for _, g := range games {
 		s := gameState{g: g, lib: gameLibrary(libs, g)}
 		if s.lib != "" {
 			s.version = installedVersion(s.lib, g)
+			s.steam = viewSteam(s.lib, g, applied)
 		}
 		gs = append(gs, s)
 	}

@@ -19,7 +19,8 @@ import (
 // whose files it holds and every file with its size and mtime, so a
 // launch can tell quickly whether the files are still the ones the sync
 // checked. Only a finished sync writes it, and a sync that changes files
-// deletes it first: a manifest on disk always describes complete files.
+// deletes it just before it moves its checked downloads into place: a
+// manifest on disk always describes complete files.
 type manifest struct {
 	Version string         `json:"version"`
 	Checked time.Time      `json:"checked"`
@@ -78,8 +79,9 @@ func (m *manifest) entry(path string) (manifestFile, bool) {
 	return manifestFile{}, false
 }
 
-// errStale is a quick check that found the files not ready.
-var errStale = errors.New("its files are updating. Try again in a few minutes.")
+// errStale is a quick check that found the files not ready; the person
+// reads notReady's sentence instead.
+var errStale = errors.New("the mod's files are not the ones the last sync checked")
 
 // quickCheck tells whether g's files are complete, as fast as a launch
 // allows: every file g needs is where the manifest says, with its size

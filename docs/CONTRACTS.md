@@ -46,7 +46,7 @@ multi-call:
 | `vos ext action ID NAME [--args JSON]` | runs action NAME of extension ID through its helper (Go in `vos`, `Helper.Action`) in this process, with its shipped descriptor, its settings and its data areas; vosd runs it as `vapor` for every action whose `run_as` is not `root` (see Extensions, Control center). `--args` (or `--args=JSON`) is a JSON object. It refuses an extension `/run/vos/extensions.json` does not name as mounted, and an action with `run_as` `root` when it does not run as root. Exit 0 when the action ran, 1 when it failed (why, as the last line on stderr), 2 on bad arguments, 3 when the extension has no such action |
 | `vos ext coolercontrol prepare` / `fans snapshot` / `fans restore` | the steps of the CoolerControl extension's `coolercontrold.service`, as root (see Extensions, CoolerControl): exit 0, 1 on failure (a failed `prepare` stops the start), 2 on bad arguments |
 | `vos ext star-citizen fetch-installer --prefix DIR` | as `vapor` (it refuses as root), run by the star-citizen helper's install: downloads the RSI Launcher's installer that the publisher's `latest.yml` names into `DIR/installer/`, resuming and checking it, and prints `{"installer","version"}` (see Extensions, Star Citizen). DIR must be a Star Citizen prefix on its own drive. The last line on stderr says what went wrong, for the card. Exit 0, 1 on failure, 2 on bad arguments |
-| `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (exit 3 while another sync runs, 4 when the version API does not vouch for a wanted game's core library, 5 when the files do not fit, after a `{"short":N}` line); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
+| `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (`total` 0 while the whole size is not known; exit 3 while another sync runs, 4 when the version API does not vouch for a wanted game's core library, 5 when the files do not fit, after a `{"short":N}` line); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam and after every stop (`vos-gamescope.service`), and from vosd when `dispatcher` turns false and that unit is down or stops within 30 s: brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
@@ -80,7 +80,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
 | `/var/lib/vos/ext/ports` | vosd | the network ports of the running extensions, which `vos-firewall` opens to the local network (see Firewall) |
 | `/run/vos/coolercontrol-fans.json` | `vos ext coolercontrol fans snapshot` | each fan's control mode (and a manual one's duty) and each amdgpu fan curve before CoolerControl took them, this boot (see Extensions, CoolerControl) |
-| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only (see Extensions, Steam) |
+| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only and TruckersMP's `switch-branch` (see Extensions, Steam) |
 | `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
 | `/run/user/1000/vos/ext-messages/` | `vos ext launch`, `vos ext truckersmp mp\|handoff` | the dispatcher's and helper commands' refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
 | `/run/user/1000/vos/truckersmp-mp.json` | `vos ext truckersmp mp` | the multiplayer flag TruckersMP's launch hook takes once (see Extensions, TruckersMP) |
@@ -835,7 +835,9 @@ anyway. A file that cannot be read or parsed counts as changed.
 *prepare's record,* `/var/home/vapor/.local/state/vaporos/steam.json`
 (vapor's, 0644), written only by `vos steam prepare`, atomically, right
 after each of Steam's files it replaces. vosd reads it through gamerfs and
-trusts it for display only:
+trusts it for display only (and for TruckersMP's `switch-branch`, whose
+worst outcome from it is asking again, or not, for a branch VaporOS
+already holds a game on):
 ```json
 {"fingerprint":"<hex>","vos":"<version>","accounts":["<accountid>"],
  "default":{"wrote":"proton-cachyos-slr","before":null,"suspended":false},
@@ -1464,15 +1466,19 @@ entries stay whether or not their game is installed (Steam keeps a
 shortcut's id and art only while it stays listed); `mp` says when a game is
 missing. Its descriptor's `downloads` name the mod (about 640 MiB, at
 install, and each new version) from `download.ets2mp.com`, the file list
-from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
+from `update.ets2mp.com` (at install, and at each sync: at least once a
+day) and the version API from `api.truckersmp.com` (at install, and every
+hour), each as an `install` and an `update` entry, the update entries
+saying how often in their `what`.
 - *Files* (the home data area, `vapor`'s): `bin/truckersmp-cli.exe` (a copy
   of the image's, which Proton's container cannot see; `setup` and the
   launch hook make it equal), `files/` (MODDIR, laid out as files.json
   says), `manifest.json`
   (`{"version","checked","games","files":[{"path","type","md5","size","mtime"}]}`,
   `mtime` in unix nanoseconds: written by a sync that finished, and deleted
-  first by one that changes files, so it always describes whole files),
-  `partial/<md5>.part` (downloads to resume) and `.sync.lock` (flock).
+  by one that changes files just before it moves its checked downloads into
+  `files/`, so it always describes whole files),
+  `partial/<md5>.part` (downloads, kept to resume) and `.sync.lock` (flock).
 - *Sync* (`vos ext truckersmp sync`, as `vapor`, one at a time): it asks
   `https://api.truckersmp.com/v2/version` and
   `https://update.ets2mp.com/files.json` (`{"Files":[{"Md5","Type","FilePath"}]}`),
@@ -1483,20 +1489,31 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   (`atsmp_checksum.dll`), and files.json the same one; otherwise the sync
   downloads nothing and exits 4 (it tries again later). A file
   the manifest recorded with that MD5, size and mtime, or whose MD5 matches,
-  stays; the others come from `https://download.ets2mp.com/files<FilePath>`
-  (HEAD for the size; where HEAD gives none, the GET's `Content-Length`, or
-  its `Content-Range` total when resumed; then GET, resumed with `Range`
-  where a part exists, a file of no bytes included; at most 2 GiB a file
-  and 8 GiB in all, the bytes downloaded counted against it as they come;
-  given up after 60 s without data), are MD5-checked and renamed into
-  place. Before downloading, the home data area's filesystem must have the
-  bytes still to come (the sizes known, less what `partial/` holds) plus
-  2 GiB free, checked again for each size only the GET gives; otherwise the
-  sync prints `{"short":N}` (the bytes missing) and exits 5. Files of the
-  old manifest no longer listed go.
+  stays; the others come from `https://download.ets2mp.com/files<FilePath>`,
+  once per MD5 (HEAD for the size; where HEAD gives none, the GET's
+  `Content-Length`, or its `Content-Range` total when resumed; then GET into
+  `partial/<md5>.part`, resumed with `Range` where a part exists, a file of
+  no bytes included; at most 2 GiB a file and 8 GiB in all, the bytes
+  downloaded counted against it as they come; given up after 60 s without
+  data) and MD5-checked. Before downloading, the home data area's
+  filesystem must have the bytes still to come (the sizes known, less what
+  `partial/` holds) plus 2 GiB free, checked again for each size only the
+  GET gives and, once all are downloaded, for the copies below; otherwise
+  the sync prints `{"short":N}` (the bytes missing) and exits 5. Every
+  refusal and failure so far leaves `files/` and the manifest as they were,
+  so multiplayer keeps working with the files it has. Only once every
+  download is checked does the sync delete the manifest and move the
+  downloads into place (renamed; the other files of an MD5 get a copy).
+  Files of the old manifest no longer listed go. Its progress lines'
+  `total` is the sum of HEAD's sizes, known before the first byte, or 0
+  (not known) until every download is done when HEAD gives a size for not
+  every file.
 - *vosd* runs the sync as `vapor` (runuser; its progress lines read as they
   come; within 4 hours; exit 3 counts as done, exits 4 and 5 the card words
-  itself) from `Install` (after `setup`), and, while this boot
+  itself) from `Install` (after `setup`; a `setup` that fails fails
+  `Install` with `setup-failed`, "Setting up TruckersMP didn't finish
+  because VaporOS couldn't copy its launcher. Try again, or remove it."),
+  and, while this boot
   mounted the extension and `settings/truckersmp.installed` exists, when it
   builds the card and a sync is due: no manifest, the API's `name` (asked at
   most hourly, every 10 minutes while unanswered; 15 s, 64 KiB) other than
@@ -1509,7 +1526,9 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   with a message (see Dispatcher messages: codes `running-<key>`,
   `starting`, `not-installed-<key>`, `no-files-<key>`, `updating`,
   `handoff-failed` and, from `handoff`, `steam-silent`, each with its
-  sentence in the helper), while a reaper of 227300 or 270880 runs
+  sentence in the helper; the launch hook's refusals add `linux-<key>` and
+  `launcher-failed`, and `Install`'s `setup-failed`, all returned as
+  `extensions.Refuse` with their code), while a reaper of 227300 or 270880 runs
   (`running-`), while `vos-ext-handoff.service` is loaded (`starting`),
   when no library has the game (`not-installed-`), or when the game's
   files fail the quick check: `no-files-` when the manifest lacks the
@@ -1532,15 +1551,19 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   take the flag (renamed away first: once), deleting one that is not valid
   and leaving one for the other game. Then the quick check (each `system`
   and game file has the manifest's size and mtime, the core library its
-  MD5): stale files refuse the start ("its files are updating. Try again in
-  a few minutes."), never turning it into single-player. Otherwise the
+  MD5): stale files refuse the start with `mp`'s code for them (`updating`
+  or `no-files-<key>`), never turning it into single-player. Otherwise the
   executable becomes `<home data area>/bin/truckersmp-cli.exe GAMEDIR
   MODDIR` (GAMEDIR two levels above the executable's folder), followed by
   Steam's arguments for the game or, without any, `-rdevice gl -nointro
-  -64bit`. A command that holds the Linux build instead
-  (`.../bin/linux_x64/eurotrucks2`, `amtrucks`) while a valid flag for
-  that game exists takes the flag and refuses the start ("ETS2 isn't set to
-  run with Proton. Restart VaporOS and try again."). Every other start
+  -64bit`; when the injector cannot be copied there, it refuses with
+  `launcher-failed` ("TruckersMP didn't start because VaporOS couldn't set
+  up its launcher. Restart VaporOS and try again."). A command that holds
+  the Linux build instead (`.../bin/linux_x64/eurotrucks2`, `amtrucks`)
+  while a valid flag for that game exists takes the flag and refuses the
+  start with `linux-<key>` ("TruckersMP didn't start because ETS2 isn't set
+  to run with Proton. Restart VaporOS and try again."). The dispatcher
+  records each with its code, so vosd shows its sentence. Every other start
   passes untouched. For its shortcuts it adds
   `ext truckersmp mp <key>` when the command ends in `/usr/bin/vos` (a
   prepare that wrote no `args`).
@@ -1550,9 +1573,19 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   `Documents/<game>`, else of `~/.local/share/<game>`, read through
   gamerfs) against them or the branch it is held on (and, once the API
   supports a newer version than that, whether that one is the game's
-  latest), and the files (downloading n %, ready, out of date, or, while
-  they are behind, a sync that failed: for want of free space, with how
-  much to free; for want of the API's checksum; or otherwise).
+  latest). Of a held game whose logged version is another than its
+  `branch`'s it promises the switch at Steam's restart only while prepare's
+  record (`~/.local/state/vaporos/steam.json`, the app's `beta.request`,
+  read through gamerfs) lacks the entry's `request`; once prepare applied
+  it, the game's appmanifest (`UserConfig` `BetaKey`, read through gamerfs)
+  tells whether Steam still has it on that branch (it runs that version,
+  or for `""` its latest, from its next start) or it was moved off in
+  Steam (its version against the supported one or, logged on the held
+  version, that it was moved off; either with "Switch to the supported
+  version."). Then the files (downloading n %, or the bytes so far while
+  the sync's total is 0; ready, out of date, or, while they are behind, a
+  sync that failed: for want of free space, with how much to free; for
+  want of the API's checksum; or otherwise).
 - *Actions:* `copy-profiles` (as `vapor`, through `vos ext action`) copies each folder of
   `~/.local/share/<game>/profiles` that the prefix's
   `Documents/<game>/profiles` lacks (through a hidden folder renamed whole;
@@ -1565,7 +1598,11 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   logged version; a game held on another branch than the supported one
   gets the supported one's, or `""` (its latest version again) once the
   API supports `latest` or newer (the newer of `latest` and its logged
-  version). Each game it changes gets a new `request` id (the switch's UTC
+  version); a game held on the supported one's whose logged version is
+  another, or whose appmanifest asks for another branch since prepare
+  applied its request (as the card reads them), gets that branch again
+  (`latest` the newer of `latest` and its logged version). Each game it
+  changes gets a new `request` id (the switch's UTC
   time, `YYYYMMDDTHHMMSS.nnnnnnnnn`); every other entry stays as it was, id
   included. The helper's `SteamParts.Beta` passes each entry to prepare as
   `{"branch","request"}`, so prepare applies each switch once and a branch

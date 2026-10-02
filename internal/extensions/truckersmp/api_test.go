@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 )
@@ -47,7 +48,8 @@ func TestDescriptor(t *testing.T) {
 		t.Errorf("data: %+v", d.Data)
 	}
 	// What it downloads: the mod at install and at its updates, checked
-	// by TruckersMP's MD5s, and what each of TruckersMP's servers tells.
+	// by TruckersMP's MD5s, and what each of TruckersMP's servers tells,
+	// each at install (the first sync) and while it updates.
 	dl := map[string]descriptor.Download{}
 	for _, x := range d.Downloads {
 		dl[x.From+" "+x.When] = x
@@ -59,11 +61,17 @@ func TestDescriptor(t *testing.T) {
 	}
 	for _, u := range []string{versionURL, filesURL, downloadBase} {
 		host, _, _ := strings.Cut(strings.TrimPrefix(u, "https://"), "/")
-		if !slices.ContainsFunc(d.Downloads, func(x descriptor.Download) bool { return x.From == host }) {
-			t.Errorf("downloads do not name %s: %+v", host, d.Downloads)
+		for _, when := range []string{"install", "update"} {
+			if _, ok := dl[host+" "+when]; !ok {
+				t.Errorf("downloads do not name %s at %s: %+v", host, when, d.Downloads)
+			}
 		}
 	}
-	if len(d.Downloads) != 4 {
+	if !strings.Contains(dl["api.truckersmp.com update"].What, "every hour") || apiEvery != time.Hour ||
+		!strings.Contains(dl["update.ets2mp.com update"].What, "once a day") || syncEvery != 24*time.Hour {
+		t.Errorf("downloads do not say how often: %+v", d.Downloads)
+	}
+	if len(d.Downloads) != 6 {
 		t.Errorf("downloads: %+v", d.Downloads)
 	}
 	for _, name := range []string{"copy-profiles", "switch-branch", "latest-branch"} {

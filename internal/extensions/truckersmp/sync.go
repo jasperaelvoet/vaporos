@@ -69,8 +69,10 @@ type syncer struct {
 	now      func() time.Time
 	free     func(path string) (int64, error)
 
-	done, total int64
-	last        time.Time // when progress was last printed
+	done  int64     // bytes downloaded, or found in partial/
+	sized int64     // the sizes known so far, held to maxTotalSize
+	total int64     // the whole download's size for progress, 0 while not all of it is known
+	last  time.Time // when progress was last printed
 }
 
 func newSyncer(progress io.Writer) *syncer {
@@ -151,13 +153,18 @@ func (s *syncer) run(ctx context.Context) error {
 		}
 	}
 	if len(need) > 0 {
-		// From here on the files change: no manifest until they are whole.
+		if err := s.fetchAll(ctx, need); err != nil {
+			return err
+		}
+		// Only now do the files change: no manifest until they are whole.
 		if err := os.Remove(filepath.Join(s.home, manifestRel)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
-		if err := s.fetchAll(ctx, need, next); err != nil {
+		placed, err := s.place(need)
+		if err != nil {
 			return err
 		}
+		next.Files = append(next.Files, placed...)
 	}
 	s.cleanUp(old, want)
 	next.Checked = s.now().UTC()
@@ -192,49 +199,146 @@ func (s *syncer) current(old *manifest, f modFile) (manifestFile, bool) {
 	return manifestFile{}, false
 }
 
-// fetchAll downloads need, sizing the whole first so progress has a total
-// and the free space can be checked.
-func (s *syncer) fetchAll(ctx context.Context, need []modFile, next *manifest) error {
-	sizes := make([]int64, len(need))
+// fetchAll downloads need into partial/ and checks each download's MD5,
+// changing nothing in MODDIR: whatever stops it (a size over the bounds,
+// too little free space, a download that fails or does not match) leaves
+// the files and the manifest as they were, so multiplayer keeps working.
+// It sizes every file first (HEAD) for the free space and the progress
+// total; files of one MD5 download once.
+func (s *syncer) fetchAll(ctx context.Context, need []modFile) error {
+	parts := uniqueMD5(need)
+	sizes := make([]int64, len(parts))
+	known := true
 	var room int64
-	for i, f := range need {
+	for i, f := range parts {
 		n, err := s.size(ctx, f)
 		if err != nil {
 			return err
 		}
 		sizes[i] = n
-		if n >= 0 {
-			if err := s.count(n); err != nil {
-				return err
-			}
-			room += max(n-s.partSize(f), 0)
+		if n < 0 {
+			known = false
+			continue
 		}
+		if err := s.count(n); err != nil {
+			return err
+		}
+		room += max(n-s.partSize(f), 0)
 	}
 	if err := s.roomFor(room); err != nil {
 		return err
 	}
+	if known {
+		s.total = s.sized
+	}
 	s.report(true)
-	for i, f := range need {
-		e, err := s.fetch(ctx, f, sizes[i])
-		if err != nil {
+	for i, f := range parts {
+		if err := s.fetch(ctx, f, sizes[i]); err != nil {
 			return fmt.Errorf("downloading %s: %w", f.Path, err)
 		}
-		next.Files = append(next.Files, e)
 	}
-	return nil
+	s.total = max(s.total, s.done)
+	if len(need) == len(parts) {
+		return nil
+	}
+	// The other files of a download's MD5 get copies of it.
+	seen := map[string]bool{}
+	var copies int64
+	for _, f := range need {
+		if seen[f.MD5] {
+			copies += s.partSize(f)
+		}
+		seen[f.MD5] = true
+	}
+	return s.roomFor(copies)
 }
 
-// count adds a file of n bytes to the total, within the bounds.
+// uniqueMD5 is need's first file of each MD5, in order.
+func uniqueMD5(need []modFile) []modFile {
+	seen := map[string]bool{}
+	var out []modFile
+	for _, f := range need {
+		if !seen[f.MD5] {
+			seen[f.MD5] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// place moves the checked downloads into MODDIR and returns their
+// manifest entries; a file whose download another file shares gets a copy
+// of it.
+func (s *syncer) place(need []modFile) ([]manifestFile, error) {
+	uses := map[string]int{}
+	for _, f := range need {
+		uses[f.MD5]++
+	}
+	var out []manifestFile
+	for _, f := range need {
+		dst := filepath.Join(s.home, filesRel, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return nil, err
+		}
+		uses[f.MD5]--
+		var err error
+		if uses[f.MD5] > 0 {
+			err = s.copyPart(f, dst)
+		} else {
+			err = os.Rename(s.partPath(f), dst)
+		}
+		if err != nil {
+			return nil, err
+		}
+		fi, err := os.Lstat(dst)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, manifestFile{Path: f.Path, Type: f.Type, MD5: f.MD5, Size: fi.Size(), MTime: fi.ModTime().UnixNano()})
+	}
+	return out, nil
+}
+
+// copyPart copies f's download to dst through a temporary file in
+// partial/, which the next sync clears when one is left over.
+func (s *syncer) copyPart(f modFile, dst string) error {
+	in, err := os.Open(s.partPath(f))
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Join(s.home, partialRel), "copy-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	_, err = io.Copy(tmp, in)
+	if err == nil {
+		err = tmp.Chmod(0o644)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
+}
+
+// count adds a file of n bytes to the sizes known, within the bounds.
 func (s *syncer) count(n int64) error {
-	s.total += n
-	if n > maxFileSize || s.total > maxTotalSize {
+	s.sized += n
+	if n > maxFileSize || s.sized > maxTotalSize {
 		return s.tooLarge()
 	}
 	return nil
 }
 
 func (s *syncer) tooLarge() error {
-	return fmt.Errorf("the TruckersMP files are larger than VaporOS allows (%d MiB)", max(s.total, s.done)>>20)
+	return fmt.Errorf("the TruckersMP files are larger than VaporOS allows (%d MiB)", max(s.sized, s.done)>>20)
 }
 
 // roomFor fails with a spaceError when n more bytes and store.ExtReserve
@@ -296,36 +400,25 @@ func (s *syncer) size(ctx context.Context, f modFile) (int64, error) {
 }
 
 // fetch downloads f into partial/<md5>.part, resuming what an earlier
-// sync left there, checks its MD5 and moves it into MODDIR.
-func (s *syncer) fetch(ctx context.Context, f modFile, size int64) (manifestFile, error) {
+// sync left there, and checks its MD5.
+func (s *syncer) fetch(ctx context.Context, f modFile, size int64) error {
 	part := s.partPath(f)
 	err := s.download(ctx, f, part, &size)
 	if errors.Is(err, errRestart) {
 		err = s.download(ctx, f, part, &size)
 	}
 	if err != nil {
-		return manifestFile{}, err
+		return err
 	}
 	sum, err := fileMD5(part)
 	if err != nil {
-		return manifestFile{}, err
+		return err
 	}
 	if sum != f.MD5 {
 		os.Remove(part)
-		return manifestFile{}, fmt.Errorf("its MD5 is %s, TruckersMP says %s", sum, f.MD5)
+		return fmt.Errorf("its MD5 is %s, TruckersMP says %s", sum, f.MD5)
 	}
-	dst := filepath.Join(s.home, filesRel, filepath.FromSlash(f.Path))
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return manifestFile{}, err
-	}
-	if err := os.Rename(part, dst); err != nil {
-		return manifestFile{}, err
-	}
-	fi, err := os.Lstat(dst)
-	if err != nil {
-		return manifestFile{}, err
-	}
-	return manifestFile{Path: f.Path, Type: f.Type, MD5: f.MD5, Size: fi.Size(), MTime: fi.ModTime().UnixNano()}, nil
+	return nil
 }
 
 // errRestart asks fetch to download the file again from its start.
@@ -501,7 +594,9 @@ func (s *syncer) add(n int64) {
 	s.report(false)
 }
 
-// report prints the progress, at most twice a second unless final.
+// report prints the progress, at most twice a second unless final. A
+// total of 0 is one not known yet: a total that grew file by file would
+// show the card a percentage that is not real.
 func (s *syncer) report(final bool) {
 	if s.progress == nil {
 		return
@@ -511,7 +606,10 @@ func (s *syncer) report(final bool) {
 		return
 	}
 	s.last = now
-	total := max(s.total, s.done)
+	total := s.total
+	if total > 0 {
+		total = max(total, s.done)
+	}
 	fmt.Fprintf(s.progress, "{\"bytes\":%d,\"total\":%d}\n", s.done, total)
 }
 

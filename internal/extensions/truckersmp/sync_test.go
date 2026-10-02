@@ -3,6 +3,7 @@ package truckersmp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -230,6 +231,9 @@ func TestSyncWithoutHead(t *testing.T) {
 	if s.total != 15000 || !strings.HasSuffix(out.String(), "{\"bytes\":15000,\"total\":15000}\n") {
 		t.Errorf("total %d, progress %q", s.total, out.String())
 	}
+	if lines := progressLines(t, out.String()); slices.ContainsFunc(lines[:len(lines)-1], func(p [2]int64) bool { return p[1] != 0 }) {
+		t.Errorf("a total before the end: %v", lines)
+	}
 
 	// A file over the cap is refused before a byte of it is written.
 	newBox(t)
@@ -264,6 +268,171 @@ func TestSyncWithoutHead(t *testing.T) {
 	}
 	if s.done > 10000 {
 		t.Errorf("downloaded %d bytes", s.done)
+	}
+}
+
+// progressLines reads a sync's {"bytes","total"} lines.
+func progressLines(t *testing.T, out string) [][2]int64 {
+	t.Helper()
+	var lines [][2]int64
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		var p struct{ Bytes, Total int64 }
+		if err := json.Unmarshal([]byte(l), &p); err != nil {
+			t.Fatalf("%q: %v", l, err)
+		}
+		lines = append(lines, [2]int64{p.Bytes, p.Total})
+	}
+	return lines
+}
+
+// The progress total is the whole download's, known before the first
+// byte from HEAD's sizes; when HEAD gives none it is 0 (bytes without a
+// percentage) until the end, never a total that grows file by file.
+func TestSyncProgressTotal(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	s, out := testSyncer(srv, "ets2")
+	tick := time.Now()
+	s.now = func() time.Time { tick = tick.Add(time.Second); return tick } // every line printed
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lines := progressLines(t, out.String())
+	if len(lines) < 4 || lines[0] != [2]int64{0, 15000} || lines[len(lines)-1] != [2]int64{15000, 15000} {
+		t.Fatalf("lines %v", lines)
+	}
+	for i, p := range lines {
+		if p[1] != 15000 || (i > 0 && p[0] < lines[i-1][0]) {
+			t.Errorf("lines %v", lines)
+			break
+		}
+	}
+
+	newBox(t)
+	srv.noHead = true
+	s, out = testSyncer(srv, "ets2")
+	s.now = func() time.Time { tick = tick.Add(time.Second); return tick }
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lines = progressLines(t, out.String())
+	if len(lines) < 4 || lines[len(lines)-1] != [2]int64{15000, 15000} {
+		t.Fatalf("lines %v", lines)
+	}
+	for _, p := range lines[:len(lines)-1] {
+		if p[1] != 0 {
+			t.Errorf("a total that is not the whole download's: %v", lines)
+			break
+		}
+	}
+}
+
+// A sync that is refused or stops writes only into partial/: the files
+// and the manifest stay as they were, so multiplayer keeps starting.
+func TestSyncRefusalKeepsFiles(t *testing.T) {
+	b := syncedBox(t, "ets2")
+	b.install(b.disk, games[0])
+	b.install(b.steam, games[1])
+	srv := newTMPServer(t)
+	ctx := context.Background()
+	before := read(t, filepath.Join(homeDir(), manifestRel))
+	stays := func(what string) {
+		t.Helper()
+		if got := read(t, filepath.Join(homeDir(), manifestRel)); got != before {
+			t.Errorf("%s: the manifest changed", what)
+		}
+		if err := quickCheck(homeDir(), games[0]); err != nil {
+			t.Errorf("%s: ETS2's files: %v", what, err)
+		}
+		m, started, told := testMP(t, shortcutProcs(t))
+		if err := m.run(ctx, games[0]); err != nil || len(*started) != 1 {
+			t.Errorf("%s: mp ets2: %v %q", what, err, *told)
+		}
+		os.Remove(flagPath())
+	}
+
+	// ATS's files do not fit: sized by HEAD, or by the GET when HEAD is
+	// refused.
+	var space *spaceError
+	for _, noHead := range []bool{false, true} {
+		srv.noHead = noHead
+		s, _ := testSyncer(srv, "ets2", "ats")
+		s.free = func(string) (int64, error) { return store.ExtReserve + 100, nil }
+		if err := s.run(ctx); !errors.As(err, &space) || space.short != 1900 {
+			t.Fatalf("no space (HEAD refused: %v): %v", noHead, err)
+		}
+		stays("no space")
+	}
+	srv.noHead = false
+
+	// A new version of a file, whose download breaks off.
+	srv.mu.Lock()
+	srv.version = "0.7.8.0"
+	srv.files["data/ets2mp.adb"] = bytes.Repeat([]byte("D"), 4000)
+	srv.cut["data/ets2mp.adb"] = 1000
+	srv.mu.Unlock()
+	s, _ := testSyncer(srv, "ets2", "ats")
+	if err := s.run(ctx); err == nil {
+		t.Fatal("a broken download passed")
+	}
+	stays("a broken download")
+
+	// Over the size cap.
+	saved := maxTotalSize
+	maxTotalSize = 1000
+	s, _ = testSyncer(srv, "ets2", "ats")
+	if err := s.run(ctx); err == nil || !strings.Contains(err.Error(), "larger") {
+		t.Fatalf("over the cap: %v", err)
+	}
+	maxTotalSize = saved
+	stays("over the cap")
+
+	// The next sync that finishes moves everything into place.
+	s, _ = testSyncer(srv, "ets2", "ats")
+	if err := s.run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range games {
+		if err := quickCheck(homeDir(), g); err != nil {
+			t.Errorf("%s: %v", g.key, err)
+		}
+	}
+	if read(t, modFilePath("data/ets2mp.adb")) != string(srv.files["data/ets2mp.adb"]) {
+		t.Error("the new file is not in place")
+	}
+}
+
+// TruckersMP lists some files for both games under one MD5: each
+// downloads once, and every file gets its own copy.
+func TestSyncSharedDownload(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	logo := bytes.Repeat([]byte("L"), 1500)
+	srv.add("data/ats/ui/logo.png", "ats", logo)
+	srv.add("data/ets2/ui/logo.png", "ets2", logo)
+	s, out := testSyncer(srv, "ets2", "ats")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := srv.getCount("data/ats/ui/logo.png") + srv.getCount("data/ets2/ui/logo.png"); n != 1 {
+		t.Errorf("downloaded %d times", n)
+	}
+	a, err1 := os.Stat(modFilePath("data/ats/ui/logo.png"))
+	e, err2 := os.Stat(modFilePath("data/ets2/ui/logo.png"))
+	if err1 != nil || err2 != nil || os.SameFile(a, e) ||
+		read(t, modFilePath("data/ats/ui/logo.png")) != string(logo) || read(t, modFilePath("data/ets2/ui/logo.png")) != string(logo) {
+		t.Fatalf("%v %v", err1, err2)
+	}
+	for _, g := range games {
+		if err := quickCheck(homeDir(), g); err != nil {
+			t.Errorf("%s: %v", g.key, err)
+		}
+	}
+	if !strings.HasSuffix(out.String(), "{\"bytes\":18500,\"total\":18500}\n") {
+		t.Errorf("progress %q", out.String())
+	}
+	if ents, _ := os.ReadDir(filepath.Join(homeDir(), partialRel)); len(ents) != 0 {
+		t.Errorf("left over: %v", ents)
 	}
 }
 

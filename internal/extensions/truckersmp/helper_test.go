@@ -140,6 +140,19 @@ func TestSwitchBranch(t *testing.T) {
 	if got[227300] != ets2 || ats.Branch != "temporary_1_61" || ats.Latest != "1.62.0.1s" || ats.Request == ets2.Request {
 		t.Fatalf("branch %+v", got)
 	}
+	// Pressed again before Steam restarts: ATS still runs 1.62, so it is
+	// asked again; ETS2 keeps its request.
+	time.Sleep(time.Millisecond)
+	if err := run("switch-branch"); err != nil {
+		t.Fatal(err)
+	}
+	again := readBranch(x.DataDir)
+	if again[227300] != ets2 || again[270880].Branch != "temporary_1_61" || again[270880].Latest != "1.62.0.1s" || again[270880].Request == ats.Request {
+		t.Fatalf("branch %+v", again)
+	}
+	got, ats = again, again[270880]
+	// Both run what TruckersMP supports: nothing to switch.
+	b.log(b.steam, games[1], "1.61.3.1s")
 	if err := run("switch-branch"); err == nil || err.Error() != "ETS2 and ATS already run a version TruckersMP supports." {
 		t.Fatalf("nothing to switch: %v", err)
 	}
@@ -204,6 +217,90 @@ func TestSwitchBranch(t *testing.T) {
 	}
 }
 
+// A game held on the supported branch that no longer runs it is asked
+// again with a new request, since prepare applies each request once, and
+// the card promises a switch only while a request will make it.
+func TestSwitchBranchAgain(t *testing.T) {
+	b := newBox(t)
+	h := branchHelper(&versionInfo{Name: "0.7.7.9", SupportedETS2: "1.61.1.1s", SupportedATS: "1.61.3.1s"})
+	x := testExt()
+	ctx := context.Background()
+	run := func() error { return h.Action(ctx, x, "switch-branch", nil) }
+	line := func() string {
+		t.Helper()
+		h.mu.Lock()
+		h.seen = nil
+		h.mu.Unlock()
+		hold := readBranch(x.DataDir)[227300]
+		tone, text := versionLine(h.games()[0], "1.61.1.1s", &hold)
+		return tone + "|" + text
+	}
+	request := func() string { return readBranch(x.DataDir)[227300].Request }
+
+	b.install(b.disk, games[0])
+	b.log(b.disk, games[0], "1.62.0.5s")
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	r1 := request()
+	if got := line(); got != "|ETS2 switches to version 1.61 when Steam restarts." {
+		t.Errorf("asked: %q", got)
+	}
+	// Steam restarts: prepare applies the request, and Steam has ETS2 on
+	// the branch before it starts again.
+	b.steamBranch(b.disk, games[0], "temporary_1_61")
+	b.prepared(map[uint32]string{227300: r1})
+	if got := line(); got != "|ETS2 runs version 1.61 from its next start." {
+		t.Errorf("applied: %q", got)
+	}
+	b.log(b.disk, games[0], "1.61.1.1s")
+	if got := line(); got != "|ETS2 stays on version 1.61 for TruckersMP." {
+		t.Errorf("on the branch: %q", got)
+	}
+	if err := run(); err == nil || err.Error() != "ETS2 already runs a version TruckersMP supports." || request() != r1 {
+		t.Fatalf("on the branch: %v", err)
+	}
+
+	// The person moves ETS2 back to its latest version in Steam: held on
+	// temporary_1_61, it logs 1.62 while TruckersMP supports 1.61.
+	b.steamBranch(b.disk, games[0], "")
+	if got := line(); got != "warning|ETS2 was moved off version 1.61 in Steam. Switch to the supported version." {
+		t.Errorf("moved off: %q", got)
+	}
+	b.log(b.disk, games[0], "1.62.0.5s")
+	if got := line(); got != "warning|ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version." {
+		t.Errorf("moved off and played: %q", got)
+	}
+	time.Sleep(time.Millisecond)
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	r2 := request()
+	if e := readBranch(x.DataDir)[227300]; r2 == r1 || e.Branch != "temporary_1_61" || e.Latest != "1.62.0.5s" {
+		t.Fatalf("asked again: %+v", e)
+	}
+	if r := h.Steam(x).Beta[227300]; r != (extensions.BetaRequest{Branch: "temporary_1_61", Request: r2}) {
+		t.Errorf("beta %+v", r)
+	}
+	if got := line(); got != "|ETS2 switches to version 1.61 when Steam restarts." {
+		t.Errorf("asked again: %q", got)
+	}
+
+	// Pressed once more before Steam restarts: ETS2 still logs 1.62.
+	time.Sleep(time.Millisecond)
+	if err := run(); err != nil || request() == r2 {
+		t.Fatalf("pressed again: %v", err)
+	}
+	// Moved off before it ran another version: asked again too.
+	r3 := request()
+	b.prepared(map[uint32]string{227300: r3})
+	b.log(b.disk, games[0], "1.61.1.1s")
+	time.Sleep(time.Millisecond)
+	if err := run(); err != nil || request() == r3 {
+		t.Fatalf("moved off before a start: %v", err)
+	}
+}
+
 // Install copies the injector as the gaming user and starts the first
 // sync; Remove stops a sync that runs and forgets the branch.
 func TestInstallAndRemove(t *testing.T) {
@@ -245,12 +342,15 @@ func TestInstallAndRemove(t *testing.T) {
 		t.Error("branch.json stays")
 	}
 
-	// A setup that fails is the card's reason.
+	// A setup that fails gives the card its own reason.
 	h.asGamer = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "runuser: something\nopen /usr/lib/vos/ext/truckersmp/truckersmp-cli.exe: no such file", errors.New("exit status 1")
 	}
-	if err := h.Install(context.Background(), x); err == nil || !strings.Contains(err.Error(), "launcher could not be copied") {
-		t.Errorf("err %v", err)
+	err := h.Install(context.Background(), x)
+	if code, text := refused(err); code != "setup-failed" ||
+		text != "Setting up TruckersMP didn't finish because VaporOS couldn't copy its launcher. Try again, or remove it." ||
+		!strings.Contains(err.Error(), "truckersmp-cli.exe: no such file") {
+		t.Errorf("err %v: %q %q", err, code, text)
 	}
 }
 
