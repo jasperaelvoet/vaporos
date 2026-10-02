@@ -686,7 +686,10 @@ the new copy. A missing file is not damage. Idle shutdown counts as busy
 end, unless no bytes came for 2 minutes, the re-read, and every helper call
 (`Install`, `Remove`, an action, `PasswordChanged`; see Control center); and, with its own
 reason, a helper's own work while the helper says so (`Busier`; TruckersMP's
-sync: `updating TruckersMP`).
+sync: `updating TruckersMP`). vosd reads the shipped descriptors every few
+seconds (the ports, the control center's document, `steam.json`), and logs
+one it cannot read once per state of its file (path, size and mtime) and
+error.
 
 **Install** (the `configure` step, after slot a is written and the target is
 mounted): the installer runs the new image's own

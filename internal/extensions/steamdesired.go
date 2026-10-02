@@ -160,10 +160,11 @@ func loadSteamEntries() (*steamEntries, error) {
 		d, err := Shipped(id)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				log.Printf("extensions: %s: %v", id, err)
+				shippedErr(id, err)
 			}
 			continue
 		}
+		shippedErr(id, nil)
 		e.descs[id] = d
 		if rep.IsMounted(id) && (e.desired == nil || e.desired[id]) {
 			e.ids = append(e.ids, id)

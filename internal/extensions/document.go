@@ -517,8 +517,10 @@ func (s *Service) descOf(id string) (*descriptor.Descriptor, error) {
 	case errors.Is(err, fs.ErrNotExist):
 		d = nil
 	case err != nil:
-		log.Printf("extensions: %s: %v", id, err)
+		shippedErr(id, err) // the document is built every 5 s
 		return nil, err
+	default:
+		shippedErr(id, nil)
 	}
 	if s.cc.descs == nil {
 		s.cc.descs = map[string]*descriptor.Descriptor{}

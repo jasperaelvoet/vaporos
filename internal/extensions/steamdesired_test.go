@@ -774,3 +774,36 @@ func TestActionSyncsSteam(t *testing.T) {
 		t.Errorf("after the action: %+v, restarts %q", d.Apps, restarts)
 	}
 }
+
+// A damaged shipped descriptor is logged once for the file as it is, not
+// at every build of the control center's document or of steam.json.
+func TestDamagedDescriptorLoggedOnce(t *testing.T) {
+	r := newRig(t)
+	p := filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json")
+	damage := func(data string) {
+		writeFile(t, p, data)
+		r.s.cc.descMu.Lock()
+		r.s.cc.descs = nil // as at vosd's start
+		r.s.cc.descMu.Unlock()
+	}
+	damage("{")
+	l := captureLogs(t)
+	for range 3 {
+		if c := r.card("coolercontrol"); c.Name != "coolercontrol" {
+			t.Fatalf("card %+v", c)
+		}
+	}
+	for range 2 {
+		r.s.syncSteam()
+	}
+	if n := l.count("extensions: coolercontrol: "); n != 1 {
+		t.Fatalf("%d log lines for one damaged descriptor:\n%s", n, l.buf.String())
+	}
+	// Written again, still damaged: once more.
+	damage("{ ")
+	r.doc()
+	r.s.syncSteam()
+	if n := l.count("extensions: coolercontrol: "); n != 2 {
+		t.Fatalf("%d log lines after it changed, want 2:\n%s", n, l.buf.String())
+	}
+}
