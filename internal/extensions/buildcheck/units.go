@@ -22,7 +22,7 @@ type unitScope struct {
 	aliases map[string]string   // unit name -> rel of a symlink to another unit
 	dropIns map[string][]string // the name a drop-in directory is for -> rels of its *.conf drop-ins
 	depDirs map[string]string   // unit name -> rel of its .wants/.requires/.upholds
-	upholds []string            // entries of .upholds directories: units kept running
+	deps    []string            // entries of those directories: the units they add
 	linked  []string            // drop-ins that are symlinks
 	target  map[string]string   // alias -> the unit it names (filled by check)
 }
@@ -57,8 +57,8 @@ func (s *unitScope) note(rel string, isDir, isLink bool) {
 			s.linked = append(s.linked, rel)
 		} else if ok {
 			s.dropIns[u] = append(s.dropIns[u], rel)
-		} else if strings.HasSuffix(p[0], ".upholds") {
-			s.upholds = append(s.upholds, rel)
+		} else if _, ok := depDirUnit(p[0]); ok {
+			s.deps = append(s.deps, rel)
 		}
 	}
 }
@@ -103,25 +103,6 @@ type unitFacts struct {
 // with the section that holds their commands, user and timeout.
 var execSections = map[string]string{"service": "Service", "socket": "Socket"}
 
-// baseEffects are the [Unit] settings that do something to the units they
-// name, so they may not name one of the base's: what the setting would do.
-// Default dependencies add Conflicts=shutdown.target to every unit anyway.
-var baseEffects = map[string]string{
-	"Before":             "orders it before",
-	"Conflicts":          "stops, whenever it starts,",
-	"OnFailure":          "starts, when it fails,",
-	"OnSuccess":          "starts, when it succeeds,",
-	"PropagatesStopTo":   "stops, whenever it stops,",
-	"PropagatesReloadTo": "reloads, whenever it reloads,",
-	"PropagateReloadTo":  "reloads, whenever it reloads,",
-	"Upholds":            "keeps restarting",
-	"BindsTo":            "binds its state to",
-	"BindTo":             "binds its state to",
-	"PartOf":             "ties its stops and restarts to",
-	"StopPropagatedFrom": "ties its stops to",
-	"JoinsNamespaceOf":   "joins the namespaces of",
-}
-
 // triggerKeys are the section and setting that name the unit a timer,
 // path or socket starts; without one it starts the service of its name.
 var triggerKeys = map[string][2]string{"timer": {"Timer", "Unit"}, "path": {"Path", "Unit"}, "socket": {"Socket", "Service"}}
@@ -134,10 +115,10 @@ var commandKeys = map[string]bool{
 
 // check applies the unit rules: names that neither are nor reach into the
 // base's units, drop-ins and dependency directories only for the
-// extension's own units, aliases only to them, no setting (baseEffects),
-// .upholds entry or trigger that acts on a unit of the base, and every
-// system unit that runs commands with a drop-in that bounds them (so a
-// hanging extension cannot hold the boot).
+// extension's own units, aliases only to them, no setting (settingProblems),
+// dependency entry or trigger that acts on a unit of the base or on the
+// system's state, and every system unit that runs commands with a drop-in
+// that bounds them (so a hanging extension cannot hold the boot).
 func (s *unitScope) check(tree, base string) unitFacts {
 	var f unitFacts
 	bad := func(format string, a ...any) { f.problems = append(f.problems, fmt.Sprintf(format, a...)) }
@@ -192,8 +173,11 @@ func (s *unitScope) check(tree, base string) unitFacts {
 			bad("%s: adds dependencies to %s, which the extension does not ship", s.depDirs[u], u)
 		}
 	}
-	for _, rel := range s.upholds {
-		if what := s.baseUnit(base, path.Base(rel)); what != "" {
+	for _, rel := range s.deps {
+		name := path.Base(rel)
+		if what := s.systemState(base, name); what != "" {
+			bad("%s: a dependency on %s", rel, what)
+		} else if what := s.baseUnit(base, name); what != "" && strings.HasSuffix(path.Dir(rel), ".upholds") {
 			bad("%s: keeps restarting %s", rel, what)
 		}
 	}
@@ -227,20 +211,11 @@ func (s *unitScope) check(tree, base string) unitFacts {
 			as = append(as, parseUnit(rel, b)...)
 		}
 		for _, a := range as {
-			effect, ok := baseEffects[a.key]
-			if a.section != "Unit" || !ok {
-				continue
-			}
-			for _, b := range strings.Fields(a.value) {
-				if a.key == "Conflicts" && b == "shutdown.target" {
-					continue
-				}
-				if p := s.baseUnit(base, b); p != "" {
-					bad("%s: %s=%s %s %s", a.file, a.key, b, effect, p)
-				}
+			for _, p := range s.settingProblems(base, a) {
+				bad("%s: %s", a.file, p)
 			}
 		}
-		if t := triggered(u, as); t != "" {
+		for _, t := range triggered(u, as) {
 			if p := s.baseUnit(base, t); p != "" {
 				bad("%s/%s: starts %s, %s", s.dir, u, t, p)
 			}
@@ -334,33 +309,37 @@ func (s *unitScope) baseUnit(base, u string) string {
 	return ""
 }
 
-// triggered returns the unit a timer, path or socket starts: the one its
-// Unit= or Service= names, else the service of its own name (a template's
-// instances with Accept=yes).
-func triggered(u string, as []assignment) string {
+// triggered returns the units a timer, path or socket may start: every one
+// its Unit= or Service= lines name (systemd keeps a timer's or path's first,
+// a socket's last, and ignores an empty one), else the service of its own
+// name (a template's instances with Accept=yes).
+func triggered(u string, as []assignment) []string {
 	typ := unitType(u)
 	tk, ok := triggerKeys[typ]
 	if !ok {
-		return ""
+		return nil
 	}
-	name, accept := "", false
+	var names []string
+	accept := false
 	for _, a := range as {
 		switch {
 		case a.section != tk[0]:
 		case a.key == tk[1]:
-			name = a.value
+			if a.value != "" {
+				names = append(names, a.value)
+			}
 		case a.key == "Accept":
 			accept = parseBool(a.value)
 		}
 	}
-	if name != "" {
-		return name
+	if len(names) > 0 {
+		return names
 	}
 	stem := strings.TrimSuffix(u, "."+typ)
 	if accept && !strings.Contains(stem, "@") {
 		stem += "@"
 	}
-	return stem + ".service"
+	return []string{stem + ".service"}
 }
 
 // baseInstances reports whether the base has a unit file that is an

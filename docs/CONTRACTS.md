@@ -73,7 +73,6 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/run/vos/ext-trial-ok` | `vos health` | the number of the set whose extension trial passed health this boot (one line, written atomically), so vosd can promote it when health could not (see Health) |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
-| `/run/vos-ext/<id>/` | the extension's `tmpfiles.d` | its runtime directory, the only place in `/run` its `tmpfiles.d` lines may use (see Extensions) |
 | `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
 | `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
@@ -274,8 +273,8 @@ manifest. Each extension is itself immutable: one sealed, read-only image.
 unknown fields rejected; `internal/extensions/descriptor`), and `files/usr/...`,
 copied into the image. Integration logic is Go in `vos`
 (`internal/extensions/<id>`). Non-goals: no `/opt` or `/usr/local` payloads, no
-AUR or DKMS, no `.ko`, no `sysusers.d`, no confext, no plugin stores that run
-code as root.
+AUR or DKMS, no `.ko`, no `sysusers.d` or `tmpfiles.d`, no confext, no plugin
+stores that run code as root.
 
 **Image** (`ext-<id>.raw`): an erofs whose only top-level directory is `usr/`,
 made with `mkfs.erofs -T0 --all-root -U <uuid>`, compressed as the root is
@@ -304,17 +303,18 @@ wherever it is) where either has a file or symlink, or one that merges with a
 directory of theirs but has another mode, or with a directory of the base
 that is not root's (the merged directory takes the image's mode and owner,
 and every directory of an image is root's, `--all-root`; root is the owner of
-the base's `/`): such base directories cannot be extended, so polkit rules,
-for one, need a root-owned `usr/share/polkit-1/rules.d` in the base, which
-Arch's polkit package makes `root:polkitd` 0750 (no v1 extension ships any);
+the base's `/`), so a base directory not owned by root cannot be extended;
 writes under
 `usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
 `usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory (one
 not reviewed as harmless) or `usr/lib/vos/**` except
 `usr/lib/vos/ext/<id>/**`, or anything under `usr/share/vos`, beyond the categories its
 descriptor declares in `permissions` (`service`, `user-service`, `udev`,
-`sysctl`, `modules`, `tmpfiles`, `polkit`, `dbus`, `compat-tool`), with any
-difference between declared and found failing too; ships `sysusers.d`, `*.ko`,
+`sysctl`, `modules`, `polkit`, `dbus`, `compat-tool`), with any
+difference between declared and found failing too; ships `sysusers.d`,
+`tmpfiles.d` (`usr/lib/tmpfiles.d` or `usr/share/user-tmpfiles.d`: a service
+gets its directories from `StateDirectory=`, `RuntimeDirectory=`,
+`CacheDirectory=` and `LogsDirectory=`, and vosd creates the data areas), `*.ko`,
 `hwdb.d`, `ld.so.conf.d`, credentials (`usr/lib/credstore`,
 `usr/lib/credstore.encrypted`: systemd imports sysctl, tmpfiles, sysusers and
 SSH key settings from them), firmware (`usr/lib/firmware`, `updates/`
@@ -325,23 +325,7 @@ GSettings schemas (`usr/lib/gio/modules`, `usr/lib/gdk-pixbuf-2.0`,
 silently not load), network configuration (NetworkManager, networkd,
 nftables, `net.*` sysctls), setuid/setgid files or file capabilities,
 whiteouts or `trusted.overlay.*` xattrs; sets a sysctl key the base or another
-extension sets; has a `tmpfiles.d` line (read as systemd-tmpfiles reads it,
-with only the `%S %C %L %t %T %V %%` specifiers, and refused, not unescaped,
-when a backslash is in its first six fields or in the argument of an `f`,
-`w`, `L` or `C` line, which systemd-tmpfiles unescapes) whose path is outside
-the extension's own areas (`/var/lib/vos/ext/data/<id>/`,
-`/var/home/vapor/.local/share/vaporos/ext/<id>/` and `/run/vos-ext/<id>/`,
-nothing else); whose path, `L` target (relative to the link's directory; by
-default `/usr/share/factory/<path>`) or `C` source (absolute; by default the
-same) ends, as the box resolves it, outside those areas and `/usr` (every
-symlink on the way is followed and `..` goes up from where one led: in `/usr`
-those of the image, the extensions built before it and the base, topmost
-first, and in the areas those the extension's own `L` lines make), whose
-glob (`w e x X r R z Z a A h H`) reaches anywhere else through such a
-symlink, or, for an `L` line, whose link would be made through one; whose
-mode sets setuid or setgid; whose type is `c` or `b` (device nodes) or `t` or
-`T` (extended attributes); or that is an `L` or `C` line with the `~` or `^`
-modifier; has a unit, alias, drop-in or dependency directory whose name ends
+extension sets; has a unit, alias, drop-in or dependency directory whose name ends
 in `-` before `@` or its type (a systemd prefix drop-in applies to every unit
 with that prefix), or that is, or is for, a `.mount`, `.automount`, `.swap`,
 `.slice`, `.scope` or `.device` unit (systemd and generators name these at
@@ -356,12 +340,29 @@ runs commands (a service, or a socket with `Exec*=` commands) whose last
 a finite one set by a drop-in of its own; has a unit or drop-in whose
 `[Unit]` `Before=`, `Conflicts=` (except `shutdown.target`, which default
 dependencies add anyway), `OnFailure=`, `OnSuccess=`, `PropagatesStopTo=`,
-`StopPropagatedFrom=`, `PropagatesReloadTo=`, `PartOf=`, `Upholds=`,
-`BindsTo=` or `JoinsNamespaceOf=` names a unit of the base (of its scope, by
-name or template), one of those runtime types, or a name with a specifier
-outside its instance; a `.upholds` entry for such a unit; a timer, path or
-socket that starts one (`Unit=`, `Service=`, else the service of its own
-name, a template's with `Accept=yes`); or drop-ins and
+`PropagatesReloadTo=`, `Upholds=` or `JoinsNamespaceOf=` names a unit of the
+base (of its scope, by name or template), one of those runtime types, or a
+name with a specifier outside its instance (`PartOf=`, `BindsTo=` and
+`StopPropagatedFrom=` may name one: they only make the extension's own unit
+follow it); a `.upholds` entry for such a unit; a timer, path or socket that
+may start one (every non-empty `Unit=` or `Service=`, although systemd keeps
+a timer's or path's first and a socket's last; with none, the service of its
+own name, a template's with `Accept=yes`); a `FailureAction=`,
+`SuccessAction=`, `StartLimitAction=` or `JobTimeoutAction=` other than
+`none` (in any section: `[Service]` still reads the old `FailureAction=` and
+`StartLimitAction=`); a `[Unit]` `OnFailureJobMode=` or `OnSuccessJobMode=`
+of `isolate` or `flush` (they stop or cancel other units' jobs),
+`OnFailureIsolate=yes` or `AllowIsolate=yes`; a `[Unit]` `Wants=`,
+`Requires=`, `Requisite=`, `Upholds=` or `BindsTo=` (or the old `BindTo=`,
+`RequiresOverridable=`, `RequisiteOverridable=`), or a `.wants`, `.requires`
+or `.upholds` entry, that names a unit changing the system's state (the
+`reboot`, `poweroff`, `halt`, `kexec`, `soft-reboot`, `exit`, `emergency`,
+`rescue`, `shutdown`, `final`, `ctrl-alt-del`, `sleep`, `suspend`,
+`hibernate`, `hybrid-sleep` and `suspend-then-hibernate` targets,
+`systemd-{reboot,poweroff,halt,kexec,soft-reboot,suspend,hibernate,hybrid-sleep,suspend-then-hibernate,exit}.service`,
+`emergency.service` and `rescue.service`), also through an alias the base
+has (`runlevel6.target`), or a name with a specifier outside its instance;
+or drop-ins and
 `.wants`/`.requires`/`.upholds` for a unit it does not ship (a unit's drop-ins
 are those of `<unit>.d/*.conf`, its template's and its aliases', merged by
 file name before these checks); or has an ELF (outside

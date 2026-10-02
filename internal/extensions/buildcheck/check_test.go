@@ -58,8 +58,10 @@ func TestClassify(t *testing.T) {
 		{"usr/lib/sysctl.d/50-demo.conf", file, descriptor.PermSysctl, ""},
 		{"usr/lib/sysctl.d/sub/x.conf", file, "", "nothing nests"},
 		{"usr/lib/modules-load.d/demo.conf", file, descriptor.PermModules, ""},
-		{"usr/lib/tmpfiles.d/demo.conf", file, descriptor.PermTmpfiles, ""},
-		{"usr/lib/tmpfiles.d", link, "", "not a directory"},
+		{"usr/lib/tmpfiles.d/demo.conf", file, "", "tmpfiles.d is not allowed"},
+		{"usr/lib/tmpfiles.d", dir, "", "tmpfiles.d is not allowed"},
+		{"usr/lib/tmpfiles.d", link, "", "tmpfiles.d is not allowed"},
+		{"usr/share/user-tmpfiles.d/demo.conf", file, "", "tmpfiles.d is not allowed"},
 		{"usr/share/polkit-1/rules.d/demo.rules", file, descriptor.PermPolkit, ""},
 		{"usr/share/polkit-1/actions/demo.policy", file, descriptor.PermPolkit, ""},
 		{"usr/share/polkit-1/other/x", file, "", "only polkit"},
@@ -201,8 +203,8 @@ func TestMergedDirectoriesKeepTheBaseMode(t *testing.T) {
 }
 
 // An image's directories are root's (--all-root), so it cannot merge into
-// a base directory that is someone else's, such as Arch's polkit rules.d
-// (0750 root:polkitd); what the tree's own files say does not matter.
+// a base directory that is someone else's (here a polkit rules.d of group
+// 102); what the tree's own files say does not matter.
 func TestBaseDirectoriesMustBeRoots(t *testing.T) {
 	base := newBase(t)
 	writeTree(t, base, map[string]string{"usr/share/polkit-1/rules.d/": "", "usr/share/doc/base/": ""})
