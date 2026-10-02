@@ -3,10 +3,12 @@ package truckersmp
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
+	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
 // branchFile is branch.json: per game, the Steam branch VaporOS asked for
@@ -79,6 +83,73 @@ func steamBeta(dataDir string) map[uint32]extensions.BetaRequest {
 	return out
 }
 
+// steamView is where Steam has a game, as far as VaporOS can tell: the
+// branch request prepare last applied to it (its own record) and the
+// branch the game's appmanifest asks for now, which the person may have
+// changed in Steam since.
+type steamView struct {
+	applied string // the request id, "" when prepare applied none
+	branch  string // the appmanifest's BetaKey, "" for the public branch
+	known   bool   // branch could be read
+}
+
+// pending is whether prepare has yet to apply hold's request: it does at
+// Steam's next start.
+func (v steamView) pending(hold branchHold) bool { return v.applied != hold.Request }
+
+// on is whether Steam has the game on hold's branch now.
+func (v steamView) on(hold branchHold) bool { return v.known && v.branch == hold.Branch }
+
+// left is whether the game was moved off hold's branch in Steam after
+// prepare applied it: no request makes the switch again but a new one.
+func (v steamView) left(hold branchHold) bool { return !v.pending(hold) && v.known && !v.on(hold) }
+
+// maxPrepareRecord bounds prepare's record, a few KiB in practice.
+const maxPrepareRecord = 1 << 20
+
+// appliedRequests are the branch requests prepare last applied, by app
+// id, from its record in the gaming user's home (read through gamerfs:
+// vosd is root there); nil when it cannot be read.
+func appliedRequests() map[uint32]string {
+	b, err := gamerfs.ReadFile(config.GamerHome, config.ExtGamerStateFile, maxPrepareRecord)
+	if err != nil {
+		return nil
+	}
+	var rec struct {
+		Apps map[string]struct {
+			Beta *struct {
+				Request string `json:"request"`
+			} `json:"beta"`
+		} `json:"apps"`
+	}
+	if json.Unmarshal(b, &rec) != nil {
+		return nil
+	}
+	out := map[uint32]string{}
+	for k, a := range rec.Apps {
+		n, err := strconv.ParseUint(k, 10, 32)
+		if err == nil && a.Beta != nil {
+			out[uint32(n)] = a.Beta.Request
+		}
+	}
+	return out
+}
+
+// viewSteam is where Steam has g, installed in lib; applied is
+// appliedRequests' answer.
+func viewSteam(lib string, g game, applied map[uint32]string) steamView {
+	v := steamView{applied: applied[g.app]}
+	root, rel := libRoot(lib)
+	b, err := gamerfs.ReadFile(root, filepath.Join(rel, "steamapps", "appmanifest_"+strconv.FormatUint(uint64(g.app), 10)+".acf"), steam.VDFMax)
+	if err != nil {
+		return v
+	}
+	if beta, _, err := steam.BetaKey(b); err == nil {
+		v.branch, v.known = beta, true
+	}
+	return v
+}
+
 // heldVersion is the game version a branch holds ("1.61" of
 // temporary_1_61).
 func heldVersion(branch string) string {
@@ -101,8 +172,11 @@ func newer(a, b string) string {
 // supports, through prepare at Steam's next start: a game that runs a
 // newer version is held on its branch; a game held on an older branch
 // than TruckersMP now supports moves to the new one, or back to its
-// latest version when TruckersMP supports that. A game already where it
-// should be keeps its request, so its id does not change.
+// latest version when TruckersMP supports that. A game held on the
+// supported branch that runs another version, or was moved off the
+// branch in Steam, is asked again with a new request, since prepare
+// applies each request once. A game already where it should be keeps its
+// request, so its id does not change.
 func (h *Helper) switchBranch(ctx context.Context, x *extensions.Ext) error {
 	info := h.versionNow(ctx)
 	if info == nil {
@@ -115,6 +189,7 @@ func (h *Helper) switchBranch(ctx context.Context, x *extensions.Ext) error {
 	}
 	id := time.Now().UTC().Format(requestLayout)
 	libs := libraries()
+	applied := appliedRequests()
 	var installed []string
 	unknown := ""
 	changed := false
@@ -134,7 +209,10 @@ func (h *Helper) switchBranch(ctx context.Context, x *extensions.Ext) error {
 		var hold branchHold
 		switch {
 		case isHeld && b.Branch == want:
-			continue
+			if c, ok := compareMinor(v, sup); (!ok || c == 0) && !viewSteam(lib, g, applied).left(b) {
+				continue
+			}
+			hold = branchHold{Branch: want, Request: id, Latest: newer(b.Latest, v)}
 		case isHeld && b.Branch != "":
 			latest := newer(b.Latest, v)
 			hold = branchHold{Branch: want, Request: id, Latest: latest}

@@ -80,7 +80,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
 | `/var/lib/vos/ext/ports` | vosd | the network ports of the running extensions, which `vos-firewall` opens to the local network (see Firewall) |
 | `/run/vos/coolercontrol-fans.json` | `vos ext coolercontrol fans snapshot` | each fan's control mode (and a manual one's duty) and each amdgpu fan curve before CoolerControl took them, this boot (see Extensions, CoolerControl) |
-| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only (see Extensions, Steam) |
+| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only and TruckersMP's `switch-branch` (see Extensions, Steam) |
 | `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
 | `/run/user/1000/vos/ext-messages/` | `vos ext launch`, `vos ext truckersmp mp\|handoff` | the dispatcher's and helper commands' refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
 | `/run/user/1000/vos/truckersmp-mp.json` | `vos ext truckersmp mp` | the multiplayer flag TruckersMP's launch hook takes once (see Extensions, TruckersMP) |
@@ -817,7 +817,9 @@ vosd asks for a Steam restart (see Units, Display policy).
 *prepare's record,* `/var/home/vapor/.local/state/vaporos/steam.json`
 (vapor's, 0644), written only by `vos steam prepare`, atomically, right
 after each of Steam's files it replaces. vosd reads it through gamerfs and
-trusts it for display only:
+trusts it for display only (and for TruckersMP's `switch-branch`, whose
+worst outcome from it is asking again, or not, for a branch VaporOS
+already holds a game on):
 ```json
 {"fingerprint":"<hex>","vos":"<version>","accounts":["<accountid>"],
  "default":{"wrote":"proton-cachyos-slr","before":null,"suspended":false},
@@ -1497,10 +1499,19 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   `Documents/<game>`, else of `~/.local/share/<game>`, read through
   gamerfs) against them or the branch it is held on (and, once the API
   supports a newer version than that, whether that one is the game's
-  latest), and the files (downloading n %, or the bytes so far while the
-  sync's total is 0, ready, out of date, or, while
-  they are behind, a sync that failed: for want of free space, with how
-  much to free; for want of the API's checksum; or otherwise).
+  latest). Of a held game whose logged version is another than its
+  `branch`'s it promises the switch at Steam's restart only while prepare's
+  record (`~/.local/state/vaporos/steam.json`, the app's `beta.request`,
+  read through gamerfs) lacks the entry's `request`; once prepare applied
+  it, the game's appmanifest (`UserConfig` `BetaKey`, read through gamerfs)
+  tells whether Steam still has it on that branch (it runs that version,
+  or for `""` its latest, from its next start) or it was moved off in
+  Steam (its version against the supported one or, logged on the held
+  version, that it was moved off; either with "Switch to the supported
+  version."). Then the files (downloading n %, or the bytes so far while
+  the sync's total is 0; ready, out of date, or, while they are behind, a
+  sync that failed: for want of free space, with how much to free; for
+  want of the API's checksum; or otherwise).
 - *Actions:* `copy-profiles` (as `vapor`, through `vos ext action`) copies each folder of
   `~/.local/share/<game>/profiles` that the prefix's
   `Documents/<game>/profiles` lacks (through a hidden folder renamed whole;
@@ -1513,7 +1524,11 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   logged version; a game held on another branch than the supported one
   gets the supported one's, or `""` (its latest version again) once the
   API supports `latest` or newer (the newer of `latest` and its logged
-  version). Each game it changes gets a new `request` id (the switch's UTC
+  version); a game held on the supported one's whose logged version is
+  another, or whose appmanifest asks for another branch since prepare
+  applied its request (as the card reads them), gets that branch again
+  (`latest` the newer of `latest` and its logged version). Each game it
+  changes gets a new `request` id (the switch's UTC
   time, `YYYYMMDDTHHMMSS.nnnnnnnnn`); every other entry stays as it was, id
   included. The helper's `SteamParts.Beta` passes each entry to prepare as
   `{"branch","request"}`, so prepare applies each switch once and a branch

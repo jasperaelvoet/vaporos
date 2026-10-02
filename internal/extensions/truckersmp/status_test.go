@@ -54,30 +54,55 @@ func TestInstalledVersion(t *testing.T) {
 
 func TestVersionLine(t *testing.T) {
 	ets2 := games[0]
+	held := func(branch, latest string) *branchHold {
+		return &branchHold{Branch: branch, Request: "r1", Latest: latest}
+	}
+	// Where Steam has ETS2: prepare's last request, and the branch its
+	// appmanifest asks for.
+	pending := steamView{}
+	on61 := steamView{applied: "r1", branch: "temporary_1_61", known: true}
+	public := steamView{applied: "r1", branch: "", known: true}
+	unread := steamView{applied: "r1"}
 	for _, c := range []struct {
 		version, supported string
 		hold               *branchHold
+		steam              steamView
 		tone, text         string
 	}{
-		{"1.61.1.1s", "1.61.1.1s", nil, "", "ETS2 1.61.1.1s works with TruckersMP."},
-		{"1.62.0.5s", "1.61.1.1s", nil, "warning", "ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version."},
-		{"1.60.3.1s", "1.61.1.1s", nil, "warning", "ETS2 1.60.3.1s is older than TruckersMP supports. Update it in Steam."},
-		{"1.61.1.1s", "", nil, "", "ETS2 runs version 1.61.1.1s."},
-		{"", "1.61.1.1s", nil, "", ""},
-		{"1.61.1.1s", "1.61.1.1s", &branchHold{Branch: "temporary_1_61"}, "", "ETS2 stays on version 1.61 for TruckersMP."},
-		{"1.62.0.5s", "1.61.1.1s", &branchHold{Branch: "temporary_1_61"}, "", "ETS2 switches to version 1.61 when Steam restarts."},
+		{"1.61.1.1s", "1.61.1.1s", nil, pending, "", "ETS2 1.61.1.1s works with TruckersMP."},
+		{"1.62.0.5s", "1.61.1.1s", nil, pending, "warning", "ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version."},
+		{"1.60.3.1s", "1.61.1.1s", nil, pending, "warning", "ETS2 1.60.3.1s is older than TruckersMP supports. Update it in Steam."},
+		{"1.61.1.1s", "", nil, pending, "", "ETS2 runs version 1.61.1.1s."},
+		{"", "1.61.1.1s", nil, pending, "", ""},
+		{"1.61.1.1s", "1.61.1.1s", held("temporary_1_61", ""), pending, "", "ETS2 stays on version 1.61 for TruckersMP."},
+		{"1.62.0.5s", "1.61.1.1s", held("temporary_1_61", ""), pending, "", "ETS2 switches to version 1.61 when Steam restarts."},
+		// prepare applied the switch: Steam has the branch, and ETS2 runs
+		// it from its next start.
+		{"1.62.0.5s", "1.61.1.1s", held("temporary_1_61", ""), on61, "", "ETS2 runs version 1.61 from its next start."},
+		{"1.61.1.1s", "1.61.1.1s", held("temporary_1_61", ""), on61, "", "ETS2 stays on version 1.61 for TruckersMP."},
+		{"1.61.1.1s", "1.61.1.1s", held("temporary_1_61", ""), unread, "", "ETS2 stays on version 1.61 for TruckersMP."},
+		// Moved off the branch in Steam since: no request switches it, so
+		// the card promises nothing and asks for a switch.
+		{"1.62.0.5s", "1.61.1.1s", held("temporary_1_61", ""), public, "warning", "ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version."},
+		{"1.62.0.5s", "1.61.1.1s", held("temporary_1_61", ""), unread, "warning", "ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version."},
+		{"1.61.1.1s", "1.61.1.1s", held("temporary_1_61", ""), public, "warning", "ETS2 was moved off version 1.61 in Steam. Switch to the supported version."},
+		{"1.60.3.1s", "1.61.1.1s", held("temporary_1_61", ""), steamView{applied: "r1", branch: "temporary_1_60", known: true}, "warning", "ETS2 1.60.3.1s is older than TruckersMP supports. Switch to the supported version."},
+		// A newer request prepare has yet to apply.
+		{"1.62.0.5s", "1.61.1.1s", held("temporary_1_61", ""), steamView{applied: "r0", known: true}, "", "ETS2 switches to version 1.61 when Steam restarts."},
 		// TruckersMP moved on: to ETS2's latest version, or to one between.
-		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_61", Latest: "1.62.0.5s"}, "warning", "TruckersMP now supports ETS2 1.62, its latest version. Switch to the supported version."},
-		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_61"}, "warning", "TruckersMP now supports ETS2 1.62, its latest version. Switch to the supported version."},
-		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_61", Latest: "1.63.0.1s"}, "warning", "TruckersMP now supports ETS2 1.62. Switch to the supported version."},
+		{"1.61.1.1s", "1.62.0.1s", held("temporary_1_61", "1.62.0.5s"), on61, "warning", "TruckersMP now supports ETS2 1.62, its latest version. Switch to the supported version."},
+		{"1.61.1.1s", "1.62.0.1s", held("temporary_1_61", ""), on61, "warning", "TruckersMP now supports ETS2 1.62, its latest version. Switch to the supported version."},
+		{"1.61.1.1s", "1.62.0.1s", held("temporary_1_61", "1.63.0.1s"), on61, "warning", "TruckersMP now supports ETS2 1.62. Switch to the supported version."},
 		// Switched: to the newly supported branch, or back to the latest.
-		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_62", Latest: "1.63.0.1s"}, "", "ETS2 switches to version 1.62 when Steam restarts."},
-		{"1.61.1.1s", "1.62.0.1s", &branchHold{Latest: "1.62.0.5s"}, "", "ETS2 updates to its latest version when Steam restarts."},
-		{"1.62.0.5s", "1.62.0.1s", &branchHold{Latest: "1.62.0.5s"}, "", "ETS2 1.62.0.5s works with TruckersMP."},
+		{"1.61.1.1s", "1.62.0.1s", held("temporary_1_62", "1.63.0.1s"), pending, "", "ETS2 switches to version 1.62 when Steam restarts."},
+		{"1.61.1.1s", "1.62.0.1s", held("", "1.62.0.5s"), pending, "", "ETS2 updates to its latest version when Steam restarts."},
+		{"1.61.1.1s", "1.62.0.1s", held("", "1.62.0.5s"), public, "", "ETS2 runs its latest version from its next start."},
+		{"1.61.1.1s", "1.62.0.1s", held("", "1.62.0.5s"), on61, "warning", "ETS2 1.61.1.1s is older than TruckersMP supports. Update it in Steam."},
+		{"1.62.0.5s", "1.62.0.1s", held("", "1.62.0.5s"), pending, "", "ETS2 1.62.0.5s works with TruckersMP."},
 	} {
-		tone, text := versionLine(gameState{g: ets2, lib: "/x", version: c.version}, c.supported, c.hold)
+		tone, text := versionLine(gameState{g: ets2, lib: "/x", version: c.version, steam: c.steam}, c.supported, c.hold)
 		if tone != c.tone || text != c.text {
-			t.Errorf("%s %s %+v: %q %q", c.version, c.supported, c.hold, tone, text)
+			t.Errorf("%s %s %+v %+v: %q %q", c.version, c.supported, c.hold, c.steam, tone, text)
 		}
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
 // box is a gaming user's home, runtime directory and Steam libraries in
@@ -66,6 +67,28 @@ func newBox(t *testing.T) *box {
 func (b *box) install(lib string, g game) {
 	write(b.t, filepath.Join(lib, "steamapps", "appmanifest_"+itoa(g.app)+".acf"),
 		`"AppState" { "appid" "`+itoa(g.app)+`" "StateFlags" "4" }`)
+}
+
+// steamBranch makes g's appmanifest in lib ask Steam for branch ("" the
+// public one), as Steam does when the person picks one.
+func (b *box) steamBranch(lib string, g game, branch string) {
+	p := filepath.Join(lib, "steamapps", "appmanifest_"+itoa(g.app)+".acf")
+	out, _, err := steam.SetBetaKey([]byte(read(b.t, p)), branch)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	write(b.t, p, string(out))
+}
+
+// prepared writes prepare's record of the branch requests it applied, by
+// app id.
+func (b *box) prepared(requests map[uint32]string) {
+	apps := map[string]any{}
+	for app, r := range requests {
+		apps[itoa(app)] = map[string]any{"beta": map[string]string{"wrote": "x", "before": "", "request": r}}
+	}
+	data, _ := json.Marshal(map[string]any{"apps": apps, "accounts": []string{"1"}})
+	write(b.t, filepath.Join(config.GamerHome, config.ExtGamerStateFile), string(data))
 }
 
 // log writes g's game.log.txt in its Proton prefix in lib.
