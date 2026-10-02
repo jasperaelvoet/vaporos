@@ -31,6 +31,12 @@ contract there first, then in code, and keep the two in sync.
 | `internal/display/edid` | Generator and decoder for the virtual display's EDID (`vos edid`). |
 | `internal/display/welcome` | `vos welcome`: draws URL, QR, status and setup code on physical monitors as DRM master. |
 | `internal/events` | In-process pub/sub behind `GET /api/v1/events` (SSE) and the welcome screen. |
+| `internal/extensions` | `vos ext`: one `register` per command file (`cli.go`); the build's `check-tree`, `catalog` and `digest` in `cli_build.go`. |
+| `internal/extensions/buildcheck` | The build's side: checks an extension's image tree against its descriptor, the base and the other extensions; writes the catalog, manifest entries and shipped descriptors. |
+| `internal/extensions/catalog` | `/usr/lib/vos/extensions.list`, the image's extension catalog the initramfs trusts (line format, closure, from a manifest). |
+| `internal/extensions/descriptor` | `extension.json` (schema 1, unknown fields rejected), from the source tree and as shipped in the image. |
+| `internal/extensions/fsverity` | Pure-Go fs-verity file digest (sha256, 4096-byte blocks, no salt): what the kernel measures. |
+| `internal/extensions/store` | The store in `/var/lib/vos/ext`: sealed images, sets, the `enabled`/`pending` links, `wanted`/`proven`/`failed`, slot catalogs, the boot report, the pure reconcile plan, promotion and GC, under `ext.lock`. |
 | `internal/install` | `vos install` and the web installer (shared `Install`): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |
 | `internal/power` | Idle shutdown policy, keep-awake, Wake-on-LAN status. |
@@ -44,6 +50,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/web` | Embedded web UI, the control center (go:embed): server-rendered page shells in `templates/`; ES modules and a Tailwind-built CSS file in `static/`; CSS input in `styles/`; the dev server's fake API data in `fixtures/`; no external assets. The routes are the registry in `web.go`, and `activeSet` picks the UI vosd serves. The previous eight-page UI stays in `templates/legacy/` and `static/legacy/` until it is removed. |
 | `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, NetworkManager config and its polkit rule, the `steamos-*` stubs Steam calls. |
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
+| `extensions/` | The curated extensions, one directory per id: `extension.json` (the descriptor) and optional `files/usr/...`. Built with the image and signed in its manifest; see CONTRACTS "Extensions". |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
 | `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `lib.sh` holds the helpers `selftest.sh` tests. |
 | `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`. |

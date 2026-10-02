@@ -13,17 +13,30 @@ func TestAfterHealthy(t *testing.T) {
 		name        string
 		rep         *BootReport
 		pendingSet  string // the set pending names before; "1" is {proton, coolercontrol}
+		want        string // AfterHealthyWant's fingerprint
 		wantProven  int
 		wantPromote bool
 	}{
 		{name: "nil report"},
-		{name: "off", rep: &BootReport{Mode: ModeOff, Reason: ReasonNoExt}, pendingSet: "1"},
+		{name: "off", rep: &BootReport{Mode: ModeOff, Reason: ReasonCmdline}, pendingSet: "1"},
 		{name: "enabled", rep: &BootReport{Mode: ModeEnabled, Set: "1", Mounted: []Mounted{proton}}, pendingSet: "1", wantProven: 1},
 		{name: "os trial", rep: &BootReport{Mode: ModeOSTrial, Set: "1", Mounted: []Mounted{proton, cc}}, pendingSet: "1", wantProven: 2},
 		{
 			name:       "trial, all mounted",
 			rep:        &BootReport{Mode: ModePending, Set: "1", Mounted: []Mounted{proton, cc}},
 			pendingSet: "1", wantProven: 2, wantPromote: true,
+		},
+		{
+			name:       "trial, all mounted, still desired",
+			rep:        &BootReport{Mode: ModePending, Set: "1", Mounted: []Mounted{cc, proton}},
+			want:       Fingerprint([]Pair{{"proton", hex64('2')}, {"coolercontrol", hex64('4')}}, nil),
+			pendingSet: "1", wantProven: 2, wantPromote: true,
+		},
+		{
+			name:       "trial, all mounted, no longer desired",
+			rep:        &BootReport{Mode: ModePending, Set: "1", Mounted: []Mounted{proton, cc}},
+			want:       Fingerprint([]Pair{{"proton", hex64('2')}}, nil),
+			pendingSet: "1", wantProven: 2,
 		},
 		{
 			name: "trial, one not in this catalog",
@@ -61,7 +74,11 @@ func TestAfterHealthy(t *testing.T) {
 			if tt.pendingSet != "" {
 				check(t, setLink(config.ExtPendingLink(), tt.pendingSet))
 			}
-			check(t, AfterHealthy(tt.rep))
+			if tt.want == "" {
+				check(t, AfterHealthy(tt.rep))
+			} else {
+				check(t, AfterHealthyWant(tt.rep, tt.want))
+			}
 
 			proven, err := Proven()
 			check(t, err)

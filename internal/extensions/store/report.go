@@ -6,6 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
@@ -18,12 +20,17 @@ const (
 	ModeOff     = "off"      // no extension mounted on purpose
 )
 
-// Reasons the initramfs gives for mounting nothing, and the one for a boot
-// without a report.
+// Reason tokens: the report's reason is zero or more of them, space
+// separated (HasReason). ReasonNoReport is vos's own, for a boot without a
+// report; the initramfs writes the others.
 const (
-	ReasonNoExt    = "vos.ext=0"
-	ReasonSkipOnce = "skip-once"
-	ReasonNoReport = "no report"
+	ReasonCmdline    = "cmdline"     // vos.ext=0: nothing mounted
+	ReasonSkipOnce   = "skip-once"   // the skip-once flag: nothing mounted
+	ReasonNoSet      = "no-set"      // no set to use
+	ReasonTriesUsed  = "tries-used"  // pending had no tries left
+	ReasonTriesWrite = "tries-write" // pending's tries could not be written
+	ReasonNoVerity   = "no-verity"   // vos_data could not get the verity feature
+	ReasonNoReport   = "no-report"   // no /run/vos/extensions.json
 )
 
 // Skip reasons for one image.
@@ -86,6 +93,17 @@ func LoadBootReport() (*BootReport, error) {
 
 // IsTrial reports whether this boot is an extension trial.
 func (r *BootReport) IsTrial() bool { return r != nil && r.Mode == ModePending }
+
+// HasReason reports whether token is one of the report's reasons.
+func (r *BootReport) HasReason(token string) bool {
+	return r != nil && token != "" && slices.Contains(strings.Fields(r.Reason), token)
+}
+
+// off reports whether this boot mounted no extension on purpose, or left no
+// report: what booted says nothing about the enabled set then.
+func (r *BootReport) off() bool {
+	return r == nil || r.Mode == ModeOff || r.HasReason(ReasonCmdline) || r.HasReason(ReasonSkipOnce)
+}
 
 // MountedPairs returns the valid id and fs-verity pairs this boot mounted.
 func (r *BootReport) MountedPairs() []Pair {

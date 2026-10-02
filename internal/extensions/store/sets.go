@@ -34,6 +34,7 @@ const (
 	setOptionsFile  = "modprobe.conf"
 	setTriesFile    = "tries"
 	setLinkPrefix   = "sets/"
+	nextSetFile     = ".next" // in sets/: the next set number, never lowered
 	maxSetTriesFile = 64
 )
 
@@ -113,9 +114,9 @@ func parseTries(s string) int {
 }
 
 // WriteSet writes a new set: into sets/.tmp-<n>/, every file and the
-// directory fsynced, then renamed to sets/<n> and sets/ fsynced. <n> is one
-// more than any set in use. Option lines that are not valid are dropped and
-// tries is clamped to 0-9. Caller holds Lock.
+// directory fsynced, then renamed to sets/<n> and sets/ fsynced, and the
+// high-water mark moved past <n> (nextSetName). Option lines that are not
+// valid are dropped and tries is clamped to 0-9. Caller holds Lock.
 func WriteSet(ids, options []string, tries int) (*Set, error) {
 	for _, id := range ids {
 		if !manifest.ValidExtensionID(id) {
@@ -147,6 +148,11 @@ func WriteSet(ids, options []string, tries int) (*Set, error) {
 	if err := syncDir(sets); err != nil {
 		return nil, err
 	}
+	// After the rename: until this lands, sets/<n> itself keeps <n> taken.
+	v, _ := strconv.Atoi(n)
+	if err := config.WriteFileAtomic(nextSetPath(), []byte(strconv.Itoa(v+1)+"\n"), 0o644); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -170,9 +176,11 @@ func writeSetDir(dir string, s *Set) error {
 	return syncDir(dir)
 }
 
-// nextSetName is one more than the highest set number in sets/ or named by
-// a link or the boot report, so a dangling link never comes back to life
-// pointing at a new set.
+// nextSetName never hands out a number twice: it is at least the high-water
+// mark in sets/.next and one more than the highest set number in sets/ or
+// named by a link or the boot report. Nothing that remembers a set by number
+// (a dangling link, the auto-restart breaker) then mistakes a new set for a
+// collected one.
 func nextSetName() (string, error) {
 	ents, err := os.ReadDir(config.ExtSetsDir())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -199,8 +207,41 @@ func nextSetName() (string, error) {
 			top = max(top, v)
 		}
 	}
-	return strconv.Itoa(top + 1), nil
+	next, err := readNextSet()
+	if err != nil {
+		return "", err
+	}
+	n := strconv.Itoa(max(top+1, next))
+	if !setNameRe.MatchString(n) {
+		return "", fmt.Errorf("no set number left after %d", top)
+	}
+	return n, nil
 }
+
+// readNextSet reads the high-water mark; a missing one, or one that is not
+// a set number, is 0.
+func readNextSet() (int, error) {
+	f, err := os.Open(nextSetPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxSetTriesFile))
+	if err != nil {
+		return 0, err
+	}
+	s := strings.TrimSpace(string(b))
+	if !setNameRe.MatchString(s) {
+		return 0, nil
+	}
+	v, _ := strconv.Atoi(s)
+	return v, nil
+}
+
+func nextSetPath() string { return filepath.Join(config.ExtSetsDir(), nextSetFile) }
 
 // removeTemps removes the leftover temp entries in dir. Only for
 // directories whose writers hold Lock, so every temp there is stale.
@@ -329,8 +370,9 @@ func Promote(bootedSet string) (bool, error) {
 }
 
 // FailPending records the pending set's fingerprint (its ids at cat's
-// digests, and its options) in failed and removes pending. Caller holds
-// Lock.
+// digests, and its options) in failed and removes pending. cat is the
+// booted catalog; on an OS trial the plan clears pending instead, as the
+// failed trials ran at another image's digests. Caller holds Lock.
 func FailPending(cat *catalog.Catalog) error {
 	p, err := Pending()
 	if err != nil {

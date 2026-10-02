@@ -42,6 +42,24 @@ func TestLoadBootReport(t *testing.T) {
 	var nilRep *BootReport
 	eq(t, "nil trial", nilRep.IsTrial(), false)
 	eq(t, "nil pairs", len(nilRep.MountedPairs()), 0)
+	eq(t, "nil reason", nilRep.HasReason(ReasonCmdline), false)
+}
+
+func TestHasReason(t *testing.T) {
+	rep := &BootReport{Mode: ModeOff, Reason: "cmdline  no-verity"}
+	for _, tok := range []string{ReasonCmdline, ReasonNoVerity} {
+		eq(t, tok, rep.HasReason(tok), true)
+	}
+	for _, tok := range []string{ReasonSkipOnce, "cmd", "no", "", "cmdline no-verity"} {
+		eq(t, "not "+tok, rep.HasReason(tok), false)
+	}
+	setup(t)
+	writeReport(t, `{"mode":"enabled","set":"","reason":"tries-used no-set"}`)
+	rep, err := LoadBootReport()
+	check(t, err)
+	eq(t, "tries-used", rep.HasReason(ReasonTriesUsed), true)
+	eq(t, "no-set", rep.HasReason(ReasonNoSet), true)
+	eq(t, "tries-write", rep.HasReason(ReasonTriesWrite), false)
 }
 
 func TestSlots(t *testing.T) {

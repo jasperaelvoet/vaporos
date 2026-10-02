@@ -35,10 +35,24 @@ func KeepImages(wanted []string, cats []*catalog.Catalog, rep *BootReport) map[s
 	return keep
 }
 
-// GC removes the images whose sha256 keep does not name (a temp file only
-// once nothing has written to it for an hour), the sets that neither
-// enabled, pending nor this boot's report names, and leftover temp links.
-// It returns what it removed, relative to the store. Caller holds Lock.
+// Collect is the store's whole garbage collection: GC with the images
+// KeepImages names, then proven pruned to the pairs that a catalog of cats
+// lists or this boot mounted. cats are the booted catalog and both slot
+// files' (a nil one lists nothing). Caller holds Lock.
+func Collect(wanted []string, cats []*catalog.Catalog, rep *BootReport) ([]string, error) {
+	removed, err := GC(KeepImages(wanted, cats, rep))
+	if err != nil {
+		return removed, err
+	}
+	return removed, pruneProven(cats, rep)
+}
+
+// GC removes the images whose sha256 keep does not name (an image or a temp
+// file only once nothing has written to it for an hour; anything else in
+// images/ at once), the sets that neither enabled, pending nor this boot's
+// report names, and leftover temp links.
+// It returns what it removed, relative to the store. Collect also prunes
+// proven. Caller holds Lock.
 func GC(keep map[string]bool) ([]string, error) {
 	removed, err := gcImages(keep, time.Now())
 	if err != nil {
@@ -70,8 +84,14 @@ func gcImages(keep map[string]bool, now time.Time) ([]string, error) {
 		if strings.HasPrefix(name, tempPrefix) {
 			continue
 		}
-		if sha, ok := strings.CutSuffix(name, ".raw"); ok && keep[sha] {
-			continue
+		if sha, ok := strings.CutSuffix(name, ".raw"); ok && isHex64(sha) {
+			if keep[sha] {
+				continue
+			}
+			fi, err := e.Info()
+			if err != nil || now.Sub(fi.ModTime()) < freshGrace {
+				continue
+			}
 		}
 		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
 			return removed, err
@@ -90,7 +110,7 @@ func gcImages(keep map[string]bool, now time.Time) ([]string, error) {
 }
 
 func gcSets() ([]string, error) {
-	keep := map[string]bool{}
+	keep := map[string]bool{nextSetFile: true}
 	for _, link := range []string{config.ExtEnabledLink(), config.ExtPendingLink()} {
 		n, err := linkName(link)
 		if err != nil {
@@ -127,4 +147,44 @@ func gcSets() ([]string, error) {
 		return removed, syncDir(dir)
 	}
 	return removed, nil
+}
+
+// pruneProven keeps the proven pairs a catalog of cats lists or this boot
+// mounted, so the file stays far below maxListFile however many versions
+// pass. It reads the file without that limit, so it also shrinks one that
+// grew past it.
+func pruneProven(cats []*catalog.Catalog, rep *BootReport) error {
+	listed := map[Pair]bool{}
+	for _, c := range cats {
+		if c == nil {
+			continue
+		}
+		for _, e := range c.Entries {
+			listed[Pair{ID: e.ID, FSVerity: e.FSVerity}] = true
+		}
+	}
+	for _, p := range rep.MountedPairs() {
+		listed[p] = true
+	}
+	kept := map[Pair]bool{}
+	dropped := false
+	err := scanLines(config.ExtProvenPath(), 0, func(line string) {
+		f := strings.Fields(line)
+		if len(f) == 2 {
+			if p := (Pair{ID: f[0], FSVerity: f[1]}); listed[p] && !kept[p] {
+				kept[p] = true
+				return
+			}
+		}
+		dropped = true
+	})
+	if err != nil || !dropped {
+		return err
+	}
+	lines := make([]string, 0, len(kept))
+	for p := range kept {
+		lines = append(lines, p.line())
+	}
+	slices.Sort(lines)
+	return writeLines(config.ExtProvenPath(), lines)
 }
