@@ -18,7 +18,11 @@
     "remove": "Fans go back to the BIOS settings. Its profiles stay unless you also delete its settings."
   },
   "packages": ["cachyos/coolercontrold", "extra/liquidctl"],
-  "strip": ["usr/lib/udev/rules.d/71-liquidctl.rules"],
+  "strip": [
+    "usr/lib/udev/rules.d/71-liquidctl.rules",
+    "usr/lib/udev/rules.d/45-i2c-tools.rules",
+    "usr/lib/sysusers.d/i2c-tools.conf"
+  ],
   "provides": ["fan-control.hwmon", "fan-control.amdgpu"],
   "permissions": ["service", "modules"],
   "services": [{"unit": "coolercontrold.service", "scope": "system"}],
