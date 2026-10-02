@@ -571,6 +571,8 @@ vm_update() {
 # exits 0.
 vm_sh() {
     local tok=$RANDOM
+    # After a reboot the shell may not be back yet; typed text would be lost.
+    serial_shell 120 >/dev/null || fail "no root shell on the serial console"
     send_ "$1; echo VOS-SH-$tok=\$?"
     rc_is_zero "VOS-SH-$tok" "${2:-120}" || fail "in the VM, this failed: $1"
 }
