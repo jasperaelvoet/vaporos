@@ -341,12 +341,29 @@ runs commands (a service, or a socket with `Exec*=` commands) whose last
 a finite one set by a drop-in of its own; has a unit or drop-in whose
 `[Unit]` `Before=`, `Conflicts=` (except `shutdown.target`, which default
 dependencies add anyway), `OnFailure=`, `OnSuccess=`, `PropagatesStopTo=`,
-`StopPropagatedFrom=`, `PropagatesReloadTo=`, `PartOf=`, `Upholds=`,
-`BindsTo=` or `JoinsNamespaceOf=` names a unit of the base (of its scope, by
-name or template), one of those runtime types, or a name with a specifier
-outside its instance; a `.upholds` entry for such a unit; a timer, path or
-socket that starts one (`Unit=`, `Service=`, else the service of its own
-name, a template's with `Accept=yes`); or drop-ins and
+`PropagatesReloadTo=`, `Upholds=` or `JoinsNamespaceOf=` names a unit of the
+base (of its scope, by name or template), one of those runtime types, or a
+name with a specifier outside its instance (`PartOf=`, `BindsTo=` and
+`StopPropagatedFrom=` may name one: they only make the extension's own unit
+follow it); a `.upholds` entry for such a unit; a timer, path or socket that
+may start one (every non-empty `Unit=` or `Service=`, although systemd keeps
+a timer's or path's first and a socket's last; with none, the service of its
+own name, a template's with `Accept=yes`); a `FailureAction=`,
+`SuccessAction=`, `StartLimitAction=` or `JobTimeoutAction=` other than
+`none` (in any section: `[Service]` still reads the old `FailureAction=` and
+`StartLimitAction=`); a `[Unit]` `OnFailureJobMode=` or `OnSuccessJobMode=`
+of `isolate` or `flush` (they stop or cancel other units' jobs),
+`OnFailureIsolate=yes` or `AllowIsolate=yes`; a `[Unit]` `Wants=`,
+`Requires=`, `Requisite=`, `Upholds=` or `BindsTo=` (or the old `BindTo=`,
+`RequiresOverridable=`, `RequisiteOverridable=`), or a `.wants`, `.requires`
+or `.upholds` entry, that names a unit changing the system's state (the
+`reboot`, `poweroff`, `halt`, `kexec`, `soft-reboot`, `exit`, `emergency`,
+`rescue`, `shutdown`, `final`, `ctrl-alt-del`, `sleep`, `suspend`,
+`hibernate`, `hybrid-sleep` and `suspend-then-hibernate` targets,
+`systemd-{reboot,poweroff,halt,kexec,soft-reboot,suspend,hibernate,hybrid-sleep,suspend-then-hibernate,exit}.service`,
+`emergency.service` and `rescue.service`), also through an alias the base
+has (`runlevel6.target`), or a name with a specifier outside its instance;
+or drop-ins and
 `.wants`/`.requires`/`.upholds` for a unit it does not ship (a unit's drop-ins
 are those of `<unit>.d/*.conf`, its template's and its aliases', merged by
 file name before these checks); or has an ELF (outside
