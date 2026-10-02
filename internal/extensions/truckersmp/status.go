@@ -2,6 +2,7 @@ package truckersmp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -65,11 +66,18 @@ func (h *Helper) Status(ctx context.Context, x *extensions.Ext) []extensions.Sta
 			continue
 		}
 		installed = append(installed, s.g.key)
-		if tone, text := versionLine(s, info.supported(s.g), held[s.g.app]); text != "" {
+		var hold *branchHold
+		if b, ok := held[s.g.app]; ok {
+			hold = &b
+		}
+		if tone, text := versionLine(s, info.supported(s.g), hold); text != "" {
 			add(tone, "%s", text)
 		}
 	}
 
+	newGame := m != nil && slices.ContainsFunc(installed, func(k string) bool { return !slices.Contains(m.Games, k) })
+	behind := m == nil || (info != nil && m.Version != info.Name) || newGame
+	var space *spaceError
 	switch {
 	case j != nil && total > 0:
 		add("", "Downloading the TruckersMP mod: %d %%", min(done*100/total, 100))
@@ -77,13 +85,17 @@ func (h *Helper) Status(ctx context.Context, x *extensions.Ext) []extensions.Sta
 		add("", "Checking the TruckersMP mod for updates")
 	case len(installed) == 0:
 		add("", "Install ETS2 or ATS in Steam to play TruckersMP.")
-	case lastErr != "" && (m == nil || (info != nil && m.Version != info.Name)):
+	case lastErr != nil && behind && errors.As(lastErr, &space):
+		add("warning", "There isn't enough free space to download the TruckersMP mod. Free up %s, and VaporOS tries again within an hour.", sizeText(space.short))
+	case lastErr != nil && behind && errors.Is(lastErr, errUnchecked):
+		add("warning", "TruckersMP hasn't confirmed the checksum of its new files yet, so VaporOS didn't download them. It tries again within an hour.")
+	case lastErr != nil && behind:
 		add("warning", "Couldn't download the TruckersMP mod. VaporOS tries again within an hour.")
 	case m == nil:
 		add("", "The TruckersMP mod isn't downloaded yet.")
 	case info != nil && m.Version != info.Name:
 		add("", "TruckersMP %s is out. VaporOS downloads it next.", info.Name)
-	case slices.ContainsFunc(installed, func(k string) bool { return !slices.Contains(m.Games, k) }):
+	case newGame:
 		add("", "VaporOS downloads the TruckersMP mod for the newly installed game next.")
 	default:
 		add("", "TruckersMP %s is ready.", m.Version)
@@ -109,18 +121,27 @@ func supportedLine(info *versionInfo) string {
 }
 
 // versionLine is one installed game's line: on the branch VaporOS holds
-// it on, or its version against the one TruckersMP supports.
-func versionLine(s gameState, supported, held string) (tone, text string) {
+// it on (hold, nil when none), or its version against the one TruckersMP
+// supports.
+func versionLine(s gameState, supported string, hold *branchHold) (tone, text string) {
 	name := s.g.short
-	if held != "" {
-		heldVersion := strings.ReplaceAll(strings.TrimPrefix(held, "temporary_"), "_", ".")
-		if want, ok := branchFor(supported); ok && want != held {
-			return "warning", fmt.Sprintf("TruckersMP now supports %s %s. Switch to the latest version.", name, minorOf(supported))
+	if hold != nil && hold.Branch != "" {
+		v := heldVersion(hold.Branch)
+		if want, ok := branchFor(supported); ok && want != hold.Branch {
+			if c, ok := compareMinor(supported, newer(hold.Latest, s.version)); !ok || c >= 0 {
+				return "warning", fmt.Sprintf("TruckersMP now supports %s %s, its latest version. Switch to the supported version.", name, minorOf(supported))
+			}
+			return "warning", fmt.Sprintf("TruckersMP now supports %s %s. Switch to the supported version.", name, minorOf(supported))
 		}
-		if c, ok := compareMinor(s.version, heldVersion); ok && c > 0 {
-			return "", fmt.Sprintf("%s switches to version %s when Steam restarts.", name, heldVersion)
+		if c, ok := compareMinor(s.version, v); ok && c != 0 {
+			return "", fmt.Sprintf("%s switches to version %s when Steam restarts.", name, v)
 		}
-		return "", fmt.Sprintf("%s stays on version %s for TruckersMP.", name, heldVersion)
+		return "", fmt.Sprintf("%s stays on version %s for TruckersMP.", name, v)
+	}
+	if hold != nil {
+		if c, ok := compareMinor(s.version, supported); ok && c < 0 {
+			return "", fmt.Sprintf("%s updates to its latest version when Steam restarts.", name)
+		}
 	}
 	if s.version == "" {
 		return "", ""

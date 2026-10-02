@@ -83,14 +83,15 @@ func TestProcs(t *testing.T) {
 func testMP(t *testing.T, p *fakeProc) (*mp, *[][]string, *[]string) {
 	var started [][]string
 	var told []string
-	m := &mp{procs: p.fs(), pid: 40, flag: flagPath(), runtime: os.Getenv("XDG_RUNTIME_DIR"), home: homeDir(), now: now,
+	m := &mp{procs: p.fs(), pid: 40, flag: flagPath(), runtime: os.Getenv("XDG_RUNTIME_DIR"), home: homeDir(), now: now, libs: libraries,
 		handOff: func(ctx context.Context, args []string) error { started = append(started, args); return nil },
 		tell:    func(code string) { text, _ := messageText(code); told = append(told, text) }}
 	return m, &started, &told
 }
 
 func TestMP(t *testing.T) {
-	syncedBox(t, "ets2")
+	b := syncedBox(t, "ets2")
+	b.install(b.disk, games[0])
 	p := shortcutProcs(t)
 	m, started, told := testMP(t, p)
 	if err := m.run(context.Background(), games[0]); err != nil {
@@ -115,29 +116,36 @@ func TestMP(t *testing.T) {
 }
 
 func TestMPRefuses(t *testing.T) {
-	syncedBox(t, "ets2")
+	b := syncedBox(t, "ets2")
+	b.install(b.disk, games[0])
 	p := shortcutProcs(t)
 	m, started, told := testMP(t, p)
+	ctx := context.Background()
 
-	// ETS2's files are there, ATS's are not.
-	if err := m.run(context.Background(), games[1]); err == nil || !strings.Contains((*told)[0], "files are updating") {
+	// ATS isn't installed; then it is, but its files are not there.
+	if err := m.run(ctx, games[1]); err == nil || (*told)[0] != "TruckersMP didn't start because ATS isn't installed. Install it in Steam, then try again." {
+		t.Fatalf("ATS not installed: %v %q", err, *told)
+	}
+	b.install(b.steam, games[1])
+	if err := m.run(ctx, games[1]); err == nil ||
+		(*told)[1] != "TruckersMP didn't start because its files for ATS aren't downloaded yet. Try again once its card in VaporOS says it's ready." {
 		t.Fatalf("ATS without files: %v %q", err, *told)
 	}
 	// A game runs already.
 	p.add(60, 10, 1000, reaper+"|SteamLaunch|AppId=270880|--|"+wrapper+"|--|x")
-	if err := m.run(context.Background(), games[0]); err == nil || !strings.Contains((*told)[1], "ATS is already running") {
+	if err := m.run(ctx, games[0]); err == nil || !strings.Contains((*told)[2], "ATS is already running") {
 		t.Fatalf("with ATS running: %v %q", err, *told)
 	}
 	p.remove(60)
 	// A handoff is under way.
 	write(t, filepath.Join(m.runtime, "systemd", "transient", gameproc.HandoffUnit), "")
-	if err := m.run(context.Background(), games[0]); err == nil || !strings.Contains((*told)[2], "already starting") {
+	if err := m.run(ctx, games[0]); err == nil || !strings.Contains((*told)[3], "already starting") {
 		t.Fatalf("during a handoff: %v %q", err, *told)
 	}
 	os.Remove(filepath.Join(m.runtime, "systemd", "transient", gameproc.HandoffUnit))
 	// systemd-run fails: no flag is left behind.
 	m.handOff = func(context.Context, []string) error { return errors.New("no user manager") }
-	if err := m.run(context.Background(), games[0]); err == nil || !strings.Contains((*told)[3], "couldn't pass the start on") {
+	if err := m.run(ctx, games[0]); err == nil || !strings.Contains((*told)[4], "couldn't pass the start on") {
 		t.Fatalf("systemd-run failing: %v %q", err, *told)
 	}
 	if _, err := os.Stat(flagPath()); !os.IsNotExist(err) {
@@ -145,6 +153,41 @@ func TestMPRefuses(t *testing.T) {
 	}
 	if len(*started) != 0 {
 		t.Errorf("started %q", *started)
+	}
+}
+
+// Files that fail the quick check are either not downloaded for the game
+// yet or updating.
+func TestNotReady(t *testing.T) {
+	syncedBox(t, "ets2")
+	ets2, ats := games[0], games[1]
+	if got := notReady(homeDir(), ats); got != "no-files-ats" {
+		t.Errorf("ATS never synced: %q", got)
+	}
+	// A file changed under a finished sync.
+	write(t, modFilePath("data/ets2mp.adb"), "changed")
+	if got := notReady(homeDir(), ets2); got != msgUpdating {
+		t.Errorf("a changed file: %q", got)
+	}
+	// A sync that changes files deleted the manifest.
+	os.Remove(filepath.Join(homeDir(), manifestRel))
+	if got := notReady(homeDir(), ets2); got != msgUpdating {
+		t.Errorf("during a sync: %q", got)
+	}
+	if got := notReady(homeDir(), ats); got != "no-files-ats" {
+		t.Errorf("ATS during a sync: %q", got)
+	}
+	newBox(t)
+	if got := notReady(homeDir(), ets2); got != "no-files-ets2" {
+		t.Errorf("nothing synced: %q", got)
+	}
+	for _, code := range []string{"not-installed-ets2", "no-files-ats", "running-ets2"} {
+		if text, ok := messageText(code); !ok || !strings.HasPrefix(text, "TruckersMP didn't start because ") {
+			t.Errorf("%s: %q", code, text)
+		}
+	}
+	if _, ok := messageText("no-files-x"); ok {
+		t.Error("a code for no game has words")
 	}
 }
 

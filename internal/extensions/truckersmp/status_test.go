@@ -2,6 +2,7 @@ package truckersmp
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -54,22 +55,74 @@ func TestInstalledVersion(t *testing.T) {
 func TestVersionLine(t *testing.T) {
 	ets2 := games[0]
 	for _, c := range []struct {
-		version, supported, held string
-		tone, text               string
+		version, supported string
+		hold               *branchHold
+		tone, text         string
 	}{
-		{"1.61.1.1s", "1.61.1.1s", "", "", "ETS2 1.61.1.1s works with TruckersMP."},
-		{"1.62.0.5s", "1.61.1.1s", "", "warning", "ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version."},
-		{"1.60.3.1s", "1.61.1.1s", "", "warning", "ETS2 1.60.3.1s is older than TruckersMP supports. Update it in Steam."},
-		{"1.61.1.1s", "", "", "", "ETS2 runs version 1.61.1.1s."},
-		{"", "1.61.1.1s", "", "", ""},
-		{"1.61.1.1s", "1.61.1.1s", "temporary_1_61", "", "ETS2 stays on version 1.61 for TruckersMP."},
-		{"1.62.0.5s", "1.61.1.1s", "temporary_1_61", "", "ETS2 switches to version 1.61 when Steam restarts."},
-		{"1.61.1.1s", "1.62.0.1s", "temporary_1_61", "warning", "TruckersMP now supports ETS2 1.62. Switch to the latest version."},
+		{"1.61.1.1s", "1.61.1.1s", nil, "", "ETS2 1.61.1.1s works with TruckersMP."},
+		{"1.62.0.5s", "1.61.1.1s", nil, "warning", "ETS2 1.62.0.5s is newer than TruckersMP supports. Switch to the supported version."},
+		{"1.60.3.1s", "1.61.1.1s", nil, "warning", "ETS2 1.60.3.1s is older than TruckersMP supports. Update it in Steam."},
+		{"1.61.1.1s", "", nil, "", "ETS2 runs version 1.61.1.1s."},
+		{"", "1.61.1.1s", nil, "", ""},
+		{"1.61.1.1s", "1.61.1.1s", &branchHold{Branch: "temporary_1_61"}, "", "ETS2 stays on version 1.61 for TruckersMP."},
+		{"1.62.0.5s", "1.61.1.1s", &branchHold{Branch: "temporary_1_61"}, "", "ETS2 switches to version 1.61 when Steam restarts."},
+		// TruckersMP moved on: to ETS2's latest version, or to one between.
+		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_61", Latest: "1.62.0.5s"}, "warning", "TruckersMP now supports ETS2 1.62, its latest version. Switch to the supported version."},
+		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_61"}, "warning", "TruckersMP now supports ETS2 1.62, its latest version. Switch to the supported version."},
+		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_61", Latest: "1.63.0.1s"}, "warning", "TruckersMP now supports ETS2 1.62. Switch to the supported version."},
+		// Switched: to the newly supported branch, or back to the latest.
+		{"1.61.1.1s", "1.62.0.1s", &branchHold{Branch: "temporary_1_62", Latest: "1.63.0.1s"}, "", "ETS2 switches to version 1.62 when Steam restarts."},
+		{"1.61.1.1s", "1.62.0.1s", &branchHold{Latest: "1.62.0.5s"}, "", "ETS2 updates to its latest version when Steam restarts."},
+		{"1.62.0.5s", "1.62.0.1s", &branchHold{Latest: "1.62.0.5s"}, "", "ETS2 1.62.0.5s works with TruckersMP."},
 	} {
-		tone, text := versionLine(gameState{g: ets2, lib: "/x", version: c.version}, c.supported, c.held)
+		tone, text := versionLine(gameState{g: ets2, lib: "/x", version: c.version}, c.supported, c.hold)
 		if tone != c.tone || text != c.text {
-			t.Errorf("%+v: %q %q", c, tone, text)
+			t.Errorf("%s %s %+v: %q %q", c.version, c.supported, c.hold, tone, text)
 		}
+	}
+}
+
+// A sync that failed in a way the card words by itself says so while
+// the files are behind.
+func TestStatusSyncFailures(t *testing.T) {
+	b := newBox(t)
+	b.install(b.disk, games[0])
+	b.log(b.disk, games[0], "1.61.1.1s")
+	h := newStatusHelper(t)
+	h.Helper.mu.Lock()
+	h.lastRun, h.api, h.apiAt = time.Now(), h.answer, time.Now()
+	h.Helper.mu.Unlock()
+	x := testExt()
+	last := func() string {
+		lines := texts(h.Status(context.Background(), x))
+		return lines[len(lines)-1]
+	}
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{&spaceError{short: 3 << 29}, "warning|There isn't enough free space to download the TruckersMP mod. Free up 1.5 GiB, and VaporOS tries again within an hour."},
+		{&spaceError{short: 1<<30 + 1}, "warning|There isn't enough free space to download the TruckersMP mod. Free up 1.1 GiB, and VaporOS tries again within an hour."},
+		{&spaceError{short: 1}, "warning|There isn't enough free space to download the TruckersMP mod. Free up 1 MiB, and VaporOS tries again within an hour."},
+		{&syncFailed{kind: errUnchecked, text: "no checksum"}, "warning|TruckersMP hasn't confirmed the checksum of its new files yet, so VaporOS didn't download them. It tries again within an hour."},
+		{errors.New("exit status 1: no network"), "warning|Couldn't download the TruckersMP mod. VaporOS tries again within an hour."},
+	} {
+		h.Helper.mu.Lock()
+		h.lastErr = c.err
+		h.Helper.mu.Unlock()
+		if got := last(); got != c.want {
+			t.Errorf("%v: %q", c.err, got)
+		}
+	}
+	// A newly installed game whose files a sync could not fetch.
+	write(t, filepath.Join(homeDir(), manifestRel), `{"version":"0.7.7.9","checked":"`+time.Now().UTC().Format(time.RFC3339)+`","games":[],"files":[]}`)
+	if got := last(); !strings.HasPrefix(got, "warning|Couldn't download") {
+		t.Errorf("a new game: %q", got)
+	}
+	// Files that are whole stay ready after a check that failed.
+	write(t, filepath.Join(homeDir(), manifestRel), `{"version":"0.7.7.9","checked":"`+time.Now().UTC().Format(time.RFC3339)+`","games":["ets2"],"files":[]}`)
+	if got := last(); got != "|TruckersMP 0.7.7.9 is ready." {
+		t.Errorf("ready: %q", got)
 	}
 }
 
@@ -255,9 +308,9 @@ func TestSchedule(t *testing.T) {
 
 func TestReadProgress(t *testing.T) {
 	var got []int64
-	readProgress(strings.NewReader("{\"bytes\":0,\"total\":0}\nnoise\n{\"bytes\":5,\"total\":10}\n{\"bytes\":-1,\"total\":3}\n"),
+	short := readProgress(strings.NewReader("{\"bytes\":0,\"total\":0}\nnoise\n{\"bytes\":5,\"total\":10}\n{\"bytes\":-1,\"total\":3}\n{\"short\":4096}\n{\"x\":1}\n"),
 		func(done, total int64) { got = append(got, done, total) })
-	if !slices.Equal(got, []int64{0, 0, 5, 10}) {
-		t.Errorf("%v", got)
+	if !slices.Equal(got, []int64{0, 0, 5, 10}) || short != 4096 {
+		t.Errorf("%v %d", got, short)
 	}
 }

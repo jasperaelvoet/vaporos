@@ -46,7 +46,24 @@ func TestDescriptor(t *testing.T) {
 		!slices.ContainsFunc(d.Data, func(x descriptor.Data) bool { return x.Where == "system" }) {
 		t.Errorf("data: %+v", d.Data)
 	}
-	if len(d.Downloads) != 1 || !d.Downloads[0].RunsCode || d.Downloads[0].Checked != "publisher-hash" {
+	// What it downloads: the mod at install and at its updates, checked
+	// by TruckersMP's MD5s, and what each of TruckersMP's servers tells.
+	dl := map[string]descriptor.Download{}
+	for _, x := range d.Downloads {
+		dl[x.From+" "+x.When] = x
+	}
+	for _, k := range []string{"download.ets2mp.com install", "download.ets2mp.com update"} {
+		if x := dl[k]; !x.RunsCode || x.Checked != "publisher-hash" {
+			t.Errorf("%s: %+v", k, d.Downloads)
+		}
+	}
+	for _, u := range []string{versionURL, filesURL, downloadBase} {
+		host, _, _ := strings.Cut(strings.TrimPrefix(u, "https://"), "/")
+		if !slices.ContainsFunc(d.Downloads, func(x descriptor.Download) bool { return x.From == host }) {
+			t.Errorf("downloads do not name %s: %+v", host, d.Downloads)
+		}
+	}
+	if len(d.Downloads) != 4 {
 		t.Errorf("downloads: %+v", d.Downloads)
 	}
 	for _, name := range []string{"copy-profiles", "switch-branch", "latest-branch"} {

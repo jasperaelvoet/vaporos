@@ -44,10 +44,29 @@
   "shares": [{"steam_app": 227300}, {"steam_app": 270880}],
   "downloads": [
     {
-      "what": "the TruckersMP mod",
+      "what": "the TruckersMP mod (about 640 MiB)",
       "from": "download.ets2mp.com",
       "checked": "publisher-hash",
       "runs_code": true,
+      "when": "install"
+    },
+    {
+      "what": "each new version of the TruckersMP mod",
+      "from": "download.ets2mp.com",
+      "checked": "publisher-hash",
+      "runs_code": true,
+      "when": "update"
+    },
+    {
+      "what": "the list of the mod's files and their checksums",
+      "from": "update.ets2mp.com",
+      "checked": "none",
+      "when": "update"
+    },
+    {
+      "what": "TruckersMP's current version and the game versions it supports",
+      "from": "api.truckersmp.com",
+      "checked": "none",
       "when": "update"
     }
   ],
@@ -67,7 +86,7 @@
       "run_as": "root",
       "confirm": {
         "title": "Switch to the version TruckersMP supports?",
-        "body": "Steam downloads the version of ETS2 or ATS that TruckersMP supports when it next restarts. Your profiles stay. Switch back once TruckersMP supports the latest version.",
+        "body": "Steam downloads the version of ETS2 or ATS that TruckersMP supports when it next restarts. Your profiles stay. When TruckersMP supports a newer version, switch again.",
         "button": "Switch version"
       }
     },

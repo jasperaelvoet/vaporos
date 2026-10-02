@@ -142,6 +142,30 @@ func TestLaunchHook(t *testing.T) {
 		t.Error("a refused start leaves its flag")
 	}
 
+	// The Linux build cannot run the mod: without a flag it starts as
+	// ever; with one, the flag goes and the start is refused.
+	linux := func() *extensions.Launch {
+		return &extensions.Launch{App: 227300, Argv: words(reaper + "|SteamLaunch|AppId=227300|--|" + wrapper + "|--|" +
+			steamHome + "/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point|--verb=waitforexitandrun|--|" + ets2Dir + "/bin/linux_x64/eurotrucks2")}
+	}
+	l = linux()
+	if err := h.LaunchHook(ctx, l); err != nil || !slices.Equal(l.Argv, linux().Argv) {
+		t.Fatalf("the Linux build without a flag: %v %q", err, l.Argv)
+	}
+	writeFlag(flagPath(), games[0], now())
+	l = linux()
+	if err := h.LaunchHook(ctx, l); err == nil || err.Error() != "ETS2 isn't set to run with Proton. Restart VaporOS and try again." {
+		t.Fatalf("the Linux build with a flag: %v", err)
+	}
+	if _, err := os.Stat(flagPath()); !os.IsNotExist(err) {
+		t.Error("the Linux build's start leaves its flag")
+	}
+	writeFlag(flagPath(), games[1], now())
+	l = &extensions.Launch{App: 270880, Argv: words(atsDir + "/bin/linux_x64/amtrucks|-nointro")}
+	if err := h.LaunchHook(ctx, l); err == nil || !strings.HasPrefix(err.Error(), "ATS isn't set to run with Proton.") {
+		t.Fatalf("ATS's Linux build with a flag: %v", err)
+	}
+
 	// Another app passes untouched.
 	l = &extensions.Launch{App: 440, Argv: []string{"/x/hl2.exe"}}
 	if err := h.LaunchHook(ctx, l); err != nil || len(l.Argv) != 1 {
