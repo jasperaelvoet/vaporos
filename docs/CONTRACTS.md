@@ -1149,12 +1149,17 @@ A wanted or core extension of the booted catalog that none of these fit is
 `installing` too (`progress` null): its image is still to come, or the
 reconcile that proposes it still to run. One that cannot get there by itself
 needs attention (2), so a card never stays `installing`, and a core
-extension is never `not-installed`. `restart.needed` is `/status`'s
-restart kind `extensions` (a restart would try `pending`, see Reconcile),
-false while `skip-once` exists (the next start mounts no extension);
+extension is never `not-installed`. `restart.needed` is whether a restart
+would try `pending` (see Reconcile), which the `restart-needed` cards wait
+for; it is `/status`'s restart kind `extensions` except while `skip-once`
+exists. Then the next start mounts no extension, so `/status` has no such
+kind and `restart.auto` is false, while the cards stay `restart-needed`
+and `restart.needed` true: the change applies at the restart after that.
 `restart.reason` says what a restart finishes, by name ("Restart to finish
-adding CoolerControl."), "" while none is needed; `restart.auto` whether
-VaporOS may still restart by itself for it (below). One change to `wanted`
+adding CoolerControl.", with `skip-once` "The next start is without
+extensions. Restart again after it to finish adding CoolerControl."), ""
+while none is needed; `restart.auto` whether VaporOS may still restart by
+itself for it (below). One change to `wanted`
 or the settings runs at a time; each answers the document and asks for a
 reconcile. Add, remove and settings fail closed: when a shipped descriptor
 they check (of the extension, of what an add brings with it, or of a wanted
@@ -1731,7 +1736,7 @@ already 1048576.
 | POST `/auth/setup` | Setup | `{"password"}` → `{"csrf"}`; only when auth.json is missing (first run after a CLI install); 409 in installer mode |
 | POST `/auth/password` | Authed | `{"current","new"}` → `{}`; 403 on a wrong current password; shares the login limit (429, 503) |
 | GET `/system` | Authed | `{"hostname","version","channel","booted_slot","uptime_s","cpu","gpu":{"vendor","name","driver","supported"},"ips":["…"],"mdns":"vapor.local","disk":{"data_total","data_free"},"temps":[{"name","c"}]}` |
-| GET `/status` | Authed | installed system only (404 on the installer). One summary for page loads that never waits on Sunshine or ethtool: `{"system":…,"sunshine":…,"stream":{"client","app"?,"mode","hdr","since"}\|null,"display":…,"update":…,"power":…,"restart":{"needed":bool,"reasons":[{"kind":"update\|rollback\|display\|extensions","version"?}]}}`. `system`, `display` and `update`: as their GET routes. `sunshine`: GET `/sunshine` without `session`, from the 3 s poll (only `running` is asked now). `stream`: the session in progress as `session.begin` carries it, null without one. `power`: GET `/power` without `wol`; keep-awake is checked now, the other busy reasons come from the last 15 s policy pass. `restart.reasons`, in this order: `update` when `update.next_boot` is newer than the booted version, else `rollback` (both with `next_boot.version`), `display` while `display.reboot_needed`, and `extensions` while a restart would try the extensions' `pending` set (GET `/extensions` `restart.needed`); `needed` is true when there is one. Readers show a general 'restart to finish' for a kind they do not know. A part that fails is null and the others still answer |
+| GET `/status` | Authed | installed system only (404 on the installer). One summary for page loads that never waits on Sunshine or ethtool: `{"system":…,"sunshine":…,"stream":{"client","app"?,"mode","hdr","since"}\|null,"display":…,"update":…,"power":…,"restart":{"needed":bool,"reasons":[{"kind":"update\|rollback\|display\|extensions","version"?}]}}`. `system`, `display` and `update`: as their GET routes. `sunshine`: GET `/sunshine` without `session`, from the 3 s poll (only `running` is asked now). `stream`: the session in progress as `session.begin` carries it, null without one. `power`: GET `/power` without `wol`; keep-awake is checked now, the other busy reasons come from the last 15 s policy pass. `restart.reasons`, in this order: `update` when `update.next_boot` is newer than the booted version, else `rollback` (both with `next_boot.version`), `display` while `display.reboot_needed`, and `extensions` while a restart would try the extensions' `pending` set (GET `/extensions` `restart.needed` while its `skip_once` is false); `needed` is true when there is one. Readers show a general 'restart to finish' for a kind they do not know. A part that fails is null and the others still answer |
 | PUT `/system/hostname` | Authed | `{"hostname"}` → `{}`; the name (trimmed and lower-cased first) is one RFC 1123 label (1-63 of `a-z`, `0-9`, `-`, not starting or ending with `-`, no dots) and not `localhost`, else 400 |
 | POST `/system/reboot`, `/system/poweroff` | Authed | → `{}` |
 | GET `/update` | Authed | update-state (with `held`) + `{"config":config.update,"booted_slot","other_slot":{"version","bootable","counting",…}\|null,"next_boot":{"slot","version"}\|null,"busy":bool,"progress":{…}\|null}` (`next_boot`: the entry systemd-boot starts next when it is not the running slot's: a staged update, or a rollback or downgrade waiting for a restart; null when a restart boots the running slot again or the ESP cannot be read) |
@@ -1765,7 +1770,7 @@ already 1048576.
 | PUT `/extensions/{id}/settings` | Authed | `{"settings":{"<setting>":value},"password"?}` → the GET `/extensions` document. 400 for an unknown setting or a value it does not take; 403, 429, 503 for the password a changed setting that `needs_password` needs; 404 for an unknown id; 409 when its descriptor cannot be read |
 | POST `/extensions/{id}/actions/{name}` | Authed | `{"args"?:{…}}` → the GET `/extensions` document, once the action ran. 400 when `args` is not an object or is larger than 64 KiB; 404 for an unknown id or action; 409 while the extension is not running (mounted); 500 when the action failed ("<label> didn't finish. Try again.", or "… in time …") |
 | POST `/extensions/{id}/retry` | Authed | → the GET `/extensions` document ("Try again": forgets the failed set, sets the extension up again). 404 for an unknown id |
-| POST `/extensions/skip-once` | Authed | → `{}`: the next boot mounts no extension |
+| POST `/extensions/skip-once` | Authed | → `{}`: the next boot mounts no extension (a change waiting for a restart then applies at the restart after it, see `restart`) |
 | DELETE `/extensions/skip-once` | Authed | → `{}`: the next boot mounts the extensions again (takes POST's flag back) |
 | GET `/install/probe` | Setup | query `?source=&channel=` (optional); returns `"source","channel","version","min_size","source_error"` plus `{"disks":[{"path","model","size","transport","removable","is_live","has_vaporos","hostname"?,"steam_libraries":[{"uuid","label","path"}]}],"ips":[…],"timezone":"Europe/Brussels","gpu":{…}}`; `hostname` is the name the VaporOS install on that disk answers to (`<hostname>.local`, the one a repair keeps), read from `etc/upper/hostname` on its vos_data (mounted read-only without journal replay, never while an install runs); omitted when unknown |
 | POST `/install` | Setup | `{"disk","mode":"erase\|repair","hostname","password","timezone","libraries":["uuid"],"source":"","channel":""}` → 202 `{"job":"id"}`; empty source means the live medium; `oci://` sources take `channel` (default: the live image's channel, then `main`); in repair, an empty hostname or timezone keeps the installed one; `hostname` (lower-cased first) follows PUT `/system/hostname`'s rule, so `localhost` is a 400 |

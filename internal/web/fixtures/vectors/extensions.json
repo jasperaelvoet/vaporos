@@ -1,5 +1,5 @@
 {
-  "description": "Extensions: what installing, removing, a setting and an action refuse (a drive an extension needs among them), the VaporOS password (for what runs as root or sets kernel module options, and the settings that feed them), a download that waits for a restart, the restart that adds it, and a start without extensions, for which no restart is needed.",
+  "description": "Extensions: what installing, removing, a setting and an action refuse (a drive an extension needs among them), the VaporOS password (for what runs as root or sets kernel module options, and the settings that feed them), a download that waits for a restart, the restart that adds it, and a start without extensions, after which the change waits for the restart after that (no restart kind in /status, none by itself).",
   "vectors": [
     {
       "name": "extensions-refusals",
@@ -47,7 +47,7 @@
       "preset": "extensions-restart",
       "ignore_topics": ["power.idle"],
       "steps": [
-        {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "events": [["extensions.state", {"skip_once": true, "restart": {"needed": false, "auto": false, "reason": ""}}]]}},
+        {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "events": [["extensions.state", {"skip_once": true, "restart": {"needed": true, "auto": false, "reason": "The next start is without extensions. Restart again after it to finish adding CoolerControl and TruckersMP."}, "extensions": [{"id": "proton"}, {"id": "coolercontrol", "state": "restart-needed"}, {"id": "truckersmp", "state": "restart-needed"}, {"id": "star-citizen", "state": "not-installed"}]}]]}},
         {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": false, "reasons": []}}}},
         {"req": "POST /system/reboot", "passive": true},
         {"wait": {"until": "down"}},

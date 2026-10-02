@@ -241,10 +241,12 @@ func (s *Service) Document(ctx context.Context) Document {
 		}
 		doc.Extensions = append(doc.Extensions, xd)
 	}
-	// The next start mounts nothing with skip-once: it would not try pending.
-	doc.Restart.Needed = st.RestartNeeded && !doc.SkipOnce
+	// The cards wait for a restart with skip-once too, but the next start
+	// mounts nothing: the change waits for the restart after that, which
+	// the reason says, and VaporOS does not restart by itself for it.
+	doc.Restart.Needed = st.RestartNeeded
 	if doc.Restart.Needed {
-		doc.Restart.Reason = restartReason(adding, removing, changing)
+		doc.Restart.Reason = restartReason(doc.SkipOnce, adding, removing, changing)
 		doc.Restart.Auto = s.autoAllowed(&v)
 	}
 	return doc
@@ -464,8 +466,9 @@ func requiredBy(cat *catalog.Catalog, want map[string]bool, id string) []string 
 	return out
 }
 
-// restartReason says what a restart would finish, by name.
-func restartReason(adding, removing, changing []string) string {
+// restartReason says what a restart would finish, by name; with skip, that
+// the next start is without extensions and it takes the restart after it.
+func restartReason(skip bool, adding, removing, changing []string) string {
 	var parts []string
 	if len(adding) > 0 {
 		parts = append(parts, "adding "+joinNames(adding))
@@ -476,11 +479,19 @@ func restartReason(adding, removing, changing []string) string {
 	if len(changing) > 0 {
 		parts = append(parts, "changing the settings of "+joinNames(changing))
 	}
-	if len(parts) == 0 {
-		return "Restart to finish changing extensions."
+	what := "changing extensions"
+	if len(parts) > 0 {
+		what = joinNames(parts)
 	}
-	return "Restart to finish " + joinNames(parts) + "."
+	if skip {
+		return skipOnceText + " Restart again after it to finish " + what + "."
+	}
+	return "Restart to finish " + what + "."
 }
+
+// skipOnceText is what a start without extensions does to a change that
+// waits for a restart.
+const skipOnceText = "The next start is without extensions."
 
 // joinNames is "A", "A and B" or "A, B and C".
 func joinNames(names []string) string {

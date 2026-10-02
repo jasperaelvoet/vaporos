@@ -2575,8 +2575,8 @@ function joinNames(names) {
 
 // refreshExtensions recomputes who requires whom, whether adding one takes
 // the password, and the restart a restart-needed card waits for, which may
-// happen by itself; none is needed while the next start leaves the
-// extensions out.
+// happen by itself; not while the next start leaves the extensions out,
+// which takes the restart after it, as the reason says.
 function refreshExtensions(doc) {
   const cards = extList(doc);
   const adding = [];
@@ -2591,8 +2591,7 @@ function refreshExtensions(doc) {
     else if (m.wanted !== true) removing.push(name);
     else changing.push(name);
   }
-  // With skip_once the next start mounts nothing: no restart tries the change.
-  if (adding.length + removing.length + changing.length === 0 || doc.skip_once === true) {
+  if (adding.length + removing.length + changing.length === 0) {
     doc.restart = { needed: false, auto: false, reason: '' };
     return;
   }
@@ -2600,6 +2599,11 @@ function refreshExtensions(doc) {
   if (adding.length) parts.push(`adding ${joinNames(adding)}`);
   if (removing.length) parts.push(`removing ${joinNames(removing)}`);
   if (changing.length) parts.push(`changing the settings of ${joinNames(changing)}`);
+  // With skip_once the next start mounts nothing: the restart after it does.
+  if (doc.skip_once === true) {
+    doc.restart = { needed: true, auto: false, reason: `The next start is without extensions. Restart again after it to finish ${joinNames(parts)}.` };
+    return;
+  }
   doc.restart = { needed: true, auto: true, reason: `Restart to finish ${joinNames(parts)}.` };
 }
 
@@ -2612,9 +2616,10 @@ function extChanged(e) {
   return doc;
 }
 
-// extensionsRestart adds the extensions to GET /status's restart reasons.
+// extensionsRestart adds the extensions to GET /status's restart reasons:
+// none while the next start leaves them out.
 function extensionsRestart(restart, ext) {
-  if (asObj(asObj(ext).restart).needed !== true) return restart;
+  if (asObj(asObj(ext).restart).needed !== true || asObj(ext).skip_once === true) return restart;
   restart.reasons.push({ kind: 'extensions' });
   restart.needed = true;
   return restart;

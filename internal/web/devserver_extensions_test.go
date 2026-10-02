@@ -480,7 +480,8 @@ func (f *devFake) extChangedLocked() any {
 // whom, whether adding one takes the password, and the restart a
 // restart-needed card waits for. A restart that is needed may happen by
 // itself (restart.auto), as the circuit breaker of a fresh set allows;
-// none is needed while the next start leaves the extensions out.
+// not while the next start leaves the extensions out, which takes the
+// restart after it, as the reason says.
 func refreshExtensions(doc map[string]any) {
 	cards := asList(doc["extensions"])
 	byID := map[string]map[string]any{}
@@ -511,8 +512,7 @@ func refreshExtensions(doc map[string]any) {
 			changing = append(changing, name)
 		}
 	}
-	// With skip_once the next start mounts nothing: no restart tries the change.
-	if len(adding)+len(removing)+len(changing) == 0 || doc["skip_once"] == true {
+	if len(adding)+len(removing)+len(changing) == 0 {
 		doc["restart"] = map[string]any{"needed": false, "auto": false, "reason": ""}
 		return
 	}
@@ -525,6 +525,11 @@ func refreshExtensions(doc map[string]any) {
 	}
 	if len(changing) > 0 {
 		parts = append(parts, "changing the settings of "+joinNames(changing))
+	}
+	// With skip_once the next start mounts nothing: the restart after it does.
+	if doc["skip_once"] == true {
+		doc["restart"] = map[string]any{"needed": true, "auto": false, "reason": "The next start is without extensions. Restart again after it to finish " + joinNames(parts) + "."}
+		return
 	}
 	doc["restart"] = map[string]any{"needed": true, "auto": true, "reason": "Restart to finish " + joinNames(parts) + "."}
 }
@@ -599,9 +604,10 @@ func bootExtensions(docs map[string]any) {
 	refreshExtensions(doc)
 }
 
-// extensionsRestart is GET /status's restart kind "extensions".
+// extensionsRestart is GET /status's restart kind "extensions": none while
+// the next start leaves the extensions out.
 func extensionsRestart(doc map[string]any) bool {
-	return asObj(doc["restart"])["needed"] == true
+	return asObj(doc["restart"])["needed"] == true && doc["skip_once"] != true
 }
 
 // The fake adds, removes and changes extensions as vosd answers (CONTRACTS
@@ -726,8 +732,12 @@ func TestFakeExtensions(t *testing.T) {
 		t.Fatal("skip-once")
 	}
 	_, doc = do("GET", "/extensions", "")
-	if doc["skip_once"] != true || asObj(doc["restart"])["needed"] != false || asObj(doc["restart"])["auto"] != false {
+	if r := asObj(doc["restart"]); doc["skip_once"] != true || r["needed"] != true || r["auto"] != false ||
+		r["reason"] != "The next start is without extensions. Restart again after it to finish removing CoolerControl." {
 		t.Fatalf("after skip-once: skip_once %v, restart %v", doc["skip_once"], doc["restart"])
+	}
+	if _, st := do("GET", "/status", ""); len(asList(asObj(st["restart"])["reasons"])) != 0 {
+		t.Fatalf("GET /status restart with skip-once = %v", st["restart"])
 	}
 	if code, _ := do("DELETE", "/extensions/skip-once", ""); code != 200 {
 		t.Fatal("taking skip-once back")
