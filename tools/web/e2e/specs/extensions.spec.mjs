@@ -3,8 +3,10 @@
 // event stream alone moves on, Restart now, Needs attention and Try again,
 // an extension's own page while it runs, Remove with its data and Install
 // again before the restart, settings, the drive an extension needs (asked
-// for as it installs), actions, a start without extensions, a first read
-// that fails and the row on System. The words a card should show come
+// for as it installs, also while the drives load, when they can't be
+// listed and with no game drive yet), actions, a start without extensions
+// (also with a change waiting for a restart), a first read that fails and
+// the row on System. The words a card should show come
 // from the fixtures through ext.js, the page's own pure module, so the
 // flows hold for any catalogue the fixtures carry; each flow first checks
 // (need) that they carry what it needs. The IDs have no parity row
@@ -446,8 +448,11 @@ export default [
         assert.equal(await sw().isChecked(), before);
       });
       await step('a change the box guards after all asks for the password instead of failing', async () => {
-        // The first step chose another value: this one changes it back.
-        await page.route(`**/api/v1/extensions/${y.id}/settings`, (r) => r.fulfill({ status: 403, json: { error: 'Changing this setting needs the admin password' } }), { times: 1 });
+        // The first step chose another value: this one changes it back. Every
+        // try without the password is refused: the client tries a 403 once
+        // more when its CSRF token turns out to have changed.
+        const guard = `**/api/v1/extensions/${y.id}/settings`;
+        await page.route(guard, (r) => (r.request().postDataJSON()?.password ? r.fallback() : r.fulfill({ status: 403, json: { error: 'Changing this setting needs the admin password' } })));
         await sel().selectOption(was);
         await page.locator('#ext-dialog[open]').waitFor();
         assert.equal(await text(page.locator('#ext-dialog-title')), `Change ${plain.label}?`);
@@ -529,6 +534,82 @@ export default [
           assert.equal(await sel.inputValue(), v.path);
         }
         await notice(page, 'Saved.');
+      });
+    },
+  },
+  {
+    id: 'SYS-ext-drives',
+    ui: ['next'],
+    allow: [/status of 500/, /500 GET .*\/api\/v1\/storage$/],
+    async run(t) {
+      const { page, step } = t;
+      const d = doc();
+      const x = need(d.extensions.find((y) => X.canInstall(y) && X.required(y).length === 1 && !X.required(y)[0].value),
+        'an extension to install that needs a drive and has none picked yet (star-citizen)');
+      const [s] = X.required(x);
+      const storage = json('base/storage.json');
+      const drives = X.drives(storage.disks);
+      const c = card(page, x.name);
+      const install = c.getByRole('button', { name: `Install ${x.name}` });
+      const pick = page.locator('#ext-dialog-choose').getByLabel(s.label, { exact: true });
+      const options = (loc) => loc.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.textContent, o.disabled]));
+      const cancel = async () => {
+        await page.click('#ext-dialog-cancel');
+        await closed(page, 'ext-dialog');
+      };
+      await step('Install is busy while the drives load, and a second press does nothing', async () => {
+        let release;
+        const held = new Promise((r) => (release = r));
+        let asked = 0;
+        await page.route('**/api/v1/storage', async (r) => {
+          asked++;
+          await held;
+          await r.fallback();
+        });
+        await open(t);
+        await install.click();
+        await until(page, (id) => document.querySelector(`.ext-card[data-id="${id}"] .ext-actions .btn`).getAttribute('aria-busy') === 'true', x.id);
+        await install.dispatchEvent('click');
+        await page.waitForTimeout(200);
+        assert.equal(await page.locator('#ext-dialog[open]').count(), 0, 'no dialog before the drives');
+        release();
+        await page.locator('#ext-dialog[open]').waitFor();
+        assert.equal(asked, 1, 'one GET /storage');
+        assert.equal(await install.getAttribute('aria-busy'), null);
+        assert.deepEqual(await options(pick), [['', 'Choose a drive', true], ...drives.map((v) => [v.path, v.text, false])]);
+        await cancel();
+        await page.unroute('**/api/v1/storage');
+      });
+      await step('drives that cannot be listed: it says so, offers none, Install waits, and Try again lists them', async () => {
+        await page.route('**/api/v1/storage', (r) => r.fulfill({ status: 500, json: { error: 'the disks could not be read' } }), { times: 1 });
+        await open(t);
+        await install.click();
+        await page.locator('#ext-dialog[open]').waitFor();
+        assert.equal(await text(page.locator('#ext-dialog-choose .field-error')), "VaporOS couldn't list the drives. Try again", 'the line, then its button');
+        assert.deepEqual(await options(pick), [['', "Couldn't list the drives", true]]);
+        assert.equal(await page.isDisabled('#ext-dialog-ok'), true, 'no drive to pick: Install waits');
+        await assertAxe(page, 'the install dialog without the drives');
+        await page.locator('#ext-dialog').getByRole('button', { name: 'Try again' }).click();
+        await until(page, (id) => document.getElementById(id).options.length > 1, await pick.getAttribute('id'));
+        assert.deepEqual(await options(pick), [['', 'Choose a drive', true], ...drives.map((v) => [v.path, v.text, false])]);
+        assert.equal(await page.locator('#ext-dialog-choose .field-error').count(), 0);
+        assert.equal(await page.evaluate(() => document.activeElement.tagName), 'SELECT');
+        assert.equal(await page.isDisabled('#ext-dialog-ok'), true);
+        await pick.selectOption(drives[0].path);
+        assert.equal(await page.isDisabled('#ext-dialog-ok'), false);
+        await cancel();
+      });
+      await step('no game drive yet: the dialog points to Storage, and offers the system drive', async () => {
+        await page.route('**/api/v1/storage', (r) => r.fulfill({ json: { ...storage, disks: storage.disks.filter((k) => k.is_system) } }), { times: 1 });
+        await open(t);
+        await install.click();
+        await page.locator('#ext-dialog[open]').waitFor();
+        assert.equal(await text(page.locator('#ext-dialog-choose .field-hint').last()), 'No game drives yet. Add one in Storage.');
+        assert.match(await page.locator('#ext-dialog-choose').getByRole('link', { name: 'Add one in Storage' }).getAttribute('href'), /\/system\/storage$/);
+        const sys = need(drives.find((v) => v.system), 'GET /storage: the system drive');
+        assert.deepEqual(await options(pick), [['', 'Choose a drive', true], [sys.path, sys.text, false]]);
+        await assertAxe(page, 'the install dialog without a game drive');
+        await cancel();
       });
     },
   },

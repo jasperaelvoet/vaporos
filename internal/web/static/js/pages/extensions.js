@@ -1,10 +1,8 @@
 // pages/extensions.js: System › Extensions (docs/CONTRACTS.md "Extensions").
-// One card per extension from GET /extensions, kept current by the
-// extensions.state event alone: nothing here polls. Install, Remove, a
-// setting, an action and Try again each answer with the whole document,
-// which replaces the one shown. Cards are made once and filled in place,
-// so a live update never moves focus or closes what is open. The words
-// are ext.js's; extensions-ask.js is the page's dialog.
+// A card per extension from GET /extensions, kept current by the
+// extensions.state event alone (no polling); every change answers the whole
+// document. Cards are filled in place, so a live update never moves focus.
+// The words are ext.js's; extensions-ask.js is the dialog.
 
 import { api, errorText, signedInBefore } from '../core/api.js';
 import { announce } from '../core/announce.js';
@@ -148,17 +146,18 @@ function actions(li, x) {
   if (changed(li, 'actions', sig)) {
     const kids = [];
     const sr = (text) => h('span', { class: 'sr-only', text });
-    if (X.canInstall(x)) kids.push(h('button', { class: 'btn small', type: 'button', onclick: (e) => install(x.id, e.currentTarget) }, h('span', {}, 'Install', sr(` ${name}`))));
-    if (retry) kids.push(h('button', { class: 'btn small', type: 'button', onclick: (e) => retryOne(x.id, e.currentTarget) }, h('span', {}, 'Try again', sr(` to install ${name}`))));
+    // Its words, and for whom to a screen reader.
+    const button = (ghost, words, whom, fn, more) =>
+      h('button', { class: ghost ? 'btn small ghost' : 'btn small', type: 'button', onclick: (e) => fn(e.currentTarget), ...more }, h('span', {}, words, sr(whom)));
+    if (X.canInstall(x)) kids.push(button(0, 'Install', ` ${name}`, (b) => install(x.id, b)));
+    if (retry) kids.push(button(0, 'Try again', ` to install ${name}`, (b) => retryOne(x.id, b)));
     if (web) {
       kids.push(h('a', { class: 'btn small ghost', href: web, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), h('span', {}, X.webLabel(x), sr(', opens in a new tab'))));
     }
-    for (const a of acts) {
-      kids.push(h('button', { class: 'btn small ghost', type: 'button', onclick: (e) => act(x.id, a.name, e.currentTarget) }, h('span', {}, a.label || a.name, sr(` (${name})`))));
-    }
+    for (const a of acts) kids.push(button(1, a.label || a.name, ` (${name})`, (b) => act(x.id, a.name, b)));
     if (rm.show) {
       const why = `ext-${x.id}-why`;
-      kids.push(h('button', { class: 'btn small ghost', type: 'button', disabled: !!rm.why, 'aria-describedby': rm.why ? why : null, onclick: (e) => remove(x.id, e.currentTarget) }, h('span', {}, 'Remove', sr(` ${name}`))));
+      kids.push(button(1, 'Remove', ` ${name}`, (b) => remove(x.id, b), { disabled: !!rm.why, 'aria-describedby': rm.why ? why : null }));
       if (rm.why) kids.push(h('p', { class: 'ext-why', id: why, text: rm.why }));
     }
     box.replaceChildren(...kids);
@@ -174,23 +173,21 @@ function after(id, btn) {
 
 async function install(id, btn) {
   const x = find(id);
-  if (!x) return;
+  if (!x || btn.getAttribute('aria-busy')) return; // the drives are loading
   // The box refuses it without the drive it needs: that is picked here.
   const need = X.required(x);
-  if (need.length) await loadDisks(true);
-  const choose = need.map((s) => {
-    const sel = h('select', { class: 'input', id: `ext-dialog-set-${s.key}` }, X.driveChoices(s, Array.isArray(disks) ? disks : X.drives([])).map(option));
-    sel.value = s.value || '';
-    return { key: s.key, sel, field: field(sel.id, s.label || s.key, X.settingHint(s), sel) };
+  const m = await busy(btn, async () => {
+    if (need.length) await loadDisks(true);
+    return asker();
   });
   // needs_password covers what it also installs; the dialog asks anyway
   // when the box wants the password after all.
-  const ok = await (await asker()).ask({
+  const ok = await m.ask({
     title: `Install ${x.name}?`,
     body: (x.copy && x.copy.install) || x.summary || '',
     can: X.can(x),
     note: X.installNote(x, doc, ctx),
-    choose,
+    choose: need.map(pick),
     password: !!x.needs_password,
     passwordHint: X.passwordHint(x, ctx),
     confirm: 'Install',
@@ -200,6 +197,33 @@ async function install(id, btn) {
   notify(X.installedText(x, ctx), { kind: 'ok' });
   after(id, btn);
 }
+
+// pick is the install dialog's drive field; without the list it asks again.
+function pick(s) {
+  const id = `ext-dialog-set-${s.key}`;
+  const sel = h('select', { class: 'input', id });
+  const more = h('div');
+  const show = () => {
+    const ok = Array.isArray(disks);
+    sel.replaceChildren(...options(s, true));
+    sel.value = ok ? s.value || '' : '';
+    more.replaceChildren(ok ? noDrives() || '' : h('p', { class: 'field-error' }, "VaporOS couldn't list the drives. ",
+      h('button', { class: 'btn small ghost', type: 'button', onclick: (e) => {
+        e.currentTarget.disabled = true;
+        loadDisks(true).then(() => {
+          show();
+          sel.dispatchEvent(new Event('change'));
+          sel.focus();
+        });
+      } }, 'Try again')));
+  };
+  show();
+  return { key: s.key, sel, field: field(id, s.label || s.key, X.settingHint(s), sel, more) };
+}
+
+// noDrives points to Storage while no game drive is adopted.
+const noDrives = () => Array.isArray(disks) && !disks.some((d) => !d.system) &&
+  h('p', { class: 'field-hint' }, 'No game drives yet. ', h('a', { href: `${document.documentElement.dataset.base || ''}/system/storage`, text: 'Add one in Storage' }), '.');
 
 async function remove(id, btn) {
   const x = find(id);
@@ -272,9 +296,7 @@ function control(x, s) {
   const sel = h('select', { class: 'input', id }, s.type === 'disk' ? [] : options(s));
   sel.addEventListener('change', () => save(sel.value, () => (sel.value = String(saved() ?? ''))));
   controls.set(`${x.id}/${s.key}`, sel);
-  const none = s.type === 'disk' && Array.isArray(disks) && !disks.some((d) => !d.system);
-  return field(id, s.label || s.key, hint, sel,
-    none && h('p', { class: 'field-hint' }, 'No game drives yet. ', h('a', { href: `${document.documentElement.dataset.base || ''}/system/storage`, text: 'Add one in Storage' }), '.'));
+  return field(id, s.label || s.key, hint, sel, s.type === 'disk' && noDrives());
 }
 
 // field is a select under its label, with its hint and what else it says.
@@ -286,9 +308,10 @@ function field(id, label, hint, sel, more) {
 
 const option = (o) => h('option', { value: o.value, text: o.text, disabled: o.disabled });
 
-function options(s) {
+// options: until the drives are listed a card keeps its drive, the dialog none.
+function options(s, asked) {
   if (s.type !== 'disk') return (s.choices || []).map((c) => option({ value: c, text: X.choiceLabel(c) }));
-  if (!Array.isArray(disks)) return [option({ value: s.value || '', text: disks === false ? "Couldn't list the drives" : 'Looking at your drives…' })];
+  if (!Array.isArray(disks)) return [option({ value: asked ? '' : s.value || '', text: disks === false ? "Couldn't list the drives" : 'Looking at your drives…', disabled: asked })];
   return X.driveChoices(s, disks).map(option);
 }
 

@@ -1,10 +1,8 @@
-// pages/extensions-ask.js: System › Extensions' own dialog, in the shared
-// confirm's look and manners (ui/dialog.js: a danger one focuses Cancel).
-// Beyond a confirm it lists what an extension can do, takes a drive, the
-// VaporOS password and the choice to delete an extension's data, and stays
-// open while the request runs, so a wrong password is said under its field.
-// When the box asks for a password the card did not announce, the field
-// appears with why, and the next press sends it.
+// pages/extensions-ask.js: System › Extensions' own dialog, as the shared
+// confirm (ui/dialog.js: a danger one focuses Cancel). It also lists what an
+// extension can do, takes a drive, the VaporOS password (also when only the
+// box asked) and whether to delete its data, and stays open while the
+// request runs, so a wrong password shows under its field.
 
 import { errorText } from '../core/api.js';
 import { byId, h } from '../core/dom.js';
