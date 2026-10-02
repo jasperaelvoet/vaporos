@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"debug/elf"
 	"encoding/binary"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,27 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 )
+
+// chowned gives a test file (by host path) another owner. Every other file
+// reads as root's, as the build's base and images are, whoever runs the
+// tests.
+var chowned = map[string]string{}
+
+func init() {
+	ownerOf = func(host string, _ fs.FileInfo) string {
+		if o, ok := chowned[host]; ok {
+			return o
+		}
+		return "0:0"
+	}
+}
+
+// chown makes the file at host read as owned by o for the rest of the test.
+func chown(t *testing.T, host, o string) {
+	t.Helper()
+	chowned[host] = o
+	t.Cleanup(func() { delete(chowned, host) })
+}
 
 // writeTree creates files under root: a value starting with "@" makes a
 // symlink to the rest, a key ending in "/" a directory.
@@ -165,6 +187,7 @@ func newBase(t *testing.T) string {
 		"usr/sbin":       "@bin",
 		"usr/share/doc/": "",
 		"usr/lib/systemd/system/multi-user.target":   "[Unit]\n",
+		"usr/lib/systemd/system/shutdown.target":     "[Unit]\n",
 		"usr/lib/systemd/system/vosd.service":        "[Service]\nExecStart=/usr/bin/vos daemon\n",
 		"usr/lib/systemd/system/getty@.service":      "[Service]\n",
 		"etc/systemd/system/local.service":           "[Service]\n",

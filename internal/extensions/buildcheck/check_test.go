@@ -98,6 +98,19 @@ func TestClassify(t *testing.T) {
 		{"usr/lib/systemd/system/demo-.service.wants", dir, "", "ends in '-'"},
 		{"usr/lib/systemd/user/vos-.service.d/x.conf", file, "", "ends in '-'"},
 		{"usr/lib/systemd/system/demo-x@y-.service", file, descriptor.PermService, ""},
+		{"usr/lib/systemd/system/efi.mount", file, "", ".mount units"},
+		{"usr/lib/systemd/system/efi.mount.d", dir, "", ".mount units"},
+		{"usr/lib/systemd/system/efi.mount.d/x.conf", file, "", ".mount units"},
+		{"usr/lib/systemd/system/var-lib-vos.mount", link, "", ".mount units"},
+		{"usr/lib/systemd/system/efi.automount", file, "", ".automount units"},
+		{"usr/lib/systemd/system/swapfile.swap", file, "", ".swap units"},
+		{"usr/lib/systemd/system/user-1000.slice", file, "", ".slice units"},
+		{"usr/lib/systemd/system/system.slice.wants", dir, "", ".slice units"},
+		{"usr/lib/systemd/system/system.slice.requires/demo.service", link, "", ".slice units"},
+		{"usr/lib/systemd/system/session-1.scope.d/x.conf", file, "", ".scope units"},
+		{"usr/lib/systemd/system/dev-sda.device.wants", dir, "", ".device units"},
+		{"usr/lib/systemd/user/app.slice", file, "", ".slice units"},
+		{"usr/lib/systemd/system/demo.service.wants/var-lib-vos.mount", link, descriptor.PermService, ""},
 		{"usr/lib/ld.so.conf.d", dir, "", "library search paths"},
 		{"usr/lib/demo/ld.so.conf.d", dir, "", "library search paths"},
 		{"usr/lib/modules/6.1/extra/demo.ko", file, "", "kernel modules"},
@@ -185,17 +198,46 @@ func TestMergedDirectoriesKeepTheBaseMode(t *testing.T) {
 	if len(r.Problems) != 2 {
 		t.Fatalf("problems %q", r.Problems)
 	}
+}
 
-	if os.Geteuid() != 0 {
-		t.Skip("changing a directory's owner needs root")
+// An image's directories are root's (--all-root), so it cannot merge into
+// a base directory that is someone else's, such as Arch's polkit rules.d
+// (0750 root:polkitd); what the tree's own files say does not matter.
+func TestBaseDirectoriesMustBeRoots(t *testing.T) {
+	base := newBase(t)
+	writeTree(t, base, map[string]string{"usr/share/polkit-1/rules.d/": "", "usr/share/doc/base/": ""})
+	other := t.TempDir()
+	writeTree(t, other, map[string]string{"usr/share/doc/demo/b": "b"})
+	tree, _ := newDemo(t)
+	d := declare(t, tree, "service", "polkit")
+	writeTree(t, tree, map[string]string{"usr/share/polkit-1/rules.d/50-demo.rules": "x"})
+	for _, root := range []string{base, tree} {
+		if err := os.Chmod(filepath.Join(root, "usr/share/polkit-1/rules.d"), 0o750); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.Chmod(filepath.Join(tree, "usr/bin"), 0o755); err != nil {
-		t.Fatal(err)
+	chown(t, filepath.Join(base, "usr/share/polkit-1/rules.d"), "0:102")
+	chown(t, filepath.Join(tree, "usr/share/doc"), "1000:1000")
+	chown(t, filepath.Join(other, "usr/share/doc/demo"), "0:102")
+	r := run(t, tree, base, d, other)
+	wantProblem(t, r, `usr/share/polkit-1/rules.d: the base's directory is owned by 0:102, not root (0:0); an image's directories are all root's (mkfs.erofs --all-root) and the merged directory takes the image's owner, so a base directory owned by anyone else cannot be extended (it rules out the "polkit" permission)`)
+	if len(r.Problems) != 1 {
+		t.Fatalf("problems %q", r.Problems)
 	}
-	if err := os.Lchown(filepath.Join(tree, "usr/share"), 0, 102); err != nil {
-		t.Fatal(err)
+
+	chown(t, filepath.Join(base, "usr/share"), "0:102")
+	chown(t, filepath.Join(base, "usr/lib/systemd"), "0:102")
+	r = run(t, tree, base, d, other)
+	wantProblem(t, r, `usr/lib/systemd: the base's directory is owned by 0:102`)
+	wantProblem(t, r, `(it rules out the "service", "user-service" permissions)`)
+	for _, p := range r.Problems {
+		if strings.HasPrefix(p, "usr/share: ") && !strings.HasSuffix(p, "cannot be extended") {
+			t.Errorf("usr/share holds every permission's files, so none is named: %q", p)
+		}
 	}
-	wantProblem(t, run(t, tree, base, d, other), "usr/share: a directory owned by 0:102 where the base has one owned by")
+	if len(r.Problems) != 3 {
+		t.Fatalf("problems %q", r.Problems)
+	}
 }
 
 func TestWarnings(t *testing.T) {

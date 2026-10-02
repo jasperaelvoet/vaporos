@@ -67,6 +67,7 @@ var (
 	CompatToolsDir     = "/usr/share/steam/compatibilitytools.d"
 	ModprobeRunDir     = "/run/modprobe.d"
 	ExtGamerDataSubdir = ".local/share/vaporos/ext" // under GamerHome
+	ExtRunDir          = "/run/vos-ext"             // <id>/: an extension's runtime directory
 	ExtGamerStateFile  = ".local/state/vaporos/steam.json"
 )
 

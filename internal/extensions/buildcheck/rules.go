@@ -1,6 +1,7 @@
 package buildcheck
 
 import (
+	"fmt"
 	"io/fs"
 	"path"
 	"strings"
@@ -69,6 +70,12 @@ var unitSuffixes = []string{".service", ".socket", ".device", ".mount", ".automo
 
 // depDirSuffixes are the directories that add dependencies to a unit.
 var depDirSuffixes = []string{".wants", ".requires", ".upholds"}
+
+// runtimeUnitTypes are the unit types whose names systemd and generators
+// make at runtime, from mount points, fstab, devices, cgroups and logins
+// (efi.mount, var-lib-vos.mount, user-1000.slice): whatever name an
+// extension picked could be one of the base's on some box.
+var runtimeUnitTypes = map[string]bool{"mount": true, "automount": true, "swap": true, "slice": true, "scope": true, "device": true}
 
 // classify applies the allowlist to rel, a slash path inside the image of
 // extension id, whose type is mode.
@@ -187,8 +194,11 @@ func unitVerdict(rel, dir string, isDir bool, perm string) verdict {
 		return verdict{forbid: "not a directory"}
 	}
 	p := strings.Split(strings.TrimPrefix(rel, dir+"/"), "/")
-	if u := namedUnit(p[0], isDir || len(p) > 1); u != "" && prefixStem(u) {
+	switch u := namedUnit(p[0], isDir || len(p) > 1); {
+	case u != "" && prefixStem(u):
 		return verdict{forbid: "a unit name that ends in '-' before '@' or its type makes systemd apply its drop-ins to every unit with that prefix"}
+	case u != "" && runtimeUnitTypes[unitType(u)]:
+		return verdict{forbid: fmt.Sprintf("systemd and generators name .%s units at runtime (efi.mount, var-lib-vos.mount, user-1000.slice), so an extension ships none, nor drop-ins or dependencies for one", unitType(u))}
 	}
 	switch len(p) {
 	case 1:

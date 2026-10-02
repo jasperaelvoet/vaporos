@@ -122,13 +122,72 @@ func TestUnitRules(t *testing.T) {
 			"usr/lib/systemd/system/demo.socket":            "[Socket]\nListenStream=1234\nExecStartPre=/usr/bin/demo\nUser=demo\n",
 			"usr/lib/systemd/system/demo.socket.d/vos.conf": "[Socket]\nTimeoutSec=10\n",
 		}},
-		"mount": {files: map[string]string{
-			"usr/lib/systemd/system/srv-demo.mount": "[Mount]\nWhat=tmpfs\nWhere=/srv/demo\n",
-		}, want: "usr/lib/systemd/system/srv-demo.mount: needs a drop-in (srv-demo.mount.d/*.conf) that sets a finite TimeoutSec="},
-		"mount with a service timeout": {files: map[string]string{
+		"a mount": {files: map[string]string{
 			"usr/lib/systemd/system/srv-demo.mount":            "[Mount]\nWhat=tmpfs\nWhere=/srv/demo\n",
-			"usr/lib/systemd/system/srv-demo.mount.d/vos.conf": "[Service]\nTimeoutSec=10\n",
-		}, want: "srv-demo.mount: needs a drop-in"},
+			"usr/lib/systemd/system/srv-demo.mount.d/vos.conf": "[Mount]\nTimeoutSec=10\n",
+		}, want: "usr/lib/systemd/system/srv-demo.mount: systemd and generators name .mount units at runtime"},
+		"a drop-in for the ESP's mount": {files: map[string]string{
+			"usr/lib/systemd/system/efi.mount.d/x.conf": "[Mount]\nOptions=rw\n",
+		}, want: "usr/lib/systemd/system/efi.mount.d: systemd and generators name .mount units"},
+		"wants of the journal's mount": {files: map[string]string{
+			"usr/lib/systemd/system/var-log-journal.mount.wants/demo.service": "@../demo.service",
+		}, want: "usr/lib/systemd/system/var-log-journal.mount.wants: systemd and generators name .mount units"},
+		"the store's mount": {files: map[string]string{
+			"usr/lib/systemd/system/var-lib-vos.mount": "@demo.service",
+		}, want: "usr/lib/systemd/system/var-lib-vos.mount: systemd and generators name .mount units"},
+		"a user's slice": {files: map[string]string{
+			"usr/lib/systemd/system/user-1000.slice": "[Slice]\nCPUWeight=10000\n",
+		}, want: "usr/lib/systemd/system/user-1000.slice: systemd and generators name .slice units"},
+		"requires of a slice": {files: map[string]string{
+			"usr/lib/systemd/system/system.slice.requires/demo.service": "@../demo.service",
+		}, want: "usr/lib/systemd/system/system.slice.requires: systemd and generators name .slice units"},
+		"a user slice drop-in": {files: map[string]string{
+			"usr/lib/systemd/user/app.slice.d/x.conf": "[Slice]\nCPUWeight=1\n",
+		}, want: "usr/lib/systemd/user/app.slice.d: systemd and generators name .slice units"},
+		"a swap":       {files: map[string]string{"usr/lib/systemd/system/demo.swap": "[Swap]\nWhat=/swap\n"}, want: "name .swap units"},
+		"an automount": {files: map[string]string{"usr/lib/systemd/system/srv-demo.automount": "[Automount]\nWhere=/srv/demo\n"}, want: "name .automount units"},
+		"a scope":      {files: map[string]string{"usr/lib/systemd/system/demo.scope": "[Scope]\n"}, want: "name .scope units"},
+		"a device":     {files: map[string]string{"usr/lib/systemd/system/dev-sda.device.wants/demo.service": "@../demo.service"}, want: "name .device units"},
+
+		"Conflicts with a base unit": {files: map[string]string{unit: "[Unit]\nConflicts=vosd.service\n[Service]\nUser=demo\n"}, want: unit + ": Conflicts=vosd.service stops, whenever it starts, a unit of the base"},
+		"Conflicts with shutdown":    {files: map[string]string{unit: "[Unit]\nConflicts=shutdown.target\n[Service]\nUser=demo\n"}},
+		"Conflicts with a mount":     {files: map[string]string{unit: "[Unit]\nConflicts=efi.mount\n[Service]\nUser=demo\n"}, want: "Conflicts=efi.mount stops, whenever it starts, a .mount unit, which systemd and generators name at runtime"},
+		"OnFailure in a drop-in":     {files: map[string]string{dropIn: "[Unit]\nOnFailure=multi-user.target\n[Service]\nTimeoutStartSec=30\n"}, want: dropIn + ": OnFailure=multi-user.target starts, when it fails, a unit of the base"},
+		"OnSuccess a base instance":  {files: map[string]string{unit: "[Unit]\nOnSuccess=getty@tty1.service\n[Service]\nUser=demo\n"}, want: "OnSuccess=getty@tty1.service starts, when it succeeds, a unit of the base"},
+		"OnFailure its own template": {files: map[string]string{unit: "[Unit]\nOnFailure=demo-notify@%n.service\n[Service]\nUser=demo\n"}},
+		"PropagatesStopTo":           {files: map[string]string{unit: "[Unit]\nPropagatesStopTo=local.service\n[Service]\nUser=demo\n"}, want: "PropagatesStopTo=local.service stops, whenever it stops, a unit of the base"},
+		"StopPropagatedFrom":         {files: map[string]string{unit: "[Unit]\nStopPropagatedFrom=vosd.service\n[Service]\nUser=demo\n"}, want: "StopPropagatedFrom=vosd.service ties its stops to a unit of the base"},
+		"PropagatesReloadTo":         {files: map[string]string{unit: "[Unit]\nPropagatesReloadTo=vosd.service\n[Service]\nUser=demo\n"}, want: "PropagatesReloadTo=vosd.service reloads"},
+		"PartOf":                     {files: map[string]string{unit: "[Unit]\nPartOf=multi-user.target\n[Service]\nUser=demo\n"}, want: "PartOf=multi-user.target ties its stops and restarts to a unit of the base"},
+		"PartOf a slice":             {files: map[string]string{unit: "[Unit]\nPartOf=user-1000.slice\n[Service]\nUser=demo\n"}, want: "PartOf=user-1000.slice ties its stops and restarts to a .slice unit"},
+		"Upholds":                    {files: map[string]string{unit: "[Unit]\nUpholds=demo-helper.service vosd.service\n[Service]\nUser=demo\n"}, want: "Upholds=vosd.service keeps restarting a unit of the base"},
+		"BindsTo":                    {files: map[string]string{unit: "[Unit]\nBindsTo=vosd.service\n[Service]\nUser=demo\n"}, want: "BindsTo=vosd.service binds its state to a unit of the base"},
+		"BindsTo a device":           {files: map[string]string{unit: "[Unit]\nBindsTo=dev-sda.device\n[Service]\nUser=demo\n"}, want: "BindsTo=dev-sda.device binds its state to a .device unit"},
+		"JoinsNamespaceOf":           {files: map[string]string{unit: "[Unit]\nJoinsNamespaceOf=vosd.service\n[Service]\nUser=demo\n"}, want: "JoinsNamespaceOf=vosd.service joins the namespaces of a unit of the base"},
+		"Before a mount":             {files: map[string]string{unit: "[Unit]\nBefore=var-lib-vos.mount\n[Service]\nUser=demo\n"}, want: "Before=var-lib-vos.mount orders it before a .mount unit"},
+		"a specifier":                {files: map[string]string{unit: "[Unit]\nConflicts=%N-x.service\n[Service]\nUser=demo\n"}, want: "Conflicts=%N-x.service stops, whenever it starts, a unit named with specifiers"},
+		"a base template's instance": {files: map[string]string{unit: "[Unit]\nConflicts=getty@%i.service\n[Service]\nUser=demo\n"}, want: "Conflicts=getty@%i.service stops, whenever it starts, a unit of the base"},
+		"wants of its own unit for the base": {files: map[string]string{
+			"usr/lib/systemd/system/demo.service.requires/vosd.service": "@/usr/lib/systemd/system/vosd.service",
+		}},
+		"upholds of its own unit for the base": {files: map[string]string{
+			"usr/lib/systemd/system/demo.service.upholds/vosd.service": "@/usr/lib/systemd/system/vosd.service",
+		}, want: "usr/lib/systemd/system/demo.service.upholds/vosd.service: keeps restarting a unit of the base"},
+		"a timer for a base service": {files: map[string]string{
+			"usr/lib/systemd/system/vosd.timer": "[Timer]\nOnCalendar=daily\n",
+		}, want: "usr/lib/systemd/system/vosd.timer: starts vosd.service, a unit of the base"},
+		"a timer's Unit=": {files: map[string]string{
+			"usr/lib/systemd/system/demo.timer": "[Timer]\nOnCalendar=daily\nUnit=multi-user.target\n",
+		}, want: "usr/lib/systemd/system/demo.timer: starts multi-user.target, a unit of the base"},
+		"a path for its own service": {files: map[string]string{
+			"usr/lib/systemd/system/demo.path": "[Path]\nPathExists=/run/vos-ext/demo/go\n",
+		}},
+		"an accepting socket for a base template": {files: map[string]string{
+			"usr/lib/systemd/system/getty.socket": "[Socket]\nListenStream=1234\nAccept=yes\n",
+		}, want: "usr/lib/systemd/system/getty.socket: starts getty@.service, a unit of the base"},
+		"a socket's Service=": {files: map[string]string{
+			"usr/lib/systemd/system/demo.socket": "[Socket]\nListenStream=1234\nService=vosd.service\n",
+		}, want: "usr/lib/systemd/system/demo.socket: starts vosd.service, a unit of the base"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tree, d := newDemo(t)
@@ -190,10 +249,6 @@ func TestRunsAsRoot(t *testing.T) {
 			"usr/lib/systemd/system/demo.socket.d/vos.conf": "[Socket]\nTimeoutSec=10\n",
 		}, false},
 		"socket without commands": {map[string]string{"usr/lib/systemd/system/demo.socket": "[Socket]\nListenStream=1234\n"}, false},
-		"mount": {map[string]string{
-			"usr/lib/systemd/system/srv-demo.mount":            "[Mount]\nWhat=tmpfs\nWhere=/srv/demo\n",
-			"usr/lib/systemd/system/srv-demo.mount.d/vos.conf": "[Mount]\nTimeoutSec=10\n",
-		}, true},
 		"user service": {map[string]string{
 			"usr/lib/systemd/user/demo.service": "[Service]\nExecStart=+/usr/bin/demo\n",
 		}, false},
