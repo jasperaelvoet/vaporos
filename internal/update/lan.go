@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -22,12 +23,19 @@ const (
 type lanProbe struct {
 	state  lanState
 	detail string   // lanNoAddress: which device, and what is wrong with it
-	mac    string   // lanUp: the address of the device with the usable address
+	mac    string   // lanUp: the permanent address of the device with the usable address
 	macs   []string // the addresses of every network device present
 }
 
-// iffUp is IFF_UP in /sys/class/net/<if>/flags: the interface was brought up.
-const iffUp = 0x1
+const (
+	// iffUp is IFF_UP in /sys/class/net/<if>/flags: the interface was brought up.
+	iffUp = 0x1
+	// arphrdEther is ARPHRD_ETHER in /sys/class/net/<if>/type.
+	arphrdEther = "1"
+	// netAddrPerm is NET_ADDR_PERM in /sys/class/net/<if>/addr_assign_type:
+	// the address is the hardware's own, not random or set by software.
+	netAddrPerm = "0"
+)
 
 var (
 	// NetClassDir lists the network interfaces.
@@ -45,10 +53,12 @@ var (
 // probeLAN looks at the network devices (interfaces with a device link,
 // so not lo, bridges, veth or tunnels): up when one that is up with
 // carrier has an IPv4 address that is neither loopback nor link-local, or a
-// global or unique local IPv6 one. A device still down is not "nothing
-// plugged in": NetworkManager brings up every device it manages, also
-// without a cable, so a down one points at the image.
-func probeLAN() lanProbe {
+// global or unique local IPv6 one. A wired device still down is not
+// "nothing plugged in": NetworkManager brings up every one it manages, also
+// without a cable, so a down one points at the image. Any other (Wi-Fi, a
+// modem) may be down for a switch or a missing SIM, so it counts only when
+// it had the LAN on the last good boot (its address is lanMAC).
+func probeLAN(lanMAC string) lanProbe {
 	ents, _ := os.ReadDir(NetClassDir)
 	p := lanProbe{state: lanNoCarrier}
 	problem := func(format string, a ...any) {
@@ -84,7 +94,9 @@ func probeLAN() lanProbe {
 		}
 		switch {
 		case !up:
-			problem("%s is down", name)
+			if wired(dir) || (lanMAC != "" && mac == lanMAC) {
+				problem("%s is down", name)
+			}
 			continue
 		case strings.TrimSpace(string(carrier)) != "1":
 			continue // up, with nothing plugged in
@@ -92,7 +104,12 @@ func probeLAN() lanProbe {
 		addrs, _ := interfaceAddrs(name)
 		for _, a := range addrs {
 			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.IsGlobalUnicast() {
-				p.state, p.mac, p.detail = lanUp, mac, ""
+				p.state, p.detail = lanUp, ""
+				// Only the hardware's own address names the device on
+				// the next boot too.
+				if sysLine(dir, "addr_assign_type") == netAddrPerm {
+					p.mac = mac
+				}
 				break
 			}
 		}
@@ -101,6 +118,22 @@ func probeLAN() lanProbe {
 		}
 	}
 	return p
+}
+
+// wired reports whether the network device in dir is wired Ethernet: its
+// link type is Ethernet, and it is neither Wi-Fi (which reports the same
+// type) nor a WWAN modem.
+func wired(dir string) bool {
+	if sysLine(dir, "type") != arphrdEther {
+		return false
+	}
+	for _, f := range []string{"wireless", "phy80211"} {
+		if _, err := os.Lstat(filepath.Join(dir, f)); err == nil {
+			return false
+		}
+	}
+	uevent := strings.Split(sysLine(dir, "uevent"), "\n")
+	return !slices.Contains(uevent, "DEVTYPE=wlan") && !slices.Contains(uevent, "DEVTYPE=wwan")
 }
 
 // sysLine reads one sysfs attribute of dir, trimmed; "" when unreadable.

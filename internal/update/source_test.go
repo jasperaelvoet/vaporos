@@ -293,13 +293,18 @@ func TestResumeGivesUp(t *testing.T) {
 
 	_, err := io.ReadAll(&resumeReader{ctx: context.Background(), f: f, name: "gone", size: 10})
 	var he *httpError
-	if !errors.As(err, &he) || he.status != 404 || calls.Load() != 1 {
+	if !errors.As(err, &he) || he.status != 404 || calls.Load() != 1 || errors.Is(err, ErrRetriesExhausted) {
 		t.Fatalf("404: err %v after %d calls", err, calls.Load())
 	}
 	calls.Store(0)
 	_, err = io.ReadAll(&resumeReader{ctx: context.Background(), f: f, name: "busy", size: 10})
 	if err == nil || int(calls.Load()) != maxAttempts {
 		t.Fatalf("503: err %v after %d calls", err, calls.Load())
+	}
+	// Other packages tell a source that gave up from one that answered.
+	want := "busy: giving up after " + strconv.Itoa(maxAttempts) + " attempts: "
+	if !errors.Is(err, ErrRetriesExhausted) || !errors.As(err, &he) || he.status != 503 || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("503: %v", err)
 	}
 }
 

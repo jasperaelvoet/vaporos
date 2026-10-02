@@ -327,6 +327,7 @@ for f in raw sha256 build.json packages.txt local.tar; do
     mv "$ca/aside" "$c.$f"
 done
 expect fail "ext cache: no list of the database's packages fails" ext_cache_check "$c" "$ca/nonexistent"
+has "ext cache: ... and says so" "there is no list of the packages its database has"
 echo other >"$c.raw"
 expect fail "ext cache: an image its sha256 does not name fails" ext_cache_check "$c" "$ca/have"
 has "ext cache: ... and says so" "not the one its sha256 names"
@@ -346,6 +347,14 @@ expect pass "ext cache: ... and the complete entry again" ext_cache_check "$c" "
 : >"$c.packages.txt"
 tar -C "$ca/db" -cf "$c.local.tar" -T /dev/null
 expect pass "ext cache: an image without packages" ext_cache_check "$c" "$ca/have"
+# With no packages there are no entries to compare, and tar lists nothing
+# from an archive it cannot read: only its exit status tells, so
+# ext_cache_check sets pipefail for it whatever its caller has.
+without_pipefail() { (set +o pipefail; "$@"); }
+echo garbage >"$c.local.tar"
+expect fail "ext cache: an archive tar cannot read, of an image without packages, fails" \
+    without_pipefail ext_cache_check "$c" "$ca/have"
+has "ext cache: ... and says so" "not those of its packages"
 
 # status NAME WANT CMD...: CMD exits with WANT; its output is in $tmp/out.
 status() {

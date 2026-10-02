@@ -40,6 +40,11 @@ const ChunkSize = 4 << 20
 // ErrChecksum means a file's content does not match the signed manifest.
 var ErrChecksum = errors.New("checksum mismatch")
 
+// ErrRetriesExhausted means a download of a remote source kept failing in
+// a way worth retrying (network errors, stalls, server errors) until it
+// gave up; the last failure is wrapped too.
+var ErrRetriesExhausted = errors.New("giving up")
+
 // Retry policy for downloads. Variables so tests can shrink them.
 var (
 	maxAttempts  = 10               // consecutive failures without progress
@@ -401,7 +406,7 @@ func (r *resumeReader) retry(err error) error {
 	}
 	r.fails++
 	if r.fails >= maxAttempts {
-		return fmt.Errorf("%s: giving up after %d attempts: %w", r.name, r.fails, err)
+		return fmt.Errorf("%s: %w after %d attempts: %w", r.name, ErrRetriesExhausted, r.fails, err)
 	}
 	t := time.NewTimer(backoff(r.fails))
 	defer t.Stop()
