@@ -17,6 +17,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/power"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
@@ -80,6 +81,7 @@ func Main(args []string) int {
 		up := update.NewService(cfg)
 		sun := sunshine.NewService(cfg)
 		sto := storage.NewService(cfg)
+		ext := extensions.NewService(cfg)
 		// The display's session only counts while Sunshine agrees a client is
 		// (or may soon be) connected: a stream abandoned without quitting,
 		// whose app Sunshine could not close, must not keep the PC awake.
@@ -89,7 +91,7 @@ func Main(args []string) int {
 			}
 			return disp.Streaming()
 		}
-		pow := power.NewService(cfg, streaming, sun.Busy, up.Busy)
+		pow := power.NewService(cfg, streaming, sun.Busy, up.Busy, ext.Busy)
 		// Someone using the web UI keeps the machine from idling off.
 		srv.OnActivity(pow.Touch)
 		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow} {
@@ -103,6 +105,7 @@ func Main(args []string) int {
 			runner{"update", up.Run},
 			runner{"sunshine", sun.Run},
 			runner{"storage", sto.Run},
+			runner{"extensions", ext.Run},
 			runner{"power", pow.Run},
 			runner{"system", sys.Run})
 		// The session socket (vos session begin|end) is served by disp.Run.

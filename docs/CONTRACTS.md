@@ -40,8 +40,8 @@ multi-call:
 | `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr, exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
 | `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
-| `vos ext fetch [--from SRC] [--version V] [ids...]` | fetch and seal extension images into the store (dev and tests; vosd does the same) |
-| `vos ext launch [--app N\|--shortcut ID/KEY] -- CMD...` | Steam launch dispatcher (see Extensions); runs CMD unchanged when no mounted extension hooks it |
+| `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then writes `slots/a.json` from the manifest (under the update lock) and, under the store lock, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `enabled` set, without a trial, of the target ids whose image sealed and whose requirements did; `--repair` also removes `slots/b.json`, `pending` and `failed`. Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the missing images, never going down); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
+| `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher (see Extensions). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. Until the dispatcher hooks anything it execs CMD (looked up in `PATH` unless absolute; `argv[0]` as given) with ARGS and the environment unchanged; `--shortcut` refuses instead (exit 1, reason on stderr) unless `/run/vos/extensions.json`, which it reads as `vapor`, lists ID as mounted; `--app` always runs CMD. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions |
 | `vos version` | prints the version |
 
@@ -68,7 +68,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool}` from the last good boot |
 | `/usr/lib/vos/extensions.list` | build | the image's extension catalog (see Extensions) |
 | `/usr/share/vos/extensions/<id>.json` | build | each extension's descriptor, with what the build verified |
-| `/var/lib/vos/ext/` | vosd, initramfs, `vos health` | the extension store, sets and trial state (see Extensions) |
+| `/var/lib/vos/ext/` | vosd, initramfs, `vos health`, `vos ext fetch` | the extension store, sets and trial state (see Extensions) |
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
@@ -189,6 +189,7 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
   1. `GET https://ghcr.io/token?scope=repository:jasperaelvoet/vaporos:pull&service=ghcr.io`
   2. manifest with `Accept: application/vnd.oci.image.manifest.v1+json`
   3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`. Follow the 307 redirect; resume with `Range`.
+  4. an extension image by its title `ext-<id>.raw` too, or with no tag at all as the blob `/v2/<repo>/blobs/sha256:<sha256>`, which works while any tag still holds it (token, redirect and resume as above).
 - `http(s)://host/dir/` or a local dir: the same five files by name.
 
 **Acceptance:**
@@ -335,7 +336,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `proven` | `<id> <fsverity>` lines: images that passed a boot, pruned by GC |
 | `failed` | `<fingerprint>` lines: sets whose trial failed. The fingerprint is the hex sha256 of the set's sorted, unique `<id> <fsverity>` lines (digests from the booted catalog) followed by its sorted, unique option lines, each ending in `\n` |
 | `skip-once` | present: the next boot mounts no extension, then the initramfs removes it |
-| `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest |
+| `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest (a stage, `vos ext fetch --seed`), or, for the booted slot, from the booted catalog (vosd) |
 | `settings/<id>.json` | the extension's settings (never in config.json) |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
@@ -437,12 +438,39 @@ boot that mounted nothing on purpose (mode `off`, or no report) counts as
 After a removal (1, 2, 3 or 5) reconcile runs again. A restart is needed (to
 try `pending`) only while `pending` has tries left, this boot is neither its
 trial nor one with reason `cmdline` or `skip-once`, and every image it names
-is sealed. Missing images are fetched for the booted version (from
-`config.update.source` at that version, by name, and from an OCI registry also
-by digest) and, best effort, for the other slot's. Once per boot, at idle I/O
-priority, vosd reads every mounted image through; an I/O error or a wrong
-digest deletes it and fetches it again (once per digest per boot). The desired
-set keeps it meanwhile, so the next boot mounts the new copy.
+is sealed.
+
+**vosd** (installed systems only; `internal/extensions`). At start it removes
+the temp files of downloads that stopped (`images/.tmp-*` untouched for an
+hour) and writes `slots/<booted>.json` from the booted catalog (each `name`
+`ext-<id>.raw`), under the update lock, unless the file already lists the same
+images for the booted version. It reconciles at start, whenever a change asks
+for it (wanted, a setting, the store), and, while an image it could fetch is
+still missing or a reconcile failed, again after 1 minute, doubling up to
+every 30 minutes. One reconcile:
+1. under the lock, applies what the plan says to fail or clear;
+2. without the lock, fetches and seals the plan's missing images for the
+   booted version;
+3. under the lock, plans again and acts in full (fail, clear, propose, keep or
+   blocked, as above), planning again after each write;
+4. fetches, best effort, the images `wanted` ∪ core need in the other slot
+   file's version, when it names another;
+5. runs GC, unless a slot file cannot be read.
+
+Images come from `config.update.source` at the version: a registry at the tag
+`<version>` (any tag in the source is replaced), by layer title, and when that
+download fails, as the blob by digest, which still works once the tag is gone;
+an HTTP or directory source by name. A source that served other bytes for an
+image is not asked for it again until a reconcile is asked for, and on a disk
+that cannot seal (boot reason `no-verity`, or a seal refused as unsupported)
+nothing is fetched until the next boot. Once per boot, after the first
+reconcile, vosd reads every mounted image through at idle I/O priority
+(`ioprio_set`, class idle). A read that fails with `EIO` (fs-verity checks
+every block) or bytes whose size or sha256 are not the booted catalog's delete
+the image, at most once per digest per boot, and the next reconcile fetches it
+again: the desired set keeps it meanwhile, so the next boot mounts the new
+copy. A missing file is not damage. While vosd downloads, seals or re-reads an
+image, idle shutdown counts it as busy (`adding an extension`).
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
