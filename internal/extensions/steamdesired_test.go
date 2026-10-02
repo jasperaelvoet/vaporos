@@ -268,6 +268,25 @@ func TestSyncSteam(t *testing.T) {
 	}
 }
 
+// The control center's changes reach steam.json at once: TruckersMP,
+// removed, leaves Steam though it stays mounted until the restart.
+func TestRemoveSyncsSteam(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	s.cc.systemctl = func(context.Context, bool, ...string) error { return nil }
+	var restarts []string
+	s.SetSteamRestarter(func(reason string) { restarts = append(restarts, reason) })
+	if _, err := s.SyncSteam(); err != nil {
+		t.Fatal(err)
+	}
+	must(t, s.Remove(t.Context(), "truckersmp", false))
+	d, err := readSteamDesired()
+	must(t, err)
+	if len(d.Apps) != 0 || !reflect.DeepEqual(d.Release, []SteamRelease{{227300}, {270880}}) || len(restarts) != 2 {
+		t.Errorf("after removing TruckersMP: %+v, restarts %q", d, restarts)
+	}
+}
+
 // Run writes steam.json before its first pass (vosd's first gamescope
 // start waits for it), and publishes what `vos ext launch` left.
 func TestRunWritesSteamJSON(t *testing.T) {

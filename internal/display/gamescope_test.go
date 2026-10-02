@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 )
 
@@ -150,9 +151,9 @@ func TestSocketDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	save, saveX := UserRuntimeDir, X11SocketDir
-	defer func() { UserRuntimeDir, X11SocketDir = save, saveX }()
-	UserRuntimeDir, X11SocketDir = dir, dir
+	save, saveX := config.GamerRuntimeDir, X11SocketDir
+	defer func() { config.GamerRuntimeDir, X11SocketDir = save, saveX }()
+	config.GamerRuntimeDir, X11SocketDir = dir, dir
 	if got := waylandDisplay(); got != "gamescope-0" {
 		t.Errorf("default = %q", got)
 	}

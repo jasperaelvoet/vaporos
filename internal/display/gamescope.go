@@ -21,8 +21,6 @@ import (
 
 // Paths used to talk to the gaming user's gamescope (variables for tests).
 var (
-	// UserRuntimeDir is %t of the gaming user's systemd manager.
-	UserRuntimeDir = "/run/user/" + strconv.Itoa(config.GamerUID)
 	// PNPIDsPath is the hwdata database gamescope resolves EDID vendor ids with.
 	PNPIDsPath = "/usr/share/hwdata/pnp.ids"
 	// X11SocketDir holds Xwayland's sockets (xprop finds DISPLAY there).
@@ -71,7 +69,7 @@ func parseXpropCardinal(out, name string) (int64, bool) {
 // gamerfs (never following a planted symlink, never blocking on a FIFO),
 // relative to these roots, and reads are bounded.
 const (
-	// gamescopeEnvRel is gamescope.env, relative to UserRuntimeDir.
+	// gamescopeEnvRel is gamescope.env, relative to config.GamerRuntimeDir.
 	gamescopeEnvRel = "vos/gamescope.env"
 	// modesCfgRel is modes.cfg, relative to config.GamerHome.
 	modesCfgRel = ".config/gamescope/modes.cfg"
@@ -84,7 +82,7 @@ const (
 )
 
 // GamescopeEnvPath is read by vos-gamescope.service (EnvironmentFile=).
-func GamescopeEnvPath() string { return filepath.Join(UserRuntimeDir, gamescopeEnvRel) }
+func GamescopeEnvPath() string { return filepath.Join(config.GamerRuntimeDir, gamescopeEnvRel) }
 
 // ModesCfgPath is gamescope's GAMESCOPE_MODE_SAVE_FILE.
 func ModesCfgPath() string { return filepath.Join(config.GamerHome, modesCfgRel) }
@@ -277,7 +275,7 @@ func gamescopeKeyForEDID(b []byte) (string, error) {
 // gaming user's runtime dir; gamescopectl needs it in
 // GAMESCOPE_WAYLAND_DISPLAY.
 func waylandDisplay() string {
-	return lowestSocket(UserRuntimeDir, "gamescope-", "gamescope-0")
+	return lowestSocket(config.GamerRuntimeDir, "gamescope-", "gamescope-0")
 }
 
 // xDisplay finds the first Xwayland display gamescope serves (":0").

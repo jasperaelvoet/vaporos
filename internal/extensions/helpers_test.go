@@ -42,7 +42,7 @@ func newEnv(t *testing.T) *env {
 	dir := t.TempDir()
 	vars := []*string{&config.StateDir, &config.RunDir, &config.ExtCatalogPath, &config.ImageInfoPath,
 		&config.ProcCmdline, &config.KeysDir, &config.ExtDescriptorsDir, &config.GamerHome,
-		&config.CompatToolsDir, &config.ExtMountedLibDir, &gamerRuntimeDir}
+		&config.CompatToolsDir, &config.ExtMountedLibDir, &config.GamerRuntimeDir}
 	saved := make([]string, len(vars))
 	for i, v := range vars {
 		saved[i] = *v
@@ -64,11 +64,11 @@ func newEnv(t *testing.T) *env {
 	config.GamerHome = filepath.Join(dir, "home", "vapor")
 	config.CompatToolsDir = filepath.Join(dir, "usr", "share", "steam", "compatibilitytools.d")
 	config.ExtMountedLibDir = filepath.Join(dir, "usr", "lib", "vos", "ext")
-	gamerRuntimeDir = filepath.Join(dir, "run", "user", "1000")
-	t.Setenv("XDG_RUNTIME_DIR", gamerRuntimeDir)
+	config.GamerRuntimeDir = filepath.Join(dir, "run", "user", "1000")
+	t.Setenv("XDG_RUNTIME_DIR", config.GamerRuntimeDir)
 	slotEntry = func(string) (*boot.Entry, error) { return nil, nil } // slot b was never written
 	e := &env{t: t, src: filepath.Join(dir, "src"), sealer: fakeStore(t)}
-	for _, d := range []string{config.StateDir, config.RunDir, e.src, config.KeysDir, config.GamerHome, gamerRuntimeDir} {
+	for _, d := range []string{config.StateDir, config.RunDir, e.src, config.KeysDir, config.GamerHome, config.GamerRuntimeDir} {
 		must(t, os.MkdirAll(d, 0o755))
 	}
 	writeFile(t, config.ImageInfoPath, fmt.Sprintf(`{"version":%q,"channel":"main"}`, bootedVersion))

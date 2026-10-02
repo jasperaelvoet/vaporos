@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
-	"github.com/jasperaelvoet/vaporos/internal/steamlock"
 )
 
 // isolate points every config path this package touches into temp dirs
@@ -21,17 +20,17 @@ import (
 func isolate(t *testing.T) {
 	t.Helper()
 	oldState, oldImage, oldCmdline, oldRun, oldHome := config.StateDir, config.ImageInfoPath, config.ProcCmdline, config.RunDir, config.GamerHome
-	oldLock := steamlock.RuntimeDir
+	oldRuntime := config.GamerRuntimeDir
 	t.Cleanup(func() {
 		config.StateDir, config.ImageInfoPath, config.ProcCmdline, config.RunDir, config.GamerHome = oldState, oldImage, oldCmdline, oldRun, oldHome
-		steamlock.RuntimeDir = oldLock
+		config.GamerRuntimeDir = oldRuntime
 	})
 	config.StateDir = t.TempDir()
 	config.ImageInfoPath = filepath.Join(t.TempDir(), "image.json")
 	config.ProcCmdline = filepath.Join(t.TempDir(), "cmdline")
 	config.RunDir = t.TempDir()
 	config.GamerHome = t.TempDir()
-	steamlock.RuntimeDir = t.TempDir()
+	config.GamerRuntimeDir = t.TempDir()
 }
 
 func TestEscapePath(t *testing.T) {

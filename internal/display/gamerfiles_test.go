@@ -126,8 +126,8 @@ func TestGamescopeEnvSymlinks(t *testing.T) {
 		t.Errorf("env = %+v", e)
 	}
 	// A symlinked vos directory is refused.
-	os.RemoveAll(filepath.Join(UserRuntimeDir, "vos"))
-	if err := os.Symlink(outside, filepath.Join(UserRuntimeDir, "vos")); err != nil {
+	os.RemoveAll(filepath.Join(config.GamerRuntimeDir, "vos"))
+	if err := os.Symlink(outside, filepath.Join(config.GamerRuntimeDir, "vos")); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.writeGamescopeEnv("DP-1", false); err == nil {

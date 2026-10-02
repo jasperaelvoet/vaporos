@@ -46,7 +46,7 @@ func newBox(t *testing.T) *box {
 	b := &box{t: t, dir: dir, home: filepath.Join(dir, "home", "vapor")}
 	b.root = filepath.Join(b.home, ".local", "share", "Steam")
 
-	saved := []*string{&config.StateDir, &config.RunDir, &config.CompatToolsDir, &config.ExtMountedLibDir}
+	saved := []*string{&config.StateDir, &config.RunDir, &config.CompatToolsDir, &config.ExtMountedLibDir, &config.GamerRuntimeDir}
 	old := make([]string, len(saved))
 	for i, p := range saved {
 		old[i] = *p
@@ -63,6 +63,7 @@ func newBox(t *testing.T) *box {
 	config.RunDir = filepath.Join(dir, "run", "vos")
 	config.CompatToolsDir = filepath.Join(dir, "usr", "share", "steam", "compatibilitytools.d")
 	config.ExtMountedLibDir = filepath.Join(dir, "usr", "lib", "vos", "ext")
+	config.GamerRuntimeDir = filepath.Join(dir, "run", "user", "1000")
 	for _, d := range []string{"run/user/1000", "proc", "home/vapor/.steam"} {
 		b.mkdir(filepath.Join(dir, d))
 	}
@@ -187,7 +188,6 @@ func (b *box) run(unwrap bool) {
 func (b *box) runWith(o Options) {
 	b.t.Helper()
 	o.Home = b.home
-	o.RuntimeDir = filepath.Join(b.dir, "run", "user", "1000")
 	o.ProcDir = filepath.Join(b.dir, "proc")
 	o.Log = log.New(&b.logs, "", 0)
 	Run(context.Background(), o)

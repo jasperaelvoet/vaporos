@@ -15,6 +15,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
+	"github.com/jasperaelvoet/vaporos/internal/steamlock"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -47,7 +48,7 @@ func prepare(ctx context.Context, o Options) {
 		o.Log.Printf("prepare: %v; Steam's files are left alone", err)
 		return
 	}
-	unlock, err := lock(ctx, o.RuntimeDir)
+	unlock, err := steamlock.Lock(ctx)
 	if err != nil {
 		o.Log.Printf("prepare: the Steam lock: %v; Steam's files are left alone", err)
 		return

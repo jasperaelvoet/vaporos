@@ -204,7 +204,7 @@ func TestRegistrationWaitsForTheSteamLock(t *testing.T) {
 	if got := listedIn(t, list); got[len(got)-1] != mp {
 		t.Errorf("not added once the lock was free: %q", got)
 	}
-	fi, err := os.Lstat(filepath.Join(steamlock.RuntimeDir, steamlock.Name))
+	fi, err := os.Lstat(filepath.Join(config.GamerRuntimeDir, steamlock.Name))
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Errorf("lock file: %v %v", fi, err)
 	}

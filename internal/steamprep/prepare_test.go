@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/steamlock"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -227,7 +228,7 @@ func TestLeavesSteamAlone(t *testing.T) {
 			b.write(filepath.Join(proc, "comm"), []byte("steamwebhelper\n"))
 		},
 		"lock held": func(b *box) {
-			unlock, err := lock(context.Background(), filepath.Join(b.dir, "run", "user", "1000"))
+			unlock, err := steamlock.Lock(context.Background())
 			b.check(err)
 			b.t.Cleanup(unlock)
 		},

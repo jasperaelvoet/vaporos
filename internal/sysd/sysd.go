@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -101,9 +100,8 @@ func Poweroff(ctx context.Context) error { return Systemctl(ctx, "poweroff") }
 // gamescope, say) with our output pipe. `runuser -u` keeps the command in
 // runuser's process group (no setsid), so the group kill reaches it.
 func AsGamer(ctx context.Context, name string, args ...string) (string, error) {
-	uid := strconv.Itoa(config.GamerUID)
 	full := append([]string{"-u", config.GamerUser, "--", "env",
-		"XDG_RUNTIME_DIR=/run/user/" + uid, "HOME=" + config.GamerHome, name}, args...)
+		"XDG_RUNTIME_DIR=" + config.GamerRuntimeDir, "HOME=" + config.GamerHome, name}, args...)
 	return run(groupCommand(ctx, "runuser", full...))
 }
 

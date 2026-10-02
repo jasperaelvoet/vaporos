@@ -690,14 +690,14 @@ func (m *Manager) writeGamescopeEnv(output string, hdr bool) error {
 	}
 	// logind mounts the runtime dir when the user manager starts; creating
 	// it ourselves would leave our file hidden under that mount.
-	if _, err := os.Lstat(UserRuntimeDir); err != nil {
-		return fmt.Errorf("gamescope env: %s not there yet (user manager not running?)", UserRuntimeDir)
+	if _, err := os.Lstat(config.GamerRuntimeDir); err != nil {
+		return fmt.Errorf("gamescope env: %s not there yet (user manager not running?)", config.GamerRuntimeDir)
 	}
 	data := gamescopeEnv{Output: output, HDR: hdr}.render()
-	if old, err := gamerfs.ReadFile(UserRuntimeDir, gamescopeEnvRel, maxGamescopeEnv); err == nil && bytes.Equal(old, data) {
+	if old, err := gamerfs.ReadFile(config.GamerRuntimeDir, gamescopeEnvRel, maxGamescopeEnv); err == nil && bytes.Equal(old, data) {
 		return nil
 	}
-	if err := m.writeGamerFile(UserRuntimeDir, gamescopeEnvRel, data); err != nil {
+	if err := m.writeGamerFile(config.GamerRuntimeDir, gamescopeEnvRel, data); err != nil {
 		return fmt.Errorf("gamescope env: %w", err)
 	}
 	return nil
@@ -706,7 +706,7 @@ func (m *Manager) writeGamescopeEnv(output string, hdr bool) error {
 // readGamescopeEnv reads back gamescope.env (the zero value when there is
 // none, or it is not a small regular file).
 func readGamescopeEnv() gamescopeEnv {
-	b, err := gamerfs.ReadFile(UserRuntimeDir, gamescopeEnvRel, maxGamescopeEnv)
+	b, err := gamerfs.ReadFile(config.GamerRuntimeDir, gamescopeEnvRel, maxGamescopeEnv)
 	if err != nil {
 		return gamescopeEnv{}
 	}

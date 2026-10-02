@@ -13,7 +13,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -22,12 +21,11 @@ const Budget = 5 * time.Second
 
 // Options are one run's inputs; tests point them into a temp dir.
 type Options struct {
-	Home       string // the gaming user's home
-	RuntimeDir string // where the Steam lock is
-	ProcDir    string // to see whether Steam runs
-	Unwrap     bool
-	Budget     time.Duration
-	Log        *log.Logger
+	Home    string // the gaming user's home
+	ProcDir string // to see whether Steam runs
+	Unwrap  bool
+	Budget  time.Duration
+	Log     *log.Logger
 }
 
 // Variables for tests.
@@ -65,10 +63,6 @@ func cli(args []string, stderr io.Writer) int {
 	if o.Home, err = os.UserHomeDir(); err != nil {
 		logger.Printf("prepare: %v", err)
 		return 0
-	}
-	o.RuntimeDir = os.Getenv("XDG_RUNTIME_DIR")
-	if o.RuntimeDir == "" {
-		o.RuntimeDir = "/run/user/" + strconv.Itoa(getuid())
 	}
 	Run(context.Background(), o)
 	return 0

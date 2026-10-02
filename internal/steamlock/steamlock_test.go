@@ -9,14 +9,16 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
 func useDir(t *testing.T) string {
 	t.Helper()
-	old := RuntimeDir
-	t.Cleanup(func() { RuntimeDir = old })
-	RuntimeDir = t.TempDir()
-	return RuntimeDir
+	old := config.GamerRuntimeDir
+	t.Cleanup(func() { config.GamerRuntimeDir = old })
+	config.GamerRuntimeDir = t.TempDir()
+	return config.GamerRuntimeDir
 }
 
 func TestLockExcludesAndReleases(t *testing.T) {
@@ -73,9 +75,9 @@ func TestLockRefusesAPlantedSymlink(t *testing.T) {
 }
 
 func TestLockWithoutRuntimeDir(t *testing.T) {
-	old := RuntimeDir
-	t.Cleanup(func() { RuntimeDir = old })
-	RuntimeDir = filepath.Join(t.TempDir(), "missing")
+	old := config.GamerRuntimeDir
+	t.Cleanup(func() { config.GamerRuntimeDir = old })
+	config.GamerRuntimeDir = filepath.Join(t.TempDir(), "missing")
 	if _, err := Lock(context.Background()); err == nil {
 		t.Fatal("locked without a runtime directory")
 	}

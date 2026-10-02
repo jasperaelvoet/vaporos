@@ -36,6 +36,7 @@ var (
 	GamerUser        = "vapor"
 	GamerUID         = 1000
 	GamerHome        = "/var/home/vapor"
+	GamerRuntimeDir  = "/run/user/1000" // the gaming user's XDG_RUNTIME_DIR (%t of its systemd manager)
 	DefaultUpdateSrc = "oci://ghcr.io/jasperaelvoet/vaporos"
 	HTTPPort         = 80
 	// BootCountVar exists while systemd-boot counts this boot: its entry

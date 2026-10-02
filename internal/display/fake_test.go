@@ -471,11 +471,11 @@ func setupPaths(t *testing.T) *testEnv {
 	save := struct {
 		state, run, home, img, host, proc, imgInfo, rt, pnp, x11 string
 	}{config.StateDir, config.RunDir, config.GamerHome, config.ImageEDIDPath, config.HostnamePath,
-		config.ProcCmdline, config.ImageInfoPath, UserRuntimeDir, PNPIDsPath, X11SocketDir}
+		config.ProcCmdline, config.ImageInfoPath, config.GamerRuntimeDir, PNPIDsPath, X11SocketDir}
 	t.Cleanup(func() {
 		config.StateDir, config.RunDir, config.GamerHome = save.state, save.run, save.home
 		config.ImageEDIDPath, config.HostnamePath, config.ProcCmdline = save.img, save.host, save.proc
-		config.ImageInfoPath, UserRuntimeDir, PNPIDsPath, X11SocketDir = save.imgInfo, save.rt, save.pnp, save.x11
+		config.ImageInfoPath, config.GamerRuntimeDir, PNPIDsPath, X11SocketDir = save.imgInfo, save.rt, save.pnp, save.x11
 		resetPNPCache()
 	})
 	config.StateDir = filepath.Join(dir, "var/lib/vos")
@@ -485,7 +485,7 @@ func setupPaths(t *testing.T) *testEnv {
 	config.HostnamePath = filepath.Join(dir, "etc/hostname")
 	config.ProcCmdline = filepath.Join(dir, "proc/cmdline")
 	config.ImageInfoPath = filepath.Join(dir, "usr/lib/vos/image.json")
-	UserRuntimeDir = filepath.Join(dir, "run/user/1000")
+	config.GamerRuntimeDir = filepath.Join(dir, "run/user/1000")
 	PNPIDsPath = filepath.Join(dir, "pnp.ids")
 	X11SocketDir = filepath.Join(dir, "tmp/.X11-unix")
 	resetPNPCache()
@@ -495,7 +495,7 @@ func setupPaths(t *testing.T) *testEnv {
 	// Lines from hwdata's pnp.ids: VPR is taken (Best Buy), VOS is not listed.
 	mustWrite(t, PNPIDsPath, "DEL\tDell Inc.\nVPR\tBest Buy\n")
 	// Both exist on a real system (tmpfiles, logind); vosd never makes them.
-	for _, d := range []string{UserRuntimeDir, config.GamerHome} {
+	for _, d := range []string{config.GamerRuntimeDir, config.GamerHome} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}

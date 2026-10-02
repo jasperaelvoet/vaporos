@@ -73,6 +73,10 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/usr/share/vos/extensions/<id>.json` | build | each extension's descriptor, with what the build verified |
 | `/var/lib/vos/ext/` | vosd, initramfs, `vos health`, `vos ext fetch` | the extension store, sets and trial state (see Extensions) |
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
+| `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
+| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only (see Extensions, Steam) |
+| `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
+| `/run/user/1000/vos/ext-messages/` | `vos ext launch` | the dispatcher's refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
 | `/run/vos/ext-trial-ok` | `vos health` | the number of the set whose extension trial passed health this boot (one line, written atomically), so vosd can promote it when health could not (see Health) |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
 | `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
@@ -461,6 +465,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest (`vos update` writes the idle slot's at Write order 1, the installer `a.json` through `vos ext fetch --seed`), or, for the booted slot, from the booted catalog (vosd) |
 | `settings/<id>.json` | the extension's settings (never in config.json): one JSON object of its descriptor's setting keys, written whole (temp + rename) when it is added and on each change. A key missing, or with a value its setting does not take, reads as the default: the descriptor's `default` when the setting takes it, else `false`, the first choice, or `""` (no disk). Purging the extension deletes it |
 | `settings/<id>.installed` | present: the extension's helper finished its `Install` and no `Remove` came after (see Control center) |
+| `steam.json` | what the mounted extensions want in Steam, written by vosd for `vos steam prepare` (see Steam) |
 | `autorestart.json` | `{"restarts":[{"at","set","fingerprint","version"}]}`: the auto-restarts vosd made (RFC 3339 UTC; the pending set's number and fingerprint; the VaporOS version it restarted from), the last 32, written atomically. A file that cannot be read counts as empty |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
@@ -663,43 +668,6 @@ the new copy. A missing file is not damage. Idle shutdown counts as busy
 (`adding an extension`) a download from its first bytes until it and its seal
 end, unless no bytes came for 2 minutes, and the re-read.
 
-**vosd and Steam** (installed systems only; the files' formats are in Steam):
-vosd writes `/var/lib/vos/ext/steam.json` (root's, 0644, atomically, only when
-its bytes change) at start before its first reconcile, after every reconcile,
-and when the control center adds or removes an extension or changes its
-settings. `set` is the boot report's. The entries are those of the extensions
-this boot mounted that `wanted` ∪ core (with their requirements, in the
-booted catalog) still wants, so one removed until the restart drops out at
-once: each from its shipped descriptor and its helper's Steam parts
-(settings from `settings/<id>.json` over the descriptor's defaults). A
-compatibility tool is named only while
-`/usr/share/steam/compatibilitytools.d/<tool>/compatibilitytool.vdf` exists
-(`default_compat_tool` from the first mounted core extension with one, an
-app's `compat_tool` from `steam.compat_tool` for each app of
-`steam.force_compat_tool`); an app's `hooks` are the extensions with a
-`steam.hooks` entry for it, in catalog order; its `beta` is a helper's
-(`null` when none asks); a shortcut is listed once its helper gives its
-target, a clean absolute `exe` and `start_dir`, with `art` the image's
-`/usr/lib/vos/ext/<id>/<art>` when that directory exists. `release` lists
-the apps the shipped descriptors of the catalog's extensions no longer
-wanted force, unless a listed extension forces them (empty while `wanted`
-cannot be read). `dispatcher` is true when the booted catalog's `dispatcher`
-is 1 or more and the other slot cannot boot an image without `vos ext
-launch`: it has no boot entry, or its slot file is for its entry's version
-and lists extensions (images built before extensions list none, and every
-image built with them has the dispatcher); an ESP that cannot be read makes
-it false. When the file changes vosd asks for a Steam restart (see Units,
-Display policy). So it does, checked every 15 s, when Steam's
-`~/.local/share/Steam/config/loginusers.vdf` lists an account (SteamID64 &
-0xffffffff) that prepare's record lacks, once per such set of accounts (and
-never without a record). Every 3 s it publishes the messages `vos ext
-launch` left in `/run/user/1000/vos/ext-messages/` (names of 1 to 20 digits
-and `.json`, read through gamerfs, at most 4 KiB each) as `system.message`
-with level `warning`, the text on one line and at most 300 characters (of
-more than 5 at once only the newest 5), and deletes them. vosd edits Steam's
-library lists only holding the Steam lock (`/run/user/1000/vos-steam.lock`,
-flock; made empty, `vapor`'s and 0600 when missing), waiting at most 2 s.
-
 **Install** (the `configure` step, after slot a is written and the target is
 mounted): the installer runs the new image's own
 `<target>/usr/bin/vos ext fetch --state-dir <target>/var/lib/vos --from SRC --version <ver> --seed`
@@ -721,14 +689,18 @@ and keeps `wanted`: a repair that cannot run the command (offline) boots
 without extensions rather than with the old set, and vosd proposes the wanted
 ones through a trial once it can.
 
-**Steam** (`internal/steamprep`). Extensions change Steam's own files only
-through `vos steam prepare`, which runs as `vapor` before every start of
-Steam, while it is down. vosd says what is wanted and reads what was done;
-it never edits those files for an extension.
+**Steam** (installed systems only; `vos steam prepare` is
+`internal/steamprep`, vosd's side `internal/extensions`; the files' formats
+are Steam's). Extensions change Steam's own files only through
+`vos steam prepare`, which runs as `vapor` before every start of Steam,
+while it is down. vosd says what is wanted and reads what was done; it
+never edits those files for an extension.
 
-*Desired state,* `/var/lib/vos/ext/steam.json` (root's, 0644), written
-atomically by vosd whenever the mounted set or a helper's `SteamParts`
-change:
+*Desired state,* `/var/lib/vos/ext/steam.json` (root's, 0644), written by
+vosd atomically and only when its bytes change: at start before its first
+reconcile, after every reconcile, and when the control center adds or
+removes an extension or changes its settings. When the file changes vosd
+asks for a Steam restart (see Units, Display policy).
 ```json
 {"set":"<n>","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
  "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":"temporary_1_61"}],
@@ -738,12 +710,16 @@ change:
 - `set`: the boot report's `set` (`""` when it has none). prepare applies
   the file only while it names this boot's set, and otherwise changes
   nothing (vosd writes it anew and restarts Steam).
-- Only extensions this boot mounted contribute. A tool
+- Only extensions this boot mounted contribute, and of those only the ones
+  `wanted` ∪ core (with their requirements, in the booted catalog) still
+  wants, so one removed until the restart drops out at once: each from its
+  shipped descriptor and its helper's `SteamParts` (settings from
+  `settings/<id>.json` over the descriptor's defaults). A tool
   (`default_compat_tool`, `compat_tool`) is named only when
   `/usr/share/steam/compatibilitytools.d/<tool>/compatibilitytool.vdf`
   exists, and is `""` otherwise.
-- `default_compat_tool`: the mounted core extension's
-  `steam.default_compat_tool`.
+- `default_compat_tool`: the `steam.default_compat_tool` of the first
+  mounted core extension that has one.
 - `apps`: one entry per app id. `compat_tool` is `steam.compat_tool` of the
   extension whose `steam.force_compat_tool` lists the app; `hooks` are the
   extensions whose `steam.hooks` name it, in catalog order; `beta` is the
@@ -754,15 +730,20 @@ change:
   absolute paths; one without a target yet is left out), with `compat_tool`
   the extension's `steam.compat_tool` when the shortcut sets `compat_tool`,
   and `art` its `art` directory in the mounted image
-  (`/usr/lib/vos/ext/<owner>/<art>`) or `""`.
-- `release`: apps a removed extension used to force. prepare hands their
-  mapping to the user: it stays, and VaporOS no longer owns it.
+  (`/usr/lib/vos/ext/<owner>/<art>`) when that directory exists, else `""`.
+- `release`: apps a removed extension used to force: those the shipped
+  descriptors of the catalog's extensions no longer wanted force, unless a
+  listed extension forces them (empty while `wanted` cannot be read).
+  prepare hands their mapping to the user: it stays, and VaporOS no longer
+  owns it.
 - `dispatcher`: true only when every VaporOS the box can boot has
   `vos ext launch`: the booted catalog has `dispatcher` 1 or more, and the
-  other slot either has no boot entry or has `slots/<other>.json` (only
-  updaters that know extensions write slot files, and every image they
-  install has the dispatcher). While it is false no launch options are
-  wrapped, and those that were are unwrapped.
+  other slot has no boot entry, or its `slots/<other>.json` is for its
+  entry's version and lists extensions (only updaters that know extensions
+  write slot files, images built before extensions list none, and every
+  image built with them has the dispatcher); an ESP that cannot be read
+  makes it false. While it is false no launch options are wrapped, and
+  those that were are unwrapped.
 - prepare ignores, with a log line, entries that are not well formed: ids
   and keys `^[a-z][a-z0-9-]{0,31}$`, tools and branches
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, app ids above 0 and listed once,
@@ -792,8 +773,11 @@ trusts it for display only:
   extension needs attention.
 - `shortcuts.<accountid>.<owner>/<key>.deleted`: the user removed a
   shortcut VaporOS added. It is not added again, and the card says so.
-- `accounts`: the accounts in loginusers.vdf at the last run. vosd restarts
-  Steam when loginusers.vdf lists one that is missing here.
+- `accounts`: the accounts in loginusers.vdf at the last run. vosd checks
+  every 15 s and asks for a Steam restart when
+  `~/.local/share/Steam/config/loginusers.vdf` lists an account (SteamID64 &
+  0xffffffff) that is missing here, once per such set of accounts (never
+  without a record).
 - `error`: what failed, `; `-separated (a file that does not parse or could
   not be written, `out of time`), and `""` after a clean run.
 
@@ -808,10 +792,12 @@ trusts it for display only:
    `~/.local/share/Steam` (where vosd reads); when a `steam`, `steam.sh` or
    `steamwebhelper` process runs as vapor; when it cannot take the Steam
    lock in time; without `steam.json` (unless `--unwrap`); or when
-   `steam.json`'s `set` is not the boot report's. The Steam lock is
-   flock(`LOCK_EX`) on `$XDG_RUNTIME_DIR/vos-steam.lock`
-   (`/run/user/1000/vos-steam.lock`), held for the whole run; vosd's library
-   registration holds it too while it edits Steam's files.
+   `steam.json`'s `set` is not the boot report's. The Steam lock
+   (`internal/steamlock`) is flock(`LOCK_EX`) on
+   `/run/user/1000/vos-steam.lock`, opened through gamerfs and made empty,
+   `vapor`'s and 0600 when missing; prepare holds it for the whole run, and
+   vosd's library registration while it edits Steam's library lists,
+   waiting at most 2 s.
 4. The fingerprint is the sha256 of `steam.json`'s bytes, the vos version,
    `--unwrap`, whether each tool `steam.json` names or VaporOS owns an entry
    for is installed, loginusers.vdf's bytes, and the size, mtime and mode of
@@ -919,9 +905,13 @@ trusts it for display only:
    without `--unwrap` applies everything again.
 
 *Dispatcher messages:* `vos ext launch` (as vapor) writes each refusal
-meant for the user to `$XDG_RUNTIME_DIR/vos/ext-messages/<unix-nanos>.json`
-(`{"level":"warning","text":"..."}`). vosd reads and deletes them through
-gamerfs (under `/run/user/1000`) and publishes each as a `system.message`.
+meant for the user to `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json`
+(`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`;
+`{"level":"warning","text":"..."}`, a temp file renamed). Every 3 s vosd
+publishes the ones in `/run/user/1000/vos/ext-messages/` (names of 1 to 20
+digits and `.json`, read through gamerfs, at most 4 KiB each) as
+`system.message` with level `warning`, the text on one line and at most 300
+characters (of more than 5 at once only the newest 5), and deletes them.
 
 **Control center** (vosd, installed systems only; the `/extensions` routes in
 HTTP API). GET `/extensions` lists the booted catalog's extensions in its
@@ -1192,14 +1182,14 @@ Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
 - **GPU and a monitor:** the welcome screen runs while idle. `session begin` stops it, starts gamescope and applies the mode. `session end` plus 60 s idle (no game or download) stops gamescope and starts the welcome screen again.
 - **HDR:** a `begin` whose HDR differs from gamescope's restarts gamescope only when no Steam game runs; otherwise the session keeps the current HDR (the mode still switches).
 - **A Steam game runs** (here and for idle shutdown: one probe, `internal/gameproc`) while a process of `vapor` (the real uid in `/proc/<pid>/status`) is Steam's reaper for an app (`argv[0]`'s base name exactly `reaper`, `argv[1]` `SteamLaunch`, and a non-zero decimal `AppId=`, up to 64 bits, before `--`; gamescope's `gamescopereaper` is not one), or has `SteamAppId` > 0 in its environment, or while `vapor`'s manager has `vos-ext-handoff.service` loaded (`/run/user/1000/systemd/transient/vos-ext-handoff.service` exists).
-- **Steam restart** (`display.Manager.RestartSteam`): when what `vos steam prepare` applies changes under a running Steam (see Extensions, vosd and Steam), vosd restarts Steam, only in the gaming state on a box without a monitor (with one, the welcome screen replaces gamescope at the next idle moment, and its next start applies the change), with no session and nothing busy (a game, a download, a Sunshine client), and only when the display policy is not switching (it never waits for it); not at all when gamescope's unit last started (its start job, `InactiveExitTimestamp`) after the change. With a process holding `~/.steam/steam.pipe` it runs `steam -shutdown` as `vapor` with that process's `DISPLAY`, `WAYLAND_DISPLAY`, `GAMESCOPE_WAYLAND_DISPLAY`, `XAUTHORITY` and `DBUS_SESSION_BUS_ADDRESS`, and Steam counts as restarted once that holder's pid or the unit's `ExecMainStartTimestamp` changes (gamescope exits with Steam and `Restart=always` starts both again); after 30 s, without a holder, or when `steam -shutdown` fails, it restarts `vos-gamescope.service`. Requests made before the restart are one restart; vosd's own come at most once every 10 minutes, one a person asks for whenever the box is quiet. vosd's first gamescope start waits up to 5 s for `/var/lib/vos/ext/steam.json` to name the boot report's set, so prepare sees this boot's extensions.
+- **Steam restart** (`display.Manager.RestartSteam`): when what `vos steam prepare` applies changes under a running Steam (see Extensions, Steam), vosd restarts Steam, only in the gaming state on a box without a monitor (with one, the welcome screen replaces gamescope at the next idle moment, and its next start applies the change), with no session and nothing busy (a game, a download, a Sunshine client), and only when the display policy is not switching (it never waits for it); not at all when gamescope's unit last started (its start job, `InactiveExitTimestamp`) after the change. With a process holding `~/.steam/steam.pipe` it runs `steam -shutdown` as `vapor` with that process's `DISPLAY`, `WAYLAND_DISPLAY`, `GAMESCOPE_WAYLAND_DISPLAY`, `XAUTHORITY` and `DBUS_SESSION_BUS_ADDRESS`, and Steam counts as restarted once that holder's pid or the unit's `ExecMainStartTimestamp` changes (gamescope exits with Steam and `Restart=always` starts both again); after 30 s, without a holder, or when `steam -shutdown` fails, it restarts `vos-gamescope.service`. Requests made before the restart are one restart; vosd's own come at most once every 10 minutes, one a person asks for whenever the box is quiet. vosd's first gamescope start waits up to 5 s for `/var/lib/vos/ext/steam.json` to name the boot report's set, so prepare sees this boot's extensions.
 
 Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/sunshine/sunshine.conf`:
 - `capture = kms`, `encoder = vulkan`, `adapter_name = <render node of the virtual connector's card>`, `output_name = <virtual connector name, e.g. DP-1>` (Sunshine's KMS capture matches connector names; a number would mean "n-th active plane", which shifts while the welcome screen lights other outputs)
 - `origin_web_ui_allowed = pc`, `upnp = disabled`, `system_tray = disabled`, `gamepad = xone`
 - `global_prep_cmd = [{"do":"/usr/bin/vos session begin","undo":"/usr/bin/vos session end","elevated":false}]`. Sunshine runs prep commands on launch only, so a resumed stream keeps the mode and HDR it was launched with; vosd publishes a `system.message` when it sees a resume (a client connects with no `session.begin` since the last one left).
 
-`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, then the apps of the extensions mounted and still wanted (as steam.json has them, see Extensions, vosd and Steam): per shortcut whose game id `vos steam prepare` recorded and did not mark deleted (its record, read through gamerfs; where accounts differ, the id VaporOS gave the shortcut, else the lowest account's) `{"name":<the shortcut's name>,"detached":["/usr/bin/vos session launch steam://rungameid/<game id>"]}` with the game id as an unsigned 64-bit decimal, then the entries their helpers add (`SteamParts.SunshineApps`, such as TruckersMP's multiplayer start), never `cmd`. Names stay unique (a game's gains ` (<id>)`, an extension's ` (2)`, ` (3)`, …), and `$` is written `$$` in names and in the extensions' commands.
+`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, then the apps of the extensions mounted and still wanted (as steam.json has them, see Extensions, Steam): per shortcut whose game id `vos steam prepare` recorded and did not mark deleted (its record, read through gamerfs; where accounts differ, the id VaporOS gave the shortcut, else the lowest account's) `{"name":<the shortcut's name>,"detached":["/usr/bin/vos session launch steam://rungameid/<game id>"]}` with the game id as an unsigned 64-bit decimal, then the entries their helpers add (`SteamParts.SunshineApps`, such as TruckersMP's multiplayer start), never `cmd`. Names stay unique (a game's gains ` (<id>)`, an extension's ` (2)`, ` (3)`, …), and `$` is written `$$` in names and in the extensions' commands.
 
 **Firewall** (nftables, input policy drop):
 - accept lo, established, ICMP/ICMPv6, udp 5353, udp 67-68;

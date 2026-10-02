@@ -54,7 +54,7 @@ func gamerBusy(ctx context.Context) (bool, string) {
 // gamerProbe looks at the gaming user's processes through the probe idle
 // shutdown shares (internal/gameproc).
 func gamerProbe() gameproc.Probe {
-	return gameproc.Probe{ProcDir: ProcDir, UID: config.GamerUID, RuntimeDir: UserRuntimeDir}
+	return gameproc.Probe{ProcDir: ProcDir, UID: config.GamerUID, RuntimeDir: config.GamerRuntimeDir}
 }
 
 // steamGameRunning reports whether a Steam game runs as the gaming user.

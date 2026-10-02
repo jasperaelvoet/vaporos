@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
 // The display asks the probe idle shutdown shares (internal/gameproc has
@@ -34,7 +36,7 @@ func TestSteamGameRunning(t *testing.T) {
 		t.Fatal("a reaper not seen")
 	}
 	os.RemoveAll(filepath.Join(ProcDir, "102"))
-	mustWrite(t, filepath.Join(UserRuntimeDir, "systemd", "transient", "vos-ext-handoff.service"), "[Unit]\n")
+	mustWrite(t, filepath.Join(config.GamerRuntimeDir, "systemd", "transient", "vos-ext-handoff.service"), "[Unit]\n")
 	if !steamGameRunning() {
 		t.Fatal("the handoff unit not seen")
 	}

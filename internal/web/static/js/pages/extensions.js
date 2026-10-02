@@ -170,18 +170,21 @@ async function install(id, btn) {
   const x = find(id);
   if (!x) return;
   const names = X.names(doc);
-  const also = (x.requires || []).filter((r) => {
-    const y = find(r);
-    return y && !y.wanted && !y.mounted && !y.core;
-  }).map((r) => names[r]);
-  const when = doc.restart && doc.restart.auto ? 'It downloads now and is added at the next restart, which VaporOS does by itself when nobody is playing.' : 'It downloads now and is added at the next restart.';
+  const deps = (x.requires || []).map(find).filter((y) => y && !y.wanted && !y.mounted && !y.core);
+  const also = deps.map((y) => names[y.id]);
+  // The server asks for the password when anything it adds needs it.
+  const pw = [x, ...deps].find((y) => y.needs_password);
+  // restart.auto speaks of a restart already needed; a new one may happen
+  // by itself.
+  const auto = doc.restart && doc.restart.needed ? !!doc.restart.auto : true;
+  const when = auto ? 'It downloads now and is added at the next restart, which VaporOS does by itself when nobody is playing.' : 'It downloads now and is added at the next restart.';
   const ok = await (await asker()).ask({
     title: `Install ${x.name}?`,
     body: (x.copy && x.copy.install) || x.summary || '',
     can: X.can(x),
     note: [also.length ? `It also installs ${X.and(also)}.` : '', when].filter(Boolean).join(' '),
-    password: !!x.needs_password,
-    passwordHint: x.runs_as_root ? `${x.name} runs as root, so VaporOS asks for its password.` : `${x.name} changes kernel settings, so VaporOS asks for its password.`,
+    password: !!pw,
+    passwordHint: pw && (pw.runs_as_root ? `${pw.name} runs as root, so VaporOS asks for its password.` : `${pw.name} changes kernel settings, so VaporOS asks for its password.`),
     confirm: 'Install',
     run: async ({ password }) => take(await api('POST', `/extensions/${enc(id)}`, password ? { password } : {})),
   });
@@ -273,8 +276,9 @@ function options(s) {
   if (s.type !== 'disk') return (s.choices || []).map((c) => h('option', { value: c, text: X.choiceLabel(c) }));
   if (!Array.isArray(disks)) return [h('option', { value: String(s.value || ''), text: disksAsked && disks === false ? "Couldn't list the drives" : 'Looking at your drives…' })];
   const out = [h('option', { value: '', text: 'Choose a game drive' })];
-  for (const d of disks) out.push(h('option', { value: d.uuid, text: [d.label || d.model || 'Drive', d.mounted_at].filter(Boolean).join(' · ') }));
-  if (s.value && !disks.some((d) => d.uuid === s.value)) out.push(h('option', { value: String(s.value), text: 'A drive that isn\'t connected' }));
+  // A disk setting holds the drive's folder (CONTRACTS: an absolute path).
+  for (const d of disks) out.push(h('option', { value: d.mounted_at, text: [d.label || d.model || 'Drive', d.mounted_at].filter(Boolean).join(' · ') }));
+  if (s.value && !disks.some((d) => d.mounted_at === s.value)) out.push(h('option', { value: String(s.value), text: 'A drive that isn\'t connected' }));
   return out;
 }
 
@@ -289,7 +293,7 @@ function value(x, s) {
 function loadDisks() {
   disksAsked = true;
   api('GET', '/storage').then((r) => {
-    disks = (Array.isArray(r.disks) ? r.disks : []).filter((d) => d.adopted && d.mounted_at && !d.missing && d.uuid);
+    disks = (Array.isArray(r.disks) ? r.disks : []).filter((d) => d.adopted && d.mounted_at && !d.missing);
   }, () => {
     disks = false;
   }).then(() => doc && render());

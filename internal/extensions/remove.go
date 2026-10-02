@@ -91,6 +91,7 @@ func (s *Service) Remove(ctx context.Context, id string, purge bool) error {
 	if err != nil {
 		log.Printf("extensions: removing %s: %v", id, err)
 	}
+	s.syncSteam() // Steam drops it now, not at the restart
 	s.Reconcile()
 	return nil
 }
@@ -181,6 +182,7 @@ func (s *Service) SetSettings(ctx context.Context, id string, change map[string]
 	if err != nil {
 		return err
 	}
+	s.syncSteam() // a helper's Steam parts may follow its settings
 	s.Reconcile()
 	return nil
 }

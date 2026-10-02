@@ -8,7 +8,6 @@ package steamlock
 import (
 	"context"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -17,9 +16,6 @@ import (
 
 // Name is the lock file in the gaming user's runtime directory.
 const Name = "vos-steam.lock"
-
-// RuntimeDir is the gaming user's /run/user/<uid> (a variable for tests).
-var RuntimeDir = "/run/user/" + strconv.Itoa(config.GamerUID)
 
 // poll is how often Lock tries again while someone else holds the lock.
 const poll = 50 * time.Millisecond
@@ -32,7 +28,7 @@ func Lock(ctx context.Context) (unlock func(), err error) {
 	if os.Geteuid() == 0 {
 		uid = config.GamerUID
 	}
-	f, err := gamerfs.OpenOrCreate(RuntimeDir, Name, 0o600, uid, uid)
+	f, err := gamerfs.OpenOrCreate(config.GamerRuntimeDir, Name, 0o600, uid, uid)
 	if err != nil {
 		return nil, err
 	}

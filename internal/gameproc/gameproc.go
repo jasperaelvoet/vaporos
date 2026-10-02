@@ -42,7 +42,7 @@ type Probe struct {
 
 // Default is the gaming user on the running system.
 func Default() Probe {
-	return Probe{ProcDir: "/proc", UID: config.GamerUID, RuntimeDir: "/run/user/" + strconv.Itoa(config.GamerUID)}
+	return Probe{ProcDir: "/proc", UID: config.GamerUID, RuntimeDir: config.GamerRuntimeDir}
 }
 
 // GameRunning reports whether a Steam game runs as the user: a process

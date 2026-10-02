@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
 type published struct {
@@ -26,7 +28,7 @@ func TestPollMessages(t *testing.T) {
 	e := newEnv(t)
 	s, _ := e.service()
 	got := capture(s)
-	dir := filepath.Join(gamerRuntimeDir, messagesRel)
+	dir := filepath.Join(config.GamerRuntimeDir, messagesRel)
 
 	s.pollMessages() // no directory yet
 	for _, text := range []string{
@@ -86,8 +88,8 @@ func TestPollMessagesRefusesASymlinkedDirectory(t *testing.T) {
 	got := capture(s)
 	elsewhere := t.TempDir()
 	writeFile(t, filepath.Join(elsewhere, "1.json"), `{"level":"warning","text":"x"}`)
-	must(t, os.MkdirAll(filepath.Join(gamerRuntimeDir, "vos"), 0o700))
-	must(t, os.Symlink(elsewhere, filepath.Join(gamerRuntimeDir, messagesRel)))
+	must(t, os.MkdirAll(filepath.Join(config.GamerRuntimeDir, "vos"), 0o700))
+	must(t, os.Symlink(elsewhere, filepath.Join(config.GamerRuntimeDir, messagesRel)))
 	s.pollMessages()
 	if len(*got) != 0 {
 		t.Errorf("published %+v", *got)

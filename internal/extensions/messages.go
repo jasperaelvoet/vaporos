@@ -29,10 +29,6 @@ import (
 // messagesRel is the message directory in the user's runtime directory.
 const messagesRel = "vos/ext-messages"
 
-// gamerRuntimeDir is the gaming user's /run/user/<uid> (a variable for
-// tests).
-var gamerRuntimeDir = "/run/user/" + strconv.Itoa(config.GamerUID)
-
 // Bounds on what vosd takes from the directory, which the gaming user and
 // every game can fill: at most maxMessages per poll (older ones beyond
 // that are dropped), each file at most maxMessageFile bytes and its text
@@ -83,7 +79,7 @@ func writeMessage(text string) error {
 // pollMessages publishes the newest messages as system.message warnings
 // and deletes every message file.
 func (s *Service) pollMessages() {
-	names, err := gamerfs.ReadDirNames(gamerRuntimeDir, messagesRel, maxMessageNames)
+	names, err := gamerfs.ReadDirNames(config.GamerRuntimeDir, messagesRel, maxMessageNames)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			log.Printf("extensions: launch messages: %v", err)
@@ -105,13 +101,13 @@ func (s *Service) pollMessages() {
 	for i, name := range names {
 		rel := messagesRel + "/" + name
 		if i >= drop {
-			if b, err := gamerfs.ReadFile(gamerRuntimeDir, rel, maxMessageFile); err == nil {
+			if b, err := gamerfs.ReadFile(config.GamerRuntimeDir, rel, maxMessageFile); err == nil {
 				if text := messageText(b); text != "" {
 					s.publish("system.message", map[string]string{"level": "warning", "text": text})
 				}
 			}
 		}
-		if err := gamerfs.Remove(gamerRuntimeDir, rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := gamerfs.Remove(config.GamerRuntimeDir, rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			log.Printf("extensions: launch message: %v", err)
 		}
 	}
