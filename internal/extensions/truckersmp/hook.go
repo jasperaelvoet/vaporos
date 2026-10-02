@@ -42,7 +42,7 @@ func (h *Helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 		// The Linux build cannot load the mod. Its flag goes, so a later
 		// single-player start stays single-player.
 		if buildIndex(l.Argv, "linux_x64", strings.TrimSuffix(g.exe, ".exe")) >= 0 && takeFlag(flagPath(), g, now()) {
-			return fmt.Errorf("%s isn't set to run with Proton. Restart VaporOS and try again.", g.short)
+			return extensions.Refuse(msgLinux+g.key, fmt.Errorf("Steam started %s's Linux build for multiplayer", g.short))
 		}
 		return nil
 	}
@@ -51,12 +51,11 @@ func (h *Helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 	}
 	home := homeDir()
 	if err := quickCheck(home, g); err != nil {
-		return err
+		return extensions.Refuse(notReady(home, g), err)
 	}
 	injector := filepath.Join(home, binRel)
 	if err := ensureInjector(injectorSource(), injector); err != nil {
-		fmt.Fprintf(os.Stderr, "truckersmp: copying the injector: %v\n", err)
-		return errors.New("it could not set up its launcher. Restart VaporOS and try again.")
+		return extensions.Refuse(msgLauncher, fmt.Errorf("copying the injector: %w", err))
 	}
 	l.Argv = rewriteArgv(l.Argv, i, injector, filepath.Join(home, filesRel))
 	return nil

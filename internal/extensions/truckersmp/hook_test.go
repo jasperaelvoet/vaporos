@@ -135,12 +135,36 @@ func TestLaunchHook(t *testing.T) {
 		t.Fatalf("ETS2 with ATS's flag: %v %q", err, l.Argv)
 	}
 	l = &extensions.Launch{App: 270880, Argv: words(protonBin + "|waitforexitandrun|" + atsDir + "/bin/win_x64/amtrucks.exe")}
-	if err := h.LaunchHook(ctx, l); !errors.Is(err, errStale) {
+	err := h.LaunchHook(ctx, l)
+	if code, text := refused(err); !errors.Is(err, errStale) || code != "no-files-ats" ||
+		text != "TruckersMP didn't start because its files for ATS aren't downloaded yet. Try again once its card in VaporOS says it's ready." {
 		t.Fatalf("ATS without files: %v", err)
 	}
 	if _, err := os.Stat(flagPath()); !os.IsNotExist(err) {
 		t.Error("a refused start leaves its flag")
 	}
+	// ETS2's files changed since the sync checked them.
+	core := filepath.Join(homeDir(), filesRel, "core_ets2mp.dll")
+	saved := read(t, core)
+	fi, _ := os.Stat(core)
+	write(t, core, "changed")
+	writeFlag(flagPath(), games[0], now())
+	err = h.LaunchHook(ctx, ets2Launch())
+	if code, text := refused(err); code != "updating" || text != "TruckersMP didn't start because its files are updating. Try again in a few minutes." {
+		t.Fatalf("ETS2 updating: %v", err)
+	}
+	write(t, core, saved)
+	os.Chtimes(core, fi.ModTime(), fi.ModTime())
+	// The injector could not be copied.
+	os.Remove(injectorSource())
+	os.Remove(inj)
+	writeFlag(flagPath(), games[0], now())
+	err = h.LaunchHook(ctx, ets2Launch())
+	if code, text := refused(err); code != "launcher-failed" ||
+		text != "TruckersMP didn't start because VaporOS couldn't set up its launcher. Restart VaporOS and try again." {
+		t.Fatalf("no injector: %v", err)
+	}
+	write(t, injectorSource(), string(b.injector))
 
 	// The Linux build cannot run the mod: without a flag it starts as
 	// ever; with one, the flag goes and the start is refused.
@@ -154,7 +178,9 @@ func TestLaunchHook(t *testing.T) {
 	}
 	writeFlag(flagPath(), games[0], now())
 	l = linux()
-	if err := h.LaunchHook(ctx, l); err == nil || err.Error() != "ETS2 isn't set to run with Proton. Restart VaporOS and try again." {
+	err = h.LaunchHook(ctx, l)
+	if code, text := refused(err); code != "linux-ets2" ||
+		text != "TruckersMP didn't start because ETS2 isn't set to run with Proton. Restart VaporOS and try again." {
 		t.Fatalf("the Linux build with a flag: %v", err)
 	}
 	if _, err := os.Stat(flagPath()); !os.IsNotExist(err) {
@@ -162,8 +188,8 @@ func TestLaunchHook(t *testing.T) {
 	}
 	writeFlag(flagPath(), games[1], now())
 	l = &extensions.Launch{App: 270880, Argv: words(atsDir + "/bin/linux_x64/amtrucks|-nointro")}
-	if err := h.LaunchHook(ctx, l); err == nil || !strings.HasPrefix(err.Error(), "ATS isn't set to run with Proton.") {
-		t.Fatalf("ATS's Linux build with a flag: %v", err)
+	if code, text := refused(h.LaunchHook(ctx, l)); code != "linux-ats" || !strings.Contains(text, "because ATS isn't set to run with Proton.") {
+		t.Fatalf("ATS's Linux build with a flag: %q %q", code, text)
 	}
 
 	// Another app passes untouched.

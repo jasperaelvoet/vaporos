@@ -79,8 +79,9 @@ func (m *manifest) entry(path string) (manifestFile, bool) {
 	return manifestFile{}, false
 }
 
-// errStale is a quick check that found the files not ready.
-var errStale = errors.New("its files are updating. Try again in a few minutes.")
+// errStale is a quick check that found the files not ready; the person
+// reads notReady's sentence instead.
+var errStale = errors.New("the mod's files are not the ones the last sync checked")
 
 // quickCheck tells whether g's files are complete, as fast as a launch
 // allows: every file g needs is where the manifest says, with its size

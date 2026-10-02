@@ -123,7 +123,9 @@ func TestMPRefuses(t *testing.T) {
 	ctx := context.Background()
 
 	// ATS isn't installed; then it is, but its files are not there.
-	if err := m.run(ctx, games[1]); err == nil || (*told)[0] != "TruckersMP didn't start because ATS isn't installed. Install it in Steam, then try again." {
+	err := m.run(ctx, games[1])
+	if code, text := refused(err); code != "not-installed-ats" || (*told)[0] != text ||
+		text != "TruckersMP didn't start because ATS isn't installed. Install it in Steam, then try again." {
 		t.Fatalf("ATS not installed: %v %q", err, *told)
 	}
 	b.install(b.steam, games[1])

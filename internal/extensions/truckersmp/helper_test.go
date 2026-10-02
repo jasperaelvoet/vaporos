@@ -342,12 +342,15 @@ func TestInstallAndRemove(t *testing.T) {
 		t.Error("branch.json stays")
 	}
 
-	// A setup that fails is the card's reason.
+	// A setup that fails gives the card its own reason.
 	h.asGamer = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "runuser: something\nopen /usr/lib/vos/ext/truckersmp/truckersmp-cli.exe: no such file", errors.New("exit status 1")
 	}
-	if err := h.Install(context.Background(), x); err == nil || !strings.Contains(err.Error(), "launcher could not be copied") {
-		t.Errorf("err %v", err)
+	err := h.Install(context.Background(), x)
+	if code, text := refused(err); code != "setup-failed" ||
+		text != "Setting up TruckersMP didn't finish because VaporOS couldn't copy its launcher. Try again, or remove it." ||
+		!strings.Contains(err.Error(), "truckersmp-cli.exe: no such file") {
+		t.Errorf("err %v: %q %q", err, code, text)
 	}
 }
 

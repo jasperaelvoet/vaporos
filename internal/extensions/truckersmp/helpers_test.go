@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -100,6 +102,17 @@ func (b *box) log(lib string, g game, version string) {
 }
 
 func itoa(n uint32) string { return strconv.FormatUint(uint64(n), 10) }
+
+// refused is err's refusal code and the sentence the registered helper
+// has for it, as vosd shows it.
+func refused(err error) (code, text string) {
+	var r *extensions.Refusal
+	if !errors.As(err, &r) {
+		return "", ""
+	}
+	text, _ = extensions.HelperFor(ID).(extensions.MessageWords).MessageText(r.Code)
+	return r.Code, text
+}
 
 func mkdir(t *testing.T, d string) {
 	t.Helper()

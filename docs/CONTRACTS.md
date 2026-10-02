@@ -1445,7 +1445,10 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   every file.
 - *vosd* runs the sync as `vapor` (runuser; its progress lines read as they
   come; within 4 hours; exit 3 counts as done, exits 4 and 5 the card words
-  itself) from `Install` (after `setup`), and, while this boot
+  itself) from `Install` (after `setup`; a `setup` that fails fails
+  `Install` with `setup-failed`, "Setting up TruckersMP didn't finish
+  because VaporOS couldn't copy its launcher. Try again, or remove it."),
+  and, while this boot
   mounted the extension and `settings/truckersmp.installed` exists, when it
   builds the card and a sync is due: no manifest, the API's `name` (asked at
   most hourly, every 10 minutes while unanswered; 15 s, 64 KiB) other than
@@ -1458,7 +1461,9 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   with a message (see Dispatcher messages: codes `running-<key>`,
   `starting`, `not-installed-<key>`, `no-files-<key>`, `updating`,
   `handoff-failed` and, from `handoff`, `steam-silent`, each with its
-  sentence in the helper), while a reaper of 227300 or 270880 runs
+  sentence in the helper; the launch hook's refusals add `linux-<key>` and
+  `launcher-failed`, and `Install`'s `setup-failed`, all returned as
+  `extensions.Refuse` with their code), while a reaper of 227300 or 270880 runs
   (`running-`), while `vos-ext-handoff.service` is loaded (`starting`),
   when no library has the game (`not-installed-`), or when the game's
   files fail the quick check: `no-files-` when the manifest lacks the
@@ -1481,15 +1486,19 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   take the flag (renamed away first: once), deleting one that is not valid
   and leaving one for the other game. Then the quick check (each `system`
   and game file has the manifest's size and mtime, the core library its
-  MD5): stale files refuse the start ("its files are updating. Try again in
-  a few minutes."), never turning it into single-player. Otherwise the
+  MD5): stale files refuse the start with `mp`'s code for them (`updating`
+  or `no-files-<key>`), never turning it into single-player. Otherwise the
   executable becomes `<home data area>/bin/truckersmp-cli.exe GAMEDIR
   MODDIR` (GAMEDIR two levels above the executable's folder), followed by
   Steam's arguments for the game or, without any, `-rdevice gl -nointro
-  -64bit`. A command that holds the Linux build instead
-  (`.../bin/linux_x64/eurotrucks2`, `amtrucks`) while a valid flag for
-  that game exists takes the flag and refuses the start ("ETS2 isn't set to
-  run with Proton. Restart VaporOS and try again."). Every other start
+  -64bit`; when the injector cannot be copied there, it refuses with
+  `launcher-failed` ("TruckersMP didn't start because VaporOS couldn't set
+  up its launcher. Restart VaporOS and try again."). A command that holds
+  the Linux build instead (`.../bin/linux_x64/eurotrucks2`, `amtrucks`)
+  while a valid flag for that game exists takes the flag and refuses the
+  start with `linux-<key>` ("TruckersMP didn't start because ETS2 isn't set
+  to run with Proton. Restart VaporOS and try again."). The dispatcher
+  records each with its code, so vosd shows its sentence. Every other start
   passes untouched. For its shortcuts it adds
   `ext truckersmp mp <key>` when the command ends in `/usr/bin/vos` (a
   prepare that wrote no `args`).

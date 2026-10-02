@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -82,8 +83,7 @@ func (h *Helper) ModuleOptions(*extensions.Ext) []string { return nil }
 // MiB), and the card shows how far it is.
 func (h *Helper) Install(ctx context.Context, x *extensions.Ext) error {
 	if out, err := h.asGamer(ctx, vosBin, "ext", ID, "setup"); err != nil {
-		log.Printf("truckersmp: setup: %v: %s", err, lastLine(out))
-		return errors.New("its launcher could not be copied. Try again.")
+		return extensions.Refuse(msgSetup, fmt.Errorf("copying the injector: %v: %s", err, lastLine(out)))
 	}
 	h.mu.Lock()
 	if h.job == nil {
