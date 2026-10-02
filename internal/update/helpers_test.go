@@ -50,7 +50,7 @@ func setup(t *testing.T) *testEnv {
 	dir := t.TempDir()
 	strs := []*string{&config.StateDir, &config.RunDir, &config.ESP, &config.KeysDir, &config.ImageInfoPath,
 		&config.ImageCmdlinePath, &config.ProcCmdline, &config.OSReleasePath, &config.LiveMedium,
-		&WorkDir, &MountInfoPath, &BootCountVar, &boot.PartLabelDir, &boot.SysClassBlock, &boot.SysDevBlock,
+		&WorkDir, &MountInfoPath, &config.BootCountVar, &boot.PartLabelDir, &boot.SysClassBlock, &boot.SysDevBlock,
 		&boot.DevDir, &boot.MountInfoPath, &boot.EFIVarsDir}
 	saved := make([]string, len(strs))
 	for i, p := range strs {
@@ -79,7 +79,7 @@ func setup(t *testing.T) *testEnv {
 	config.LiveMedium = filepath.Join(dir, "medium")
 	WorkDir = filepath.Join(dir, "tmp")
 	MountInfoPath = filepath.Join(dir, "mountinfo")
-	BootCountVar = filepath.Join(dir, "LoaderBootCountPath")
+	config.BootCountVar = filepath.Join(dir, "LoaderBootCountPath")
 	// No sysfs and no mountinfo for the boot disk: slots go by label.
 	boot.PartLabelDir = filepath.Join(dir, "dev", "disk", "by-partlabel")
 	boot.SysClassBlock = filepath.Join(dir, "sys", "class", "block")

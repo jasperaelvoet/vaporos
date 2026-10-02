@@ -66,11 +66,12 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (boot disk, virtual connector + EDID) |
 | `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running |
 | `/var/lib/vos/firmware/edid/vaporos.bin` | vosd | EDID with learned modes; overrides the image one via `firmware_class.path=/var/lib/vos/firmware`. vosd also hands each new version to the running kernel, best effort: it writes `/sys/kernel/debug/dri/<minor or PCI address>/<C>/edid_override`, re-probes the connector by switching its sysfs `status` to `on-digital` and back to `on`, and sends a `change` uevent with `HOTPLUG=1`. It counts only when the connector's sysfs `edid` then matches. vosd skips this during a stream (it applies at `session.end`) and when the new EDID drops the mode on screen. If the kernel refuses, or gamescope does not reach a mode added this way within 15 s, vosd stops trying until the next boot and the mode applies after a reboot |
-| `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool}` from the last good boot |
+| `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool,"lan_mac":"<address>"}` from the last good boot; `lan_mac` is the `address` of the network device that had the LAN (omitted when unknown) |
 | `/usr/lib/vos/extensions.list` | build | the image's extension catalog (see Extensions) |
 | `/usr/share/vos/extensions/<id>.json` | build | each extension's descriptor, with what the build verified |
 | `/var/lib/vos/ext/` | vosd, initramfs, `vos health`, `vos ext fetch` | the extension store, sets and trial state (see Extensions) |
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
+| `/run/vos/ext-trial-ok` | `vos health` | the number of the set whose extension trial passed health this boot (one line, written atomically), so vosd can promote it when health could not (see Health) |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
 | `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
@@ -206,7 +207,7 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
-0. Fetch kernel and initrd, then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. A data partition that cannot seal (no fs-verity) skips the images: the new image then starts without them. Any other failure fails the stage.
+0. Fetch kernel and initrd, then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. On a boot whose report has reason `no-verity` no image is fetched, counted or given space (they could not be sealed), and a seal refused as unsupported stops the fetching: either way the new image then starts without them (logged). Any other failure fails the stage.
 1. Under ext.lock: remove the idle slot's entries, then write `ext/slots/<idle>.json` from the new manifest (an empty `extensions` object when it has none). An image of step 0 that GC removed in between (no slot file named it yet) is fetched again.
 2. Stream root into the idle slot partition while hashing.
 3. Re-read and verify.
@@ -221,7 +222,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
  "held":{"version":"<ver>","rollback_index":N}}
 ```
 `available.size` is the root plus the extension images this machine would
-still have to fetch for it (Write order step 0).
+still have to fetch for it (Write order step 0; none on a boot with reason
+`no-verity`).
 On daemon start: if `staged.version` ≠ booted, and the staged entry has no
 tries left (or is gone), append it to `failed` and clear `staged`. If it
 equals booted, clear `staged` once the boot is no longer on trial.
@@ -238,7 +240,7 @@ or above it passes health.
 - `user@1000.service` is active;
 - if `health-ok.gpu`, a DRM card with an amdgpu (or other supported) driver exists;
 - if `health-ok.stream`, `vos-sunshine.service` is active;
-- if `health-ok.lan`, the LAN is up within 60 s of the start (the check runs alongside the others): some network interface with a device (`/sys/class/net/<if>/device`; not `lo`, bridges or tunnels) and `carrier` 1 has an IPv4 address that is neither loopback nor link-local, or a global or unique local IPv6 one. No carrier anywhere at the deadline passes (nothing is plugged in) and keeps `health-ok.lan`;
+- if `health-ok.lan`, the LAN is up within 60 s of the start (the check runs alongside the others): some network device (an interface with `/sys/class/net/<if>/device`; not `lo`, bridges or tunnels) that is up (`IFF_UP` in its `flags`; without `flags`, a readable `carrier`) with `carrier` 1 has an IPv4 address that is neither loopback nor link-local, or a global or unique local IPv6 one. If none has by the deadline, it fails when the device whose `address` is `health-ok.lan_mac` is gone, or when a network device is down or has a link without such an address (NetworkManager brings up every device, also without a cable); when every network device is up with `carrier` 0, or there is none (nothing is plugged in), it passes and keeps `health-ok.lan` and `lan_mac`;
 - `vos.health.fail=1` forces a failure.
 
 A check that `health-ok` does not require is still looked at once (the LAN
@@ -250,10 +252,13 @@ this one runs out of tries, and on an extension trial (`/run/vos/extensions.json
 mode `pending`; see Extensions); otherwise a failing check is logged as degraded
 and it exits 0. It writes `health-ok` unless it fails, and prints the
 `VOS-HEALTH` serial line on every outcome. `FailureAction=reboot`, and
-systemd-boot counting (or the trial's tries) does the rest. After a good boot
-whose report mounted anything on purpose (mode other than `off`), it takes
-ext.lock (waiting up to 30 s) and records the boot (proven images, promotion;
-see "Trial and promotion"); a problem there is logged and never fails the boot.
+systemd-boot counting (or the trial's tries) does the rest. After an
+extension trial that passes, it first writes the booted set's number to
+`/run/vos/ext-trial-ok` (temp + rename), so vosd can still promote the set
+should the next step not get the lock. After a good boot whose report
+mounted anything on purpose (mode other than `off`), it takes ext.lock
+(waiting up to 30 s) and records the boot (proven images, promotion; see
+"Trial and promotion"); a problem there is logged and never fails the boot.
 
 ## Extensions
 
@@ -484,9 +489,10 @@ mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
 (rename, directory fsync) and `pending` removed. A set the user no longer
 wants is never promoted: reconcile removes or replaces such a `pending`, also
 on its own trial, and a promoter that knows the desired set's fingerprint
-promotes only when what booted has it. On trial boots (mode `pending`, or an
-OS trial) the generator gives `vos-health.service` a drop-in with
-`JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
+promotes only when what booted has it. On trial boots (mode `pending`, or any
+boot systemd-boot counts, also with `vos.ext=0` or `skip-once`) the generator
+gives `vos-health.service` a drop-in with `JobTimeoutSec=10min` and
+`JobTimeoutAction=reboot-force` (see Units).
 
 A trial that hangs the kernel or PID 1 must still reboot, so it uses up a try.
 CachyOS blacklists the hardware watchdog drivers, which only stops their
@@ -581,17 +587,21 @@ end, unless no bytes came for 2 minutes, and the re-read.
 mounted): the installer runs the new image's own
 `<target>/usr/bin/vos ext fetch --state-dir <target>/var/lib/vos --from SRC --version <ver> --seed`
 (plus `--repair` on a repair), which seals the image's core extensions into
-the new system's store and makes them `pending`: the first boot is their
-trial, and `vos health` promotes them to `enabled` (a fresh install has no
-`enabled` before that). A repair tries core only; the rest of `wanted`
-(kept, its images fetched too) vosd proposes through a trial of its own.
-SRC is the install's source, or for the live medium
-(which carries no extension images) the new system's `config.update.source`.
-It is best effort and capped at 20 minutes: a failure is logged, and vosd
-fetches what is missing once the system runs. Its progress lines show as
-`configure`. Before it runs, a repair removes `slots/b.json` (slot b was
-wiped), `enabled`, `pending` and `failed`, so a repair that cannot fetch
-boots with no extension rather than the old set.
+the new system's store as the `pending` set (tries 2): the first boot is an
+extension trial that `vos health` proves and promotes, and a new install has
+no `enabled` before that. A repair tries core only; the rest of `wanted`
+(kept, its images fetched too) vosd proposes through a trial of its own. SRC
+is the install's source (a directory, http(s) or a registry, which the
+command asks at the tag `<ver>`), or for the live medium (which carries no
+extension images) the new system's `config.update.source`. It is best effort
+and capped at 20 minutes: a failure is logged, and vosd fetches what is
+missing once the system runs. Its progress lines (bytes of the whole run)
+show as `configure`: the first one, then whenever the percent moves, at least
+once a second while bytes come in, and the last. Before it runs, a repair
+removes `slots/b.json` (slot b was wiped), `enabled`, `pending` and `failed`,
+and keeps `wanted`: a repair that cannot run the command (offline) boots
+without extensions rather than with the old set, and vosd proposes the wanted
+ones through a trial once it can.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
@@ -727,7 +737,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 - `vosd.service`: `ExecStart=/usr/bin/vos daemon`, `Restart=always`
 - `vos-welcome.service`: started and stopped by vosd only
 - `vos-health.service`: `FailureAction=reboot` (see "Health")
-- `vos-generator` (`/usr/lib/systemd/system-generators`), following `/run/vos/extensions.json` and never intent: for each mounted extension, the system units its shipped descriptor (`/usr/share/vos/extensions/<id>.json`) lists in `services` with scope `system` are wanted the way their `[Install]` would (`.service` by `multi-user.target`, `.socket`, `.timer` and `.path` by `sockets.target`, `timers.target` and `paths.target`; an instance links to its template's file); a unit file that is missing is logged and skipped. On a trial boot (mode `pending` or `os-trial`) it writes `vos-health.service.d/50-vos-trial.conf`: `[Unit]` `JobTimeoutSec=10min`, `JobTimeoutAction=reboot-force`. It always exits 0
+- `vos-generator` (`/usr/lib/systemd/system-generators`), following `/run/vos/extensions.json` and never intent: for each mounted extension, the system units its shipped descriptor (`/usr/share/vos/extensions/<id>.json`) lists in `services` with scope `system` are wanted by `multi-user.target` (`.service`), `sockets.target`, `timers.target` or `paths.target` by suffix (an instance links to its template's file); a unit file that is missing is logged and skipped. On a trial boot (mode `pending`, or any boot systemd-boot counts: `LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f` in efivars, the variable `vos health` reads, also when `vos.ext=0` or `skip-once` left mode `off` or the report cannot be read) it writes `vos-health.service.d/50-vos-trial.conf`: `[Unit]` `JobTimeoutSec=10min`, `JobTimeoutAction=reboot-force`. It always exits 0
 - `seatd.service.d/vos.conf`
 - `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
 - every `systemd-sysext*` and `systemd-confext*` unit is masked: only the initramfs merges extensions

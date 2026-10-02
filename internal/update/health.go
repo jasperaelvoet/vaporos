@@ -35,9 +35,6 @@ import (
 
 var (
 	MountInfoPath = "/proc/self/mountinfo"
-	// BootCountVar exists while systemd-boot is counting this boot, i.e.
-	// the entry is still on trial (systemd-bless-boot reads it too).
-	BootCountVar = "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 
 	healthTimeout = 90 * time.Second // the whole check
 	pingTimeout   = 60 * time.Second // vosd must answer within this
@@ -59,6 +56,8 @@ type HealthOK struct {
 	GPU    bool `json:"gpu"`
 	Stream bool `json:"stream"`
 	LAN    bool `json:"lan"`
+	// LANMAC is the address of the network device that had the LAN.
+	LANMAC string `json:"lan_mac,omitempty"`
 }
 
 // healthEnv is everything a health check looks at, so tests can fake it.
@@ -70,7 +69,7 @@ type healthEnv struct {
 	counting   func() bool // is this boot on trial (boot counting)?
 	fallback   func() bool // would another entry boot once this one runs out of tries?
 	forced     func() bool // vos.health.fail=1
-	lan        func() lanState
+	lan        func() lanProbe
 	extensions func() (*store.BootReport, error) // what the initramfs mounted
 	// healthy records a boot that passed (store.AfterHealthy, under ext.lock).
 	healthy func(rep *store.BootReport) error
@@ -143,19 +142,19 @@ func checkHealth(ctx context.Context, env healthEnv, prev HealthOK, logf func(st
 	// The LAN check runs alongside the others, from the start.
 	lctx, lcancel := context.WithTimeout(ctx, lanTimeout)
 	defer lcancel()
-	lanc := make(chan lanState, 1)
+	lanc := make(chan lanProbe, 1)
 	go func() {
-		st := env.lan()
-		for st != lanUp {
+		p := env.lan()
+		for p.state != lanUp {
 			select {
 			case <-lctx.Done():
-				lanc <- st
+				lanc <- p
 				return
 			case <-time.After(healthPoll):
 			}
-			st = env.lan()
+			p = env.lan()
 		}
-		lanc <- st
+		lanc <- p
 	}()
 
 	ms, err := env.mounts()
@@ -211,20 +210,22 @@ func checkHealth(ctx context.Context, env healthEnv, prev HealthOK, logf func(st
 	if !prev.LAN {
 		lcancel()
 	}
-	switch st := <-lanc; {
-	case st == lanUp:
-		res.seen.LAN = true
+	switch p := <-lanc; {
+	case p.state == lanUp:
+		res.seen.LAN, res.seen.LANMAC = true, p.mac
 		if prev.LAN {
 			check("lan", nil)
 		}
-	case st == lanNoCarrier:
+	case prev.LAN && prev.LANMAC != "" && !slices.Contains(p.macs, prev.LANMAC):
+		check("lan", fmt.Errorf("no address, and the network device of the last good boot (%s) is gone", prev.LANMAC))
+	case p.state == lanNoCarrier:
 		// Nothing is plugged in: that says nothing about this image.
-		res.seen.LAN = prev.LAN
 		if prev.LAN {
-			logf("ok    lan: no interface has a link; not checked")
+			res.seen.LAN, res.seen.LANMAC = true, prev.LANMAC
+			logf("ok    lan: no network device has a link; not checked")
 		}
 	case prev.LAN:
-		check("lan", errors.New("an interface has a link but no address, but the last good boot had one"))
+		check("lan", fmt.Errorf("%s, but the last good boot had an address", p.detail))
 	}
 
 	if env.forced() {
@@ -265,6 +266,13 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 			}
 			return nil
 		})
+		if trial && rep.Set != "" {
+			// Written first: should health not get ext.lock in time, vosd
+			// still knows this trial passed and promotes the set itself.
+			if err := config.WriteFileAtomic(config.ExtTrialOKPath(), []byte(rep.Set+"\n"), 0o644); err != nil {
+				logf("extensions: recording the passed trial: %v", err)
+			}
+		}
 		if rep != nil && rep.Mode != store.ModeOff {
 			if err := env.healthy(rep); err != nil {
 				logf("extensions: recording this good boot: %v", err)
@@ -339,7 +347,7 @@ func supportedGPU() bool {
 // bootCounting reports whether this boot is still on trial: systemd-boot
 // set LoaderBootCountPath, or the running slot's entry has a counter.
 func bootCounting() bool {
-	if _, err := os.Stat(BootCountVar); err == nil {
+	if _, err := os.Stat(config.BootCountVar); err == nil {
 		return true
 	}
 	if boot.EnsureESP(config.ESP) != nil {

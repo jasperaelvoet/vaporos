@@ -70,11 +70,11 @@ func newFakeSys(t *testing.T) *fakeSys {
 
 	oldPaths, oldBlock, oldAllow := paths, isBlockDevice, allowAnywhere
 	oldRun, oldLive, oldKeys, oldInfo := config.RunDir, config.LiveMedium, config.KeysDir, config.ImageInfoPath
-	oldProbeTimeout, oldSeed, oldSeedTimeout := probeImageTimeout, seedRun, seedTimeout
+	oldProbeTimeout, oldSeed, oldSeedTimeout, oldSeedEvery := probeImageTimeout, seedRun, seedTimeout, seedReportEvery
 	t.Cleanup(func() {
 		paths, isBlockDevice, allowAnywhere = oldPaths, oldBlock, oldAllow
 		config.RunDir, config.LiveMedium, config.KeysDir, config.ImageInfoPath = oldRun, oldLive, oldKeys, oldInfo
-		probeImageTimeout, seedRun, seedTimeout = oldProbeTimeout, oldSeed, oldSeedTimeout
+		probeImageTimeout, seedRun, seedTimeout, seedReportEvery = oldProbeTimeout, oldSeed, oldSeedTimeout, oldSeedEvery
 	})
 	seedRun = func(ctx context.Context, name string, args []string, stdout, stderr func(string)) error {
 		f.mu.Lock()

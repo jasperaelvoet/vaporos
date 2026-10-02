@@ -27,17 +27,23 @@ JobTimeoutAction=reboot-force
 
 // generateExtensions follows the boot report (/run/vos/extensions.json),
 // never intent: the system units of the extensions this boot mounted are
-// wanted, and a trial boot gets the vos-health drop-in.
+// wanted, and a trial boot gets the vos-health drop-in. A boot systemd-boot
+// counts is a trial too, also when it mounted nothing (vos.ext=0 or
+// skip-once report mode off) or its report cannot be read.
 func generateExtensions(dir string) []error {
+	var errs []error
 	rep, err := store.LoadBootReport()
 	if err != nil {
-		return []error{fmt.Errorf("extensions: %w (no extension units wanted)", err)}
+		errs = append(errs, fmt.Errorf("extensions: %w (no extension units wanted)", err))
 	}
-	var errs []error
-	if rep.IsTrial() || rep.Mode == store.ModeOSTrial {
+	_, cerr := os.Stat(config.BootCountVar)
+	if counted := cerr == nil; counted || rep.IsTrial() || rep != nil && rep.Mode == store.ModeOSTrial {
 		if err := writeDropin(dir, "vos-health.service", "50-vos-trial.conf", trialDropin); err != nil {
 			errs = append(errs, fmt.Errorf("vos-health trial drop-in: %w", err))
 		}
+	}
+	if rep == nil {
+		return errs
 	}
 	seen := map[string]bool{}
 	for _, m := range rep.Mounted {
