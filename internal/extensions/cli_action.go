@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"slices"
@@ -114,8 +113,8 @@ func runAction(ctx context.Context, id, name string, args json.RawMessage) error
 }
 
 // actionAsGamer runs an action through `vos ext action` as vapor: its
-// helper works in vapor's trees as vapor. The action's own words are the
-// last line the command printed.
+// helper works in vapor's trees as vapor. Why it failed, for the log, is
+// the last line the command printed.
 func (s *Service) actionAsGamer(ctx context.Context, id, name string, args json.RawMessage) error {
 	cmd := []string{"ext", "action", id, name}
 	if len(args) > 0 {
@@ -129,12 +128,8 @@ func (s *Service) actionAsGamer(ctx context.Context, id, name string, args json.
 	if errors.As(err, &exit) && exit.ExitCode() == actionExitNoAction {
 		return ErrNoAction
 	}
-	log.Printf("extensions: %s: %s as vapor: %v", id, name, err)
-	if ctx.Err() != nil {
-		return errors.New("it did not finish in time")
-	}
 	if line := lastLine(out); line != "" {
-		return errors.New(line)
+		return fmt.Errorf("%w: %s", err, line)
 	}
 	return err
 }
@@ -144,5 +139,9 @@ func lastLine(s string) string {
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-// maxActionError bounds the line vosd shows of a failed action.
-const maxActionError = 1000
+// maxActionError bounds the line `vos ext action` prints of a failed
+// action, and maxLoggedArgs what vosd logs of an action's args.
+const (
+	maxActionError = 1000
+	maxLoggedArgs  = 200
+)

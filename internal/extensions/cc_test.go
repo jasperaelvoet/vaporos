@@ -61,7 +61,7 @@ var shipped = map[string]string{
 		"category":"app","upstream":{"name":"Cloud Imperium Games","url":"https://robertsspaceindustries.com","license":"Proprietary"},
 		"caveats":["Easy Anti-Cheat isn't tested on VaporOS yet."],"requires":["proton"],
 		"data":[{"name":"prefix","where":"library","min_free_gb":150,"fs":["ext4","btrfs","xfs","f2fs"]}],
-		"settings":[{"key":"library","type":"disk","label":"Install on"}],
+		"settings":[{"key":"disk","type":"disk","label":"Game drive","required":true}],
 		"build":{"size":4000,"permissions":[]}}`,
 	"sc-hotas": `{"schema":1,"id":"sc-hotas","name":"HOTAS for Star Citizen","summary":"Joystick and throttle rules for Star Citizen.","category":"app",
 		"upstream":{"name":"VaporOS","url":"https://github.com/jasperaelvoet/vaporos","license":"MIT"},"requires":["star-citizen"],

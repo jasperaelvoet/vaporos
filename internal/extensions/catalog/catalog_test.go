@@ -47,6 +47,7 @@ func TestParseRejects(t *testing.T) {
 	for name, text := range map[string]string{
 		"short":          "ext proton " + a + " 10 " + b + "\n",
 		"bad id":         "ext Proton " + a + " 10 " + b + " -\n",
+		"route word":     "ext skip-once " + a + " 10 " + b + " -\n",
 		"bad size":       "ext proton " + a + " ten " + b + " -\n",
 		"zero size":      "ext proton " + a + " 0 " + b + " -\n",
 		"bad sha":        "ext proton abc 10 " + b + " -\n",

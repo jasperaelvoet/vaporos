@@ -9,8 +9,8 @@ import (
 	"log"
 	"maps"
 	"os"
-	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -45,9 +45,22 @@ func defaultValue(s descriptor.Setting) any {
 	return ""
 }
 
+// A disk setting's value: "" (none picked yet), SystemDrive or an adopted
+// game drive's folder, GameDrives/<name> (GET /storage's mounted_at).
+const (
+	SystemDrive = "/var"
+	GameDrives  = "/var/mnt"
+)
+
+// legacySystemDrive is the system drive's folder earlier control centers
+// offered; a stored one reads as SystemDrive.
+const legacySystemDrive = "/state"
+
+var driveNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,255}$`)
+
 // CheckSetting returns v (as JSON decodes it) if setting s takes it: what
 // PUT /extensions/{id}/settings accepts (the dev server's fake checks the
-// same).
+// same). A required disk setting does not take "".
 func CheckSetting(s descriptor.Setting, v any) (any, error) {
 	switch s.Type {
 	case "bool":
@@ -61,19 +74,36 @@ func CheckSetting(s descriptor.Setting, v any) (any, error) {
 		}
 		return nil, fmt.Errorf("%s must be one of %s", s.Key, strings.Join(s.Choices, ", "))
 	case "disk":
-		if p, ok := v.(string); ok && (p == "" || diskPath(p)) {
+		if p, ok := v.(string); ok && (drivePath(p) || (p == "" && !s.Required)) {
 			return p, nil
 		}
-		return nil, fmt.Errorf("%s must be a folder on a disk (an absolute path), or empty", s.Key)
+		if s.Required {
+			return nil, fmt.Errorf("%s must be the system drive (%s) or a game drive (a folder in %s)", s.Key, SystemDrive, GameDrives)
+		}
+		return nil, fmt.Errorf("%s must be the system drive (%s), a game drive (a folder in %s) or empty", s.Key, SystemDrive, GameDrives)
 	}
 	return nil, fmt.Errorf("%s is a kind of setting this VaporOS does not know", s.Key)
 }
 
-// diskPath reports whether p may name a disk's folder: absolute, clean and
-// printable. The helper that uses it checks the disk itself.
-func diskPath(p string) bool {
-	return len(p) <= 4096 && path.IsAbs(p) && path.Clean(p) == p && p != "/" &&
-		!strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f })
+// drivePath reports whether p names a drive the control center offers: the
+// system drive, or a game drive's folder. The helper that uses it checks
+// the drive itself.
+func drivePath(p string) bool {
+	name, ok := strings.CutPrefix(p, GameDrives+"/")
+	return p == SystemDrive || (ok && driveNameRe.MatchString(name) && name != "." && name != "..")
+}
+
+// missingDrive is the first required disk setting of d that values leave
+// without a drive, or false.
+func missingDrive(d *descriptor.Descriptor, values map[string]any) (descriptor.Setting, bool) {
+	if d != nil {
+		for _, s := range d.Settings {
+			if p, _ := values[s.Key].(string); s.Required && s.Type == "disk" && p == "" {
+				return s, true
+			}
+		}
+	}
+	return descriptor.Setting{}, false
 }
 
 // loadSettings returns every setting of d with its value: the stored one
@@ -87,6 +117,9 @@ func loadSettings(id string, d *descriptor.Descriptor) map[string]any {
 	for _, s := range d.Settings {
 		v := defaultValue(s)
 		if raw, ok := stored[s.Key]; ok {
+			if s.Type == "disk" && raw == legacySystemDrive {
+				raw = SystemDrive
+			}
 			if c, err := CheckSetting(s, raw); err == nil {
 				v = c
 			}

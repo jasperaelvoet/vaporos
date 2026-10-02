@@ -146,14 +146,15 @@ func TestAutoRestartWithAStagedUpdate(t *testing.T) {
 }
 
 // While the next start leaves the extensions out, a restart would not try
-// the set: VaporOS does not restart by itself for it, and says so.
+// the set: no restart is needed for it (nor in /status), and VaporOS does
+// not restart by itself for it.
 func TestAutoRestartSkipOnce(t *testing.T) {
 	a := newAutoRig(t)
 	if code, _ := a.do("POST", "/extensions/skip-once", ""); code != 200 {
 		t.Fatal("skip-once")
 	}
-	if d := a.doc(); !d.SkipOnce || !d.Restart.Needed || d.Restart.Auto {
-		t.Fatalf("document = skip_once %v, restart %+v", d.SkipOnce, d.Restart)
+	if d := a.doc(); !d.SkipOnce || d.Restart != (RestartDoc{}) || a.s.RestartNeeded() {
+		t.Fatalf("document = skip_once %v, restart %+v, RestartNeeded %v", d.SkipOnce, d.Restart, a.s.RestartNeeded())
 	}
 	a.idle(time.Hour)
 	if len(a.reboots) != 0 || exists(config.ExtAutoRestartPath()) {
@@ -162,7 +163,7 @@ func TestAutoRestartSkipOnce(t *testing.T) {
 	if code, _ := a.do("DELETE", "/extensions/skip-once", ""); code != 200 {
 		t.Fatal("cancelling skip-once")
 	}
-	if d := a.doc(); d.SkipOnce || !d.Restart.Auto {
+	if d := a.doc(); d.SkipOnce || !d.Restart.Needed || !d.Restart.Auto || !a.s.RestartNeeded() {
 		t.Fatalf("document = skip_once %v, restart %+v", d.SkipOnce, d.Restart)
 	}
 	a.idle(time.Hour)

@@ -2398,18 +2398,16 @@ function extLookup(e, id) {
   return findExt(e.doc('extensions'), id) || fail(404, `no extension ${JSON.stringify(id)}`);
 }
 
-// diskPath is extensions.diskPath: absolute, clean, not / and printable.
-function diskPath(p) {
-  return (
-    utf8Len(p) <= 4096 &&
-    p.startsWith('/') &&
-    p !== '/' &&
-    p.split('/').slice(1).every((seg) => seg !== '' && seg !== '.' && seg !== '..') &&
-    ![...p].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)
-  );
+// drivePath is extensions.drivePath: the system drive (/var), or a game
+// drive's folder (/var/mnt/<name>).
+function drivePath(p) {
+  if (p === '/var') return true;
+  const name = p.startsWith('/var/mnt/') ? p.slice('/var/mnt/'.length) : '';
+  return /^[A-Za-z0-9._-]{1,255}$/.test(name) && name !== '.' && name !== '..';
 }
 
 // checkSetting is extensions.CheckSetting: the value as stored, or the 400.
+// A required disk setting does not take "" (no drive).
 function checkSetting(s, key, v) {
   switch (s.type) {
     case 'bool':
@@ -2419,9 +2417,30 @@ function checkSetting(s, key, v) {
       return typeof v === 'string' && choices.includes(v) ? v : fail(400, `${key} must be one of ${choices.join(', ')}`);
     }
     case 'disk':
-      return typeof v === 'string' && (v === '' || diskPath(v)) ? v : fail(400, `${key} must be a folder on a disk (an absolute path), or empty`);
+      if (typeof v === 'string' && (drivePath(v) || (v === '' && s.required !== true))) return v;
+      return s.required === true
+        ? fail(400, `${key} must be the system drive (/var) or a game drive (a folder in /var/mnt)`)
+        : fail(400, `${key} must be the system drive (/var), a game drive (a folder in /var/mnt) or empty`);
   }
   return fail(400, `${key} is a kind of setting this VaporOS does not know`);
+}
+
+// missingDrive is why adding x is refused for a drive (extensions'
+// checkDrives): x, or a requirement it adds, has a required disk setting
+// without one (in values for x, else the card's value); '' when none is.
+function missingDrive(x, values, adding) {
+  const name = asStr(x.name);
+  for (const a of [...adding, x]) {
+    for (const s of asList(a.settings).map(asObj)) {
+      if (s.type !== 'disk' || s.required !== true) continue;
+      const own = asStr(a.id) === asStr(x.id) && Object.hasOwn(values, asStr(s.key));
+      if (asStr(own ? values[asStr(s.key)] : s.value) !== '') continue;
+      if (asStr(a.id) === asStr(x.id)) return `${name} needs a game drive. Pick one to add it.`;
+      const n = asStr(a.name);
+      return `${name} needs ${n}, which needs a game drive. Add ${n} first.`;
+    }
+  }
+  return '';
 }
 
 // checkExtSettings checks every key of set, in order, against x's
@@ -2515,6 +2534,7 @@ function addExt(e, x) {
   x.progress = null;
   if (x.mounted === true) {
     x.state = 'installed';
+    x.web_running = isObj(x.web);
     return;
   }
   x.state = 'installing';
@@ -2555,7 +2575,8 @@ function joinNames(names) {
 
 // refreshExtensions recomputes who requires whom, whether adding one takes
 // the password, and the restart a restart-needed card waits for, which may
-// happen by itself unless the next start leaves the extensions out.
+// happen by itself; none is needed while the next start leaves the
+// extensions out.
 function refreshExtensions(doc) {
   const cards = extList(doc);
   const adding = [];
@@ -2570,7 +2591,8 @@ function refreshExtensions(doc) {
     else if (m.wanted !== true) removing.push(name);
     else changing.push(name);
   }
-  if (adding.length + removing.length + changing.length === 0) {
+  // With skip_once the next start mounts nothing: no restart tries the change.
+  if (adding.length + removing.length + changing.length === 0 || doc.skip_once === true) {
     doc.restart = { needed: false, auto: false, reason: '' };
     return;
   }
@@ -2578,7 +2600,7 @@ function refreshExtensions(doc) {
   if (adding.length) parts.push(`adding ${joinNames(adding)}`);
   if (removing.length) parts.push(`removing ${joinNames(removing)}`);
   if (changing.length) parts.push(`changing the settings of ${joinNames(changing)}`);
-  doc.restart = { needed: true, auto: doc.skip_once !== true, reason: `Restart to finish ${joinNames(parts)}.` };
+  doc.restart = { needed: true, auto: true, reason: `Restart to finish ${joinNames(parts)}.` };
 }
 
 // extChanged brings required_by and restart up to date, publishes the
@@ -2624,6 +2646,7 @@ function bootExtensions(docs) {
         x.reason = STARTED_OFF;
       }
     }
+    x.web_running = x.mounted === true && wanted && isObj(x.web);
   }
   doc.skip_once = false;
   refreshExtensions(doc);
@@ -2655,6 +2678,8 @@ const EXTENSIONS = [
     const values = checkExtSettings(x, v.options);
     if (isAnswer(values)) return values;
     const adding = addingExt(this, x);
+    const drive = missingDrive(x, values, adding);
+    if (drive) return fail(400, drive);
     if (Object.keys(values).some((k) => moduleSetting(x, k)) || adding.some(ownPassword)) {
       const no = checkExtPassword(this, v.password, `Adding ${name}`);
       if (no) return no;
@@ -2675,6 +2700,7 @@ const EXTENSIONS = [
     x.wanted = false;
     x.reason = '';
     x.progress = null;
+    x.web_running = false;
     x.state = x.mounted === true ? 'restart-needed' : 'not-installed';
     // Purging deletes settings/<id>.json: the settings read as defaults.
     if (purge === '1') for (const s of asList(x.settings).map(asObj)) s.value = settingDefault(s);

@@ -93,11 +93,13 @@ func (s *Service) SetAutoRestart(reboot func(ctx context.Context, message string
 }
 
 // RestartNeeded reports whether a restart would try the pending set (the
-// /status restart kind "extensions").
+// /status restart kind "extensions"): not while the next start mounts no
+// extension (skip-once).
 func (s *Service) RestartNeeded() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.view.restart
+	restart := s.view.restart
+	s.mu.Unlock()
+	return restart && !skipOnce()
 }
 
 type autoRecord struct {

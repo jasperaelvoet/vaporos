@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
@@ -37,7 +41,11 @@ func TestInstallRefuses(t *testing.T) {
 		{"/extensions/gone", `{}`, 409, "This version of VaporOS does not have gone."},
 		{"/extensions/proton", `{}`, 409, "CachyOS Proton is part of VaporOS and always on."},
 		{"/extensions/coolercontrol", `{"password":"` + rigPassword + `"}`, 409, "CoolerControl cannot run together with LACT."},
-		{"/extensions/star-citizen", `{"options":{"library":"relative/path"}}`, 400, "library must be a folder on a disk"},
+		{"/extensions/star-citizen", `{"options":{"disk":"relative/path"}}`, 400, "disk must be the system drive (/var) or a game drive (a folder in /var/mnt)"},
+		{"/extensions/star-citizen", `{"options":{"disk":"/state"}}`, 400, "disk must be the system drive (/var) or a game drive (a folder in /var/mnt)"},
+		{"/extensions/star-citizen", `{"options":{"disk":""}}`, 400, "disk must be the system drive"},
+		{"/extensions/star-citizen", `{}`, 400, "Star Citizen needs a game drive. Pick one to add it."},
+		{"/extensions/sc-hotas", `{}`, 400, "HOTAS for Star Citizen needs Star Citizen, which needs a game drive. Add Star Citizen first."},
 		{"/extensions/star-citizen", `{"options":{"color":"red"}}`, 400, `unknown setting \"color\"`},
 		{"/extensions/star-citizen", `{"options":[]}`, 400, "bad request body"},
 	} {
@@ -96,6 +104,9 @@ func TestInstallPassword(t *testing.T) {
 // needs is refused, as is removing core.
 func TestInstallRequiresAndRemoveRefuses(t *testing.T) {
 	r := newRig(t)
+	if code, body := r.do("POST", "/extensions/star-citizen", `{"options":{"disk":"/var/mnt/Games"}}`); code != 200 {
+		t.Fatalf("install star-citizen: %d %s", code, body)
+	}
 	if code, body := r.do("POST", "/extensions/sc-hotas", `{}`); code != 200 {
 		t.Fatalf("install: %d %s", code, body)
 	}
@@ -149,7 +160,7 @@ func TestInstallSpace(t *testing.T) {
 	r.s.mu.Lock()
 	r.s.noVerity = true
 	r.s.mu.Unlock()
-	if code, body := r.do("POST", "/extensions/star-citizen", `{}`); code != 409 || !strings.Contains(body, "cannot seal") {
+	if code, body := r.do("POST", "/extensions/star-citizen", `{"options":{"disk":"/var"}}`); code != 409 || !strings.Contains(body, "cannot seal") {
 		t.Fatalf("no verity: %d %s", code, body)
 	}
 }
@@ -211,9 +222,9 @@ func TestRemove(t *testing.T) {
 }
 
 // A helper's Install runs once per extension mounted for the first time,
-// as root after the restart, and only for a wanted one; a failure needs
-// attention and is tried again, at most maxHelperInstalls times a boot,
-// then again after "Try again".
+// as root after the restart, and only for a wanted one; a failure is tried
+// again, the card installing meanwhile, at most maxHelperInstalls times a
+// boot, then needs attention until "Try again".
 func TestHelperInstall(t *testing.T) {
 	r := newRig(t)
 	h := &recHelper{installErr: errors.New("api.truckersmp.com did not answer")}
@@ -226,15 +237,17 @@ func TestHelperInstall(t *testing.T) {
 		t.Fatalf("Install ran before the restart: %v", h.Calls())
 	}
 	r.boot()
-	x := r.card("truckersmp")
-	if x.State != StateNeedsAttention || x.Reason != "Setting up TruckersMP didn't finish. Try again, or remove it." {
-		t.Fatalf("after a failed setup = %+v", x)
+	if x := r.card("truckersmp"); x.State != StateInstalling || x.Reason != "" {
+		t.Fatalf("after a failed setup with tries left = %+v", x)
 	}
 	r.pass()
 	r.pass()
 	r.pass()
 	if n := len(h.Calls()); n != maxHelperInstalls {
 		t.Fatalf("%d installs, want %d", n, maxHelperInstalls)
+	}
+	if x := r.card("truckersmp"); x.State != StateNeedsAttention || x.Reason != "Setting up TruckersMP didn't finish. Try again, or remove it." {
+		t.Fatalf("after the last try = %+v", x)
 	}
 	h.installErr = nil
 	if code, body := r.do("POST", "/extensions/truckersmp/retry", ""); code != 200 {
@@ -439,5 +452,69 @@ func TestGetDocument(t *testing.T) {
 	if code != 200 || json.Unmarshal([]byte(body), &doc) != nil || len(doc.Extensions) != 6 {
 		t.Fatalf("GET: %d %s", code, body)
 	}
-	_ = context.Background
+}
+
+// pwHelper records the extensions it passed a new admin password to.
+type pwHelper struct {
+	NopHelper
+	mu  sync.Mutex
+	got []string
+}
+
+func (h *pwHelper) PasswordChanged(_ context.Context, x *Ext) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.got = append(h.got, x.ID)
+	return nil
+}
+
+// A new admin password reaches the helpers that keep one, for each
+// extension this boot mounted that is still wanted, through the hook the
+// routes register with the API server.
+func TestPasswordChangedReachesTheHelpers(t *testing.T) {
+	r := newRig(t)
+	h := &pwHelper{}
+	useHelper(t, "coolercontrol", h)
+	useHelper(t, "truckersmp", h)
+	for _, id := range []string{"coolercontrol", "truckersmp"} {
+		if code, _ := r.do("POST", "/extensions/"+id, `{"password":"`+rigPassword+`"}`); code != 200 {
+			t.Fatal("install " + id)
+		}
+	}
+	r.pass()
+	r.boot()
+	if code, _ := r.do("DELETE", "/extensions/truckersmp", ""); code != 200 {
+		t.Fatal("remove truckersmp")
+	}
+
+	must(t, auth.SetAdminPassword("", rigPassword))
+	srv := api.New(api.Options{})
+	r.s.Routes(srv)
+	send := func(path, body, cookie, csrf string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", api.Prefix+path, strings.NewReader(body))
+		req.RemoteAddr, req.Host = "127.0.0.1:40000", "127.0.0.1"
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+			req.Header.Set("X-VOS-CSRF", csrf)
+		}
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+	w := send("/auth/login", `{"password":"`+rigPassword+`"}`, "", "")
+	var login struct{ CSRF string }
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &login) != nil || len(w.Result().Cookies()) == 0 {
+		t.Fatalf("login: %d %s", w.Code, w.Body)
+	}
+	c := w.Result().Cookies()[0]
+	if w := send("/auth/password", `{"current":"`+rigPassword+`","new":"vapor-vapor-2"}`, c.Name+"="+c.Value, login.CSRF); w.Code != 200 {
+		t.Fatalf("password: %d %s", w.Code, w.Body)
+	}
+	r.s.cc.passwords.Wait()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !slices.Equal(h.got, []string{"coolercontrol"}) {
+		t.Fatalf("passed to %q, want coolercontrol alone (truckersmp was removed)", h.got)
+	}
 }

@@ -259,7 +259,14 @@ func (e *env) service() (*Service, *booted) {
 	e.t.Helper()
 	b, err := loadBooted()
 	must(e.t, err)
-	return NewService(e.cfg), b
+	s := NewService(e.cfg)
+	// Before newEnv puts the paths back: a pass's helper installs, and the
+	// helpers' password calls, end after the test.
+	e.t.Cleanup(func() {
+		s.waitInstalls()
+		s.cc.passwords.Wait()
+	})
+	return s, b
 }
 
 func (e *env) state(s *Service, id string) ExtensionStatus {

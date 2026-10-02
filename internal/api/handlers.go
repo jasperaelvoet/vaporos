@@ -187,6 +187,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusInternalServerError, "saving the password: %v", err)
 		return
 	}
+	s.passwordChanged()
 	csrf, err := s.startSession(w, r)
 	if err != nil {
 		Error(w, http.StatusInternalServerError, "starting session: %v", err)
@@ -231,6 +232,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	if info, ok := sessionFromContext(r.Context()); ok {
 		s.sessions.deleteAllExcept(info.key)
 	}
+	s.passwordChanged()
 	OK(w)
 }
 
