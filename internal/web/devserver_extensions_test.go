@@ -617,17 +617,17 @@ func TestFakeExtensions(t *testing.T) {
 	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"nope-nope"}`); code != 403 || ans["error"] != "the password is wrong" {
 		t.Fatalf("a wrong password: %d %v", code, ans)
 	}
-	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_overdrive":1}}`); code != 400 || ans["error"] != "gpu_overdrive must be true or false" {
+	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_fan_curves":1}}`); code != 400 || ans["error"] != "gpu_fan_curves must be true or false" {
 		t.Fatalf("bad option: %d %v", code, ans)
 	}
-	if code, ans := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"library":"-x"}}`); code != 400 ||
-		ans["error"] != "library must be a folder on a disk (an absolute path), or empty" {
+	if code, ans := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"disk":"-x"}}`); code != 400 ||
+		ans["error"] != "disk must be a folder on a disk (an absolute path), or empty" {
 		t.Fatalf("a disk that is no path: %d %v", code, ans)
 	}
-	if code, _ := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"library":"/var/mnt/games"}}`); code != 200 {
+	if code, _ := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"disk":"/var/mnt/Games"}}`); code != 200 {
 		t.Fatalf("a disk: %d", code)
 	}
-	code, doc := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_overdrive":true}}`)
+	code, doc := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_fan_curves":true}}`)
 	if c := card(doc, "coolercontrol"); code != 200 || c["state"] != "restart-needed" || c["wanted"] != true {
 		t.Fatalf("added: %d %v", code, c)
 	}
@@ -664,21 +664,22 @@ func TestFakeExtensions(t *testing.T) {
 	if code, ans := do("POST", "/extensions/coolercontrol/actions/copy-profiles", `{}`); code != 404 || ans["error"] != `CoolerControl has no action "copy-profiles"` {
 		t.Fatalf("unknown action: %d %v", code, ans)
 	}
-	if code, ans := do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"gpu_overdrive":false}}`); code != 403 {
+	if code, ans := do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"gpu_fan_curves":false}}`); code != 403 {
 		t.Fatalf("a module setting without the password: %d %v", code, ans)
 	}
-	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"poll_rate":"every_five_seconds"}}`)
-	if c := card(doc, "coolercontrol"); c["state"] != "installed" || extSetting(c, "poll_rate")["value"] != "every_five_seconds" {
-		t.Fatalf("plain setting: %v", c)
+	// A module setting saved as it is changes nothing: no password.
+	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"settings":{"gpu_fan_curves":true}}`)
+	if c := card(doc, "coolercontrol"); c["state"] != "installed" || extSetting(c, "gpu_fan_curves")["value"] != true {
+		t.Fatalf("an unchanged module setting: %v", c)
 	}
-	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"password":"`+devPassword+`","settings":{"gpu_overdrive":false}}`)
+	_, doc = do("PUT", "/extensions/coolercontrol/settings", `{"password":"`+devPassword+`","settings":{"it87_conflicts":true}}`)
 	if c := card(doc, "coolercontrol"); c["state"] != "restart-needed" ||
 		asObj(doc["restart"])["reason"] != "Restart to finish changing the settings of CoolerControl." {
 		t.Fatalf("module setting: %v, restart %v", c, doc["restart"])
 	}
 	_, doc = do("DELETE", "/extensions/coolercontrol?purge=1", "")
 	if c := card(doc, "coolercontrol"); c["state"] != "restart-needed" || c["wanted"] != false ||
-		extSetting(c, "poll_rate")["value"] != "every_second" || asObj(doc["restart"])["reason"] != "Restart to finish removing CoolerControl." {
+		extSetting(c, "gpu_fan_curves")["value"] != false || extSetting(c, "it87_conflicts")["value"] != false || asObj(doc["restart"])["reason"] != "Restart to finish removing CoolerControl." {
 		t.Fatalf("removed: %v, restart %v", c, doc["restart"])
 	}
 	if code, _ := do("POST", "/extensions/skip-once", ""); code != 200 {

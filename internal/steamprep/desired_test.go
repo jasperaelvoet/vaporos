@@ -2,6 +2,7 @@ package steamprep
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,5 +78,43 @@ func TestParseDesired(t *testing.T) {
 	d, _ = parseDesired([]byte(`{"default_compat_tool":"a b"}`), func(string, ...any) {})
 	if d.DefaultCompatTool != "" {
 		t.Errorf("default %q", d.DefaultCompatTool)
+	}
+}
+
+// testdata/steam.json is what vosd writes (internal/extensions
+// TestGoldenSteamJSON makes the same bytes): prepare takes every entry,
+// branch requests and shortcut args included, without a log line.
+func TestGoldenSteamJSON(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "steam.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	d, err := parseDesired(data, func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
+	if err != nil || len(logs) != 0 {
+		t.Fatalf("%v %q", err, logs)
+	}
+	if d.Set != "3" || !d.Dispatcher || d.DefaultCompatTool != "proton-cachyos-slr" || len(d.Apps) != 3 || len(d.Shortcuts) != 2 {
+		t.Fatalf("%+v", d)
+	}
+	if b := d.Apps[0].Beta; b == nil || *b != (BetaWant{Branch: "temporary_1_61", Request: "20261002T200000.000000000"}) || d.Apps[0].keepBranch {
+		t.Errorf("ETS2's branch request %+v", d.Apps[0])
+	}
+	if d.Apps[1].Beta != nil || d.Apps[1].keepBranch || strings.Join(d.Apps[1].Hooks, ",") != "truckersmp" {
+		t.Errorf("ATS %+v", d.Apps[1])
+	}
+	if b := d.Apps[2].Beta; b == nil || *b != (BetaWant{Branch: "", Request: "1759400000"}) {
+		t.Errorf("a request for the public branch %+v", d.Apps[2])
+	}
+	sc := d.Shortcuts[1]
+	if sc.Ref() != "truckersmp/ets2" || strings.Join(sc.Args, " ") != "ext truckersmp mp ets2" ||
+		sc.launchOptions() != "/usr/bin/vos ext launch --shortcut truckersmp/ets2 %command% ext truckersmp mp ets2" {
+		t.Errorf("shortcut %+v", sc)
+	}
+	if d.Shortcuts[0].Art != "/usr/lib/vos/ext/star-citizen/art" || !d.names("star-citizen") || !d.names("truckersmp") {
+		t.Errorf("%+v", d.Shortcuts[0])
+	}
+	if r := d.releases(); len(r) != 1 || !r[292030] {
+		t.Errorf("release %v", r)
 	}
 }

@@ -54,9 +54,10 @@ test('size, upstream and licence', () => {
 test('what it can do, in sentences', () => {
   assert.deepEqual(X.can(ext(base, 'coolercontrol')).slice(0, 3), [
     'Runs a system service as root.',
-    'Adds device rules.',
     'Loads kernel modules.',
+    'Sets kernel module options (takes effect after a restart).',
   ]);
+  assert.deepEqual(X.can(ext(base, 'star-citizen')).slice(0, 2), ['Adds device rules.', 'Adds Star Citizen to your Steam library.']);
   assert.equal(X.can(ext(base, 'coolercontrol')).at(-1), 'Has its own web page, reachable from your network.');
   assert.deepEqual(X.can(ext(base, 'proton')).slice(0, 2), ['Loads kernel modules.', 'Adds a Steam compatibility tool.']);
   assert.deepEqual(X.can({ permissions: ['service', 'user-service', 'sysctl', 'polkit', 'dbus', 'udev', 'made-up'] }), [
@@ -121,7 +122,7 @@ test('the fold is named by what it holds', () => {
 
 test('what it downloads, and when VaporOS cannot check it', () => {
   assert.deepEqual(X.downloads(ext(base, 'truckersmp')), [
-    { text: "The TruckersMP mod from truckersmp.com, when it updates. It runs as a program, and VaporOS can't check these files.", warn: true },
+    { text: "The TruckersMP mod from download.ets2mp.com, when it updates. It runs as a program, and VaporOS can't check these files.", warn: true },
   ]);
   assert.deepEqual(X.downloads({ downloads: [{ what: 'fonts', from: 'example.com', checked: 'pinned', runs_code: true, when: 'install' }] }), [
     { text: 'Fonts from example.com, when you install it. VaporOS checks it against a fingerprint it ships.', warn: false },
@@ -169,9 +170,9 @@ test('the lines under a card', () => {
   assert.deepEqual(X.lines(ext(chain, 'd'), ctx(chain)), [], 'wanted: nothing to install');
   const att = preset('extensions-attention');
   assert.deepEqual(X.lines(ext(att, 'coolercontrol')), [
-    { text: 'Fans and pumps: 4 found.', tone: '' },
-    { text: 'Its service stopped. VaporOS starts it again at the next restart.', tone: 'error' },
+    { text: "CoolerControl isn't running. Restart VaporOS, or remove it.", tone: 'warning' },
   ]);
+  assert.deepEqual(X.lines(ext(att, 'truckersmp')).map((l) => l.tone), ['', 'warning', '']);
   // A helper's line keeps its words; an unknown tone is plain, an empty line none.
   assert.deepEqual(X.lines({ status: [{ text: 'odd', tone: 'purple' }, { tone: 'error' }] }), [{ text: 'odd.', tone: '' }]);
 });
@@ -259,19 +260,21 @@ test('the Extensions row on System', () => {
   assert.deepEqual(X.rowLine(base), ['1 installed', '']);
   assert.deepEqual(X.rowLine(preset('extensions-installing')), ['1 installed · installing CoolerControl · 41%', 'hot']);
   assert.deepEqual(X.rowLine(preset('extensions-restart')), ['1 installed · restart needed', 'hot']);
-  assert.deepEqual(X.rowLine(preset('extensions-attention')), ['2 installed · 1 needs attention', 'cold']);
+  assert.deepEqual(X.rowLine(preset('extensions-attention')), ['3 installed · 1 needs attention', 'cold']);
   const two = preset('extensions-attention');
   ext(two, 'coolercontrol').state = 'needs-attention';
-  assert.deepEqual(X.rowLine(two), ['2 installed · 2 need attention', 'cold']);
+  assert.deepEqual(X.rowLine(two), ['3 installed · 2 need attention', 'cold']);
   assert.deepEqual(X.rowLine({ extensions: [] }), ['None installed', '']);
   assert.deepEqual(X.rowLine(null), ["Couldn't load", 'cold']);
   assert.deepEqual(X.rowLine({}), ["Couldn't load", 'cold']);
 });
 
 test('settings, choices and the web page', () => {
-  const [overdrive, poll] = ext(base, 'coolercontrol').settings;
-  assert.equal(X.settingHint(overdrive), 'Turns on AMD overdrive in the graphics driver. Takes effect after a restart.');
-  assert.equal(X.settingHint(poll), 'How often it reads temperatures and fan speeds.');
+  const [curves, it87] = ext(base, 'coolercontrol').settings;
+  assert.equal(X.settingHint(curves), "Lets CoolerControl set an AMD card's fan curve. This turns on the card's overclocking controls, so a wrong setting there can make the card unstable. Takes effect after a restart.");
+  assert.match(X.settingHint(it87), /^Makes fans on some ITE chips show up\..* Takes effect after a restart\.$/);
+  const [disk] = ext(base, 'star-citizen').settings;
+  assert.equal(X.settingHint(disk), disk.help, 'no restart: the help alone');
   assert.equal(X.settingHint({ restart: true }), 'Takes effect after a restart.');
   assert.equal(X.choiceLabel('every_two_seconds'), 'Every two seconds');
   assert.equal(X.webLabel(ext(base, 'coolercontrol')), 'Open CoolerControl');

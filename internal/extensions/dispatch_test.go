@@ -156,6 +156,20 @@ var steamGameEnv = map[string]string{
 	"PRESSURE_VESSEL_FILESYSTEMS_RO": "/usr/share/steam/compatibilitytools.d",
 }
 
+// A helper's own command drops the same variables from what it hands on.
+func TestWithoutSteamEnv(t *testing.T) {
+	env := []string{"HOME=/var/home/vapor", "STEAM_COMPAT_DATA_PATH=/x"}
+	for k, v := range steamGameEnv {
+		env = append(env, k+"="+v)
+	}
+	if got := WithoutSteamEnv(env); !slices.Equal(got, []string{"HOME=/var/home/vapor", "STEAM_COMPAT_DATA_PATH=/x"}) {
+		t.Errorf("%q", got)
+	}
+	if len(env) != 2+len(steamGameEnv) {
+		t.Error("env changed in place")
+	}
+}
+
 func TestDispatchRunsTheHooks(t *testing.T) {
 	_, calls, hooks := dispatchBox(t)
 	for k, v := range steamGameEnv {

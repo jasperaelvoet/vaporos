@@ -134,14 +134,13 @@ func (m *mp) runningGame() string {
 }
 
 // systemdRun starts the handoff in the gaming user's manager, so it lives
-// on after the shortcut's processes end. Steam's overlay (LD_PRELOAD) and
-// runtime libraries (LD_LIBRARY_PATH) stay out of systemd-run.
+// on after the shortcut's processes end. Steam's overlay, runtime
+// libraries and runtime settings stay out of systemd-run, as they stay out
+// of a hook's programs.
 func systemdRun(ctx context.Context, args []string) error {
 	full := append([]string{"--user", "--collect", "--quiet", "--unit=" + strings.TrimSuffix(gameproc.HandoffUnit, ".service"), "--"}, args...)
 	cmd := exec.CommandContext(ctx, "systemd-run", full...)
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		return strings.HasPrefix(kv, "LD_PRELOAD=") || strings.HasPrefix(kv, "LD_LIBRARY_PATH=")
-	})
+	cmd.Env = extensions.WithoutSteamEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("systemd-run: %v: %s", err, strings.TrimSpace(string(out)))
 	}

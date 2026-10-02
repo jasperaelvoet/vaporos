@@ -117,6 +117,16 @@ func steamOnly(key string) bool {
 		strings.HasPrefix(key, "STEAM_RUNTIME") || strings.HasPrefix(key, "PRESSURE_VESSEL")
 }
 
+// WithoutSteamEnv is env less the steamOnly variables: what a helper's
+// own command that Steam started (TruckersMP's mp) hands the programs it
+// starts, as a hook's programs get.
+func WithoutSteamEnv(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		k, _, _ := strings.Cut(kv, "=")
+		return steamOnly(k)
+	})
+}
+
 // stripSteamEnv takes the steamOnly variables out of this process's
 // environment, which every helper program a hook starts inherits; the
 // launch itself keeps Steam's environment. A variable for tests.

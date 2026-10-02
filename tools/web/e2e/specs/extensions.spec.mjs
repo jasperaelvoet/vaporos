@@ -349,25 +349,33 @@ export default [
     async run(t) {
       const { page, step } = t;
       const d = doc('extensions-attention');
-      const x = need(d.extensions.find((y) => y.mounted && (y.settings || []).some((s) => s.type === 'choice' && !s.needs_password) && (y.settings || []).some((s) => s.type === 'bool' && s.needs_password)),
-        'extensions-attention: a running extension with a choice and a switch that takes the password (settings[].needs_password)');
-      const choice = x.settings.find((s) => s.type === 'choice' && !s.needs_password);
+      const x = need(d.extensions.find((y) => y.mounted && (y.settings || []).some((s) => s.type === 'bool' && s.needs_password)),
+        'extensions-attention: a running extension with a switch that takes the password (settings[].needs_password)');
       const flag = x.settings.find((s) => s.type === 'bool' && s.needs_password);
+      // A setting without the password: a choice, or a drive (one of those GET /storage lists).
+      const free = (s) => !s.needs_password && (s.type === 'choice' || s.type === 'disk');
+      const y = need(d.extensions.find((z) => (z.wanted || z.mounted) && (z.settings || []).some(free)),
+        'extensions-attention: an added extension with a choice or a drive that takes no password');
+      const plain = y.settings.find(free);
+      const values = plain.type === 'disk' ? X.drives(json('base/storage.json').disks).map((v) => v.path) : plain.choices;
+      const was = String(plain.value ?? '');
+      const pick = need(values.find((v) => v !== was), `another value for ${y.name}'s ${plain.label}`);
+      const sel = () => card(page, y.name).getByLabel(plain.label, { exact: true });
+      const sw = () => card(page, x.name).getByRole('switch', { name: flag.label, exact: true });
       const saved = flag.restart ? `Saved. ${X.AFTER_RESTART}` : 'Saved.';
-      await step('a choice saves at once, without a password', async () => {
+      await step('a setting without the password saves at once', async () => {
         await open(t);
-        const pick = choice.choices.find((c) => c !== choice.value);
-        const body = write(page, 'PUT', `/extensions/${x.id}/settings`);
-        await page.getByLabel(choice.label, { exact: true }).selectOption(pick);
-        assert.deepEqual(await body, { settings: { [choice.key]: pick } });
+        if (plain.type === 'disk') await until(page, (id) => document.getElementById(id).options.length > 1, `ext-${y.id}-${plain.key}`);
+        const body = write(page, 'PUT', `/extensions/${y.id}/settings`);
+        await sel().selectOption(pick);
+        assert.deepEqual(await body, { settings: { [plain.key]: pick } });
         await notice(page, 'Saved.');
-        assert.equal(await page.getByLabel(choice.label, { exact: true }).inputValue(), pick);
+        assert.equal(await sel().inputValue(), pick);
       });
       await step('a setting that takes the password asks for it first, and a wrong one is said under the field', async () => {
-        const sw = page.getByRole('switch', { name: flag.label });
-        assert.equal(await sw.isChecked(), flag.value === true);
-        if (flag.restart) assert.match(await text(page.locator(`#${await sw.getAttribute('aria-describedby')}`)), /Takes effect after a restart\.$/);
-        await sw.click({ force: true });
+        assert.equal(await sw().isChecked(), flag.value === true);
+        if (flag.restart) assert.match(await text(page.locator(`#${await sw().getAttribute('aria-describedby')}`)), /Takes effect after a restart\.$/);
+        await sw().click({ force: true });
         await page.locator('#ext-dialog[open]').waitFor();
         assert.equal(await text(page.locator('#ext-dialog-title')), `Change ${flag.label}?`);
         assert.equal(await page.evaluate(() => document.activeElement.id), 'ext-dialog-pw');
@@ -377,39 +385,36 @@ export default [
         assert.equal(await page.locator('#ext-dialog[open]').count(), 1, 'the dialog stays open');
       });
       await step('the right password saves it', async () => {
-        const sw = page.getByRole('switch', { name: flag.label });
         const body = write(page, 'PUT', `/extensions/${x.id}/settings`);
         await page.fill('#ext-dialog-pw', 'vaporvapor');
         await page.click('#ext-dialog-ok');
         assert.deepEqual(await body, { settings: { [flag.key]: flag.value !== true }, password: 'vaporvapor' });
         await closed(page, 'ext-dialog');
         await notice(page, saved);
-        assert.equal(await sw.isChecked(), flag.value !== true);
+        assert.equal(await sw().isChecked(), flag.value !== true);
       });
       await step('Cancel puts the switch back', async () => {
-        const sw = page.getByRole('switch', { name: flag.label });
-        const before = await sw.isChecked();
-        await sw.click({ force: true });
+        const before = await sw().isChecked();
+        await sw().click({ force: true });
         await page.locator('#ext-dialog[open]').waitFor();
         await page.click('#ext-dialog-cancel');
         await closed(page, 'ext-dialog');
-        assert.equal(await sw.isChecked(), before);
+        assert.equal(await sw().isChecked(), before);
       });
       await step('a change the box guards after all asks for the password instead of failing', async () => {
         // The first step chose another value: this one changes it back.
-        const sel = page.getByLabel(choice.label, { exact: true });
-        await page.route(`**/api/v1/extensions/${x.id}/settings`, (r) => r.fulfill({ status: 403, json: { error: 'Changing this setting needs the admin password' } }), { times: 1 });
-        await sel.selectOption(choice.value);
+        await page.route(`**/api/v1/extensions/${y.id}/settings`, (r) => r.fulfill({ status: 403, json: { error: 'Changing this setting needs the admin password' } }), { times: 1 });
+        await sel().selectOption(was);
         await page.locator('#ext-dialog[open]').waitFor();
-        assert.equal(await text(page.locator('#ext-dialog-title')), `Change ${choice.label}?`);
+        assert.equal(await text(page.locator('#ext-dialog-title')), `Change ${plain.label}?`);
         assert.equal(await page.evaluate(() => document.activeElement.id), 'ext-dialog-pw');
-        const body = write(page, 'PUT', `/extensions/${x.id}/settings`);
+        const body = write(page, 'PUT', `/extensions/${y.id}/settings`);
         await page.fill('#ext-dialog-pw', 'vaporvapor');
         await page.click('#ext-dialog-ok');
-        assert.deepEqual(await body, { settings: { [choice.key]: choice.value }, password: 'vaporvapor' });
+        assert.deepEqual(await body, { settings: { [plain.key]: was }, password: 'vaporvapor' });
         await closed(page, 'ext-dialog');
         await notice(page, 'Saved.');
-        assert.equal(await sel.inputValue(), choice.value);
+        assert.equal(await sel().inputValue(), was);
       });
     },
   },

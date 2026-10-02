@@ -1,0 +1,66 @@
+{
+  "set": "3",
+  "dispatcher": true,
+  "default_compat_tool": "proton-cachyos-slr",
+  "apps": [
+    {
+      "app": 227300,
+      "compat_tool": "proton-cachyos-slr",
+      "hooks": [
+        "truckersmp"
+      ],
+      "beta": {
+        "branch": "temporary_1_61",
+        "request": "20261002T200000.000000000"
+      }
+    },
+    {
+      "app": 270880,
+      "compat_tool": "proton-cachyos-slr",
+      "hooks": [
+        "truckersmp"
+      ],
+      "beta": null
+    },
+    {
+      "app": 1172470,
+      "compat_tool": "",
+      "hooks": [],
+      "beta": {
+        "branch": "",
+        "request": "1759400000"
+      }
+    }
+  ],
+  "shortcuts": [
+    {
+      "owner": "star-citizen",
+      "key": "launcher",
+      "name": "Star Citizen",
+      "exe": "/var/mnt/games/VaporOS/star-citizen/installer/RSI Launcher-Setup-2.17.0.exe",
+      "start_dir": "/var/mnt/games/VaporOS/star-citizen",
+      "compat_tool": "proton-cachyos-slr",
+      "art": "/usr/lib/vos/ext/star-citizen/art"
+    },
+    {
+      "owner": "truckersmp",
+      "key": "ets2",
+      "name": "TruckersMP (ETS2)",
+      "exe": "/usr/bin/vos",
+      "start_dir": "/var/home/vapor/.local/share/vaporos/ext/truckersmp",
+      "args": [
+        "ext",
+        "truckersmp",
+        "mp",
+        "ets2"
+      ],
+      "compat_tool": "",
+      "art": ""
+    }
+  ],
+  "release": [
+    {
+      "app": 292030
+    }
+  ]
+}

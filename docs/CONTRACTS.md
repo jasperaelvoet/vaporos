@@ -1313,8 +1313,9 @@ ets2|ats` under the shortcuts' names, standing for them.
   `$XDG_RUNTIME_DIR/vos/truckersmp-mp.json` (`{"game","created","nonce"}`,
   0600; valid for 15 minutes, and up to 1 minute in the future) and runs
   `systemd-run --user --collect --quiet --unit=vos-ext-handoff -- /usr/bin/vos
-  ext truckersmp handoff <game> <id> <nonce>` without `LD_PRELOAD` and
-  `LD_LIBRARY_PATH` (Steam's overlay and runtime), `<id>`
+  ext truckersmp handoff <game> <id> <nonce>` without `LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `STEAM_RUNTIME*` and `PRESSURE_VESSEL*` (Steam's
+  overlay and runtime, as for a hook's programs), `<id>`
   the AppId of the nearest reaper above it (0 when none is); when that fails
   the flag goes. `handoff` waits until no reaper with that AppId (as app id
   or game id) is left, at most 30 s, then 2 s more (with 0, not at all), and hands
@@ -1370,7 +1371,8 @@ already 1048576.
 - *Drive.* The setting `disk` ("Game drive") is the drive's folder:
   `/var/mnt/<name>` (`/mnt/<name>` reads the same) is a game drive, and the
   prefix is `/var/mnt/<name>/VaporOS/star-citizen` (its `library` data
-  area); `""` (or `/var`) is the system drive, and the prefix is its home
+  area); `""` (or `/state`, the system drive's folder System › Extensions
+  offers, or `/var`) is the system drive, and the prefix is its home
   data area, `/var/home/vapor/.local/share/vaporos/ext/star-citizen`. Any
   other value is refused. The prefix is fixed at install: a drive picked
   later applies only after removing Star Citizen and adding it again (its

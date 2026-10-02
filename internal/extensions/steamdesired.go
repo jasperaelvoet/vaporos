@@ -397,11 +397,10 @@ func (s *Service) SyncSteam() (bool, error) {
 			return false, err
 		}
 	}
-	b, err := json.MarshalIndent(e.desiredSteam(dispatcherReady(e.catalog)), "", "  ")
+	b, err := marshalSteamDesired(e.desiredSteam(dispatcherReady(e.catalog)))
 	if err != nil {
 		return false, err
 	}
-	b = append(b, '\n')
 	if old, err := os.ReadFile(config.ExtSteamPath()); err == nil && bytes.Equal(old, b) {
 		return false, nil
 	}
@@ -411,6 +410,17 @@ func (s *Service) SyncSteam() (bool, error) {
 	log.Printf("extensions: wrote %s", config.ExtSteamPath())
 	s.restartSteam("what the extensions set in Steam changed")
 	return true, nil
+}
+
+// marshalSteamDesired is steam.json's bytes as vosd writes them, which
+// `vos steam prepare` parses (internal/steamprep; both sides test the same
+// golden file, internal/steamprep/testdata/steam.json).
+func marshalSteamDesired(d SteamDesired) ([]byte, error) {
+	b, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 func (s *Service) syncSteam() {

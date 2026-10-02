@@ -53,11 +53,12 @@ func (p place) Prefix() string { return filepath.Join(p.Base, p.Rel) }
 // systemPrefix is the prefix on the system drive: the home data area.
 func systemPrefix() string { return filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, ID) }
 
-// normalizeDisk maps the other spellings of a drive to one: /var (the
-// system drive's mount point) to "", /mnt/<name> to /var/mnt/<name>.
+// normalizeDisk maps the other spellings of a drive to one: /state (where
+// the system drive is mounted, which the control center offers as its
+// folder) and /var to "", /mnt/<name> to /var/mnt/<name>.
 func normalizeDisk(disk string) string {
 	switch {
-	case disk == "/var":
+	case disk == "/state", disk == "/var":
 		return ""
 	case strings.HasPrefix(disk, "/mnt/"):
 		return mntBase + strings.TrimPrefix(disk, "/mnt")

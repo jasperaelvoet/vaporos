@@ -59,7 +59,7 @@ func TestMountOf(t *testing.T) {
 func TestPlaceFor(t *testing.T) {
 	b := newBox(t)
 	sys := filepath.Join(config.GamerHome, ".local/share/vaporos/ext/star-citizen")
-	for _, disk := range []string{"", "/var"} {
+	for _, disk := range []string{"", "/var", "/state"} {
 		p, err := placeFor(disk)
 		if err != nil || !p.System || p.Prefix() != sys || p.Disk != "" || p.Name != "the system drive" {
 			t.Errorf("%q: %+v, %v", disk, p, err)

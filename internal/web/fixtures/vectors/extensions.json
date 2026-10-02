@@ -13,10 +13,10 @@
         {"req": "POST /extensions/coolercontrol", "body": {}, "expect": {"status": 403, "body": {"error": "Adding CoolerControl needs the admin password"}, "copy": "Enter the VaporOS password."}},
         {"req": "POST /extensions/coolercontrol", "body": {"password": "nope-nope"}, "expect": {"status": 403, "body": {"error": "the password is wrong"}, "copy": "That's not the VaporOS password."}},
         {"req": "POST /extensions/coolercontrol", "body": {"options": {"fan_speed": true}, "password": "vaporvapor"}, "expect": {"status": 400, "body": {"error": "unknown setting \"fan_speed\""}}},
-        {"req": "POST /extensions/coolercontrol", "body": {"options": {"poll_rate": "never"}, "password": "vaporvapor"}, "expect": {"status": 400, "body": {"error": "poll_rate must be one of every_second, every_two_seconds, every_five_seconds"}}},
+        {"req": "POST /extensions/coolercontrol", "body": {"options": {"gpu_fan_curves": "yes"}, "password": "vaporvapor"}, "expect": {"status": 400, "body": {"error": "gpu_fan_curves must be true or false"}}},
         {"req": "DELETE /extensions/proton", "expect": {"status": 409, "body": {"error": "CachyOS Proton is part of VaporOS and cannot be removed."}}},
-        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"library": "-x"}}, "expect": {"status": 400, "body": {"error": "library must be a folder on a disk (an absolute path), or empty"}}},
-        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"library": "/var/mnt/games"}}, "expect": {"status": 200}},
+        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"disk": "-x"}}, "expect": {"status": 400, "body": {"error": "disk must be a folder on a disk (an absolute path), or empty"}}},
+        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"disk": "/var/mnt/Games"}}, "expect": {"status": 200}},
         {"req": "POST /extensions/truckersmp/actions/fly", "body": {}, "expect": {"status": 404, "body": {"error": "TruckersMP has no action \"fly\""}}},
         {"req": "POST /extensions/truckersmp/actions/copy-profiles", "body": {}, "expect": {"status": 409, "body": {"error": "TruckersMP is not running yet. Restart VaporOS first."}}},
         {"req": "POST /extensions/skip-once", "body": {}, "expect": {"status": 200, "body": {}, "events": [["extensions.state", {"skip_once": true}]]}},
@@ -28,12 +28,13 @@
       "name": "extensions-passwords",
       "preset": "idle",
       "steps": [
-        {"req": "GET /extensions", "passive": true, "expect": {"body": {"extensions": [{"id": "proton", "needs_password": false}, {"id": "coolercontrol", "needs_password": true, "module_options": true, "settings": [{"key": "gpu_overdrive", "needs_password": true}, {"key": "poll_rate", "needs_password": false}]}, {"id": "truckersmp", "needs_password": false, "steam": {"forces": [{"app": 227300}, {"app": 270880}]}}, {"id": "star-citizen", "needs_password": false}]}}},
-        {"req": "POST /extensions/coolercontrol", "body": {"options": {"poll_rate": "every_five_seconds"}}, "expect": {"status": 403, "body": {"error": "Adding CoolerControl needs the admin password"}}},
+        {"req": "GET /extensions", "passive": true, "expect": {"body": {"extensions": [{"id": "proton", "needs_password": false}, {"id": "coolercontrol", "needs_password": true, "module_options": true, "settings": [{"key": "gpu_fan_curves", "needs_password": true}, {"key": "it87_conflicts", "needs_password": true}]}, {"id": "truckersmp", "needs_password": false, "steam": {"forces": [{"app": 227300}, {"app": 270880}]}}, {"id": "star-citizen", "needs_password": false, "settings": [{"key": "disk", "needs_password": false}]}]}}},
+        {"req": "POST /extensions/coolercontrol", "body": {"options": {"it87_conflicts": true}}, "expect": {"status": 403, "body": {"error": "Adding CoolerControl needs the admin password"}}},
         {"req": "POST /extensions/coolercontrol", "body": {"password": "vaporvapor"}, "expect": {"status": 200}},
-        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"poll_rate": "every_five_seconds"}}, "expect": {"status": 200}},
-        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_overdrive": true}}, "expect": {"status": 403, "body": {"error": "Changing this setting needs the admin password"}}},
-        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_overdrive": true}, "password": "vaporvapor"}, "expect": {"status": 200}}
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_fan_curves": false}}, "expect": {"status": 200}},
+        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"disk": "/var/mnt/Games"}}, "expect": {"status": 200}},
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_fan_curves": true}}, "expect": {"status": 403, "body": {"error": "Changing this setting needs the admin password"}}},
+        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"gpu_fan_curves": true}, "password": "vaporvapor"}, "expect": {"status": 200}}
       ]
     },
     {
@@ -58,8 +59,8 @@
       "preset": "extensions-attention",
       "steps": [
         {"req": "DELETE /extensions/proton", "expect": {"status": 409}},
-        {"req": "PUT /extensions/coolercontrol/settings", "body": {"settings": {"poll_rate": "every_five_seconds"}}, "expect": {"status": 200, "events": [["extensions.state", {"restart": {"needed": false}}]]}},
-        {"req": "POST /extensions/coolercontrol/actions/restore-fans", "body": {}, "expect": {"status": 200}},
+        {"req": "PUT /extensions/star-citizen/settings", "body": {"settings": {"disk": "/state"}}, "expect": {"status": 200, "events": [["extensions.state", {"restart": {"needed": false}}]]}},
+        {"req": "POST /extensions/truckersmp/actions/copy-profiles", "body": {}, "expect": {"status": 200}},
         {"req": "DELETE /extensions/coolercontrol?purge=1", "expect": {"status": 200, "events": [["extensions.state", {"restart": {"needed": true}}]]}},
         {"req": "GET /status", "passive": true, "expect": {"body": {"restart": {"needed": true, "reasons": [{"kind": "extensions"}]}}}}
       ]
