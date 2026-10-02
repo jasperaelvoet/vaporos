@@ -35,6 +35,6 @@
     {"what": "Updates to the RSI Launcher, and the game", "from": "robertsspaceindustries.com", "checked": "none", "runs_code": true, "when": "launch"}
   ],
   "settings": [
-    {"key": "disk", "type": "disk", "label": "Game drive", "help": "Needs 150 GB free. Pick it before the restart: it doesn't move later."}
+    {"key": "disk", "type": "disk", "label": "Game drive", "help": "Needs 150 GB free. Pick it before the restart: it doesn't move later.", "required": true}
   ]
 }

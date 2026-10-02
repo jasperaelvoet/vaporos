@@ -1368,8 +1368,9 @@ into the launcher's start. The image ships one udev rule,
 so vapor (group `input`) opens the hidraw nodes of VKB, Virpil and
 Thrustmaster sticks on USB. No sysctl: the base's `vm.max_map_count` is
 already 1048576.
-- *Drive.* The setting `disk` ("Game drive") is the drive's folder: `""`
-  is no drive picked yet; `/var` (or `/state`, as earlier control centers
+- *Drive.* The setting `disk` ("Game drive", `"required": true`: the
+  install dialog asks for it, and vosd refuses an install without one) is
+  the drive's folder: `""` is no drive picked yet; `/var` (or `/state`, as earlier control centers
   offered it) is the system drive, and the prefix is its home data area,
   `/var/home/vapor/.local/share/vaporos/ext/star-citizen`;
   `/var/mnt/<name>` (`/mnt/<name>` reads the same) is a game drive, and the
