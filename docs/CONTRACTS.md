@@ -1404,7 +1404,10 @@ entries stay whether or not their game is installed (Steam keeps a
 shortcut's id and art only while it stays listed); `mp` says when a game is
 missing. Its descriptor's `downloads` name the mod (about 640 MiB, at
 install, and each new version) from `download.ets2mp.com`, the file list
-from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
+from `update.ets2mp.com` (at install, and at each sync: at least once a
+day) and the version API from `api.truckersmp.com` (at install, and every
+hour), each as an `install` and an `update` entry, the update entries
+saying how often in their `what`.
 - *Files* (the home data area, `vapor`'s): `bin/truckersmp-cli.exe` (a copy
   of the image's, which Proton's container cannot see; `setup` and the
   launch hook make it equal), `files/` (MODDIR, laid out as files.json

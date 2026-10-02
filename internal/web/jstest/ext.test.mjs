@@ -124,8 +124,10 @@ test('what it downloads, and when VaporOS cannot check it', () => {
   assert.deepEqual(X.downloads(ext(base, 'truckersmp')), [
     { text: "The TruckersMP mod (about 640 MiB) from download.ets2mp.com, when you install it. It runs as a program, and VaporOS can't check these files.", warn: true },
     { text: "Each new version of the TruckersMP mod from download.ets2mp.com, when it updates. It runs as a program, and VaporOS can't check these files.", warn: true },
-    { text: "The list of the mod's files and their checksums from update.ets2mp.com, when it updates. Nothing checks it.", warn: false },
-    { text: "TruckersMP's current version and the game versions it supports from api.truckersmp.com, when it updates. Nothing checks it.", warn: false },
+    { text: "The list of the mod's files and their checksums from update.ets2mp.com, when you install it. Nothing checks it.", warn: false },
+    { text: "The list of the mod's files and their checksums (at least once a day) from update.ets2mp.com, when it updates. Nothing checks it.", warn: false },
+    { text: "TruckersMP's current version and the game versions it supports from api.truckersmp.com, when you install it. Nothing checks it.", warn: false },
+    { text: "TruckersMP's current version and the game versions it supports (every hour) from api.truckersmp.com, when it updates. Nothing checks it.", warn: false },
   ]);
   assert.deepEqual(X.downloads({ downloads: [{ what: 'fonts', from: 'example.com', checked: 'pinned', runs_code: true, when: 'install' }] }), [
     { text: 'Fonts from example.com, when you install it. VaporOS checks it against a fingerprint it ships.', warn: false },

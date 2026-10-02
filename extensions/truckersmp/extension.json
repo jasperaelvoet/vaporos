@@ -61,10 +61,22 @@
       "what": "the list of the mod's files and their checksums",
       "from": "update.ets2mp.com",
       "checked": "none",
+      "when": "install"
+    },
+    {
+      "what": "the list of the mod's files and their checksums (at least once a day)",
+      "from": "update.ets2mp.com",
+      "checked": "none",
       "when": "update"
     },
     {
       "what": "TruckersMP's current version and the game versions it supports",
+      "from": "api.truckersmp.com",
+      "checked": "none",
+      "when": "install"
+    },
+    {
+      "what": "TruckersMP's current version and the game versions it supports (every hour)",
       "from": "api.truckersmp.com",
       "checked": "none",
       "when": "update"
