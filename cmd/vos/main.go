@@ -11,6 +11,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/daemon"
 	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
+	_ "github.com/jasperaelvoet/vaporos/internal/extensions/all"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/session"
 	"github.com/jasperaelvoet/vaporos/internal/steamprep"

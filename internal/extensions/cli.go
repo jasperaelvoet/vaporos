@@ -25,6 +25,10 @@ func register(name, usage string, run func(args []string) int) {
 	commands[name] = command{usage: usage, run: run}
 }
 
+// RegisterCommand adds `vos ext <name>` for an extension's helper package
+// (internal/extensions/<id>), from its init function.
+func RegisterCommand(name, usage string, run func(args []string) int) { register(name, usage, run) }
+
 // CLI runs `vos ext <command> [args]`.
 func CLI(args []string) int {
 	if len(args) == 0 {
