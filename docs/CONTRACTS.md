@@ -861,7 +861,10 @@ trusts it for display only:
    fsync) and with its mode kept. A file that does not parse, is larger
    than Steam's ever are (4 MiB; localconfig.vdf 64 MiB), or whose edited
    bytes would not parse again within that size, is not touched and goes
-   into `error`. Each file is parsed once for all its edits. Lookups follow
+   into `error`. config.vdf and each account's localconfig.vdf and
+   shortcuts.vdf are parsed once a run, and all their edits are made on
+   that parse in one pass (an entry the same pass set and then removes
+   is not written); an appmanifest gets one edit. Lookups follow
    Steam's on Linux: keys match in any case, the first of repeated keys
    counts, and an entry whose conditional is false on Linux (`[$WIN32]`,
    `[$WINDOWS]`, `[$OSX]`, `[$X360]`, `[$PS3]`, `[!$LINUX]`, `[!$POSIX]`,
