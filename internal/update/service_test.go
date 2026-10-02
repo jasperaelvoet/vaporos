@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
 // call runs one handler directly: the api package's access control is not
@@ -170,6 +173,51 @@ func lastProgress(t *testing.T) Progress {
 	}
 	t.Fatal("no update.progress to replay")
 	return Progress{}
+}
+
+// The extensions hear of every change to what the other slot boots: a
+// stage once the idle slot's catalog is recorded and again at its end, a
+// rollback, an activation. A stage that stops before touching the slot,
+// and a refused rollback, say nothing.
+func TestSlotsChanged(t *testing.T) {
+	e := setup(t)
+	img := e.makeImage(newVersion, 200, 1000, nil)
+	s := NewService(e.cfg(e.srcDir(img)))
+	var seen []string // the slot file's version and whether slot b had an entry, at each call
+	s.SetSlotsChanged(func() {
+		v := "none"
+		if sl, err := store.ReadSlot("b"); err == nil && sl != nil {
+			v = sl.Version
+		}
+		seen = append(seen, fmt.Sprintf("%s entry=%v", v, e.entry("b") != nil))
+	})
+	if err := s.stageNow(context.Background(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{newVersion + " entry=false", newVersion + " entry=true"}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("stage: %q, want %q", seen, want)
+	}
+	if err := s.stageNow(context.Background(), Options{}); !errors.Is(err, ErrAlreadyStaged) || len(seen) != 2 {
+		t.Fatalf("a stage with nothing to do: %v, calls %q", err, seen)
+	}
+
+	oldDelay := rebootDelay
+	rebootDelay = 0
+	defer func() { rebootDelay = oldDelay }()
+	rebooted := make(chan struct{}, 1)
+	s.reboot = func(context.Context) error { rebooted <- struct{}{}; return nil }
+	if code, out := call(t, s.handleActivate, "POST", ""); code != 200 || len(seen) != 3 {
+		t.Fatalf("activate: %d %v, calls %q", code, out, seen)
+	}
+	<-rebooted
+	if code, out := call(t, s.handleRollback, "POST", ""); code != 200 || len(seen) != 4 {
+		t.Fatalf("rollback: %d %v, calls %q", code, out, seen)
+	}
+	e.setState(&State{Failed: []string{newVersion}})
+	if code, _ := call(t, s.handleRollback, "POST", ""); code != http.StatusConflict || len(seen) != 4 {
+		t.Fatalf("a refused rollback: %d, calls %q", code, seen)
+	}
 }
 
 func TestBenignStageEndsWithIdle(t *testing.T) {

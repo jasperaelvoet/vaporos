@@ -174,6 +174,13 @@ func TestBuildWelcome(t *testing.T) {
 		t.Errorf("message = %+v", st)
 	}
 	wantTone(t, "message", st, brand.Ready, "", 0)
+	// One meant for the control center alone leaves the screen as it is.
+	if in.overlay.apply(event("system.message", map[string]any{"level": "warning", "text": "Star Citizen didn't start", "welcome": false}), now) {
+		t.Error("a control-center-only message changed the welcome screen")
+	}
+	if st = buildWelcome(in); st.Detail != "Disk almost full" {
+		t.Errorf("message = %+v", st)
+	}
 	in.now = now.Add(10 * time.Minute)
 	if st = buildWelcome(in); st.Detail == "Disk almost full" {
 		t.Error("stale message still shown")

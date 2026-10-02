@@ -165,9 +165,10 @@ type Steam struct {
 }
 
 // Hook wraps the launch of Steam apps with the extension's launch hook.
+// The hooks of several extensions on one app run in catalog order, so a
+// descriptor has no say in it.
 type Hook struct {
-	Apps  []uint32 `json:"apps"`
-	Order int      `json:"order,omitempty"`
+	Apps []uint32 `json:"apps"`
 }
 
 // Shortcut is a non-Steam game the extension adds to Steam.

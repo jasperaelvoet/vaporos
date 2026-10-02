@@ -77,17 +77,21 @@ type execCall struct {
 	env  []string
 }
 
+// stripSteamEnvForReal is the dispatcher's own stripSteamEnv, for a test
+// that sets Steam's variables with t.Setenv (which puts them back).
+var stripSteamEnvForReal = stripSteamEnv
+
 // fakeExec records execs instead of making them, and keeps the dispatcher
-// from changing the test's own environment (stripPreload).
+// from changing the test's own environment (stripSteamEnv).
 func fakeExec(t *testing.T) *[]execCall {
 	var calls []execCall
-	e, strip := execve, stripPreload
-	t.Cleanup(func() { execve, stripPreload = e, strip })
+	e, strip := execve, stripSteamEnv
+	t.Cleanup(func() { execve, stripSteamEnv = e, strip })
 	execve = func(path string, argv, env []string) error {
 		calls = append(calls, execCall{path, argv, env})
 		return errors.New("exec faked")
 	}
-	stripPreload = func() {}
+	stripSteamEnv = func() {}
 	return &calls
 }
 
@@ -142,12 +146,12 @@ func TestLaunchRefuses(t *testing.T) {
 			writeFile(t, config.ExtBootPath(), report)
 		}
 		rc, msg := runLaunch("--shortcut", "star-citizen/launcher", "/x/reaper")
-		if rc != 1 || !strings.Contains(msg, "star-citizen did not start because its extension is not active") {
+		if rc != 1 || !strings.Contains(msg, "star-citizen: not-mounted: shortcut star-citizen/launcher") {
 			t.Errorf("%s: exit %d: %s", name, rc, msg)
 		}
 	}
-	if texts := launchMessages(t); len(texts) != 3 || !strings.HasPrefix(texts[0], "star-citizen did not start") {
-		t.Errorf("messages for VaporOS: %q", texts)
+	if recs := launchMessages(t); len(recs) != 3 || recs[0].Code != codeNotMounted || recs[0].ID != "star-citizen" {
+		t.Errorf("records for VaporOS: %+v", recs)
 	}
 	if rc, _ := runLaunch("--app", "1", "/no/such/dir/game"); rc != 1 {
 		t.Errorf("a missing absolute command: exit %d", rc)

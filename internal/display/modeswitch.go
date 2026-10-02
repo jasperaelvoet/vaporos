@@ -95,6 +95,7 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	m.mu.Unlock()
 	m.publishWelcomeLater()
 
+	m.awaitSteamBack(ctx)
 	gsUp := m.h.UnitActive(ctx, GamescopeUnit, true)
 	// Switching HDR restarts gamescope, and with it Steam and everything
 	// Steam runs. A game can outlive its Moonlight session (Sunshine's

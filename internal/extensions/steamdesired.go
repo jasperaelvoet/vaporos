@@ -9,8 +9,10 @@ import (
 	"hash/crc32"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -20,6 +22,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
+	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
 // SteamDesired is /var/lib/vos/ext/steam.json: what VaporOS wants in Steam
@@ -37,10 +40,10 @@ type SteamDesired struct {
 
 // SteamApp is what extensions set for one Steam app.
 type SteamApp struct {
-	App        uint32   `json:"app"`
-	CompatTool string   `json:"compat_tool"`
-	Hooks      []string `json:"hooks"`
-	Beta       *string  `json:"beta"`
+	App        uint32       `json:"app"`
+	CompatTool string       `json:"compat_tool"`
+	Hooks      []string     `json:"hooks"`
+	Beta       *BetaRequest `json:"beta"`
 }
 
 // SteamShortcut is a non-Steam game an extension adds.
@@ -86,6 +89,35 @@ type steamEntries struct {
 	descs   map[string]*descriptor.Descriptor
 	ids     []string
 	parts   map[string]SteamParts
+	// owned is steam-owned.json's ids with those wanted or mounted now:
+	// the extensions that may have set something in Steam. ownedChanged
+	// says the file lacks some of them.
+	owned        map[string]bool
+	ownedChanged bool
+}
+
+// steamOwned is /var/lib/vos/ext/steam-owned.json: every extension that
+// was wanted or mounted on this box at some point. Only those may have set
+// something in Steam, so only their apps are ever released.
+type steamOwned struct {
+	IDs []string `json:"ids"`
+}
+
+// maxSteamOwned bounds the list: catalogs hold far fewer extensions.
+const maxSteamOwned = 256
+
+func loadSteamOwned() map[string]bool {
+	var f steamOwned
+	if err := config.ReadJSON(config.ExtSteamOwnedPath(), &f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("extensions: %v", err)
+	}
+	out := map[string]bool{}
+	for _, id := range f.IDs {
+		if manifest.ValidExtensionID(id) && len(out) < maxSteamOwned {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 func loadSteamEntries() (*steamEntries, error) {
@@ -97,14 +129,24 @@ func loadSteamEntries() (*steamEntries, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	e := &steamEntries{report: rep, catalog: cat, descs: map[string]*descriptor.Descriptor{}, parts: map[string]SteamParts{}}
+	e := &steamEntries{report: rep, catalog: cat, descs: map[string]*descriptor.Descriptor{}, parts: map[string]SteamParts{},
+		owned: loadSteamOwned()}
+	own := func(id string) {
+		if !e.owned[id] && manifest.ValidExtensionID(id) && len(e.owned) < maxSteamOwned {
+			e.owned[id], e.ownedChanged = true, true
+		}
+	}
 	if wanted, err := store.Wanted(); err == nil {
 		e.desired = map[string]bool{}
 		for _, id := range cat.Closure(append(wanted, cat.Core()...)) {
 			e.desired[id] = true
+			own(id)
 		}
 	} else {
 		log.Printf("extensions: steam.json keeps every mounted extension: %v", err)
+	}
+	for _, m := range rep.Mounted {
+		own(m.ID)
 	}
 	for _, id := range cat.IDs() {
 		d, err := Shipped(id)
@@ -214,10 +256,12 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 			}
 		}
 		for a, beta := range parts.Beta {
-			if a != 0 {
-				b := beta
-				app(a).Beta = &b
+			if a == 0 || (beta.Branch != "" && !steamNameRe.MatchString(beta.Branch)) || !steamNameRe.MatchString(beta.Request) {
+				log.Printf("extensions: %s: branch %q (request %q) for app %d is not well formed", id, beta.Branch, beta.Request, a)
+				continue
 			}
+			b := beta
+			app(a).Beta = &b
 		}
 	}
 	for _, x := range apps {
@@ -228,7 +272,7 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 	if e.desired != nil {
 		release := map[uint32]bool{}
 		for _, id := range e.catalog.IDs() {
-			if desc := e.descs[id]; !e.desired[id] && desc != nil && desc.Steam != nil {
+			if desc := e.descs[id]; !e.desired[id] && e.owned[id] && desc != nil && desc.Steam != nil {
 				for _, a := range desc.Steam.ForceCompatTool {
 					if !forced[a] {
 						release[a] = true
@@ -243,6 +287,10 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 	}
 	return d
 }
+
+// steamNameRe is a branch or a branch request's id, as prepare accepts
+// them.
+var steamNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // validPath accepts a clean absolute path without control characters:
 // prepare writes it into shortcuts.vdf, whose strings end at a NUL.
@@ -307,9 +355,9 @@ func (s *Service) restartSteam(reason string) {
 
 // SyncSteam writes /var/lib/vos/ext/steam.json (0644, atomically) when its
 // content changed, and then asks for a Steam restart: Run calls it at
-// start and after every reconcile, the control center after an extension
-// is added or removed or its settings change. It reports whether it
-// wrote the file.
+// start and after every reconcile, WatchSteam when the slots change and
+// once a minute, the control center after an extension is added or
+// removed or its settings change. It reports whether it wrote the file.
 func (s *Service) SyncSteam() (bool, error) {
 	if config.IsLive() {
 		return false, nil
@@ -319,6 +367,13 @@ func (s *Service) SyncSteam() (bool, error) {
 	e, err := loadSteamEntries()
 	if err != nil {
 		return false, err
+	}
+	if e.ownedChanged {
+		// First: steam.json releases apps only for ids this file keeps.
+		ids := slices.Sorted(maps.Keys(e.owned))
+		if err := config.WriteJSONAtomic(config.ExtSteamOwnedPath(), steamOwned{IDs: ids}, 0o644); err != nil {
+			return false, err
+		}
 	}
 	b, err := json.MarshalIndent(e.desiredSteam(dispatcherReady(e.catalog)), "", "  ")
 	if err != nil {

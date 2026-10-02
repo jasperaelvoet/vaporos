@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -70,6 +71,51 @@ func (p *fakeProc) remove(pid int) {
 
 func (p *fakeProc) probe() Probe {
 	return Probe{ProcDir: p.dir, UID: 1000, RuntimeDir: filepath.Join(p.dir, "run")}
+}
+
+// The runtime directory is the gaming user's: the handoff unit counts only
+// as a regular file reached without a symlink, so a planted link can
+// neither keep the PC awake through a file of root's nor hang the probe.
+func TestHandoffThroughSymlinks(t *testing.T) {
+	p := newProc(t)
+	pr := p.probe()
+	elsewhere := t.TempDir()
+	transient := filepath.Join(elsewhere, "transient")
+	if err := os.MkdirAll(transient, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(transient, HandoffUnit), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pr.RuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(pr.RuntimeDir, "systemd")
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	if pr.GameRunning() {
+		t.Error("a symlinked systemd directory counts")
+	}
+	os.Remove(link)
+
+	unit := filepath.Join(pr.RuntimeDir, "systemd", "transient", HandoffUnit)
+	if err := os.MkdirAll(filepath.Dir(unit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(transient, HandoffUnit), unit); err != nil {
+		t.Fatal(err)
+	}
+	if pr.GameRunning() {
+		t.Error("a symlinked unit file counts")
+	}
+	os.Remove(unit)
+	if err := syscall.Mkfifo(unit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if pr.GameRunning() {
+		t.Error("a FIFO counts")
+	}
 }
 
 func TestReaperApp(t *testing.T) {

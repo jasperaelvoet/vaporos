@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -106,12 +107,30 @@ func appHooks(d *SteamDesired, rep *store.BootReport, app uint32) []string {
 	return out
 }
 
-// stripPreload takes LD_PRELOAD (Steam's overlay) out of this process's
+// steamOnly reports whether a variable of Steam's environment is for the
+// game alone: Steam's overlay (LD_PRELOAD), its runtime's libraries
+// (LD_LIBRARY_PATH) and the runtime's and its container's settings, which
+// would load Steam's libraries into VaporOS's programs or send them into
+// the container.
+func steamOnly(key string) bool {
+	return key == "LD_PRELOAD" || key == "LD_LIBRARY_PATH" ||
+		strings.HasPrefix(key, "STEAM_RUNTIME") || strings.HasPrefix(key, "PRESSURE_VESSEL")
+}
+
+// stripSteamEnv takes the steamOnly variables out of this process's
 // environment, which every helper program a hook starts inherits; the
 // launch itself keeps Steam's environment. A variable for tests.
-var stripPreload = func() { os.Unsetenv("LD_PRELOAD") }
+var stripSteamEnv = func() {
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); steamOnly(k) {
+			os.Unsetenv(k)
+		}
+	}
+}
 
-// dispatch runs l: the hooks of what it starts, then the command.
+// dispatch runs l: the hooks of what it starts, then the command. A
+// refusal leaves a record for vosd (refuseLaunch), unless Steam stopped
+// the launch itself (ctx ended while a hook ran): nobody waits for it then.
 func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int {
 	d, _ := readSteamDesired() // nil without one: no app is hooked
 	var st *prepareState
@@ -124,8 +143,12 @@ func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int
 	switch {
 	case id.owner != "":
 		if repErr != nil || !rep.IsMounted(id.owner) {
-			return refuseLaunch(stderr, fmt.Sprintf("%s did not start because its extension is not active right now (%s/%s). Check Extensions in VaporOS.",
-				displayName(id.owner), id.owner, id.key))
+			detail := "this boot did not mount it"
+			if repErr != nil {
+				detail = repErr.Error()
+			}
+			return refuseLaunch(stderr, launchRecord{Code: codeNotMounted, ID: id.owner,
+				Detail: fmt.Sprintf("shortcut %s/%s: %s", id.owner, id.key, detail)})
 		}
 		hooks = []string{id.owner}
 	case id.app != 0 && d != nil && repErr == nil:
@@ -136,35 +159,34 @@ func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int
 		run.Shortcut = id.owner + "/" + id.key
 	}
 	if len(hooks) > 0 {
-		stripPreload()
+		stripSteamEnv()
 	}
 	for _, h := range hooks {
-		if err := HelperFor(h).LaunchHook(ctx, run); err != nil {
-			return refuseLaunch(stderr, fmt.Sprintf("%s did not start: %v", displayName(h), err))
+		err := HelperFor(h).LaunchHook(ctx, run)
+		if err == nil && len(run.Argv) == 0 {
+			err = errors.New("its hook left nothing to run")
 		}
-		if len(run.Argv) == 0 {
-			return refuseLaunch(stderr, fmt.Sprintf("%s did not start: its hook left nothing to run.", displayName(h)))
+		if err == nil {
+			continue
 		}
+		if ctx.Err() != nil {
+			fmt.Fprintf(stderr, "vos ext launch: %s: Steam stopped the launch: %v\n", h, err)
+			return 1
+		}
+		return refuseLaunch(stderr, launchRecord{Code: codeHookFailed, ID: h, Detail: err.Error()})
 	}
 	return execLaunch(run, stderr)
 }
 
-// refuseLaunch tells the person at the control center (writeMessage) and
-// Steam's log why a launch does not start.
-func refuseLaunch(stderr io.Writer, text string) int {
-	fmt.Fprintf(stderr, "vos ext launch: %s\n", text)
-	if err := writeMessage(text); err != nil {
+// refuseLaunch tells Steam's log why a launch does not start, and vosd
+// (writeMessage), which tells the person at the control center in its
+// own words.
+func refuseLaunch(stderr io.Writer, r launchRecord) int {
+	fmt.Fprintf(stderr, "vos ext launch: %s: %s: %s\n", r.ID, r.Code, r.Detail)
+	if err := writeMessage(r); err != nil {
 		fmt.Fprintf(stderr, "vos ext launch: telling VaporOS: %v\n", err)
 	}
 	return 1
-}
-
-// displayName is the extension's name from its shipped descriptor.
-func displayName(id string) string {
-	if d, err := Shipped(id); err == nil {
-		return d.Name
-	}
-	return id
 }
 
 // execLaunch replaces this process with the launch's command.

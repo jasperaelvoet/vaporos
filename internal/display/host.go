@@ -22,6 +22,9 @@ import (
 // tests substitute a fake.
 type host interface {
 	UnitActive(ctx context.Context, unit string, user bool) bool
+	// UnitState is a unit's ActiveState (active, activating, inactive,
+	// failed, ...), "" when systemd cannot tell.
+	UnitState(ctx context.Context, unit string, user bool) string
 	// UnitStopped reports whether a unit is really down (inactive or
 	// failed). Not active is not enough: a unit waiting out RestartSec is
 	// "activating" and comes back by itself unless it is stopped.
@@ -90,6 +93,12 @@ func (h *realHost) UnitActive(ctx context.Context, unit string, user bool) bool 
 	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
 	defer cancel()
 	return sysd.IsActive(ctx, unit, user)
+}
+
+func (h *realHost) UnitState(ctx context.Context, unit string, user bool) string {
+	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
+	defer cancel()
+	return sysd.ActiveState(ctx, unit, user)
 }
 
 func (h *realHost) UnitStopped(ctx context.Context, unit string, user bool) bool {

@@ -210,6 +210,57 @@ func TestRegistrationWaitsForTheSteamLock(t *testing.T) {
 	}
 }
 
+// prepare holds the lock until just before Steam starts: a registration
+// that got the lock after waiting for it looks again, and leaves the
+// library queued when Steam (or gamescope) started meanwhile.
+func TestRegistrationRechecksSteamUnderTheLock(t *testing.T) {
+	s, fs := newTestService(t)
+	list := steamHome(t)
+	mp := withLibrary(t, s, fs)
+	running := false
+	s.steamRunning = func() bool { return running }
+	saved := lockSteam
+	t.Cleanup(func() { lockSteam = saved })
+	lockSteam = func() (func(), error) {
+		running = true // prepare let go, and Steam starts
+		return func() {}, nil
+	}
+	before, _ := os.ReadFile(list)
+	if _, out := call(t, s.handleAdopt, "POST", "/", `{"uuid":"`+sata500+`"}`); out["registered"] != false || out["registration_pending"] != true {
+		t.Fatalf("adopt as Steam starts: %v", out)
+	}
+	running = false
+	s.applyPending() // takes the lock, and Steam starts again
+	if after, _ := os.ReadFile(list); string(after) != string(before) {
+		t.Fatal("Steam's list changed as Steam started")
+	}
+	lockSteam = func() (func(), error) { return func() {}, nil }
+	running = false
+	s.applyPending()
+	if got := listedIn(t, list); got[len(got)-1] != mp {
+		t.Errorf("not added once Steam was down: %q", got)
+	}
+}
+
+// Without the gaming user's runtime directory its manager is not running:
+// nobody can hold the Steam lock or start Steam, so the lists are edited
+// without it.
+func TestRegistrationWithoutARuntimeDirectory(t *testing.T) {
+	s, fs := newTestService(t)
+	list := steamHome(t)
+	mp := withLibrary(t, s, fs)
+	config.GamerRuntimeDir = filepath.Join(t.TempDir(), "user", "1000")
+	if _, out := call(t, s.handleAdopt, "POST", "/", `{"uuid":"`+sata500+`"}`); out["registered"] != true {
+		t.Fatalf("adopt: %v", out)
+	}
+	if got := listedIn(t, list); got[len(got)-1] != mp {
+		t.Errorf("not added: %q", got)
+	}
+	if _, err := os.Lstat(config.GamerRuntimeDir); err == nil {
+		t.Error("the runtime directory was made")
+	}
+}
+
 // Before Steam's first start there is no list to add to: the library
 // waits until there is one.
 func TestRegistrationWaitsForSteamsFirstStart(t *testing.T) {

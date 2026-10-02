@@ -30,7 +30,8 @@ type Helper interface {
 	// its settings, for the set's modprobe.conf.
 	ModuleOptions(x *Ext) []string
 	// Steam returns what the extension adds to Steam beyond its descriptor,
-	// such as a shortcut's executable chosen at install.
+	// such as a shortcut's executable chosen at install. It must be cheap
+	// too: vosd asks after every change and about once a minute.
 	Steam(x *Ext) SteamParts
 	// LaunchHook may rewrite a Steam launch of one of its hooked apps or
 	// shortcuts. It runs as vapor inside `vos ext launch`, never in vosd.
@@ -58,12 +59,21 @@ type SteamParts struct {
 	// Shortcuts by descriptor key: where the executable is and what to
 	// start in, which only the install knows.
 	Shortcuts map[string]ShortcutTarget
-	// Beta asks Steam to switch an app to a branch ("" for the public one).
-	Beta map[uint32]string
+	// Beta asks Steam to switch apps to a branch, one request per app.
+	Beta map[uint32]BetaRequest
 	// SunshineApps are entries Sunshine lists after the games, started
 	// without a Steam shortcut (TruckersMP's multiplayer start: `vos ext
 	// truckersmp mp ets2`). Optional; the shortcuts are listed anyway.
 	SunshineApps []SunshineApp
+}
+
+// BetaRequest is one request to switch an app's branch. prepare applies
+// each Request once, so a branch the user picks in Steam afterwards stays
+// theirs; a helper asks again with a new Request (any id it likes,
+// [A-Za-z0-9._-], 1 to 64 characters, not starting with . _ or -).
+type BetaRequest struct {
+	Branch  string `json:"branch"`  // "" for the public branch
+	Request string `json:"request"` // this request's id
 }
 
 // ShortcutTarget is a shortcut's executable and start directory, canonical
@@ -76,9 +86,11 @@ type ShortcutTarget struct {
 // Launch is one Steam launch passing through `vos ext launch`: the app or
 // shortcut it is for and the command line Steam built (%command%). Env is
 // Steam's, for the game alone: programs a hook starts itself inherit vos's
-// own environment, which has no LD_PRELOAD (Steam's overlay). A hook's
-// error is shown to the person at the control center, after "<name> did
-// not start: ".
+// own environment, without Steam's LD_PRELOAD, LD_LIBRARY_PATH,
+// STEAM_RUNTIME* and PRESSURE_VESSEL*. A hook's error goes to Steam's log
+// and vosd's journal; the person at the control center reads "<name>
+// couldn't start the game", so a hook that refuses for a reason they can
+// fix also says so in its Status lines.
 type Launch struct {
 	App      uint32   // a Steam app id, or 0
 	Shortcut string   // "<id>/<key>", or ""

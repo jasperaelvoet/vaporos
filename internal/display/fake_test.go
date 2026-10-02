@@ -26,8 +26,9 @@ import (
 // property, and without it the game scans out on direct planes.
 type fakeHost struct {
 	mu         sync.Mutex
-	active     map[string]bool // "unit" or "unit@user"
-	restarting map[string]bool // waiting out RestartSec: "activating", not active
+	active     map[string]bool   // "unit" or "unit@user"
+	restarting map[string]bool   // waiting out RestartSec: "activating", not active
+	states     map[string]string // UnitState's answer, overriding the two above
 	calls      []string
 	gpu        GPUInfo
 	conns      []drm.SysConnector
@@ -68,12 +69,14 @@ type fakeHost struct {
 	// again; shutdownErr makes the command fail. gsJob and gsMain are the
 	// unit's last start job and main process start (UnitStarted), set
 	// from clock at every start.
-	steamPID      int
-	steamExits    bool
-	shutdownErr   error
-	gsJob, gsMain time.Time
-	gsStarts      int
-	clock         func() time.Time
+	steamPID        int
+	steamExits      bool
+	shutdownErr     error
+	shutdownGate    chan struct{} // ShutdownSteam waits for it to close
+	shutdownStarted chan struct{} // closed when ShutdownSteam starts waiting
+	gsJob, gsMain   time.Time
+	gsStarts        int
+	clock           func() time.Time
 }
 
 func unitKey(unit string, user bool) string {
@@ -91,6 +94,23 @@ func (f *fakeHost) UnitActive(ctx context.Context, unit string, user bool) bool 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.active[unitKey(unit, user)]
+}
+
+// UnitState: what states says, else active, activating (restarting) or
+// inactive.
+func (f *fakeHost) UnitState(ctx context.Context, unit string, user bool) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := unitKey(unit, user)
+	switch {
+	case f.states[k] != "":
+		return f.states[k]
+	case f.active[k]:
+		return "active"
+	case f.restarting[k]:
+		return "activating"
+	}
+	return "inactive"
 }
 
 // UnitStopped: the fake's units are either active or stopped, except one
@@ -368,11 +388,25 @@ func (f *fakeHost) SteamPID() int {
 }
 
 // ShutdownSteam: a Steam that obeys exits, gamescope with it, and systemd
-// starts both again (Restart=always).
+// starts both again (Restart=always). With shutdownGate the command first
+// waits for the gate to close (or ctx to end, its error then).
 func (f *fakeHost) ShutdownSteam(ctx context.Context, pid int) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.record("steam -shutdown %d", pid)
+	gate, started := f.shutdownGate, f.shutdownStarted
+	f.mu.Unlock()
+	if gate != nil {
+		if started != nil {
+			close(started)
+		}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.shutdownErr != nil {
 		return f.shutdownErr
 	}
