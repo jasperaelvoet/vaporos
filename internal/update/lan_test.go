@@ -121,16 +121,19 @@ func TestProbeLAN(t *testing.T) {
 	n.set("wwan0", "type", "65534") // ARPHRD_NONE: raw IP
 	n.nic("wwan1", true, "0x1002", "")
 	n.set("wwan1", "uevent", "DEVTYPE=wwan\nINTERFACE=wwan1")
+	// A radio known only by its uevent (no wireless/ or phy80211).
+	n.nic("wlan2", true, "0x1002", "")
+	n.set("wlan2", "uevent", "DEVTYPE=wlan\nINTERFACE=wlan2")
 	probe("", lanNoCarrier, "down radios and modems next to a device without a cable")
 	probe(n.mac("eno1"), lanNoCarrier, "down radios and modems, another device had the LAN")
-	for _, name := range []string{"wlan1", "wwan0", "wwan1"} {
+	for _, name := range []string{"wlan1", "wlan2", "wwan0", "wwan1"} {
 		if p := probe(n.mac(name), lanNoAddress, name+" down, and it had the LAN"); p.detail != name+" is down" {
 			t.Fatalf("detail %q", p.detail)
 		}
 	}
 
 	n.nic("enp5s0", true, "0x1002", "") // down, so its carrier cannot be read
-	if p := probe("", lanNoAddress, "a wired device that is down"); p.detail != "enp5s0 is down" || len(p.macs) != 6 {
+	if p := probe("", lanNoAddress, "a wired device that is down"); p.detail != "enp5s0 is down" || len(p.macs) != 7 {
 		t.Fatalf("down: %+v", p)
 	}
 	n.nic("enp5s0", true, "", "") // neither flags nor carrier readable

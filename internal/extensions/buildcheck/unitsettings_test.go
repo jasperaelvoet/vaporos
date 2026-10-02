@@ -111,6 +111,7 @@ func TestSystemStateNames(t *testing.T) {
 		"systemd-reboot.service", "systemd-poweroff.service", "systemd-halt.service", "systemd-kexec.service",
 		"systemd-soft-reboot.service", "systemd-suspend.service", "systemd-hibernate.service",
 		"systemd-hybrid-sleep.service", "systemd-suspend-then-hibernate.service",
+		"systemd-exit.service", "emergency.service", "rescue.service",
 	} {
 		if s.systemState(base, u) == "" {
 			t.Errorf("%s: not a system-state unit", u)

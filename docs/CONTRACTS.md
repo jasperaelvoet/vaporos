@@ -342,12 +342,14 @@ a finite one set by a drop-in of its own; has a unit or drop-in whose
 dependencies add anyway), `OnFailure=`, `OnSuccess=`, `PropagatesStopTo=`,
 `PropagatesReloadTo=`, `Upholds=` or `JoinsNamespaceOf=` names a unit of the
 base (of its scope, by name or template), one of those runtime types, or a
-name with a specifier outside its instance (`PartOf=`, `BindsTo=` and
-`StopPropagatedFrom=` may name one: they only make the extension's own unit
-follow it); a `.upholds` entry for such a unit; a timer, path or socket that
-may start one (every non-empty `Unit=` or `Service=`, although systemd keeps
-a timer's or path's first and a socket's last; with none, the service of its
-own name, a template's with `Accept=yes`); a `FailureAction=`,
+name with a specifier outside its instance (`PartOf=` and
+`StopPropagatedFrom=` may name a unit of the base or a runtime type, and
+`BindsTo=` too unless it is a system-state unit or a name with a specifier:
+they only make the extension's own unit follow it); a `.upholds` entry for
+such a unit; a timer, path or socket that may start one (every non-empty
+`Unit=` or `Service=`, although systemd keeps a timer's or path's first and a
+socket's last, and always the service of its own name, a template's with
+`Accept=yes`, which systemd uses when it ignores them all); a `FailureAction=`,
 `SuccessAction=`, `StartLimitAction=` or `JobTimeoutAction=` other than
 `none` (in any section: `[Service]` still reads the old `FailureAction=` and
 `StartLimitAction=`); a `[Unit]` `OnFailureJobMode=` or `OnSuccessJobMode=`

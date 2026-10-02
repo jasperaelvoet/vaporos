@@ -207,6 +207,17 @@ func TestUnitRules(t *testing.T) {
 		"an accepting socket for a base template": {files: map[string]string{
 			"usr/lib/systemd/system/getty.socket": "[Socket]\nListenStream=1234\nAccept=yes\n",
 		}, want: "usr/lib/systemd/system/getty.socket: starts getty@.service, a unit of the base"},
+		// systemd ignores a value it cannot use and falls back to the
+		// service of the unit's own name.
+		"an invalid Unit= falls back to a base service": {files: map[string]string{
+			"usr/lib/systemd/system/vosd.timer": "[Timer]\nOnBootSec=1min\nUnit=junk\n",
+		}, want: "usr/lib/systemd/system/vosd.timer: starts vosd.service, a unit of the base"},
+		"a Unit= naming the timer itself": {files: map[string]string{
+			"usr/lib/systemd/system/vosd.timer": "[Timer]\nOnBootSec=1min\nUnit=vosd.timer\n",
+		}, want: "usr/lib/systemd/system/vosd.timer: starts vosd.service, a unit of the base"},
+		"a socket's Service= that is no service": {files: map[string]string{
+			"usr/lib/systemd/system/vosd.socket": "[Socket]\nListenStream=1234\nService=demo.target\n",
+		}, want: "usr/lib/systemd/system/vosd.socket: starts vosd.service, a unit of the base"},
 		"a socket's Service=": {files: map[string]string{
 			"usr/lib/systemd/system/demo.socket": "[Socket]\nListenStream=1234\nService=vosd.service\n",
 		}, want: "usr/lib/systemd/system/demo.socket: starts vosd.service, a unit of the base"},

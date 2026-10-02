@@ -131,6 +131,9 @@ func (s *Service) Run(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
+	if rep, err := store.LoadBootReport(); err == nil {
+		makeDataAreas(rep)
+	}
 	var rehash sync.WaitGroup
 	defer rehash.Wait()
 	failures := 0

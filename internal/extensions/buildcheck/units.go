@@ -311,8 +311,8 @@ func (s *unitScope) baseUnit(base, u string) string {
 
 // triggered returns the units a timer, path or socket may start: every one
 // its Unit= or Service= lines name (systemd keeps a timer's or path's first,
-// a socket's last, and ignores an empty one), else the service of its own
-// name (a template's instances with Accept=yes).
+// a socket's last, and ignores an empty one) and always the service of its
+// own name (a template's instances with Accept=yes).
 func triggered(u string, as []assignment) []string {
 	typ := unitType(u)
 	tk, ok := triggerKeys[typ]
@@ -332,14 +332,14 @@ func triggered(u string, as []assignment) []string {
 			accept = parseBool(a.value)
 		}
 	}
-	if len(names) > 0 {
-		return names
-	}
+	// systemd falls back to the service of the unit's own name whenever it
+	// ignores every value (no valid type, the unit itself, a failed
+	// specifier), so that one is always checked too.
 	stem := strings.TrimSuffix(u, "."+typ)
 	if accept && !strings.Contains(stem, "@") {
 		stem += "@"
 	}
-	return []string{stem + ".service"}
+	return append(names, stem+".service")
 }
 
 // baseInstances reports whether the base has a unit file that is an
