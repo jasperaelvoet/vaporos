@@ -39,7 +39,8 @@
 - **Phone-first web UI** at `http://vapor.local`, in four tabs: **Home** (what
   the PC is doing now), **Devices** (pairing and paired devices), **Screen**
   (the virtual display and stream settings: encoder, bitrate, controller type)
-  and **System** (updates, power, storage, name and password, SSH, logs).
+  and **System** (updates, extensions, power, storage, name and password,
+  SSH, logs).
 - **A/B updates with automatic rollback.** A new version is written to the
   other system slot and starts on the next restart. If it fails its health
   check, the PC goes back to the previous version by itself and won't install
@@ -49,6 +50,9 @@
   SHA-256 are verified before the new version can start.
 - **Read-only system.** The OS is one read-only image. Your settings,
   Steam and games live on a separate data partition.
+- **Extensions, kept apart.** CachyOS Proton, CoolerControl, TruckersMP and
+  the Star Citizen launcher come as sealed add-ons that update and roll back
+  with the system (see [Extensions](#extensions)).
 - **CachyOS underneath.** The CachyOS kernel, x86-64-v3 packages and
   `cachyos-settings` tuning.
 - **Keeps the games you have.** The installer finds Steam libraries on other
@@ -125,6 +129,34 @@ with Copy buttons. Note them while VaporOS is on.
 - If a new version doesn't start properly, VaporOS returns to the previous
   one by itself and lists it under "Versions that didn't start".
 - Other channels exist, but they carry test builds. They are published as prereleases.
+
+## Extensions
+
+Extensions add software that isn't part of VaporOS itself. Each one is an
+add-on, kept outside the read-only system:
+
+- **Sealed.** An extension is one read-only image, built and signed together
+  with the VaporOS version it belongs to. VaporOS checks it before it is used,
+  and the kernel refuses any change to it afterwards, even from VaporOS itself.
+- **Updates and rolls back with VaporOS.** An update brings each extension's
+  matching version, and going back to an earlier VaporOS brings its extensions
+  back too.
+- **Tried before it's kept.** Adding or removing one takes effect after a
+  restart. VaporOS restarts by itself when nobody is playing, or you restart
+  it yourself. If it doesn't come up healthy with the change, it starts the
+  way it was before and says so.
+- **Kept apart.** An extension's settings and downloads live in a place of
+  their own. Removing one removes its files, and its card lists anything it
+  changed in Steam or downloaded.
+
+Manage them under **System › Extensions**:
+
+| Extension | What it does |
+| --- | --- |
+| CachyOS Proton | Runs Windows games in Steam with CachyOS's fixes. Always on, and Steam uses it by default; pick another Proton for one game in that game's Steam properties. |
+| CoolerControl | Fan, pump and GPU fan control, with its own web page on your network. You sign in with your VaporOS password. |
+| TruckersMP | Multiplayer for Euro Truck Simulator 2 and American Truck Simulator. It uses the games' own Proton setup, so single-player and TruckersMP share profiles and mods. TruckersMP doesn't support Linux; it runs through Proton. |
+| Star Citizen | Adds the RSI Launcher to Steam, installed on a drive you pick. Easy Anti-Cheat isn't tested on VaporOS yet. |
 
 ## Verify a download
 
@@ -225,6 +257,7 @@ The website (`website/`) deploys to GitHub Pages through `pages.yml`.
 | `cmd/vos/` | The multi-call `vos` binary. |
 | `internal/` | Its packages: daemon, API, web UI, installer, updater, display, Sunshine, storage, power. |
 | `packages.txt` | Every package in the image. |
+| `extensions/` | The extensions: each one's descriptor and files (see `extensions/README.md`). |
 | `rootfs/` | Files overlaid onto the image: units, initramfs hook, firewall, os-release. |
 | `build/` | The build container and the scripts that run in it. |
 | `scripts/` | `dev.sh` (the dev loop), `build.sh`, `serial.py` (drives the VM's serial console). |
