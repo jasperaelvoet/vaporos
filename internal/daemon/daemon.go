@@ -82,6 +82,8 @@ func Main(args []string) int {
 		sun := sunshine.NewService(cfg)
 		sto := storage.NewService(cfg)
 		ext := extensions.NewService(cfg)
+		// Steam restarts so `vos steam prepare` applies what changed under it.
+		ext.SetSteamRestarter(func(reason string) { disp.RestartSteam(reason, false) })
 		// The display's session only counts while Sunshine agrees a client is
 		// (or may soon be) connected: a stream abandoned without quitting,
 		// whose app Sunshine could not close, must not keep the PC awake.

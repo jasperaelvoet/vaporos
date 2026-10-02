@@ -60,6 +60,10 @@ type SteamParts struct {
 	Shortcuts map[string]ShortcutTarget
 	// Beta asks Steam to switch an app to a branch ("" for the public one).
 	Beta map[uint32]string
+	// SunshineApps are entries Sunshine lists after the games, started
+	// without a Steam shortcut (TruckersMP's multiplayer start: `vos ext
+	// truckersmp mp ets2`). Optional; the shortcuts are listed anyway.
+	SunshineApps []SunshineApp
 }
 
 // ShortcutTarget is a shortcut's executable and start directory, canonical

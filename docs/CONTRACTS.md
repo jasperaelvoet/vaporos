@@ -42,7 +42,7 @@ multi-call:
 | `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
-| `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher (see Extensions). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. Until the dispatcher hooks anything it execs CMD (looked up in `PATH` unless absolute; `argv[0]` as given) with ARGS and the environment unchanged; `--shortcut` refuses instead (exit 1, reason on stderr) unless `/run/vos/extensions.json`, which it reads as `vapor`, lists ID as mounted; `--app` always runs CMD. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
+| `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher, run as `vapor` from the launch options `vos steam prepare` writes (see Extensions, Steam). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. What starts is, in order: `--app` or `--shortcut`; the `AppId=` of Steam's reaper line when CMD is one (as in Units, Display policy); `SteamAppId`, then `SteamGameId` in its environment. An id with the top bit set, or a shortcut's game id (`(appid << 32) \| 0x02000000`), names an extension's shortcut when `/var/lib/vos/ext/steam.json` lists one with that app id (`crc32("<owner>/<key>") \| 0x80000000`) or prepare's record holds it, and nothing otherwise. For an app it runs the launch hooks of the extensions steam.json lists in that app's `hooks` and `/run/vos/extensions.json` names as mounted, in that file's (catalog) order; for a shortcut, its extension's hook, refusing when that extension is not mounted (also when the report cannot be read). A hook is Go in `vos` (`Helper.LaunchHook`) that may rewrite the command and add to its environment; the programs a hook starts run without `LD_PRELOAD`, while the command keeps Steam's environment. It then execs the command (looked up in `PATH` unless absolute; `argv[0]` as given); with no hook to run that is CMD with ARGS and the environment unchanged. A refusal, a hook's error or a hook that leaves no command is exit 1, with the reason on stderr and in a message for vosd: `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json` (`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`), `{"level":"warning","text"}`, written to a temp file and renamed. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
 | `vos version` | prints the version |
 
@@ -629,6 +629,43 @@ the new copy. A missing file is not damage. Idle shutdown counts as busy
 (`adding an extension`) a download from its first bytes until it and its seal
 end, unless no bytes came for 2 minutes, and the re-read.
 
+**vosd and Steam** (installed systems only; the files' formats are in Steam):
+vosd writes `/var/lib/vos/ext/steam.json` (root's, 0644, atomically, only when
+its bytes change) at start before its first reconcile, after every reconcile,
+and when the control center adds or removes an extension or changes its
+settings. `set` is the boot report's. The entries are those of the extensions
+this boot mounted that `wanted` ∪ core (with their requirements, in the
+booted catalog) still wants, so one removed until the restart drops out at
+once: each from its shipped descriptor and its helper's Steam parts
+(settings from `settings/<id>.json` over the descriptor's defaults). A
+compatibility tool is named only while
+`/usr/share/steam/compatibilitytools.d/<tool>/compatibilitytool.vdf` exists
+(`default_compat_tool` from the first mounted core extension with one, an
+app's `compat_tool` from `steam.compat_tool` for each app of
+`steam.force_compat_tool`); an app's `hooks` are the extensions with a
+`steam.hooks` entry for it, in catalog order; its `beta` is a helper's
+(`null` when none asks); a shortcut is listed once its helper gives its
+target, a clean absolute `exe` and `start_dir`, with `art` the image's
+`/usr/lib/vos/ext/<id>/<art>` when that directory exists. `release` lists
+the apps the shipped descriptors of the catalog's extensions no longer
+wanted force, unless a listed extension forces them (empty while `wanted`
+cannot be read). `dispatcher` is true when the booted catalog's `dispatcher`
+is 1 or more and the other slot cannot boot an image without `vos ext
+launch`: it has no boot entry, or its slot file is for its entry's version
+and lists extensions (images built before extensions list none, and every
+image built with them has the dispatcher); an ESP that cannot be read makes
+it false. When the file changes vosd asks for a Steam restart (see Units,
+Display policy). So it does, checked every 15 s, when Steam's
+`~/.local/share/Steam/config/loginusers.vdf` lists an account (SteamID64 &
+0xffffffff) that prepare's record lacks, once per such set of accounts (and
+never without a record). Every 3 s it publishes the messages `vos ext
+launch` left in `/run/user/1000/vos/ext-messages/` (names of 1 to 20 digits
+and `.json`, read through gamerfs, at most 4 KiB each) as `system.message`
+with level `warning`, the text on one line and at most 300 characters (of
+more than 5 at once only the newest 5), and deletes them. vosd edits Steam's
+library lists only holding the Steam lock (`/run/user/1000/vos-steam.lock`,
+flock; made empty, `vapor`'s and 0600 when missing), waiting at most 2 s.
+
 **Install** (the `configure` step, after slot a is written and the target is
 mounted): the installer runs the new image's own
 `<target>/usr/bin/vos ext fetch --state-dir <target>/var/lib/vos --from SRC --version <ver> --seed`
@@ -811,7 +848,7 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - `origin_web_ui_allowed = pc`, `upnp = disabled`, `system_tray = disabled`, `gamepad = xone`
 - `global_prep_cmd = [{"do":"/usr/bin/vos session begin","undo":"/usr/bin/vos session end","elevated":false}]`. Sunshine runs prep commands on launch only, so a resumed stream keeps the mode and HDR it was launched with; vosd publishes a `system.message` when it sees a resume (a client connects with no `session.begin` since the last one left).
 
-`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, never `cmd`.
+`~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, then the apps of the extensions mounted and still wanted (as steam.json has them, see Extensions, vosd and Steam): per shortcut whose game id `vos steam prepare` recorded and did not mark deleted (its record, read through gamerfs; where accounts differ, the id VaporOS gave the shortcut, else the lowest account's) `{"name":<the shortcut's name>,"detached":["/usr/bin/vos session launch steam://rungameid/<game id>"]}` with the game id as an unsigned 64-bit decimal, then the entries their helpers add (`SteamParts.SunshineApps`, such as TruckersMP's multiplayer start), never `cmd`. Names stay unique (a game's gains ` (<id>)`, an extension's ` (2)`, ` (3)`, …), and `$` is written `$$` in names and in the extensions' commands.
 
 **Firewall** (nftables, input policy drop):
 - accept lo, established, ICMP/ICMPv6, udp 5353, udp 67-68;

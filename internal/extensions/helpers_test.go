@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/fsverity"
@@ -40,15 +41,18 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	dir := t.TempDir()
 	vars := []*string{&config.StateDir, &config.RunDir, &config.ExtCatalogPath, &config.ImageInfoPath,
-		&config.ProcCmdline, &config.KeysDir}
+		&config.ProcCmdline, &config.KeysDir, &config.ExtDescriptorsDir, &config.GamerHome,
+		&config.CompatToolsDir, &config.ExtMountedLibDir, &gamerRuntimeDir}
 	saved := make([]string, len(vars))
 	for i, v := range vars {
 		saved[i] = *v
 	}
+	savedEntry := slotEntry
 	t.Cleanup(func() {
 		for i, v := range vars {
 			*v = saved[i]
 		}
+		slotEntry = savedEntry
 	})
 	config.StateDir = filepath.Join(dir, "state")
 	config.RunDir = filepath.Join(dir, "run")
@@ -56,8 +60,15 @@ func newEnv(t *testing.T) *env {
 	config.ImageInfoPath = filepath.Join(dir, "usr", "image.json")
 	config.ProcCmdline = filepath.Join(dir, "cmdline")
 	config.KeysDir = filepath.Join(dir, "keys")
+	config.ExtDescriptorsDir = filepath.Join(dir, "usr", "share", "vos", "extensions")
+	config.GamerHome = filepath.Join(dir, "home", "vapor")
+	config.CompatToolsDir = filepath.Join(dir, "usr", "share", "steam", "compatibilitytools.d")
+	config.ExtMountedLibDir = filepath.Join(dir, "usr", "lib", "vos", "ext")
+	gamerRuntimeDir = filepath.Join(dir, "run", "user", "1000")
+	t.Setenv("XDG_RUNTIME_DIR", gamerRuntimeDir)
+	slotEntry = func(string) (*boot.Entry, error) { return nil, nil } // slot b was never written
 	e := &env{t: t, src: filepath.Join(dir, "src"), sealer: fakeStore(t)}
-	for _, d := range []string{config.StateDir, config.RunDir, e.src, config.KeysDir} {
+	for _, d := range []string{config.StateDir, config.RunDir, e.src, config.KeysDir, config.GamerHome, gamerRuntimeDir} {
 		must(t, os.MkdirAll(d, 0o755))
 	}
 	writeFile(t, config.ImageInfoPath, fmt.Sprintf(`{"version":%q,"channel":"main"}`, bootedVersion))

@@ -77,14 +77,17 @@ type execCall struct {
 	env  []string
 }
 
+// fakeExec records execs instead of making them, and keeps the dispatcher
+// from changing the test's own environment (stripPreload).
 func fakeExec(t *testing.T) *[]execCall {
 	var calls []execCall
-	e := execve
-	t.Cleanup(func() { execve = e })
+	e, strip := execve, stripPreload
+	t.Cleanup(func() { execve, stripPreload = e, strip })
 	execve = func(path string, argv, env []string) error {
 		calls = append(calls, execCall{path, argv, env})
 		return errors.New("exec faked")
 	}
+	stripPreload = func() {}
 	return &calls
 }
 
@@ -139,9 +142,12 @@ func TestLaunchRefuses(t *testing.T) {
 			writeFile(t, config.ExtBootPath(), report)
 		}
 		rc, msg := runLaunch("--shortcut", "star-citizen/launcher", "/x/reaper")
-		if rc != 1 || !strings.Contains(msg, "star-citizen extension is not installed") {
+		if rc != 1 || !strings.Contains(msg, "star-citizen did not start because its extension is not active") {
 			t.Errorf("%s: exit %d: %s", name, rc, msg)
 		}
+	}
+	if texts := launchMessages(t); len(texts) != 3 || !strings.HasPrefix(texts[0], "star-citizen did not start") {
+		t.Errorf("messages for VaporOS: %q", texts)
 	}
 	if rc, _ := runLaunch("--app", "1", "/no/such/dir/game"); rc != 1 {
 		t.Errorf("a missing absolute command: exit %d", rc)
