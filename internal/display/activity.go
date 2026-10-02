@@ -1,7 +1,6 @@
 package display
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -9,12 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/gameproc"
 	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
@@ -34,8 +32,6 @@ const (
 	steamRootRel = ".local/share/Steam"
 	// maxVDF bounds libraryfolders.vdf (as internal/storage/steam does).
 	maxVDF = 4 << 20
-	// maxEnviron bounds how much of one process's environment is scanned.
-	maxEnviron = 8 << 20
 )
 
 // gamerBusy reports why gamescope should keep running on a machine with a
@@ -43,7 +39,7 @@ const (
 // downloading, or Sunshine still has a client. It is a private copy of the
 // reference machine's idle checks (the power package has its own policy).
 func gamerBusy(ctx context.Context) (bool, string) {
-	if steamGameRunning(ProcDir, config.GamerUID) {
+	if steamGameRunning() {
 		return true, "a Steam game is running"
 	}
 	if steamDownloading(config.GamerHome, time.Now()) {
@@ -55,79 +51,14 @@ func gamerBusy(ctx context.Context) (bool, string) {
 	return false, ""
 }
 
-var steamAppID = regexp.MustCompile(`^SteamAppId=[1-9][0-9]*$`)
-
-// steamGameRunning looks for a process of uid whose environment carries a
-// non-zero SteamAppId, which Steam sets for every game it launches.
-func steamGameRunning(procDir string, uid int) bool {
-	ents, err := os.ReadDir(procDir)
-	if err != nil {
-		return false
-	}
-	for _, e := range ents {
-		if _, err := strconv.Atoi(e.Name()); err != nil {
-			continue
-		}
-		dir := filepath.Join(procDir, e.Name())
-		if procUID(filepath.Join(dir, "status")) != uid {
-			continue
-		}
-		if environHas(filepath.Join(dir, "environ"), steamAppID.Match) {
-			return true
-		}
-	}
-	return false
+// gamerProbe looks at the gaming user's processes through the probe idle
+// shutdown shares (internal/gameproc).
+func gamerProbe() gameproc.Probe {
+	return gameproc.Probe{ProcDir: ProcDir, UID: config.GamerUID, RuntimeDir: UserRuntimeDir}
 }
 
-// environHas scans a NUL-separated environment (/proc/<pid>/environ) for a
-// variable match accepts. It streams: a game can make its environment
-// megabytes long, so at most maxEnviron bytes are read, and a variable
-// longer than the read buffer is skipped (no SteamAppId is that long).
-func environHas(path string, match func([]byte) bool) bool {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	br := bufio.NewReaderSize(io.LimitReader(f, maxEnviron), 4096)
-	long := false
-	for {
-		kv, err := br.ReadSlice(0)
-		if err == bufio.ErrBufferFull {
-			long = true
-			continue
-		}
-		if !long && len(kv) > 0 && match(bytes.TrimSuffix(kv, []byte{0})) {
-			return true
-		}
-		long = false
-		if err != nil {
-			return false
-		}
-	}
-}
-
-// procUID returns the real uid from /proc/<pid>/status, or -1.
-func procUID(path string) int {
-	f, err := os.Open(path)
-	if err != nil {
-		return -1
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if rest, ok := strings.CutPrefix(sc.Text(), "Uid:"); ok {
-			fields := strings.Fields(rest)
-			if len(fields) > 0 {
-				n, err := strconv.Atoi(fields[0])
-				if err == nil {
-					return n
-				}
-			}
-		}
-	}
-	return -1
-}
+// steamGameRunning reports whether a Steam game runs as the gaming user.
+func steamGameRunning() bool { return gamerProbe().GameRunning() }
 
 // steamDownloading reports whether any Steam library has a file in its
 // downloading/ or temp/ directory modified in the last 30 seconds.

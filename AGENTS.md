@@ -37,10 +37,12 @@ contract there first, then in code, and keep the two in sync.
 | `internal/extensions/descriptor` | `extension.json` (schema 1, unknown fields rejected), from the source tree and as shipped in the image. |
 | `internal/extensions/fsverity` | Pure-Go fs-verity file digest (sha256, 4096-byte blocks, no salt): what the kernel measures. |
 | `internal/extensions/store` | The store in `/var/lib/vos/ext`: sealed images, sets, the `enabled`/`pending` links, `wanted`/`proven`/`failed`, slot catalogs, the boot report, the pure reconcile plan, promotion and GC, under `ext.lock`. |
+| `internal/gameproc` | The one "a Steam game runs" probe idle shutdown and the display policy share (Steam's reaper, `SteamAppId`, the extension handoff unit), and the Steam client holding `steam.pipe`. |
 | `internal/install` | `vos install` and the web installer (shared `Install`): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |
 | `internal/power` | Idle shutdown policy, keep-awake, Wake-on-LAN status. |
 | `internal/session` | Sunshine prep-cmd protocol: `vos session begin` / `end` to `/run/vos/session.sock`. Always exits 0. |
+| `internal/steamlock` | The Steam lock (`/run/user/1000/vos-steam.lock`) every writer of Steam's files holds. |
 | `internal/storage` | Disk and Steam library discovery, library adoption, the systemd generator (mount units, SSH). |
 | `internal/storage/steam` | Reads `libraryfolders.vdf`, `appmanifest_*.acf` and library markers. Never talks to Steam. |
 | `internal/sunshine` | Renders `sunshine.conf`/`apps.json`, local API credentials, pairing/clients/logs proxy, KMS plane-loss watchdog. |

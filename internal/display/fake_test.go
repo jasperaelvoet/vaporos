@@ -62,6 +62,18 @@ type fakeHost struct {
 	// calls panic (to restart Run as the daemon does).
 	hotplugCalls int
 	panicIPs     int
+	// Steam in the fake gamescope: steamPID holds steam.pipe (0: none),
+	// and a new one comes with every gamescope start. steamExits makes
+	// it obey `steam -shutdown`, after which systemd starts gamescope
+	// again; shutdownErr makes the command fail. gsJob and gsMain are the
+	// unit's last start job and main process start (UnitStarted), set
+	// from clock at every start.
+	steamPID      int
+	steamExits    bool
+	shutdownErr   error
+	gsJob, gsMain time.Time
+	gsStarts      int
+	clock         func() time.Time
 }
 
 func unitKey(unit string, user bool) string {
@@ -133,6 +145,16 @@ func (f *fakeHost) RestartUnit(ctx context.Context, unit string, user bool) erro
 func (f *fakeHost) gamescopeStartedLocked() {
 	if b, err := os.ReadFile(GamescopeEnvPath()); err == nil {
 		f.gsHDR = parseGamescopeEnv(b).HDR
+	}
+	f.gsStarts++
+	var now time.Time
+	if f.clock != nil {
+		now = f.clock()
+	}
+	f.gsJob = now.Add(time.Duration(f.gsStarts) * time.Microsecond)
+	f.gsMain = f.gsJob.Add(time.Second)
+	if f.steamPID != 0 {
+		f.steamPID += 100
 	}
 	f.composite, f.props = false, nil
 	f.applySavedModeLocked()
@@ -330,6 +352,36 @@ func (f *fakeHost) GameRunning() bool {
 	return f.game
 }
 
+func (f *fakeHost) UnitStarted(ctx context.Context, unit string, user bool) (time.Time, time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if unit != GamescopeUnit || !user {
+		return time.Time{}, time.Time{}
+	}
+	return f.gsJob, f.gsMain
+}
+
+func (f *fakeHost) SteamPID() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.steamPID
+}
+
+// ShutdownSteam: a Steam that obeys exits, gamescope with it, and systemd
+// starts both again (Restart=always).
+func (f *fakeHost) ShutdownSteam(ctx context.Context, pid int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("steam -shutdown %d", pid)
+	if f.shutdownErr != nil {
+		return f.shutdownErr
+	}
+	if f.steamExits && f.active[unitKey(GamescopeUnit, true)] {
+		f.gamescopeStartedLocked()
+	}
+	return nil
+}
+
 func (f *fakeHost) SunshineApp(ctx context.Context) (bool, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -503,6 +555,10 @@ func newTestManager(t *testing.T, monitor bool) (*Manager, *fakeHost, *clock, *e
 	m := newManager(cfg, h, hub)
 	clk := &clock{t: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)}
 	m.now = clk.now
+	h.mu.Lock()
+	h.clock = clk.now
+	h.mu.Unlock()
+	m.steamWait, m.steamPoll, m.steamGateWait = 20*time.Millisecond, time.Millisecond, 0
 	m.settle = 0
 	m.poll = time.Millisecond
 	m.recheckAfter = 0

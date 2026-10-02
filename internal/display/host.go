@@ -29,6 +29,10 @@ type host interface {
 	StartUnit(ctx context.Context, unit string, user bool) error
 	StopUnit(ctx context.Context, unit string, user bool) error
 	RestartUnit(ctx context.Context, unit string, user bool) error
+	// UnitStarted reports when a (user) unit's last start began (its start
+	// job, before ExecStartPre runs) and when its main process started;
+	// zero times when systemd cannot tell.
+	UnitStarted(ctx context.Context, unit string, user bool) (job, main time.Time)
 
 	GPU() GPUInfo
 	Connectors(card string) []drm.SysConnector
@@ -51,6 +55,12 @@ type host interface {
 	Busy(ctx context.Context) (bool, string)
 	// GameRunning reports whether a Steam game runs as the gaming user.
 	GameRunning() bool
+	// SteamPID is the pid of the gaming user's Steam client that takes
+	// commands (it holds ~/.steam/steam.pipe open), or 0.
+	SteamPID() int
+	// ShutdownSteam asks that Steam client to exit: `steam -shutdown` as
+	// the gaming user, in its display and session environment.
+	ShutdownSteam(ctx context.Context, pid int) error
 	// SunshineApp asks Sunshine whether it runs an app; ok is false when
 	// Sunshine gave no clear answer.
 	SunshineApp(ctx context.Context) (busy, ok bool)
@@ -228,7 +238,7 @@ func (h *realHost) Xprop(ctx context.Context, args ...string) (string, error) {
 
 func (h *realHost) Busy(ctx context.Context) (bool, string) { return gamerBusy(ctx) }
 
-func (h *realHost) GameRunning() bool { return steamGameRunning(ProcDir, config.GamerUID) }
+func (h *realHost) GameRunning() bool { return steamGameRunning() }
 
 func (h *realHost) SunshineApp(ctx context.Context) (bool, bool) { return sunshineState(ctx) }
 

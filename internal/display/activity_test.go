@@ -6,31 +6,37 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
+// The display asks the probe idle shutdown shares (internal/gameproc has
+// the cases): here only that it looks in ProcDir and the gaming user's
+// runtime directory.
 func TestSteamGameRunning(t *testing.T) {
-	proc := t.TempDir()
-	write := func(pid, uid, env string) {
-		mustWrite(t, filepath.Join(proc, pid, "status"), "Name:\tx\nUid:\t"+uid+"\t"+uid+"\t"+uid+"\t"+uid+"\n")
-		mustWrite(t, filepath.Join(proc, pid, "environ"), env)
+	setupPaths(t)
+	save := ProcDir
+	t.Cleanup(func() { ProcDir = save })
+	ProcDir = t.TempDir()
+	write := func(pid, uid, cmdline, env string) {
+		mustWrite(t, filepath.Join(ProcDir, pid, "status"), "Name:\tx\nUid:\t"+uid+"\t"+uid+"\t"+uid+"\t"+uid+"\n")
+		mustWrite(t, filepath.Join(ProcDir, pid, "cmdline"), cmdline)
+		mustWrite(t, filepath.Join(ProcDir, pid, "environ"), env)
 	}
-	write("100", "1000", "HOME=/var/home/vapor\x00SteamAppId=0\x00")         // Steam itself
-	write("101", "0", "SteamAppId=730\x00")                                  // not the gamer
-	write("102", "1000", "SteamAppIdX=730\x00STEAM=1\x00SteamAppId=abc\x00") // near misses
-	mustWrite(t, filepath.Join(proc, "self", "status"), "Uid:\t1000\n")
-	if steamGameRunning(proc, 1000) {
+	write("100", "1000", "/usr/bin/gamescopereaper\x00--\x00/usr/bin/steam\x00", "SteamAppId=0\x00")
+	write("101", "0", "reaper\x00SteamLaunch\x00AppId=730\x00--\x00x\x00", "SteamAppId=730\x00")
+	if steamGameRunning() {
 		t.Fatal("no game should be detected")
 	}
-	write("103", "1000", "DISPLAY=:0\x00SteamAppId=1091500\x00")
-	if !steamGameRunning(proc, 1000) {
-		t.Fatal("game not detected")
+	write("102", "1000", "/var/home/vapor/.local/share/Steam/ubuntu12_32/reaper\x00SteamLaunch\x00AppId=1091500\x00--\x00x\x00", "")
+	if !steamGameRunning() {
+		t.Fatal("a reaper not seen")
 	}
-	if steamGameRunning(filepath.Join(proc, "missing"), 1000) {
-		t.Fatal("missing /proc")
+	os.RemoveAll(filepath.Join(ProcDir, "102"))
+	mustWrite(t, filepath.Join(UserRuntimeDir, "systemd", "transient", "vos-ext-handoff.service"), "[Unit]\n")
+	if !steamGameRunning() {
+		t.Fatal("the handoff unit not seen")
 	}
 }
 
@@ -109,26 +115,6 @@ func TestSteamLibrariesHostileFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	only("symlinked directory")
-}
-
-// TestSteamGameRunningHugeEnviron: a game can make its environment huge;
-// the scan is bounded and still finds SteamAppId past a very long variable.
-func TestSteamGameRunningHugeEnviron(t *testing.T) {
-	proc := t.TempDir()
-	mustWrite(t, filepath.Join(proc, "200", "status"), "Uid:\t1000\t1000\t1000\t1000\n")
-	long := "JUNK=" + strings.Repeat("SteamAppId=1", 10000)
-	mustWrite(t, filepath.Join(proc, "200", "environ"), long+"\x00SteamAppId=440\x00")
-	if !steamGameRunning(proc, 1000) {
-		t.Error("SteamAppId after a long variable not found")
-	}
-	mustWrite(t, filepath.Join(proc, "200", "environ"), long+"\x00")
-	if steamGameRunning(proc, 1000) {
-		t.Error("a long variable's tail was taken for SteamAppId")
-	}
-	mustWrite(t, filepath.Join(proc, "200", "environ"), strings.Repeat("A=1\x00", maxEnviron/4+10)+"SteamAppId=440\x00")
-	if steamGameRunning(proc, 1000) {
-		t.Error("read past the environ bound")
-	}
 }
 
 func TestSunshineStreaming(t *testing.T) {

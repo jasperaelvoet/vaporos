@@ -96,6 +96,14 @@ type Manager struct {
 	// gsHDR is the HDR flag the running gamescope was started with
 	// (guarded by op: only Begin and apply start gamescope).
 	gsHDR bool
+	// steamGated: vosd's first gamescope start has waited for steam.json
+	// (guarded by op).
+	steamGated bool
+	// Steam restarts (steamrestart.go): the most Steam waits to shut down,
+	// how often that is checked, the least time between two restarts vosd
+	// asks for itself, and the most the first gamescope start waits for
+	// steam.json.
+	steamWait, steamPoll, steamEvery, steamGateWait time.Duration
 	// kick wakes the Run loop to reconcile and refresh welcome.json.
 	kick chan struct{}
 	// startOnce starts what lives as long as vosd, not as long as one Run
@@ -127,6 +135,11 @@ type Manager struct {
 	lastBusy    string
 	composite   compositeWatch
 	upSince     time.Time // the first init: when this vosd started
+	// steamReq is a Steam restart waiting for its moment, steamBusy is set
+	// while one is under way, and steamLast is when Steam last restarted.
+	steamReq  *steamRequest
+	steamBusy bool
+	steamLast time.Time
 }
 
 // opLock is a mutex whose Lock can give up when a context ends.
@@ -191,6 +204,10 @@ func newManager(cfg *config.Config, h host, hub *events.Hub) *Manager {
 		beginBudget:    75 * time.Second,
 		composeReserve: 5 * time.Second,
 		compositeEvery: 5 * time.Second,
+		steamWait:      30 * time.Second,
+		steamPoll:      time.Second,
+		steamEvery:     10 * time.Minute,
+		steamGateWait:  5 * time.Second,
 		now:            time.Now,
 		op:             newOpLock(),
 		state:          StateNone,
@@ -269,9 +286,11 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-verify.C:
 			m.dropStaleSession(ctx)
 			m.reconcile(ctx, true)
+			m.maybeRestartSteam(ctx)
 		case <-m.kick:
 			m.reconcile(ctx, false)
 			m.refreshWelcome()
+			m.maybeRestartSteam(ctx)
 		case ev, ok := <-evs:
 			if !ok {
 				evs = nil
@@ -620,6 +639,9 @@ func (m *Manager) ensureStarted(ctx context.Context, unit string, user bool) boo
 	}
 	m.lastStart[unit] = now
 	m.mu.Unlock()
+	if unit == GamescopeUnit {
+		m.awaitSteamJSON(ctx)
+	}
 	if err := m.h.StartUnit(ctx, unit, user); err != nil {
 		log.Printf("display: start %s: %v", unit, err)
 		return false
