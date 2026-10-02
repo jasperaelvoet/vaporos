@@ -587,17 +587,37 @@ has "firewall: ... while 80 is public" 'add rule inet vos optional tcp dport 80 
 
 expect pass "firewall: a last line without a newline" render_ports '{}' 'tcp 11987'
 has "firewall: ... still counts" 'ip saddr @lan4 tcp dport 11987 accept'
+lacks "firewall: ... a port without an upstream keeps loopback as it is" 'add rule inet vos upstream'
 
-for bad in 'a line that is not a port=tcp 11987\nhttp 8080\n' \
-           'Sunshine'"'"'s admin port=tcp 11987\ntcp 47990\n' \
-           'a port below 1024=tcp 11987\ntcp 22\n' \
+# A proxied port's loopback upstream: only root (vosd) may connect to it.
+expect pass "firewall: a proxied port with its upstream" \
+    render_ports '{"web":{"allow_public":true}}' 'tcp 11987 upstream 11986\nudp 27015\n'
+has "firewall: ... opens 11987 to the LAN" 'add rule inet vos optional ip saddr @lan4 tcp dport 11987 accept'
+has "firewall: ... resets anyone but root on 11986" \
+    'add rule inet vos upstream tcp dport 11986 meta skuid != 0 reject with tcp reset'
+lacks "firewall: ... never opens the upstream" 'dport 11986 accept'
+has "firewall: ... from loopback's output" 'oif lo jump upstream'
+
+for bad in 'a line that is not a port=tcp 11987 upstream 11986\nhttp 8080\n' \
+           'Sunshine'"'"'s admin port=tcp 11987 upstream 11986\ntcp 47990\n' \
+           'a port below 1024=tcp 11987 upstream 11986\ntcp 22\n' \
+           'a port of 1023=tcp 11987 upstream 11986\ntcp 1023\n' \
            'a port above 65535=tcp 65536\n' \
            'a leading zero=tcp 011987\n' \
            'a trailing space=tcp 11987 \n' \
            'a CRLF line=tcp 11987\r\n' \
-           'an empty line=tcp 11987\n\n'; do
+           'an empty line=tcp 11987\n\n' \
+           'an upstream on udp=tcp 11987 upstream 11986\nudp 27015 upstream 27016\n' \
+           'Sunshine'"'"'s admin port as an upstream=tcp 11987 upstream 47990\n' \
+           'an upstream below 1024=tcp 11987 upstream 80\n' \
+           'an upstream above 65535=tcp 11987 upstream 65536\n' \
+           'an upstream with a leading zero=tcp 11987 upstream 011986\n' \
+           'an upstream without a port=tcp 11987 upstream\n' \
+           'two spaces before an upstream=tcp 11987  upstream 11986\n' \
+           'a trailing space after an upstream=tcp 11987 upstream 11986 \n'; do
     expect pass "firewall: a ports file with ${bad%%=*}" render_ports '{"web":{"allow_public":true}}' "${bad#*=}"
     lacks "firewall: ... opens none of it" 'add rule inet vos optional ip saddr'
+    lacks "firewall: ... and adds no upstream rule" 'add rule inet vos upstream'
 done
 many=$(for ((p = 20000; p < 20065; p++)); do printf 'tcp %d\\n' "$p"; done)
 expect pass "firewall: a ports file of 65 ports" render_ports '{}' "$many"

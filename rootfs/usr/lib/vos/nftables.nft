@@ -2,7 +2,8 @@
 # VaporOS firewall. vos-firewall.service loads this through
 # /usr/lib/vos/vos-firewall, which appends to the "optional" chain the rules
 # that /var/lib/vos/config.json switches on (SSH, HTTPS, public web access)
-# and the running extensions' ports (/var/lib/vos/ext/ports, LAN only).
+# and the running extensions' ports (/var/lib/vos/ext/ports, LAN only), and
+# to the "upstream" chain the loopback ports vosd proxies those to.
 # The whole load is one nft transaction: there is never a moment with half a
 # ruleset.
 
@@ -28,6 +29,18 @@ table inet vos {
     # Filled by vos-firewall from config.json and the extensions' ports;
     # empty means closed.
     chain optional {
+    }
+
+    # Filled by vos-firewall from the extensions' ports: the loopback port
+    # behind each web UI vosd proxies, which only root (vosd) may connect
+    # to. Everyone else, such as a game running as vapor, gets a reset
+    # instead of the extension's own server.
+    chain upstream {
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+        oif lo jump upstream
     }
 
     chain input {

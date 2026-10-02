@@ -1,12 +1,15 @@
 package extensions
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -75,7 +78,7 @@ func TestPortsFollowMountedAndWanted(t *testing.T) {
 
 	r.boot()
 	r.s.syncPorts()
-	if got := r.portsFile(); got != "tcp 11987\n" || r.reloads() != 1 {
+	if got := r.portsFile(); got != "tcp 11987 upstream 11986\n" || r.reloads() != 1 {
 		t.Fatalf("mounted: file %q, %d reloads", got, r.reloads())
 	}
 	r.s.syncPorts()
@@ -92,7 +95,7 @@ func TestPortsFollowMountedAndWanted(t *testing.T) {
 	if code, body := r.do("POST", "/extensions/coolercontrol", `{"password":"`+rigPassword+`"}`); code != 200 {
 		t.Fatalf("add again: %d %s", code, body)
 	}
-	if got := r.portsFile(); got != "tcp 11987\n" || r.reloads() != 3 {
+	if got := r.portsFile(); got != "tcp 11987 upstream 11986\n" || r.reloads() != 3 {
 		t.Fatalf("added back: file %q, %d reloads", got, r.reloads())
 	}
 }
@@ -113,7 +116,7 @@ func TestPortsReloadRetried(t *testing.T) {
 		return nil
 	}
 	r.s.syncPorts()
-	if got := r.portsFile(); got != "tcp 11987\n" || r.reloads() != 0 {
+	if got := r.portsFile(); got != "tcp 11987 upstream 11986\n" || r.reloads() != 0 {
 		t.Fatalf("file %q, %d reloads", got, r.reloads())
 	}
 	fail = false
@@ -128,6 +131,16 @@ func TestPortsFile(t *testing.T) {
 	if got != "tcp 11987\nudp 27015\n" {
 		t.Fatalf("ports file %q", got)
 	}
+	// A proxied port names its loopback upstream, which only root may reach.
+	got = string(portsFile([]exposed{
+		{proto: "tcp", port: 11987, mode: "proxied", upstream: "127.0.0.1:11986"},
+		{proto: "tcp", port: 8080, mode: "lan"},
+		{proto: "tcp", port: 9000, mode: "proxied", upstream: "localhost:9001"},
+		{proto: "tcp", port: 9002, mode: "proxied", upstream: "127.0.0.1:80"},
+	}))
+	if got != "tcp 11987 upstream 11986\ntcp 8080\ntcp 9000\ntcp 9002\n" {
+		t.Fatalf("ports file %q", got)
+	}
 	if b := portsFile(nil); len(b) != 0 {
 		t.Fatalf("no ports: %q", b)
 	}
@@ -136,7 +149,8 @@ func TestPortsFile(t *testing.T) {
 func TestExposedPortsSkipsSunshineAdmin(t *testing.T) {
 	r := newRig(t)
 	writeFile(t, filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json"), withPorts(t, shipped["coolercontrol"],
-		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11986"},{"proto":"tcp","port":47990,"mode":"lan"},{"proto":"udp","port":5000,"mode":"lan"}]`))
+		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11986"},{"proto":"tcp","port":47990,"mode":"lan"},`+
+			`{"proto":"tcp","port":12000,"mode":"proxied","upstream":"127.0.0.1:47990"},{"proto":"udp","port":5000,"mode":"lan"}]`))
 	locked(t, func() error { return store.WriteWanted([]string{"coolercontrol"}) })
 	r.report(bootWith(r, "proton", "coolercontrol"))
 	ps, err := exposedPorts()
@@ -147,5 +161,65 @@ func TestExposedPortsSkipsSunshineAdmin(t *testing.T) {
 	}
 	if !slices.Equal(got, []int{11987, 5000}) {
 		t.Fatalf("exposed ports %v", got)
+	}
+}
+
+// logs collects what the package logs during the test.
+type logs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func captureLogs(t *testing.T) *logs {
+	t.Helper()
+	l := &logs{}
+	saved := log.Writer()
+	log.SetOutput(l)
+	t.Cleanup(func() { log.SetOutput(saved) })
+	return l
+}
+
+func (l *logs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+// count is how many lines contain s.
+func (l *logs) count(s string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, line := range strings.Split(l.buf.String(), "\n") {
+		if strings.Contains(line, s) {
+			n++
+		}
+	}
+	return n
+}
+
+// A shipped descriptor vosd cannot read is logged once per error, not at
+// every look at the ports.
+func TestExposedPortsLogsADamagedDescriptorOnce(t *testing.T) {
+	r := newRig(t)
+	locked(t, func() error { return store.WriteWanted([]string{"coolercontrol"}) })
+	r.report(bootWith(r, "proton", "coolercontrol"))
+	p := filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json")
+	good, err := os.ReadFile(p)
+	must(t, err)
+	l := captureLogs(t)
+	writeFile(t, p, "{")
+	for i := 0; i < 3; i++ {
+		exposedPorts()
+	}
+	if n := l.count("extensions: coolercontrol: "); n != 1 {
+		t.Fatalf("%d log lines for one damaged descriptor:\n%s", n, l.buf.String())
+	}
+	writeFile(t, p, string(good))
+	exposedPorts()
+	writeFile(t, p, "{")
+	exposedPorts()
+	if n := l.count("extensions: coolercontrol: "); n != 2 {
+		t.Fatalf("%d log lines after it broke again, want 2", n)
 	}
 }

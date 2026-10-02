@@ -50,11 +50,19 @@ type dirs struct {
 	data   string // CC_DATA_DIR
 }
 
+// areaDirs are the data area's own subdirectories (the system data area
+// when area is "").
+func areaDirs(area string) dirs {
+	if area == "" {
+		area = filepath.Join(config.ExtDataDir(), id)
+	}
+	return dirs{area: area, config: filepath.Join(area, "config"), data: filepath.Join(area, "data")}
+}
+
 // unitDirs reads the unit's environment, falling back to the data area's
 // own subdirectories.
 func unitDirs() dirs {
-	area := filepath.Join(config.ExtDataDir(), id)
-	d := dirs{area: area, config: filepath.Join(area, "config"), data: filepath.Join(area, "data")}
+	d := areaDirs("")
 	if v := os.Getenv("CC_CONFIG_DIR"); filepath.IsAbs(v) {
 		d.config = filepath.Clean(v)
 	}

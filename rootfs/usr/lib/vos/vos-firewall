@@ -14,10 +14,12 @@
 #   web.allow_public     tcp 80 (443 with https, 22 with ssh) from anywhere
 #
 # and the ports of the extensions this boot runs, which vosd lists in
-# /var/lib/vos/ext/ports (one "tcp PORT" or "udp PORT" line each, PORT
-# 1024-65535 and never Sunshine's admin port 47990). Those are opened to
-# the local network only, whatever web.allow_public says; one line that is
-# not exactly that, or more than 64, and the file opens nothing.
+# /var/lib/vos/ext/ports (one "tcp PORT", "udp PORT" or "tcp PORT upstream
+# UPSTREAM" line each, both 1024-65535 and never Sunshine's admin port
+# 47990). Those are opened to the local network only, whatever
+# web.allow_public says; one line that is not exactly that, or more than
+# 64, and the file opens nothing. An UPSTREAM is the loopback port vosd
+# proxies PORT to: only root (vosd) may connect to it.
 #
 # VOS_NFT_RULES, VOS_CONFIG and VOS_EXT_PORTS override the three input
 # paths (the build uses them to check the rules against test files).
@@ -53,21 +55,27 @@ allow_lan() { # allow_lan PROTO PORT COMMENT: from the LAN sets only, always
                "ip6 saddr @lan6 $1 dport $2 accept comment \"$3\"")
 }
 
+upstream=()
+
 # The extensions' ports, all or nothing: a damaged or hand-edited file
 # never opens a port it did not mean to.
 ext_ports() {
     [[ -f $ports && -r $ports ]] || return 0
-    local line proto port n=0 found=()
+    local line proto port up n=0 found=()
     while IFS= read -r line || [[ -n $line ]]; do
-        [[ $line =~ ^(tcp|udp)\ ([1-9][0-9]{3,4})$ ]] || return 0
-        port=${BASH_REMATCH[2]}
-        (( port <= 65535 && port != 47990 && ++n <= 64 )) || return 0
-        found+=("${BASH_REMATCH[1]} $port")
+        [[ $line =~ ^(tcp|udp)\ ([1-9][0-9]{3,4})$ || $line =~ ^(tcp)\ ([1-9][0-9]{3,4})\ upstream\ ([1-9][0-9]{3,4})$ ]] ||
+            return 0
+        port=${BASH_REMATCH[2]} up=${BASH_REMATCH[3]:-}
+        (( port >= 1024 && port <= 65535 && port != 47990 && ++n <= 64 )) || return 0
+        [[ -z $up ]] || (( up >= 1024 && up <= 65535 && up != 47990 )) || return 0
+        found+=("${BASH_REMATCH[1]} $port $up")
     done <"$ports"
     (( n )) || return 0
     for line in "${found[@]}"; do
-        read -r proto port <<<"$line"
+        read -r proto port up <<<"$line"
         allow_lan "$proto" "$port" "extension $proto $port"
+        [[ -z $up ]] ||
+            upstream+=("tcp dport $up meta skuid != 0 reject with tcp reset comment \"extension upstream $up\"")
     done
 }
 
@@ -81,6 +89,9 @@ ruleset() {
     local rule
     for rule in "${optional[@]}"; do
         printf 'add rule inet vos optional %s\n' "$rule"
+    done
+    for rule in "${upstream[@]}"; do
+        printf 'add rule inet vos upstream %s\n' "$rule"
     done
 }
 

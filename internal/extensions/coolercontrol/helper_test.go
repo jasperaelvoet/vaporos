@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 )
@@ -110,16 +111,37 @@ func TestHandshake(t *testing.T) {
 	}
 }
 
-func TestModuleOptions(t *testing.T) {
-	saved := amdgpuFeatureMask
-	t.Cleanup(func() { amdgpuFeatureMask = saved })
-	amdgpuFeatureMask = filepath.Join(t.TempDir(), "ppfeaturemask")
+// pciDevice adds a PCI device with vendor and class to the fake bus.
+func pciDevice(t *testing.T, name, vendor, class string) {
+	t.Helper()
+	d := filepath.Join(pciDevicesDir, name)
+	must(t, os.MkdirAll(d, 0o755))
+	must(t, os.WriteFile(filepath.Join(d, "vendor"), []byte(vendor+"\n"), 0o444))
+	must(t, os.WriteFile(filepath.Join(d, "class"), []byte(class+"\n"), 0o444))
+}
+
+// fakeModuleSys points ModuleOptions at an empty sysfs and a boot without
+// module options.
+func fakeModuleSys(t *testing.T) *helper {
+	t.Helper()
+	savedMask, savedPCI := amdgpuFeatureMask, pciDevicesDir
+	t.Cleanup(func() { amdgpuFeatureMask, pciDevicesDir = savedMask, savedPCI })
+	root := t.TempDir()
+	amdgpuFeatureMask = filepath.Join(root, "module", "amdgpu", "parameters", "ppfeaturemask")
+	pciDevicesDir = filepath.Join(root, "bus", "pci", "devices")
+	must(t, os.MkdirAll(filepath.Dir(amdgpuFeatureMask), 0o755))
 	h := newHelper()
+	h.booted = func() []string { return nil }
+	return h
+}
+
+func TestModuleOptions(t *testing.T) {
+	h := fakeModuleSys(t)
 	opts := func(gpu, it87 bool) string {
 		return strings.Join(h.ModuleOptions(&extensions.Ext{ID: id, Settings: map[string]any{"gpu_fan_curves": gpu, "it87_conflicts": it87}}), "|")
 	}
 	if got := opts(true, false); got != "" {
-		t.Errorf("no amdgpu loaded: %q", got)
+		t.Errorf("no AMD graphics card: %q", got)
 	}
 	for mask, want := range map[string]string{
 		"4294426623\n": "options amdgpu ppfeaturemask=0xfff7ffff", // the kernel's default, as it prints it
@@ -139,6 +161,62 @@ func TestModuleOptions(t *testing.T) {
 	}
 	if got := opts(false, false); got != "" {
 		t.Errorf("both off: %q", got)
+	}
+}
+
+// Before amdgpu has loaded, the line stays what the booted set carries,
+// and a PC with an AMD graphics card gets the kernel's default mask with
+// OverDrive; only a PC without one gets no line.
+func TestModuleOptionsBeforeAmdgpuLoads(t *testing.T) {
+	h := fakeModuleSys(t)
+	gpuLine := func() string {
+		return strings.Join(h.ModuleOptions(&extensions.Ext{ID: id, Settings: map[string]any{"gpu_fan_curves": true}}), "|")
+	}
+	pciDevice(t, "0000:00:02.0", "0x8086", "0x030000") // another vendor's graphics
+	pciDevice(t, "0000:03:00.1", "0x1002", "0x040300") // an AMD card's HDMI audio
+	if got := gpuLine(); got != "" {
+		t.Errorf("no AMD display controller: %q", got)
+	}
+
+	pciDevice(t, "0000:03:00.0", "0x1002", "0x030000")
+	if got := gpuLine(); got != "options amdgpu ppfeaturemask=0xfff7ffff" {
+		t.Errorf("an AMD card, amdgpu not loaded: %q", got)
+	}
+
+	h.booted = func() []string {
+		return []string{"options it87 ignore_resource_conflict=1", "", "options  amdgpu ppfeaturemask=0xfff5ffff"}
+	}
+	if got := gpuLine(); got != "options amdgpu ppfeaturemask=0xfff5ffff" {
+		t.Errorf("the booted set's line: %q", got)
+	}
+	must(t, os.WriteFile(amdgpuFeatureMask, []byte("4294426623\n"), 0o444))
+	if got := gpuLine(); got != "options amdgpu ppfeaturemask=0xfff7ffff" {
+		t.Errorf("amdgpu loaded: %q", got)
+	}
+}
+
+// The booted options are the initramfs's file, then the booted set's.
+func TestBootedOptions(t *testing.T) {
+	savedState, savedRun, savedModprobe := config.StateDir, config.RunDir, config.ModprobeRunDir
+	t.Cleanup(func() { config.StateDir, config.RunDir, config.ModprobeRunDir = savedState, savedRun, savedModprobe })
+	root := t.TempDir()
+	config.StateDir, config.RunDir, config.ModprobeRunDir = filepath.Join(root, "state"), filepath.Join(root, "run"), filepath.Join(root, "modprobe.d")
+	if got := bootedOptions(); len(got) != 0 {
+		t.Fatalf("nothing booted: %q", got)
+	}
+	set := filepath.Join(config.ExtSetsDir(), "4")
+	must(t, os.MkdirAll(set, 0o755))
+	must(t, os.WriteFile(filepath.Join(set, "ids"), []byte("proton\ncoolercontrol\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(set, "modprobe.conf"), []byte("options amdgpu ppfeaturemask=0xfff7ffff\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(set, "tries"), []byte("0\n"), 0o644))
+	must(t, config.WriteJSONAtomic(config.ExtBootPath(), map[string]any{"mode": "enabled", "set": "4"}, 0o644))
+	if got := bootedOptions(); !slices.Contains(got, "options amdgpu ppfeaturemask=0xfff7ffff") {
+		t.Fatalf("the booted set's: %q", got)
+	}
+	must(t, os.MkdirAll(config.ModprobeRunDir, 0o755))
+	must(t, os.WriteFile(filepath.Join(config.ModprobeRunDir, "vos-ext.conf"), []byte("options amdgpu ppfeaturemask=0xfff5ffff\n"), 0o644))
+	if got := bootedOptions(); len(got) == 0 || got[0] != "options amdgpu ppfeaturemask=0xfff5ffff" {
+		t.Fatalf("the initramfs's first: %q", got)
 	}
 }
 
@@ -169,7 +247,14 @@ func TestRemoveStopsAndRestores(t *testing.T) {
 }
 
 func TestRegistered(t *testing.T) {
-	if _, ok := extensions.HelperFor(id).(*helper); !ok {
+	h := extensions.HelperFor(id)
+	if _, ok := h.(*helper); !ok {
 		t.Fatal("the coolercontrol helper is not registered")
+	}
+	// vosd finds the optional hook by this method.
+	if _, ok := h.(interface {
+		PasswordChanged(context.Context, *extensions.Ext) error
+	}); !ok {
+		t.Fatal("the helper has no PasswordChanged")
 	}
 }

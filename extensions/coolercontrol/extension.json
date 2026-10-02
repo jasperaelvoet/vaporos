@@ -10,12 +10,12 @@
     "license": "GPL-3.0-or-later"
   },
   "caveats": [
-    "When it stops or you remove it, VaporOS puts every fan back to how it was before CoolerControl started.",
+    "When it stops or you remove it, the motherboard and graphics card fans it controlled go back to their firmware settings. USB coolers keep their last profile until the PC turns off.",
     "Some motherboard fan chips and the graphics card's fan curve need an option below, which takes a restart."
   ],
   "copy": {
     "install": "CoolerControl runs as a system service with full control of your fans, pump and GPU fan. Sign in to it with your VaporOS password.",
-    "remove": "Fans go back to the BIOS settings. Its profiles stay unless you also delete its settings."
+    "remove": "Motherboard and graphics card fans go back to their firmware settings. USB coolers keep their last profile until the PC turns off. Its profiles stay unless you also delete its settings."
   },
   "packages": ["cachyos/coolercontrold", "extra/liquidctl"],
   "strip": [

@@ -542,13 +542,14 @@ check_extensions() {
 }
 
 # CoolerControl (docs/CONTRACTS.md "Extensions", CoolerControl), once added
-# and booted: its daemon runs and listens on loopback only, vosd's page on
-# :11987 asks for a sign-in (and, with the password, passes a signed-in
-# request through), the firewall lets 11987 in from the LAN sets only, and
-# the daemon got the VaporOS password. A VM has no fan chips, so a daemon
-# that does not run there only warns.
+# and booted: its daemon runs with VaporOS's start limit and listens on
+# loopback only, where only root reaches it, vosd's page on :11987 asks
+# for a sign-in (and, with the password, passes a signed-in request
+# through), the firewall lets 11987 in from the LAN sets only, and the
+# daemon got the VaporOS password. A VM has no fan chips, so a daemon that
+# does not run there, and fans with nothing to record, only warn.
 check_coolercontrol() {
-    local password=$1 state code loc rules line i hash fans jar=$tmp/cc-cookies
+    local password=$1 state code loc rules line i hash fans root vapor jar=$tmp/cc-cookies
     local data=/var/lib/vos/ext/data/coolercontrol
 
     fans=0
@@ -561,6 +562,12 @@ check_coolercontrol() {
     else
         warn cc-unit "coolercontrold.service is '${state:-?}' on a machine without fan controls: $(journalctl -u coolercontrold.service -n 3 -o cat --no-pager 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
     fi
+    line="$(systemctl show -P StartLimitIntervalUSec coolercontrold.service 2>/dev/null) $(systemctl show -P StartLimitBurst coolercontrold.service 2>/dev/null)"
+    if [[ $line == "30min 5" ]]; then
+        ok cc-start-limit "at most 5 starts in 30 min"
+    else
+        bad cc-start-limit "StartLimitIntervalUSec and StartLimitBurst are '$line', expected '30min 5' (is the drop-in loaded?)"
+    fi
 
     # 11986 (2EE2) listens on 127.0.0.1 and ::1 only.
     line=$(awk '$4 == "0A" && $2 ~ /:2EE2$/ && $2 != "0100007F:2EE2" && $2 != "00000000000000000000000001000000:2EE2"' \
@@ -571,8 +578,8 @@ check_coolercontrol() {
         ok cc-loopback "coolercontrold listens on loopback only"
     fi
 
-    if [[ $(cat /var/lib/vos/ext/ports 2>/dev/null) == *"tcp 11987"* ]]; then
-        ok cc-ports "/var/lib/vos/ext/ports lists tcp 11987"
+    if grep -qx 'tcp 11987 upstream 11986' /var/lib/vos/ext/ports 2>/dev/null; then
+        ok cc-ports "/var/lib/vos/ext/ports lists tcp 11987 with its upstream 11986"
     else
         bad cc-ports "/var/lib/vos/ext/ports: '$(tr '\n' ' ' </var/lib/vos/ext/ports 2>/dev/null)'"
     fi
@@ -581,6 +588,27 @@ check_coolercontrol() {
         ok cc-firewall "11987 is accepted from the LAN sets only ($(grep -c . <<<"$rules") rules)"
     else
         bad cc-firewall "11987 in the optional chain: '${rules:-none}'"
+    fi
+
+    # Only root (vosd) connects to the daemon's own port; vapor's connection
+    # is reset, whether the daemon runs or not.
+    rules=$(nft list chain inet vos upstream 2>/dev/null | grep 'dport 11986')
+    if [[ $rules == *skuid* && $rules == *reject* ]]; then
+        ok cc-upstream-rule "loopback 11986 resets everyone but root"
+    else
+        bad cc-upstream-rule "11986 in the upstream chain: '${rules:-none}'"
+    fi
+    root=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:11986/handshake 2>/dev/null) || true
+    vapor=$(setpriv --reuid=1000 --regid=1000 --clear-groups curl -sS -m 5 -o /dev/null -w '%{http_code}' \
+        http://127.0.0.1:11986/handshake 2>/dev/null) || true
+    if [[ $vapor != 000 ]]; then
+        bad cc-upstream "vapor reached 127.0.0.1:11986: '${vapor:-no curl}'"
+    elif [[ $root == 200 ]]; then
+        ok cc-upstream "root gets 200 from 127.0.0.1:11986, vapor does not get through"
+    elif ((fans)); then
+        bad cc-upstream "coolercontrold does not answer root on 127.0.0.1:11986 ($root)"
+    else
+        warn cc-upstream "coolercontrold does not answer root on 127.0.0.1:11986 ($root); vapor does not get through either"
     fi
 
     # vosd serves the page only while the daemon runs; it looks every 5 s.
@@ -618,12 +646,12 @@ check_coolercontrol() {
         warn cc-passwd ".passwd is 0600 but differs from auth.json (changed in CoolerControl?)"
     fi
 
-    if ((fans)); then
-        if [[ -s /run/vos/coolercontrol-fans.json ]]; then
-            ok cc-fans "/run/vos/coolercontrol-fans.json records the fans' first modes"
-        else
-            bad cc-fans "no /run/vos/coolercontrol-fans.json with fan controls present"
-        fi
+    if ((fans)) && [[ -s /run/vos/coolercontrol-fans.json ]]; then
+        ok cc-fans "/run/vos/coolercontrol-fans.json records the fans' first modes"
+    elif ((fans)); then
+        bad cc-fans "no /run/vos/coolercontrol-fans.json with fan controls present"
+    else
+        warn cc-fans "no fans: no /sys/class/hwmon/hwmon*/pwm*_enable to record or put back"
     fi
     if [[ -d /sys/module/drivetemp ]]; then ok cc-drivetemp "drivetemp is loaded"; else warn cc-drivetemp "drivetemp is not loaded"; fi
 }
