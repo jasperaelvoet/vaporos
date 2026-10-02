@@ -435,8 +435,8 @@ never in live mode; never `vos_die`):
 3. For each id of the set in catalog order (lines of `ids` that are not ids
    are ignored), the first check that fails is the skip reason: a requirement
    that did not mount (`requires`, also when it is not in the set),
-   `images/<sha256>.raw` missing or a symlink (`missing`) or of another size
-   (`size`), not in `proven` (`unproven`, `enabled` mode only), `fsverity
+   `images/<sha256>.raw` missing, a symlink or in an `images/` that is a
+   symlink (`missing`) or of another size (`size`), not in `proven` (`unproven`, `enabled` mode only), `fsverity
    measure` other than the catalog (`fsverity`), `mount -t erofs -o ro` failing, also through
    `losetup -r` (`mount`), no `usr/` directory (`no-usr`, unmounted). Ids the
    catalog does not list follow as `not-in-catalog`; an `ext` line whose

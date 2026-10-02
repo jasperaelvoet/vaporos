@@ -495,7 +495,8 @@ vos_ext_try() {
         esac
     done
     r=missing
-    vos_ext_file "$img" || return
+    # Nor may images/ itself be a symlink (see vos_ext_file).
+    [ ! -L "$vos_ext/images" ] && vos_ext_file "$img" || return
     r=size
     [ "$(stat -c %s "$img" 2>/dev/null)" = "$size" ] || return
     r=unproven

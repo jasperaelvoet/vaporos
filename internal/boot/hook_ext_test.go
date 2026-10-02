@@ -302,6 +302,16 @@ func TestHookExtensionSets(t *testing.T) {
 			h.link("enabled", "sets/01")
 			h.prove("a", "b", "c")
 		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "a set number of nine digits", setup: func(h *hookEnv) {
+			h.set("123456789", "", "", "a", "b", "c")
+			h.link("enabled", "sets/123456789")
+			h.prove("a", "b", "c")
+		}, want: `enabled set=123456789 tries=0 reason="" mounted=a,b,c skipped=`},
+		{name: "a set number of ten digits", setup: func(h *hookEnv) {
+			h.set("1234567890", "", "", "a", "b", "c")
+			h.link("enabled", "sets/1234567890")
+			h.prove("a", "b", "c")
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
 		// The store is root's, but every path still resolves inside it.
 		{name: "a set that is a symlink", setup: func(h *hookEnv) {
 			enabled(h)
@@ -356,6 +366,11 @@ func TestHookExtensionSets(t *testing.T) {
 			h.rename(storeRel+"/images/"+shaOf("c")+".raw", storeRel+"/c.raw")
 			h.symlink("../c.raw", storeRel+"/images/"+shaOf("c")+".raw")
 		}, want: `enabled set=1 tries=0 reason="" mounted=a,b skipped=c:missing`},
+		{name: "images/ is a symlink", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel+"/images", storeRel+"/images.real")
+			h.symlink("images.real", storeRel+"/images")
+		}, want: `enabled set=1 tries=0 reason="" mounted= skipped=a:missing,b:requires,c:missing`},
 		{name: "missing image", setup: func(h *hookEnv) {
 			enabled(h)
 			os.Remove(h.path(storeRel, "images", shaOf("c")+".raw"))
