@@ -478,7 +478,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `settings/<id>.installed` | present: the extension's helper finished its `Install` and no `Remove` came after (see Control center) |
 | `steam.json` | what the mounted extensions want in Steam, written by vosd for `vos steam prepare` (see Steam) |
 | `steam-owned.json` | `{"ids":["<id>",...]}` (sorted, at most 256): every extension that was wanted (with core and requirements) or mounted on this box at some point, so the only ones that may have set something in Steam (`release`, see Steam). vosd adds to it (atomically, before it writes `steam.json`) and never removes from it; ids that are not extension ids are dropped when read, and a file that cannot be read counts as empty |
-| `ports` | `<proto> <port>` lines (`tcp` or `udp`, 1024-65535, sorted, each once): the descriptors' `network.ports` of the extensions this boot mounted that `wanted` ∪ core (with their requirements) still wants, never 47990. vosd writes it (0644, atomically) at start, after every reconcile and when the control center adds or removes an extension, only when its bytes change, and then reloads `vos-firewall.service` (a reload that failed is tried again at the next of those moments). A missing file opens nothing, as an empty one (see Firewall) |
+| `ports` | `<proto> <port>` lines (`tcp` or `udp`, 1024-65535, sorted, each once), `tcp <port> upstream <upstream port>` for a `proxied` one (its `upstream`'s port on 127.0.0.1, which only root may connect to; see Firewall): the descriptors' `network.ports` of the extensions this boot mounted that `wanted` ∪ core (with their requirements) still wants, never 47990, also not as an upstream. vosd writes it (0644, atomically) at start, after every reconcile and when the control center adds or removes an extension, only when its bytes change, and then reloads `vos-firewall.service` (a reload that failed is tried again at the next of those moments). A missing file opens nothing, as an empty one (see Firewall) |
 | `autorestart.json` | `{"restarts":[{"at","set","fingerprint","version"}]}`: the auto-restarts vosd made (RFC 3339 UTC; the pending set's number and fingerprint; the VaporOS version it restarted from), the last 32, written atomically. A file that cannot be read counts as empty |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
@@ -1583,7 +1583,7 @@ already 1048576.
 
 **Pages** (server-rendered shells plus JS modules that call the API): `/` home, `/devices`, `/screen`, `/system` with `/system/updates`, `/system/power`, `/system/storage`, `/system/extensions`, `/system/settings`, `/system/logs` and `/system/about`, plus `/login` and `/setup` (the first-run password, or the installer wizard on the ISO). The old paths `/pair`, `/streaming`, `/display`, `/storage`, `/updates`, `/power` and `/advanced` answer 303 to their new pages (`/pair` goes to `/devices#pair`) and keep the query. On the ISO, every page answers 303 to `/setup`. There are no external assets (no CDN): everything is embedded. The installer's `/setup` adds `connect-src 'self' http://*.local`. `/login`'s `?next=` returns to a path on vosd's own origin, or to an extension's web UI: an `http` URL with the sign-in page's own host name, no user info and another explicit port of 1024 or more.
 
-**Extension web UIs** (installed systems only; a second listener per port, `internal/extensions`): for each `network.ports` entry with mode `proxied` of an extension this boot mounted that `wanted` ∪ core (with their requirements) still wants, vosd listens on `:<port>` (every address) while each of its `services` that is not a template is active. It looks every 5 s and whenever the ports file is written; a unit that is activating or reloading keeps a port already served, and a port that cannot be bound is logged and tried again, never stopping vosd. Each request passes, in order:
+**Extension web UIs** (installed systems only; a second listener per port, `internal/extensions`): for each `network.ports` entry with mode `proxied` (never one whose port or upstream port is 47990) of an extension this boot mounted that `wanted` ∪ core (with their requirements) still wants, vosd listens on `:<port>` (every address) while each of its `services` that is not a template is active. It looks every 5 s and whenever the ports file is written; a unit that is activating or reloading keeps a port already served, and a port that cannot be bound is logged and tried again, never stopping vosd. Each request passes, in order:
 1. the source IP is loopback, private, link-local or ULA, whatever `web.allow_public` says (else 403);
 2. `Host` is in vosd's allowlist (else 421);
 3. a request other than GET or HEAD is same-origin, as on vosd (else 403);
@@ -1682,9 +1682,18 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - tcp 22 only while SSH is enabled;
 - the running extensions' ports (`/var/lib/vos/ext/ports`, see Extensions)
   from the private ranges only (`allow_lan`: the `lan4`/`lan6` sets), whatever
-  `web.allow_public` says. Each line must be exactly `tcp <port>` or
-  `udp <port>`, 1024-65535 without a leading zero and never 47990, at most
-  64 lines; one that is not (a blank line too), and the file opens nothing.
+  `web.allow_public` says. Each line must be exactly `tcp <port>`,
+  `udp <port>` or `tcp <port> upstream <upstream port>`, both 1024-65535
+  without a leading zero and never 47990, at most 64 lines; one that is not
+  (a blank line too), and the file opens nothing and adds no upstream rule.
+  The upstream is never opened.
+
+Output (policy accept): what leaves through `lo` passes the `upstream`
+chain, where for each `upstream <port>` of the ports file a TCP packet to
+that port from a socket whose owner (`meta skuid`) is not root is rejected
+with a TCP reset. Only root (vosd, which guards the web UI it proxies)
+reaches an extension's own server on loopback; a game or anything else
+running as `vapor` does not. Packets without a socket are not matched.
 
 47990 is never reachable from outside.
 

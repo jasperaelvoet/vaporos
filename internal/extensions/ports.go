@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"os"
 	"slices"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -64,30 +67,74 @@ func exposedPorts() ([]exposed, error) {
 		d, err := Shipped(m.ID)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				log.Printf("extensions: %s: %v", m.ID, err)
+				shippedErrs.log(m.ID, err)
 			}
 			continue
 		}
+		shippedErrs.log(m.ID, nil)
 		if d.Network == nil {
 			continue
 		}
 		for _, p := range d.Network.Ports {
-			if p.Port < 1024 || p.Port > 65535 || p.Port == sunshineAdminPort {
+			e := exposed{id: m.ID, name: d.Name, proto: p.Proto, port: p.Port, mode: p.Mode,
+				upstream: p.Upstream, services: d.Services}
+			if p.Port < 1024 || p.Port > 65535 || p.Port == sunshineAdminPort || e.upstreamPort() == sunshineAdminPort {
 				continue
 			}
-			out = append(out, exposed{id: m.ID, name: d.Name, proto: p.Proto, port: p.Port, mode: p.Mode,
-				upstream: p.Upstream, services: d.Services})
+			out = append(out, e)
 		}
 	}
 	return out, nil
 }
 
+// upstreamPort is the loopback port vosd proxies e to, 0 for none.
+func (e exposed) upstreamPort() int {
+	if e.mode != "proxied" {
+		return 0
+	}
+	host, port, err := net.SplitHostPort(e.upstream)
+	n, nerr := strconv.Atoi(port)
+	if err != nil || nerr != nil || host != "127.0.0.1" || n < 1024 || n > 65535 {
+		return 0
+	}
+	return n
+}
+
+// shippedErrs logs an error reading a shipped descriptor once per id and
+// error: vosd lists the ports every 5 s.
+var shippedErrs = &onceLog{last: map[string]string{}}
+
+type onceLog struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+// log logs err for id unless it was the last one logged; nil forgets id's.
+func (o *onceLog) log(id string, err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if err == nil {
+		delete(o.last, id)
+		return
+	}
+	if msg := err.Error(); o.last[id] != msg {
+		o.last[id] = msg
+		log.Printf("extensions: %s: %v", id, err)
+	}
+}
+
 // portsFile is /var/lib/vos/ext/ports as vos-firewall reads it: one
-// "<proto> <port>" line per port, sorted, each once.
+// "<proto> <port>" line per port, "tcp <port> upstream <port>" for one
+// vosd proxies to loopback (only root may connect to that), sorted, each
+// once.
 func portsFile(ps []exposed) []byte {
 	var lines []string
 	for _, p := range ps {
-		lines = append(lines, fmt.Sprintf("%s %d\n", p.proto, p.port))
+		l := fmt.Sprintf("%s %d", p.proto, p.port)
+		if up := p.upstreamPort(); up != 0 && p.proto == "tcp" {
+			l += fmt.Sprintf(" upstream %d", up)
+		}
+		lines = append(lines, l+"\n")
 	}
 	slices.Sort(lines)
 	var b bytes.Buffer

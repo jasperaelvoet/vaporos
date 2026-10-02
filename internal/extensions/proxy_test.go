@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,6 +269,46 @@ func TestProxyUpstreamDown(t *testing.T) {
 		ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "CoolerControl isn't answering") {
 		t.Fatalf("upstream down: %d %q", rec.Code, rec.Body)
+	}
+}
+
+// An upstream that stops answering is logged once, and once when it
+// answers again, however often the page asks meanwhile.
+func TestProxyLogsUpstreamChangesOnly(t *testing.T) {
+	w := newWebRig(t)
+	var fail atomic.Bool
+	up := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			panic(http.ErrAbortHandler) // the connection drops without an answer
+		}
+		fmt.Fprint(rw, "ok")
+	}))
+	t.Cleanup(up.Close)
+	h := w.s.proxyHandler(exposed{id: "coolercontrol", name: "CoolerControl", upstream: strings.TrimPrefix(up.URL, "http://")})
+	get := func() int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("X-Test-Signed-In", "1")
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	l := captureLogs(t)
+	for round := 1; round <= 2; round++ {
+		fail.Store(true)
+		for i := 0; i < 3; i++ {
+			if code := get(); code != http.StatusBadGateway {
+				t.Fatalf("upstream down: %d", code)
+			}
+		}
+		fail.Store(false)
+		for i := 0; i < 3; i++ {
+			if code := get(); code != http.StatusOK {
+				t.Fatalf("upstream up: %d", code)
+			}
+		}
+		if down, again := l.count("coolercontrol web UI: ")-l.count("answers again"), l.count("answers again"); down != round || again != round {
+			t.Fatalf("round %d: %d down and %d up lines:\n%s", round, down, again, l.buf.String())
+		}
 	}
 }
 

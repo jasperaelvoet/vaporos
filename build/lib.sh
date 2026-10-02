@@ -106,13 +106,14 @@ is_ed25519_pubkey() {
 # Check the firewall as the kernel's nftables parser sees it (nft -c changes
 # nothing), with every optional port both closed and open and with
 # extensions' ports, and make sure a broken config.json or ports file opens
-# nothing and an extension's port stays on the local network even with
-# web.allow_public. Needs CAP_NET_ADMIN.
+# nothing, an extension's port stays on the local network even with
+# web.allow_public and only root reaches its loopback upstream. Needs
+# CAP_NET_ADMIN.
 # Usage: check_firewall SCRIPT RULES
 check_firewall() {
     local script=$1 rules=$2 tmp cfg rc=0
     tmp=$(mktemp -d)
-    printf 'tcp 11987\nudp 27015\n' >"$tmp/ports"
+    printf 'tcp 11987 upstream 11986\nudp 27015\n' >"$tmp/ports"
     for cfg in '{}' \
                '{"ssh":{"enabled":true},"web":{"https":true}}' \
                '{"ssh":{"enabled":true},"web":{"https":true,"allow_public":true}}' \
@@ -135,6 +136,11 @@ check_firewall() {
     if (( $(grep -c 'saddr @lan[46] ' "$tmp/ext") != 4 || $(wc -l <"$tmp/ext") != 4 )); then
         echo "firewall: extension ports are not open to exactly the local network:" >&2
         cat "$tmp/ext" >&2
+        rc=1
+    fi
+    if ! VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/ports bash "$script" --print |
+            grep -q '^add rule inet vos upstream tcp dport 11986 meta skuid != 0 reject with tcp reset '; then
+        echo "firewall: an extension's upstream is open to more than root on loopback" >&2
         rc=1
     fi
     printf 'tcp 11987\ntcp 22\n' >"$tmp/ports"

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
@@ -195,6 +196,9 @@ func (s *Service) startWeb(ctx context.Context, p exposed) (*webServer, error) {
 // as they come.
 func (s *Service) proxyHandler(p exposed) http.Handler {
 	target := &url.URL{Scheme: "http", Host: p.upstream}
+	// Logged when it stops answering and when it answers again, not per
+	// request: an open page asks every second.
+	var down atomic.Bool
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
@@ -204,11 +208,14 @@ func (s *Service) proxyHandler(p exposed) http.Handler {
 		},
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
+			if down.CompareAndSwap(true, false) {
+				log.Printf("extensions: %s web UI: %s answers again", p.id, p.upstream)
+			}
 			dropVOSCookies(resp.Header)
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if !errors.Is(err, context.Canceled) {
+			if !errors.Is(err, context.Canceled) && down.CompareAndSwap(false, true) {
 				log.Printf("extensions: %s web UI: %v", p.id, err)
 			}
 			http.Error(w, p.name+" isn't answering. Try again in a moment.", http.StatusBadGateway)
