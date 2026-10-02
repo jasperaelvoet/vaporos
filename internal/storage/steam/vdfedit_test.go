@@ -385,6 +385,26 @@ func TestLocalConfigBatch(t *testing.T) {
 		t.Errorf("taken out again:\n%s", back)
 	}
 
+	// Launch options set and taken out in one batch: as one at a time.
+	for _, data := range []string{orig, "\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t}\n\t\t}\n\t}\n}\n"} {
+		lc, err = ParseLocalConfig([]byte(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := errors.Join(lc.SetLaunchOptions(5, "x"), lc.DeleteLaunchOptions(5)); err != nil {
+			t.Fatal(err)
+		}
+		got, _, err := lc.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _, _ := SetLaunchOptions([]byte(data), 5, "x")
+		want, _, _ = DeleteLaunchOptions(want, 5)
+		if want, _, _ = DropEmptyApp(want, 5); string(got) != string(want) {
+			t.Errorf("set then deleted:\n%s\nwant:\n%s", got, want)
+		}
+	}
+
 	// Apps added where there is no "apps" block yet share a new one.
 	fresh := "\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t}\n\t\t}\n\t}\n}\n"
 	lc, err = ParseLocalConfig([]byte(fresh))

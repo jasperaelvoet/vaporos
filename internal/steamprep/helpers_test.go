@@ -136,17 +136,39 @@ func (b *box) removeTool(name string) {
 	b.check(os.RemoveAll(filepath.Join(config.CompatToolsDir, name)))
 }
 
+// bootWithoutExtensions writes the report of a boot that mounted none
+// (reason cmdline for vos.ext=0, skip-once).
+func (b *box) bootWithoutExtensions(reason string) {
+	b.write(config.ExtBootPath(), []byte(`{"mode":"off","set":"","tries_left":0,"reason":"`+reason+`","mounted":[],"skipped":[]}`+"\n"))
+}
+
 func (b *box) bootReport(set string) {
 	b.write(config.ExtBootPath(), []byte(`{"mode":"enabled","set":"`+set+`","tries_left":0,"reason":"","mounted":[{"id":"proton","sha256":"`+
 		strings.Repeat("a", 64)+`","fsverity":"`+strings.Repeat("b", 64)+`"}],"skipped":[]}`+"\n"))
 }
 
-// desire writes steam.json as vosd would.
+// desire writes steam.json as vosd would. Without Owners, the
+// extensions it names are the owners, as when nothing else is wanted.
 func (b *box) desire(d Desired) {
 	b.t.Helper()
 	if d.Set == "" {
 		d.Set = theSet
 	}
+	if d.Owners == nil {
+		d.Owners = []string{}
+		for _, a := range d.Apps {
+			d.Owners = append(d.Owners, a.Hooks...)
+		}
+		for _, s := range d.Shortcuts {
+			d.Owners = append(d.Owners, s.Owner)
+		}
+	}
+	b.desireExact(d)
+}
+
+// desireExact writes d as steam.json, set and owners as they are.
+func (b *box) desireExact(d Desired) {
+	b.t.Helper()
 	data, err := json.Marshal(d)
 	b.check(err)
 	b.write(config.ExtSteamPath(), data)

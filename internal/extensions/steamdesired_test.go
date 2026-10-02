@@ -75,7 +75,23 @@ func steamBox(t *testing.T) (*env, *[]string) {
 		Shortcuts: map[string]ShortcutTarget{"launcher": {Exe: scExe, StartDir: scPrefix}},
 	}})
 	withHelper(t, "truckersmp", settingsHelper{saw: &saw, parts: SteamParts{Beta: map[uint32]BetaRequest{227300: ets2Beta}}})
+	fakeGamescope(t, "active")
 	return e, &saw
+}
+
+// fakeGamescope stands in for gamescope's unit in state, and returns the
+// `vos steam prepare` runs vosd makes as vapor.
+func fakeGamescope(t *testing.T, state string) <-chan struct{} {
+	t.Helper()
+	ran := make(chan struct{}, 10)
+	st, prep := gamescopeState, prepareAsGamer
+	t.Cleanup(func() { gamescopeState, prepareAsGamer = st, prep })
+	gamescopeState = func(context.Context) string { return state }
+	prepareAsGamer = func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	}
+	return ran
 }
 
 // ets2Beta is TruckersMP asking for the branch its mod supports.
@@ -111,7 +127,8 @@ func TestSteamDesired(t *testing.T) {
 		// ETS2 Multiplayer has no target yet, so it is left out.
 		Shortcuts: []SteamShortcut{{Owner: "star-citizen", Key: "launcher", Name: "Star Citizen", Exe: scExe, StartDir: scPrefix,
 			CompatTool: "proton-cachyos-slr", Art: filepath.Join(config.ExtMountedLibDir, "star-citizen", "art")}},
-		Release: []SteamRelease{}}
+		Release: []SteamRelease{},
+		Owners:  []string{"proton", "star-citizen", "truckersmp"}}
 	if got := loadDesired(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steam.json:\n%+v\nwant\n%+v", got, want)
 	}
@@ -225,8 +242,58 @@ func TestSteamDesiredWithNothingMounted(t *testing.T) {
 	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonSkipOnce})
 	d := loadDesired(t)
 	// Still wanted: nothing is released, prepare keeps what it set.
-	if d.Set != "" || len(d.Apps)+len(d.Shortcuts)+len(d.Release) != 0 || d.DefaultCompatTool != "" {
+	if d.Set != "" || len(d.Apps)+len(d.Shortcuts)+len(d.Release) != 0 || d.DefaultCompatTool != "" ||
+		!slices.Equal(d.Owners, []string{"proton", "star-citizen", "truckersmp"}) {
 		t.Errorf("skip-once: %+v", d)
+	}
+}
+
+// Owners are the extensions whose shortcuts stay while this boot lists
+// none of theirs: wanted ∪ core ∪ mounted, wanted as it is.
+func TestSteamOwners(t *testing.T) {
+	e, _ := steamBox(t)
+	proton := newImage(t, "proton", "", 100, true)
+	tmp := newImage(t, "truckersmp", "", 100, false, "proton")
+
+	// A trial with Star Citizen fell back to a set without it: it is
+	// still wanted, so its shortcut stays.
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "2", Mounted: mountedAs(proton, tmp)})
+	if d := loadDesired(t); len(d.Shortcuts) != 0 || !slices.Equal(d.Owners, []string{"proton", "star-citizen", "truckersmp"}) {
+		t.Errorf("fallback: %+v", d)
+	}
+	// Mounted, with no target for its only shortcut yet: listed nowhere
+	// else, owned all the same.
+	sc0 := newImage(t, "star-citizen", "", 100, false, "proton")
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "3", Mounted: mountedAs(proton, tmp, sc0)})
+	withHelper(t, "star-citizen", testHelper{})
+	if d := loadDesired(t); len(d.Shortcuts) != 0 || !slices.Contains(d.Owners, "star-citizen") {
+		t.Errorf("no target yet: %+v", d)
+	}
+	// Removed but mounted until the restart: its entries go at once,
+	// while its shortcut waits for the boot that no longer mounts it.
+	// One the booted catalog lacks still counts while it is wanted.
+	sc := newImage(t, "star-citizen", "", 100, false, "proton")
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "3", Mounted: mountedAs(proton, tmp, sc)})
+	writeFile(t, config.ExtWantedPath(), "gone-from-catalog\ntruckersmp\n")
+	if d := loadDesired(t); len(d.Shortcuts) != 0 ||
+		!slices.Equal(d.Owners, []string{"gone-from-catalog", "proton", "star-citizen", "truckersmp"}) {
+		t.Errorf("removed: %+v", d)
+	}
+	e.report(store.BootReport{Mode: store.ModeEnabled, Set: "4", Mounted: mountedAs(proton, tmp)})
+	if d := loadDesired(t); !slices.Equal(d.Owners, []string{"gone-from-catalog", "proton", "truckersmp"}) {
+		t.Errorf("after the restart: %+v", d.Owners)
+	}
+	// wanted cannot be read: nothing is known, so prepare removes none.
+	must(t, os.Remove(config.ExtWantedPath()))
+	must(t, os.Mkdir(config.ExtWantedPath(), 0o755))
+	d := loadDesired(t)
+	if d.Owners != nil {
+		t.Errorf("unknown wanted: %+v", d.Owners)
+	}
+	b, err := marshalSteamDesired(d)
+	must(t, err)
+	if !strings.Contains(string(b), `"owners": null`) {
+		t.Errorf("steam.json:\n%s", b)
 	}
 }
 
@@ -261,7 +328,8 @@ func TestShortcutIDs(t *testing.T) {
 }
 
 func TestDispatcherReady(t *testing.T) {
-	steamBox(t)
+	e, _ := steamBox(t)
+	s, _ := e.service()
 	cat := loadSteamCatalog(t)
 	entry := func(e *boot.Entry, err error) {
 		slotEntry = func(slot string) (*boot.Entry, error) {
@@ -270,46 +338,99 @@ func TestDispatcherReady(t *testing.T) {
 			}
 			return e, err
 		}
+		s.forgetSlots() // as SlotsChanged does
 	}
 	slotB := func(version string, exts map[string]manifest.Extension) {
 		locked(t, func() error { return store.WriteSlot("b", version, exts) })
 	}
 	proton := map[string]manifest.Extension{"proton": {Name: "ext-proton.raw", Size: 100, SHA256: strings.Repeat("a", 64), FSVerity: strings.Repeat("b", 64), Core: true}}
+	ready := func() bool { return s.dispatcherReady(cat, false) }
 
 	entry(nil, nil)
-	if !dispatcherReady(cat) {
+	if !ready() {
 		t.Error("nothing to roll back to: not ready")
 	}
 	entry(&boot.Entry{Version: otherVersion, Slot: "b"}, nil)
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with an image in slot b nobody recorded")
 	}
 	slotB(otherVersion, map[string]manifest.Extension{})
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with an image without extensions in slot b")
 	}
 	slotB(otherVersion, proton)
-	if !dispatcherReady(cat) {
+	if !ready() {
 		t.Error("an image with extensions in slot b: not ready")
 	}
 	entry(&boot.Entry{Version: "20260701.000000", Slot: "b"}, nil)
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with slot b's file for another version")
 	}
 	entry(nil, errors.New("the ESP is not mounted"))
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready without the ESP")
 	}
 	entry(nil, nil)
 	cat.Dispatcher = 0
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready with a catalog without the dispatcher")
 	}
 	cat.Dispatcher = 1
 	writeFile(t, config.ProcCmdline, "quiet\n")
-	if dispatcherReady(cat) {
+	if ready() {
 		t.Error("ready outside a slot")
 	}
+}
+
+// The minute's check reads the ESP again only when slot b's file or
+// update-state.json changed, after 30 minutes or after SlotsChanged, and
+// one failed read does not turn the dispatcher off.
+func TestDispatcherReadsTheESPSparingly(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	cat := loadSteamCatalog(t)
+	clock := time.Date(2026, 10, 2, 20, 0, 0, 0, time.UTC)
+	savedNow := now
+	t.Cleanup(func() { now = savedNow })
+	now = func() time.Time { return clock }
+	reads := 0
+	var fail error
+	slotEntry = func(slot string) (*boot.Entry, error) {
+		reads++
+		return &boot.Entry{Version: otherVersion, Slot: slot}, fail
+	}
+	slotB(t, true)
+	check := func(current, want bool, wantReads int, what string) {
+		t.Helper()
+		if got := s.dispatcherReady(cat, current); got != want || reads != wantReads {
+			t.Errorf("%s: ready %v, %d ESP reads; want %v, %d", what, got, reads, want, wantReads)
+		}
+	}
+	check(false, true, 1, "first check")
+	check(true, true, 1, "a minute later")
+	clock = clock.Add(29 * time.Minute)
+	check(true, true, 1, "29 minutes later")
+	writeFile(t, config.UpdateStatePath(), `{"booted":"`+bootedVersion+`"}`)
+	check(true, true, 2, "update-state.json written")
+	slotB(t, false)
+	check(true, false, 3, "slot b's file written")
+	clock = clock.Add(31 * time.Minute)
+	check(false, false, 4, "after 30 minutes")
+	s.forgetSlots()
+	check(false, false, 5, "after SlotsChanged")
+
+	// A read that fails keeps what steam.json says; two in a row turn
+	// it off, and the next good read counts again.
+	slotB(t, true)
+	fail = errors.New("the ESP is not mounted")
+	s.forgetSlots()
+	check(true, true, 6, "one failed read")
+	check(true, false, 7, "two failed reads")
+	fail = nil
+	check(false, true, 8, "the ESP is back")
+	fail = errors.New("the ESP is not mounted")
+	s.forgetSlots()
+	check(true, true, 9, "one failed read again")
 }
 
 func loadSteamCatalog(t *testing.T) *catalog.Catalog {
@@ -474,6 +595,53 @@ func TestSlotsChangedFollowsTheDispatcher(t *testing.T) {
 	slotB(t, false)
 	s.SlotsChanged()
 	waitFor(t, func() bool { return !dispatcherOn() && len(restarts()) == asked+1 })
+}
+
+// The dispatcher turning off while gamescope is down: vosd runs prepare
+// as vapor at once, since no Steam start or restart is coming that would.
+// While gamescope runs (or starts, or stops) it leaves that to the unit,
+// and a dispatcher that stays off runs nothing more.
+func TestDispatcherOffRunsPrepare(t *testing.T) {
+	for state, runs := range map[string]bool{"inactive": true, "failed": true, "active": false, "activating": false, "deactivating": false, "": false} {
+		t.Run(state, func(t *testing.T) {
+			e, _ := steamBox(t)
+			s, _ := e.service()
+			ran := fakeGamescope(t, state)
+			bootsOtherVersion()
+			slotB(t, true)
+			if _, err := s.SyncSteam(); err != nil || !dispatcherOn() {
+				t.Fatalf("on: %v", err)
+			}
+			slotB(t, false)
+			if _, err := s.SyncSteam(); err != nil || dispatcherOn() {
+				t.Fatalf("off: %v", err)
+			}
+			wait := 200 * time.Millisecond
+			if runs {
+				wait = 5 * time.Second
+			}
+			select {
+			case <-ran:
+				if !runs {
+					t.Fatal("ran prepare")
+				}
+			case <-time.After(wait):
+				if runs {
+					t.Fatal("did not run prepare")
+				}
+			}
+			locked(t, func() error { return store.WriteSlot("b", otherVersion, nil) }) // still none
+			e.report(store.BootReport{Mode: store.ModeEnabled, Set: "4", Mounted: mountedAs(newImage(t, "proton", "", 100, true))})
+			if changed, err := s.SyncSteam(); err != nil || !changed {
+				t.Fatalf("again: %v %v", changed, err)
+			}
+			select {
+			case <-ran:
+				t.Fatal("ran prepare for a dispatcher that was off already")
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
 }
 
 // A slot file written behind vosd's back (`vos update` from a shell) is

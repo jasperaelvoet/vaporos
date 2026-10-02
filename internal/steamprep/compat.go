@@ -159,34 +159,31 @@ func (p *prep) compatTools() {
 	if err == nil && f.missing {
 		return
 	}
+	// One parse for every entry: each comes once, so the file as parsed
+	// is the file as edited so far for it.
+	var cfg *steam.ConfigVDF
 	if err == nil {
-		_, err = steam.ParseVDF(f.data)
+		cfg, err = steam.ParseConfigVDF(f.data)
 	}
 	if err != nil {
 		p.fail("config.vdf", err)
 		return
 	}
-	data := f.data
 	type result struct {
 		key uint32
 		m   Mapping
 	}
 	var results []result
 	for _, in := range p.mapInputs() {
-		cur, ok, err := steam.CompatToolMapping(data, in.key)
-		if err != nil {
-			p.fail("config.vdf", err)
-			return
-		}
-		if ok {
+		if cur, ok := cfg.CompatToolMapping(in.key); ok {
 			in.cur = &cur
 		}
 		act, m := decideMapping(in)
 		switch {
 		case act.del:
-			data, _, err = steam.DeleteCompatToolMapping(data, in.key)
+			err = cfg.DeleteCompatToolMapping(in.key)
 		case act.set != nil:
-			data, _, err = steam.SetCompatToolMapping(data, in.key, *act.set)
+			err = cfg.SetCompatToolMapping(in.key, *act.set)
 		}
 		if err != nil {
 			p.fail("config.vdf", err)
@@ -197,7 +194,12 @@ func (p *prep) compatTools() {
 		}
 		results = append(results, result{in.key, m})
 	}
-	if !bytes.Equal(data, f.data) {
+	data, changed, err := cfg.Bytes()
+	if err != nil {
+		p.fail("config.vdf", err)
+		return
+	}
+	if changed && !bytes.Equal(data, f.data) {
 		if !p.step("writing config.vdf") {
 			return
 		}

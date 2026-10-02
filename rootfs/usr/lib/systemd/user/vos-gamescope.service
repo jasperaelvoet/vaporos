@@ -28,6 +28,11 @@ EnvironmentFile=-%t/vos/gamescope.env
 # from starting.
 ExecStartPre=-/usr/bin/vos steam prepare
 ExecStartPre=/usr/bin/mkdir -p %h/.config/gamescope
+# Steam is down again once gamescope stops, at shutdown too: prepare
+# applies the latest steam.json, which takes the dispatcher out of the
+# launch options when the VaporOS that may boot next lacks it (dispatcher
+# false), so its games still start.
+ExecStopPost=-/usr/bin/vos steam prepare
 # No -W/-H/-r: the output mode comes from the mode save file and the EDID.
 ExecStart=/usr/bin/gamescope --backend drm --prefer-output ${VOS_OUTPUT} --xwayland-count 2 --force-grab-cursor -e $VOS_GS_EXTRA -- /usr/bin/steam -gamepadui -steamos3
 Restart=always

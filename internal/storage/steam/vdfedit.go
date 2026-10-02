@@ -204,27 +204,56 @@ func (e *vdfEditor) del(path []string, key string) error {
 		return err
 	}
 	n, matched := e.walk(path)
-	if matched < len(path) {
-		return nil
-	}
-	for _, c := range n.Children {
-		if !e.gone[c] && c.applies() && strings.EqualFold(c.Key, key) {
-			e.remove(c)
+	if matched == len(path) {
+		for _, c := range n.Children {
+			if !e.gone[c] && c.applies() && strings.EqualFold(c.Key, key) {
+				e.remove(c)
+			}
 		}
 	}
-	for _, b := range e.adds {
-		if b.at == n {
-			b.entries = slices.DeleteFunc(b.entries, func(x *newEntry) bool { return strings.EqualFold(x.key, key) })
-		}
+	// What this batch set and has not written yet goes too, also in
+	// blocks it adds itself.
+	if b := e.pending(n, path[matched:]); b != nil {
+		b.entries = slices.DeleteFunc(b.entries, func(x *newEntry) bool { return strings.EqualFold(x.key, key) })
 	}
 	return nil
+}
+
+// pending returns the entries this batch adds to the block at rest below
+// n (a block that is there, n itself when rest is empty, or one the batch
+// adds), nil when it adds none there.
+func (e *vdfEditor) pending(n *Node, rest []string) *newBlock {
+	var b *newBlock
+	for _, x := range e.adds {
+		if x.at == n {
+			b = x
+			break
+		}
+	}
+	for _, k := range rest {
+		if b == nil {
+			return nil
+		}
+		b = b.find(k)
+	}
+	return b
 }
 
 // dropEmpty removes the block at path when nothing is left in it, an
 // entry Steam does not read on Linux included.
 func (e *vdfEditor) dropEmpty(path []string) {
+	if len(path) == 0 {
+		return
+	}
 	n, matched := e.walk(path)
-	if len(path) == 0 || matched < len(path) {
+	if matched < len(path) {
+		// A block this batch adds goes again once it is empty.
+		if b := e.pending(n, path[matched:len(path)-1]); b != nil {
+			last := path[len(path)-1]
+			b.entries = slices.DeleteFunc(b.entries, func(x *newEntry) bool {
+				return x.block != nil && len(x.block.entries) == 0 && strings.EqualFold(x.key, last)
+			})
+		}
 		return
 	}
 	for _, c := range n.Children {
@@ -265,14 +294,22 @@ func (e *vdfEditor) addsTo(n *Node, depth int) *newBlock {
 }
 
 func (b *newBlock) block(key string) *newBlock {
+	if x := b.find(key); x != nil {
+		return x
+	}
+	x := &newEntry{key: key, block: &newBlock{depth: b.depth + 1}}
+	b.entries = append(b.entries, x)
+	return x.block
+}
+
+// find returns the block key that b adds, nil when it adds none.
+func (b *newBlock) find(key string) *newBlock {
 	for _, x := range b.entries {
 		if x.block != nil && strings.EqualFold(x.key, key) {
 			return x.block
 		}
 	}
-	x := &newEntry{key: key, block: &newBlock{depth: b.depth + 1}}
-	b.entries = append(b.entries, x)
-	return x.block
+	return nil
 }
 
 func (b *newBlock) put(key, value string) {

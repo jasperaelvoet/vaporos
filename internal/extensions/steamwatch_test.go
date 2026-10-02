@@ -71,6 +71,19 @@ func TestLoginAccounts(t *testing.T) {
 	if _, err := loginAccounts([]byte(`"users" { "765`)); err == nil {
 		t.Fatal("a half-written file parsed")
 	}
+	// Only the accounts prepare sets up count (steam.Accounts): never an
+	// anonymous one, one of another type or id 0, so none of them looks
+	// new for ever.
+	odd := `"users" {
+		"76561198012345678" { "AccountName" "vaporfan" }
+		"76561197960265728" { "AccountName" "zero" }
+		"76561198087654321" { "AccountName" "anonymous" }
+		"103582791429521412" { "AccountName" "a clan" }
+		"52079950" { "AccountName" "no type" }
+	}`
+	if got, err := loginAccounts([]byte(odd)); err != nil || !slices.Equal(got, []string{acctFan}) {
+		t.Fatalf("odd accounts %q, %v", got, err)
+	}
 }
 
 func TestCheckAccounts(t *testing.T) {

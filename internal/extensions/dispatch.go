@@ -173,19 +173,36 @@ func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int
 	}
 	for _, h := range hooks {
 		err := HelperFor(h).LaunchHook(ctx, run)
+		if ctx.Err() != nil {
+			// Also when the hook itself returned nil: nothing more runs.
+			return stopped(stderr, h, err)
+		}
 		if err == nil && len(run.Argv) == 0 {
 			err = errors.New("its hook left nothing to run")
 		}
 		if err == nil {
 			continue
 		}
-		if ctx.Err() != nil {
-			fmt.Fprintf(stderr, "vos ext launch: %s: Steam stopped the launch: %v\n", h, err)
-			return 1
-		}
 		return refuseLaunch(stderr, launchRecord{Code: codeHookFailed, ID: h, Detail: err.Error()})
 	}
+	if ctx.Err() != nil {
+		return stopped(stderr, "", nil)
+	}
 	return execLaunch(run, stderr)
+}
+
+// stopped ends a launch Steam stopped (SIGTERM or SIGINT): nobody waits
+// for that game any more, so vosd is told nothing and nothing is run.
+func stopped(stderr io.Writer, hook string, err error) int {
+	msg := "vos ext launch: Steam stopped the launch"
+	if hook != "" {
+		msg = "vos ext launch: " + hook + ": Steam stopped the launch"
+	}
+	if err != nil {
+		msg += ": " + err.Error()
+	}
+	fmt.Fprintln(stderr, msg)
+	return 1
 }
 
 // refuseLaunch tells Steam's log why a launch does not start, and vosd

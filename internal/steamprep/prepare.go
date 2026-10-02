@@ -43,6 +43,10 @@ type prep struct {
 	// keptShortcuts are the app ids of VaporOS shortcuts kept although
 	// steam.json does not list them this run.
 	keptShortcuts map[uint32]bool
+	// extOff: the boot report's mode is off (vos.ext=0, skip-once, no
+	// report), a boot without extensions that says nothing about which
+	// ones stay: no shortcut goes.
+	extOff bool
 }
 
 func prepare(ctx context.Context, o Options) {
@@ -100,6 +104,7 @@ func prepare(ctx context.Context, o Options) {
 			p.skip(skipOtherSet, fmt.Sprintf("steam.json is for set %q, not this boot's; waiting for vosd to write it", p.want.Set))
 			return
 		}
+		p.extOff = rep.Mode == store.ModeOff
 	}
 
 	fp := p.fingerprint(raw.data)
@@ -231,12 +236,15 @@ func (p *prep) readAccounts() ([]uint32, error) {
 }
 
 // loadAccounts reads the accounts that signed in. Without them, which
-// shortcuts VaporOS has is not known either.
+// shortcuts VaporOS has is not known either, and the record keeps the
+// accounts it has: vosd would take an empty list for new accounts and
+// restart Steam for them.
 func (p *prep) loadAccounts() {
 	ids, err := p.readAccounts()
 	if err != nil {
 		p.fail("loginusers.vdf", err)
 		p.shortcutsUnread = true
+		return
 	}
 	p.accounts = ids
 	p.st.Accounts = acctKeys(ids)
@@ -272,7 +280,7 @@ func (p *prep) toolOK(name string) bool {
 // of Steam's a run reads.
 func (p *prep) fingerprint(desired []byte) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "vos %q unwrap %v\nsteam.json %d\n", config.BinaryVersion, p.o.Unwrap, len(desired))
+	fmt.Fprintf(h, "vos %q unwrap %v off %v\nsteam.json %d\n", config.BinaryVersion, p.o.Unwrap, p.extOff, len(desired))
 	h.Write(desired)
 
 	tools := []string{p.st.Default.Wrote}
@@ -312,6 +320,9 @@ func (p *prep) fingerprint(desired []byte) string {
 	statLine(h, filepath.Join(p.root, "steamapps", "libraryfolders.vdf"))
 	if apps := p.betaApps(); len(apps) > 0 {
 		libs := p.libraries()
+		for _, lib := range libs {
+			fmt.Fprintf(h, "library %q %v\n", lib, dirExists(filepath.Join(lib, "steamapps")))
+		}
 		for _, app := range apps {
 			for _, lib := range libs {
 				statLine(h, manifestPath(lib, app))

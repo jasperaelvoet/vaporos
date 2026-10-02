@@ -63,6 +63,61 @@ func TestCompatToolMapping(t *testing.T) {
 	}
 }
 
+// A batch on one parse gives what the same edits one at a time give, a
+// delete of an entry the batch itself set (also in blocks it adds)
+// included.
+func TestConfigVDFBatch(t *testing.T) {
+	orig := readFixture(t, "config.vdf")
+	noBlock := "\"InstallConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t}\n\t\t}\n\t}\n}\n"
+	sc := CompatTool{Name: "proton-cachyos-slr", Priority: "250"}
+	type edit struct {
+		app uint32
+		set *CompatTool // nil: delete
+	}
+	for name, c := range map[string]struct {
+		data  string
+		edits []edit
+	}{
+		"set then delete":           {orig, []edit{{227300, &sc}, {227300, nil}}},
+		"delete then set":           {orig, []edit{{1091500, nil}, {1091500, &sc}}},
+		"in a block the batch adds": {noBlock, []edit{{227300, &sc}, {270880, &sc}, {227300, nil}}},
+		"only to delete again":      {noBlock, []edit{{227300, &sc}, {227300, nil}}},
+		"the default and another":   {orig, []edit{{0, &sc}, {2483190, nil}, {270880, &sc}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := ParseConfigVDF([]byte(c.data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []byte(c.data)
+			for _, e := range c.edits {
+				if e.set != nil {
+					err = cfg.SetCompatToolMapping(e.app, *e.set)
+					want, _, _ = SetCompatToolMapping(want, e.app, *e.set)
+				} else {
+					err = cfg.DeleteCompatToolMapping(e.app)
+					want, _, _ = DeleteCompatToolMapping(want, e.app)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, changed, err := cfg.Bytes()
+			if err != nil || string(got) != string(want) || changed != (string(want) != c.data) {
+				t.Errorf("changed %v, %v:\n%s\nwant:\n%s", changed, err, got, want)
+			}
+		})
+	}
+	// What a read gives is the file as parsed.
+	cfg, err := ParseConfigVDF([]byte(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := cfg.CompatToolMapping(1091500); !ok || got.Name != "proton_9" {
+		t.Errorf("read %+v %v", got, ok)
+	}
+}
+
 func TestCompatToolMappingOtherCasing(t *testing.T) {
 	// Older config.vdf files say "valve" and "Priority", and an entry may
 	// carry keys of its own; an update keeps all of that.

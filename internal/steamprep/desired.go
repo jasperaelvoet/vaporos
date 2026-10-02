@@ -21,11 +21,15 @@ type Desired struct {
 	Apps              []AppWant    `json:"apps"`
 	Shortcuts         []Shortcut   `json:"shortcuts"`
 	Release           []AppRelease `json:"release"`
+	// Owners are the extensions whose shortcuts stay while steam.json
+	// lists none of theirs (wanted ∪ core ∪ mounted); nil when vosd could
+	// not tell (null or missing), and then no shortcut goes.
+	Owners []string `json:"owners"`
 
-	// owners are the extensions steam.json names anywhere, entries not
-	// well formed included: a VaporOS shortcut goes only once its
-	// extension is in none of them.
-	owners map[string]bool
+	// named are the extensions steam.json names anywhere, entries not
+	// well formed included; owners the well formed ids of Owners. A
+	// VaporOS shortcut goes only once its extension is in neither.
+	named, owners map[string]bool
 }
 
 // AppWant is what extensions ask for one Steam app.
@@ -108,17 +112,24 @@ func parseDesired(data []byte, logf func(string, ...any)) (*Desired, error) {
 		logf("steam.json: default compatibility tool %q is not a tool name; ignored", d.DefaultCompatTool)
 		d.DefaultCompatTool = ""
 	}
-	d.owners = map[string]bool{}
+	d.named, d.owners = map[string]bool{}, map[string]bool{}
 	for _, a := range d.Apps {
 		for _, h := range a.Hooks {
 			if nameRe.MatchString(h) {
-				d.owners[h] = true
+				d.named[h] = true
 			}
 		}
 	}
 	for _, s := range d.Shortcuts {
 		if nameRe.MatchString(s.Owner) {
-			d.owners[s.Owner] = true
+			d.named[s.Owner] = true
+		}
+	}
+	for _, id := range d.Owners {
+		if nameRe.MatchString(id) {
+			d.owners[id] = true
+		} else {
+			logf("steam.json: owner %q is not an extension id; ignored", id)
 		}
 	}
 	apps := d.Apps[:0]
@@ -193,7 +204,11 @@ func cleanAbs(p string) bool {
 }
 
 // names reports whether steam.json names extension id anywhere.
-func (d *Desired) names(id string) bool { return d.owners[id] }
+func (d *Desired) names(id string) bool { return d.named[id] }
+
+// keeps reports whether extension id's shortcuts stay though steam.json
+// does not list them.
+func (d *Desired) keeps(id string) bool { return d.named[id] || d.Owners == nil || d.owners[id] }
 
 // releases returns the apps steam.json hands to the user.
 func (d *Desired) releases() map[uint32]bool {

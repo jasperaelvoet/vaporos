@@ -95,6 +95,10 @@ func writeMessage(r launchRecord) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// vosd logs no more of the detail and reads no more than
+	// maxMessageFile: 300 characters, each at most 6 bytes as JSON, keep
+	// any record well inside that, so a long error is still told.
+	r.Detail = oneLine(r.Detail, maxMessageDetail)
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err

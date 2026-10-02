@@ -109,25 +109,17 @@ func (p *prepareState) shortcutByAppID(appid uint32) (owner, key string, ok bool
 }
 
 // loginAccounts returns the account ids (SteamID64 & 0xffffffff, in
-// decimal) loginusers.vdf lists, sorted.
+// decimal) loginusers.vdf lists, sorted: those steam.Accounts counts,
+// as prepare does, so an account prepare never sets up (an anonymous
+// one, say) does not look new forever.
 func loginAccounts(data []byte) ([]string, error) {
-	root, err := steam.ParseVDF(data)
+	list, err := steam.Accounts(data)
 	if err != nil {
 		return nil, err
 	}
-	users := root.Child("users")
-	if users == nil {
-		return nil, nil
-	}
-	var out []string
-	for _, u := range users.Children {
-		id, err := strconv.ParseUint(u.Key, 10, 64)
-		if err != nil || !u.Block || uint32(id) == 0 {
-			continue
-		}
-		if a := strconv.FormatUint(id&0xffffffff, 10); !slices.Contains(out, a) {
-			out = append(out, a)
-		}
+	out := make([]string, 0, len(list))
+	for _, a := range list {
+		out = append(out, strconv.FormatUint(uint64(a.AccountID), 10))
 	}
 	slices.Sort(out)
 	return out, nil

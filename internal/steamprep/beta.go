@@ -73,6 +73,26 @@ func decideBeta(cur string, b *BetaState, want *BetaWant) (string, *BetaState) {
 	return cur, nil
 }
 
+// uninstalled drops the branch record of an app no library has the
+// manifest of: a reinstall comes with a new manifest, which then gets
+// the request that still stands. A library whose steamapps is
+// missing (its drive is not mounted) may still hold it, so the record
+// waits for it.
+func (p *prep) uninstalled(app uint32) {
+	a := p.st.peekApp(app)
+	if a == nil || a.Beta == nil {
+		return
+	}
+	for _, lib := range p.libraries() {
+		if !dirExists(filepath.Join(lib, "steamapps")) {
+			return
+		}
+	}
+	p.o.Log.Printf("prepare: app %d is not installed; its branch is asked for again when it is", app)
+	a.Beta = nil
+	p.commit()
+}
+
 // branches is step 5: the BetaKey of each app's appmanifest, which Steam
 // reads when it starts. An app that is not installed is left for later.
 // --unwrap leaves branches alone, and so does an app whose request in
@@ -102,6 +122,7 @@ func (p *prep) branches() {
 			continue
 		}
 		if f == nil {
+			p.uninstalled(app)
 			continue
 		}
 		name := relName(p.root, f.path)

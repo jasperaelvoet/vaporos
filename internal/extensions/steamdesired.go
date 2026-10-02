@@ -3,6 +3,7 @@ package extensions
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
@@ -23,6 +25,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
+	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
 // SteamDesired is /var/lib/vos/ext/steam.json: what VaporOS wants in Steam
@@ -36,6 +39,10 @@ type SteamDesired struct {
 	Apps              []SteamApp      `json:"apps"`
 	Shortcuts         []SteamShortcut `json:"shortcuts"`
 	Release           []SteamRelease  `json:"release"`
+	// Owners are the extensions whose Steam entries stay even while this
+	// boot does not list them (wanted ∪ core ∪ mounted), sorted; nil
+	// when wanted cannot be read, and then prepare removes none.
+	Owners []string `json:"owners"`
 }
 
 // SteamApp is what extensions set for one Steam app.
@@ -87,6 +94,7 @@ type steamEntries struct {
 	report  *store.BootReport
 	catalog *catalog.Catalog
 	desired map[string]bool // wanted ∪ core with their requirements; nil when unknown
+	wanted  []string        // wanted as it is, ids the booted catalog lacks included
 	descs   map[string]*descriptor.Descriptor
 	ids     []string
 	parts   map[string]SteamParts
@@ -138,6 +146,7 @@ func loadSteamEntries() (*steamEntries, error) {
 		}
 	}
 	if wanted, err := store.Wanted(); err == nil {
+		e.wanted = wanted
 		e.desired = map[string]bool{}
 		for _, id := range cat.Closure(append(wanted, cat.Core()...)) {
 			e.desired[id] = true
@@ -289,8 +298,25 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 			d.Release = append(d.Release, SteamRelease{App: a})
 		}
 		slices.SortFunc(d.Release, func(a, b SteamRelease) int { return cmp.Compare(a.App, b.App) })
+		d.Owners = e.owners()
 	}
 	return d
+}
+
+// owners are the extensions whose shortcuts prepare keeps though this
+// boot does not list them: a boot without extensions, a trial that fell
+// back, an image whose catalog lacks one or an install with no target
+// yet must not take the user's shortcut (with its art and collections)
+// away. wanted as it is, so an extension the booted catalog lacks counts.
+func (e *steamEntries) owners() []string {
+	ids := slices.Concat(e.wanted, slices.Collect(maps.Keys(e.desired)))
+	for _, m := range e.report.Mounted {
+		if manifest.ValidExtensionID(m.ID) {
+			ids = append(ids, m.ID)
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 // steamNameRe is a branch or a branch request's id, as prepare accepts
@@ -335,8 +361,9 @@ var slotEntry = func(slot string) (*boot.Entry, error) {
 // to roll back to; otherwise only an image built with extensions has the
 // dispatcher, and the updater records each image it writes in
 // slots/<slot>.json, so its slot file must be for the entry's version and
-// list extensions.
-func dispatcherReady(cat *catalog.Catalog) bool {
+// list extensions. current is what steam.json says now, which one ESP
+// read that fails does not change. Under steamMu.
+func (s *Service) dispatcherReady(cat *catalog.Catalog, current bool) bool {
 	if cat == nil || cat.Dispatcher < catalog.Dispatcher {
 		return false
 	}
@@ -344,17 +371,60 @@ func dispatcherReady(cat *catalog.Catalog) bool {
 	if slot != "a" && slot != "b" {
 		return false
 	}
-	other := config.OtherSlot(slot)
+	return s.otherSlotReady(config.OtherSlot(slot), current)
+}
+
+// slotCheck is the last reading of the other slot's boot entry.
+type slotCheck struct {
+	slot  string
+	key   string    // what the updater writes around every change of it
+	at    time.Time // when the ESP was read
+	ready bool
+	known bool
+	errs  int // ESP reads that failed in a row
+}
+
+// slotRecheck is how long a reading of the ESP stands while neither the
+// other slot's file nor update-state.json changes. A variable for tests.
+var slotRecheck = 30 * time.Minute
+
+// otherSlotReady is dispatcherReady's other slot. The minute's check must
+// not read the ESP each time: every stage writes slots/<slot>.json and
+// update-state.json around its change of the entries (also from a
+// shell), so the entry is read again only when either file changed, after
+// slotRecheck, or when the slots may have changed (forgetSlots). A read
+// that fails keeps current; only a second one in a row makes it false.
+func (s *Service) otherSlotReady(other string, current bool) bool {
+	c := &s.slots
+	key := statKey(filepath.Join(config.ExtSlotsDir(), other+".json")) + statKey(config.UpdateStatePath())
+	if c.known && c.slot == other && c.key == key && now().Sub(c.at) < slotRecheck {
+		return c.ready
+	}
 	e, err := slotEntry(other)
 	if err != nil {
-		log.Printf("extensions: slot %s's boot entry: %v", other, err)
-		return false
+		c.errs++
+		log.Printf("extensions: slot %s's boot entry (%d in a row): %v", other, c.errs, err)
+		return c.errs < 2 && current
 	}
-	if e == nil {
-		return true
+	ready := e == nil
+	if e != nil {
+		sl, err := store.ReadSlot(other)
+		ready = err == nil && sl != nil && sl.Version == e.Version && len(sl.Extensions) > 0
 	}
-	sl, err := store.ReadSlot(other)
-	return err == nil && sl != nil && sl.Version == e.Version && len(sl.Extensions) > 0
+	*c = slotCheck{slot: other, key: key, at: now(), ready: ready, known: true}
+	return ready
+}
+
+// forgetSlots makes the next check read the ESP again. Under steamMu.
+func (s *Service) forgetSlots() { s.slots.known = false }
+
+// statKey is a file's size and mtime, "-" when it cannot be read.
+func statKey(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "- "
+	}
+	return fmt.Sprintf("%d:%d ", fi.Size(), fi.ModTime().UnixNano())
 }
 
 // SetSteamRestarter sets what asks for a Steam restart when steam.json or
@@ -397,11 +467,17 @@ func (s *Service) SyncSteam() (bool, error) {
 			return false, err
 		}
 	}
-	b, err := marshalSteamDesired(e.desiredSteam(dispatcherReady(e.catalog)))
+	old, oldErr := os.ReadFile(config.ExtSteamPath())
+	var was struct{ Dispatcher bool }
+	if oldErr == nil && json.Unmarshal(old, &was) != nil {
+		was.Dispatcher = false
+	}
+	d := e.desiredSteam(s.dispatcherReady(e.catalog, was.Dispatcher))
+	b, err := marshalSteamDesired(d)
 	if err != nil {
 		return false, err
 	}
-	if old, err := os.ReadFile(config.ExtSteamPath()); err == nil && bytes.Equal(old, b) {
+	if oldErr == nil && bytes.Equal(old, b) {
 		return false, nil
 	}
 	if err := config.WriteFileAtomic(config.ExtSteamPath(), b, 0o644); err != nil {
@@ -409,7 +485,41 @@ func (s *Service) SyncSteam() (bool, error) {
 	}
 	log.Printf("extensions: wrote %s", config.ExtSteamPath())
 	s.restartSteam("what the extensions set in Steam changed")
+	if was.Dispatcher && !d.Dispatcher {
+		go unwrapNow(gamescopeState, prepareAsGamer)
+	}
 	return true, nil
+}
+
+// gamescopeUnit is the gaming user's unit that runs gamescope and Steam.
+const gamescopeUnit = "vos-gamescope.service"
+
+// What unwrapNow asks and runs; variables for tests.
+var (
+	gamescopeState = func(ctx context.Context) string { return sysd.ActiveState(ctx, gamescopeUnit, true) }
+	prepareAsGamer = func(ctx context.Context) error {
+		_, err := sysd.AsGamer(ctx, vosBinary, "steam", "prepare")
+		return err
+	}
+)
+
+// unwrapNow runs `vos steam prepare` as vapor once the dispatcher turned
+// off while gamescope is down (inactive or failed): a Steam restart has
+// nothing to restart then, and the box may next boot a VaporOS without
+// `vos ext launch`, whose games would not start with it in their launch
+// options. A running gamescope gets the same from its stop
+// (ExecStopPost) or the restart, and one starting from its own prepare.
+func unwrapNow(state func(context.Context) string, prepare func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if st := state(ctx); st != "inactive" && st != "failed" {
+		return
+	}
+	if err := prepare(ctx); err != nil {
+		log.Printf("extensions: taking the dispatcher out of Steam's launch options: %v", err)
+		return
+	}
+	log.Print("extensions: took the dispatcher out of Steam's launch options")
 }
 
 // marshalSteamDesired is steam.json's bytes as vosd writes them, which

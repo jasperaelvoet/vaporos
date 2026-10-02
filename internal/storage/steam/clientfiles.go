@@ -43,27 +43,77 @@ func CompatToolMapping(data []byte, app uint32) (CompatTool, bool, error) {
 	if err != nil {
 		return CompatTool{}, false, err
 	}
+	t, ok := compatToolMapping(root, app)
+	return t, ok, nil
+}
+
+func compatToolMapping(root *Node, app uint32) (CompatTool, bool) {
 	n, matched := walkVDF(root, compatToolMappingPath)
 	if matched < len(compatToolMappingPath) {
-		return CompatTool{}, false, nil
+		return CompatTool{}, false
 	}
 	e := n.Child(appKey(app))
 	if e == nil || !e.Block {
-		return CompatTool{}, false, nil
+		return CompatTool{}, false
 	}
-	return CompatTool{Name: e.Str("name"), Config: e.Str("config"), Priority: e.Str("priority")}, true, nil
+	return CompatTool{Name: e.Str("name"), Config: e.Str("config"), Priority: e.Str("priority")}, true
 }
 
 // SetCompatToolMapping writes app's entry, keeping the keys of an entry
 // that is there already (and any it has besides these three).
 func SetCompatToolMapping(data []byte, app uint32, t CompatTool) ([]byte, bool, error) {
-	return setVDF(data, VDFMax, under(compatToolMappingPath, appKey(app)), [][2]string{{"name", t.Name}, {"config", t.Config}, {"priority", t.Priority}})
+	c, err := ParseConfigVDF(data)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := c.SetCompatToolMapping(app, t); err != nil {
+		return nil, false, err
+	}
+	return c.Bytes()
 }
 
 // DeleteCompatToolMapping removes app's entry.
 func DeleteCompatToolMapping(data []byte, app uint32) ([]byte, bool, error) {
 	return DeleteVDF(data, VDFMax, compatToolMappingPath, appKey(app))
 }
+
+// ConfigVDF is config.vdf, parsed once for every CompatToolMapping change
+// a run makes to it.
+type ConfigVDF struct{ e *vdfEditor }
+
+// ParseConfigVDF parses config.vdf (at most VDFMax bytes).
+func ParseConfigVDF(data []byte) (*ConfigVDF, error) {
+	e, err := newEditor(data, VDFMax)
+	if err != nil {
+		return nil, err
+	}
+	return &ConfigVDF{e}, nil
+}
+
+// CompatToolMapping is app's entry in the file as it was parsed.
+func (c *ConfigVDF) CompatToolMapping(app uint32) (CompatTool, bool) {
+	return compatToolMapping(c.e.root, app)
+}
+
+// SetCompatToolMapping writes app's entry, as the function of that name.
+func (c *ConfigVDF) SetCompatToolMapping(app uint32, t CompatTool) error {
+	path := under(compatToolMappingPath, appKey(app))
+	for _, kv := range [][2]string{{"name", t.Name}, {"config", t.Config}, {"priority", t.Priority}} {
+		if err := c.e.set(path, kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteCompatToolMapping removes app's entry, also one this batch set.
+func (c *ConfigVDF) DeleteCompatToolMapping(app uint32) error {
+	return c.e.del(compatToolMappingPath, appKey(app))
+}
+
+// Bytes makes the changes in one pass: the new file, whether it differs,
+// and an error when it would not parse.
+func (c *ConfigVDF) Bytes() ([]byte, bool, error) { return c.e.result() }
 
 // LaunchOptions returns an app's launch options from an account's
 // localconfig.vdf, and false when it has none.

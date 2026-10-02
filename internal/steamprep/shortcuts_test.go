@@ -225,7 +225,7 @@ func TestDecideShortcutsKeepsTheUsers(t *testing.T) {
 	theirs := steam.NewShortcut(0x87654321, "Star Citizen", "/usr/bin/env", "/", "lutris")
 	want := []Shortcut{{Owner: scOwner, Key: scKey, Name: "Star Citizen", Exe: "/x/setup.exe", StartDir: "/x"}}
 	res := decideShortcuts(shortcutInput{list: []steam.Shortcut{heroic, theirs}, existed: true, want: want,
-		names: func(string) bool { return true }})
+		keep: func(string) bool { return true }})
 	if len(res.list) != 3 || res.list[0].AppName != "Heroic" || res.list[1].LaunchOptions != "lutris" || len(res.removed) != 0 {
 		t.Errorf("%+v %v", res.list, res.removed)
 	}
@@ -239,7 +239,7 @@ func TestDecideShortcutsKeepsTheUsers(t *testing.T) {
 func TestShortcutArgs(t *testing.T) {
 	want := []Shortcut{{Owner: "truckersmp", Key: "ets2", Name: "TruckersMP (ETS2)", Exe: "/usr/bin/vos", StartDir: "/home",
 		Args: []string{"ext", "truckersmp", "mp", "ets2"}}}
-	res := decideShortcuts(shortcutInput{want: want, names: func(string) bool { return true }})
+	res := decideShortcuts(shortcutInput{want: want, keep: func(string) bool { return true }})
 	opts := "/usr/bin/vos ext launch --shortcut truckersmp/ets2 %command% ext truckersmp mp ets2"
 	if len(res.list) != 1 || res.list[0].LaunchOptions != opts {
 		t.Fatalf("%+v", res.list)
@@ -247,7 +247,7 @@ func TestShortcutArgs(t *testing.T) {
 	if owner, key, ok := steam.ShortcutRef(opts); !ok || owner != "truckersmp" || key != "ets2" {
 		t.Errorf("ref %q %q %v", owner, key, ok)
 	}
-	again := decideShortcuts(shortcutInput{list: res.list, existed: true, want: want, st: res.next, names: func(string) bool { return true }})
+	again := decideShortcuts(shortcutInput{list: res.list, existed: true, want: want, st: res.next, keep: func(string) bool { return true }})
 	if len(again.list) != 1 || again.list[0].LaunchOptions != opts {
 		t.Errorf("a second run: %+v", again.list)
 	}
@@ -410,5 +410,132 @@ func TestUnknownAccountsKeepShortcutMappings(t *testing.T) {
 				t.Error("mapping no longer owned")
 			}
 		})
+	}
+}
+
+// shortcutKept checks that the Star Citizen shortcut is as the first run
+// left it: in shortcuts.vdf, recorded, mapped and with its art.
+func (b *box) shortcutKept(t *testing.T, vdf []byte) {
+	t.Helper()
+	if got := b.steamFile("userdata/52079950/config/shortcuts.vdf"); string(got) != string(vdf) {
+		t.Error("shortcuts.vdf changed")
+	}
+	if _, ok := b.vaporShortcut(acctB); !ok {
+		t.Error("the second account's went")
+	}
+	if ss := b.state().Shortcuts["52079950"]["star-citizen/launcher"]; ss == nil || ss.AppID != scApp || ss.Deleted || len(ss.Art) != 2 {
+		t.Errorf("record %+v", ss)
+	}
+	if got, _ := b.mapping(scApp); got != oursApp || !b.state().peekApp(scApp).Mapping.owned() {
+		t.Errorf("mapping %+v", got)
+	}
+	if _, err := os.Stat(b.grid(acctA, scApp, "p")); err != nil {
+		t.Errorf("art: %v", err)
+	}
+}
+
+// A boot without extensions (vos.ext=0, starting once without them)
+// lists no shortcut and says nothing about which stay: none goes, even
+// when steam.json owns no extension, and the next boot adds none again.
+func TestShortcutsStayOnABootWithoutExtensions(t *testing.T) {
+	for _, reason := range []string{"cmdline", "skip-once"} {
+		t.Run(reason, func(t *testing.T) {
+			b := newBox(t)
+			b.desire(b.starCitizen(proton()))
+			b.run(false)
+			vdf := b.steamFile("userdata/52079950/config/shortcuts.vdf")
+
+			b.bootWithoutExtensions(reason)
+			b.desireExact(Desired{Dispatcher: true, Owners: []string{}})
+			b.run(false)
+			b.shortcutKept(t, vdf)
+
+			b.bootReport("5")
+			b.desire(Desired{Set: "5", Dispatcher: true, DefaultCompatTool: tool, Shortcuts: b.starCitizen(proton()).Shortcuts})
+			b.run(false)
+			b.shortcutKept(t, vdf)
+		})
+	}
+}
+
+// While steam.json owns its extension, an unlisted shortcut stays: a
+// trial with Star Citizen that fell back to a set without it, or Star
+// Citizen mounted with no target for its shortcut yet (steam.json is
+// the same for both). Once it is owned no more, it goes with its record,
+// mapping and the art VaporOS wrote; art the user put there stays.
+func TestShortcutsStayWhileOwned(t *testing.T) {
+	for name, owners := range map[string][]string{
+		"owned":          {"proton", "star-citizen"},
+		"owners unknown": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := newBox(t)
+			b.desire(b.starCitizen(proton()))
+			b.run(false)
+			vdf := b.steamFile("userdata/52079950/config/shortcuts.vdf")
+			d := proton()
+			d.Set, d.Owners = theSet, owners
+			b.desireExact(d)
+			b.run(false)
+			b.shortcutKept(t, vdf)
+		})
+	}
+
+	b := newBox(t)
+	orig := b.steamFile("userdata/52079950/config/shortcuts.vdf")
+	b.desire(b.starCitizen(proton()))
+	b.run(false)
+	b.write(b.grid(acctA, scApp, "_hero"), []byte("the user's own"))
+	b.write(b.grid(acctA, scApp, "_logo"), []byte("the user's too"))
+	b.desire(proton()) // owns Proton alone
+	b.run(false)
+	if got := b.steamFile("userdata/52079950/config/shortcuts.vdf"); string(got) != string(orig) {
+		t.Error("shortcut left")
+	}
+	if _, ok := b.mapping(scApp); ok || b.state().peekApp(scApp) != nil || len(b.state().Shortcuts) != 0 {
+		t.Errorf("mapping or records left: %+v", b.state().Shortcuts)
+	}
+	if _, err := os.Stat(b.grid(acctA, scApp, "p")); !os.IsNotExist(err) {
+		t.Errorf("VaporOS's art left: %v", err)
+	}
+	for _, suffix := range []string{"_hero", "_logo"} {
+		if _, err := os.Stat(b.grid(acctA, scApp, suffix)); err != nil {
+			t.Errorf("the user's art %s went: %v", suffix, err)
+		}
+	}
+}
+
+// An existing VaporOS shortcut without an icon gets the extension's, at
+// the app id Steam keeps for it; one with an icon keeps it
+// (TestShortcutArtAndIcon).
+func TestIconForAnExistingShortcut(t *testing.T) {
+	b := newBox(t)
+	d := b.starCitizen(proton())
+	b.desire(d)
+	b.run(false)
+	if sc, _ := b.vaporShortcut(acctA); sc.Icon != "" {
+		t.Fatalf("icon without icon.png: %q", sc.Icon)
+	}
+	const other = 0x9abcdef0
+	b.edit("userdata/52079950/config/shortcuts.vdf", func(data []byte) []byte {
+		list, err := steam.ParseShortcuts(data)
+		b.check(err)
+		list[2].AppID = other
+		out, err := steam.MarshalShortcuts(list)
+		b.check(err)
+		return out
+	})
+	b.write(filepath.Join(d.Shortcuts[0].Art, iconArt), []byte("icon"))
+	b.run(false)
+	sc, _ := b.vaporShortcut(acctA)
+	if sc.Icon != b.grid(acctA, other, "_icon") || sc.AppID != other || sc.AppName != "Star Citizen" {
+		t.Errorf("icon %q, app id %d, name %q", sc.Icon, sc.AppID, sc.AppName)
+	}
+	if data, err := os.ReadFile(b.grid(acctA, other, "_icon")); err != nil || string(data) != "icon" {
+		t.Errorf("icon file %q %v", data, err)
+	}
+	ss := b.state().Shortcuts["52079950"]["star-citizen/launcher"]
+	if ss == nil || ss.Art[strconv.FormatUint(other, 10)+"_icon.png"].Size != 4 {
+		t.Errorf("record %+v", ss)
 	}
 }

@@ -36,7 +36,8 @@ func TestParseDesired(t *testing.T) {
 		{"owner":"truckersmp","key":"ets2","name":"TruckersMP (ETS2)","exe":"/usr/bin/vos","start_dir":"/var/home/vapor","args":["ext","truckersmp","mp","ets2"]},
 		{"owner":"x","key":"u","name":"spaced args","exe":"/a","start_dir":"/","args":["a b"]}
 	],
-	"release":[{"app":0},{"app":270880}]}`
+	"release":[{"app":0},{"app":270880}],
+	"owners":["proton","Bad Owner"]}`
 	var logs []string
 	d, err := parseDesired([]byte(data), func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
 	if err != nil {
@@ -69,7 +70,15 @@ func TestParseDesired(t *testing.T) {
 	if r := d.releases(); len(r) != 1 || !r[270880] {
 		t.Errorf("release %v", r)
 	}
-	if len(logs) != 14 {
+	// Shortcuts stay for the owners and the extensions named; without
+	// owners (an older vosd, or wanted unknown) for every extension.
+	if !d.keeps("proton") || !d.keeps("truckersmp") || d.keeps("nobody") || d.keeps("Bad Owner") {
+		t.Errorf("owners %q", d.Owners)
+	}
+	if none, _ := parseDesired([]byte(`{"owners":null}`), func(string, ...any) {}); !none.keeps("nobody") {
+		t.Error("no owners: a shortcut goes")
+	}
+	if len(logs) != 15 {
 		t.Errorf("%d log lines: %q", len(logs), logs)
 	}
 	if _, err := parseDesired([]byte(`{"set":`), func(string, ...any) {}); err == nil {
@@ -116,5 +125,8 @@ func TestGoldenSteamJSON(t *testing.T) {
 	}
 	if r := d.releases(); len(r) != 1 || !r[292030] {
 		t.Errorf("release %v", r)
+	}
+	if len(d.Owners) != 4 || !d.keeps("coolercontrol") || d.keeps("nobody") {
+		t.Errorf("owners %q", d.Owners)
 	}
 }
