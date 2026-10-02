@@ -37,7 +37,10 @@ multi-call:
 | `vos health` | boot health check (vos-health.service, see "Health") |
 | `vos edid generate --out FILE [--modes-from FILE]` / `vos edid decode FILE` | EDID generator |
 | `vos sign --key FILE\|env:VAR MANIFEST` / `vos keygen --out PREFIX` | ed25519 manifest signing |
-| `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json |
+| `vos ext check-tree` / `vos ext catalog` | build: check an extension's tree against its descriptor and the base; write the catalog and manifest entries |
+| `vos ext fetch [--from SRC] [--version V] [ids...]` | fetch and seal extension images into the store (dev and tests; vosd does the same) |
+| `vos ext launch [--app N\|--shortcut ID/KEY] -- CMD...` | Steam launch dispatcher (see Extensions); runs CMD unchanged when no mounted extension hooks it |
+| `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions |
 | `vos version` | prints the version |
 
 The build embeds the version with `-ldflags "-X main.version=… -X main.commit=…"`.
@@ -60,7 +63,12 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (boot disk, virtual connector + EDID) |
 | `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running |
 | `/var/lib/vos/firmware/edid/vaporos.bin` | vosd | EDID with learned modes; overrides the image one via `firmware_class.path=/var/lib/vos/firmware`. vosd also hands each new version to the running kernel, best effort: it writes `/sys/kernel/debug/dri/<minor or PCI address>/<C>/edid_override`, re-probes the connector by switching its sysfs `status` to `on-digital` and back to `on`, and sends a `change` uevent with `HOTPLUG=1`. It counts only when the connector's sysfs `edid` then matches. vosd skips this during a stream (it applies at `session.end`) and when the new EDID drops the mode on screen. If the kernel refuses, or gamescope does not reach a mode added this way within 15 s, vosd stops trying until the next boot and the mode applies after a reboot |
-| `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool}` from the last good boot |
+| `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool}` from the last good boot |
+| `/usr/lib/vos/extensions.list` | build | the image's extension catalog (see Extensions) |
+| `/usr/share/vos/extensions/<id>.json` | build | each extension's descriptor, with what the build verified |
+| `/var/lib/vos/ext/` | vosd, initramfs, `vos health` | the extension store, sets and trial state (see Extensions) |
+| `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
+| `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
 | `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
 | `/run/vos/medium/vos/` | initramfs (live) | ISO contents: root.erofs, vmlinuz, initramfs.img, manifest.json(.sig) |
@@ -111,7 +119,7 @@ A boot entry's `options` are built as: `vos.slot=<a|b>` + image cmdline + machin
   or else the first `*.iso` file, on any exFAT, FAT or NTFS partition, whose ISO 9660 label is `vos.label`
   and whose `/vos/manifest.json` has `version` = `vos.version` (Ventoy in normal mode, which cannot hook into
   systemd-boot). It waits 30 s for either, then reboots.
-- **Test knobs:** `vos.health.fail=1` makes `vos health` fail on a counted boot (ignored on a blessed entry). `vos.debug=1` is reserved.
+- **Test knobs:** `vos.health.fail=1` makes `vos health` fail on a counted boot or an extension trial (ignored otherwise). `vos.ext=0` mounts no extension. `vos.debug=1` is reserved.
 
 `vos update` writes the new entry with the *new* manifest's cmdline. `vosd`
 rewrites both slots' entries when the machine cmdline changes
@@ -129,7 +137,9 @@ GPT:
 Slot size: `clamp(3 × image size, 8 GiB, 16 GiB)`. The minimum disk is
 `512 MiB + 2×slot + 8 GiB`. On `vos_data`: `var/`, `etc/{upper,work}`.
 Mounting is done by the initramfs hook (erofs slot ro at `/`, data at `/state`,
-`/var` bind, `/etc` overlay `index=off`). It finds the partitions by GPT name
+`/var` bind, `/etc` overlay `index=off`, then the mounted extensions as a
+read-only overlay on `/usr`, see Extensions). vos_data is ext4 with the
+`verity` feature (`mkfs.ext4 -O verity -b 4096`; older installs get it at boot). It finds the partitions by GPT name
 on the `vos.disk` disk (and reboots if that disk does not appear). Before any
 reboot it takes, it renames an uncounted entry of the failing slot to
 `+0-1` when the other slot has a bootable entry.
@@ -186,11 +196,12 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `rollback_index` > booted image's, unless `--force` or `--allow-downgrade`.
 - Without a picked version or `--force`: `rollback_index` > `held.rollback_index`.
 - The version is not in `failed`, unless `--force`.
-- Every artifact's size and sha256 match.
+- Every artifact's size and sha256 match, and every extension image's size, sha256 and fs-verity digest.
 - Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
-1. Remove the idle slot's entries.
+0. Fetch and seal the extension images the new image needs (`wanted` ∪ its core, with requirements) that the store lacks, next to kernel and initrd, before anything is unhooked.
+1. Remove the idle slot's entries, then write `ext/slots/<idle>.json` from the new manifest.
 2. Stream root into the idle slot partition while hashing.
 3. Re-read and verify.
 4. Kernel and initrd to `/efi/vos/<ver>/` (tmp + rename).
@@ -219,13 +230,146 @@ or above it passes health.
 - `user@1000.service` is active;
 - if `health-ok.gpu`, a DRM card with an amdgpu (or other supported) driver exists;
 - if `health-ok.stream`, `vos-sunshine.service` is active;
+- if `health-ok.lan`, some interface with carrier has a non-loopback, non-link-local address within 60 s (no carrier anywhere passes);
 - `vos.health.fail=1` forces a failure.
 
 It exits non-zero only on a counted boot when another entry would boot once
-this one runs out of tries; otherwise a failing check is logged as degraded
+this one runs out of tries, and on an extension trial (see Extensions); otherwise a failing check is logged as degraded
 and it exits 0. It writes `health-ok` unless it fails, and prints the
 `VOS-HEALTH` serial line on every outcome. `FailureAction=reboot`, and
 systemd-boot counting does the rest.
+
+## Extensions
+
+Extensions add software that is not part of the VaporOS image (Proton,
+CoolerControl, TruckersMP, ...). They are curated: each is a directory in
+`extensions/<id>/` of this repository, built by the same build as the image it
+belongs to, against that image's exact packages, and listed in its signed
+manifest. Each extension is itself immutable: one sealed, read-only image.
+
+**Source** (`extensions/<id>/`): `extension.json`, the descriptor (schema 1,
+unknown fields rejected; `internal/extensions/descriptor`), and `files/usr/...`,
+copied into the image. Integration logic is Go in `vos`
+(`internal/extensions/<id>`). Non-goals: no `/opt` or `/usr/local` payloads, no
+AUR or DKMS, no `.ko`, no `sysusers.d`, no confext, no plugin stores that run
+code as root.
+
+**Image** (`ext-<id>.raw`): an erofs whose only top-level directory is `usr/`,
+made with `mkfs.erofs -T0 --all-root -U <uuid5(id)>` (zstd). It holds the
+extension's packages (resolved from the base's own sync snapshot), its
+`files/`, and `usr/lib/vos/ext/<id>/{extension.json,packages.txt,module-options}`.
+`module-options` lists the `module param` pairs the extension may set (one per
+line). Its identity is its fs-verity digest: `fsverity digest --hash-alg=sha256
+--block-size=4096`, no salt, as 64 hex digits. The build fails an image that:
+ships anything outside `usr/`; ships a path the base or another extension
+ships (unless identical bytes from the same package); writes under
+`usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
+`usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory or
+`usr/lib/vos/**` except `usr/lib/vos/ext/<id>/**`, beyond the categories its
+descriptor declares in `permissions` (`service`, `user-service`, `udev`,
+`sysctl`, `modules`, `tmpfiles`, `polkit`, `dbus`, `compat-tool`), with any
+difference between declared and found failing too; ships `sysusers.d`, `*.ko`,
+`hwdb.d`, `ld.so.conf.d`, network configuration (NetworkManager, networkd,
+nftables, `net.*` sysctls), setuid/setgid files or file capabilities,
+whiteouts or `trusted.overlay.*` xattrs; sets a sysctl key the base or another
+extension sets; ships a system unit without a VaporOS drop-in that sets
+`TimeoutStartSec=` (finite) and no `Before=` on a base unit; or has an ELF
+(outside `elf_exempt`) that does not resolve against the base's
+`ld.so.cache`.
+
+**Catalog** (`/usr/lib/vos/extensions.list`, in the image, so the read-only
+slot is the trust anchor; `internal/extensions/catalog`):
+```
+# comment
+dispatcher 1
+ext <id> <sha256> <size> <fsverity> <core|-> [requires...]
+```
+`ext` lines come in dependency order; unknown line kinds are ignored.
+`dispatcher` is the `vos ext launch` level the image's vos understands. The
+build also ships every descriptor, with a `build` section it fills in
+(`size`, `packages`, verified `permissions`, `runs_as_root`), as
+`/usr/share/vos/extensions/<id>.json`.
+
+**Manifest:** `manifest.json` gains `"extensions": {"<id>": {"name":
+"ext-<id>.raw", "size", "sha256", "fsverity", "core"?, "requires"?, "key"?}}`
+(optional; `schema` and `min_updater` stay 1, older updaters ignore it). `key`
+is the build's input key: an image is rebuilt only when it changes. Ids match
+`^[a-z][a-z0-9-]{0,31}$`; `requires` must name extensions of the same manifest,
+without cycles. The OCI artifact carries each image as a layer titled
+`ext-<id>.raw` (media type `application/vnd.vaporos.extension.v1.erofs`); http
+and directory sources serve it by that name next to `manifest.json`.
+
+**Store** (`/var/lib/vos/ext/`, root's):
+
+| Path | What |
+| --- | --- |
+| `images/<sha256>.raw` | A sealed image: written to a temp file, fsynced, sha256-checked, closed, reopened read-only, `FS_IOC_ENABLE_VERITY` (sha256, 4096, no salt), `FS_IOC_MEASURE_VERITY` compared with the catalog, then renamed into place and the directory fsynced. A file under its final name is always sealed; one without fs-verity, or with another digest, is deleted and fetched again |
+| `wanted` | the ids the user added, one per line (core ids are always wanted) |
+| `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines), boots left to try it (0-9). Written into a temp directory, fsynced, renamed |
+| `enabled`, `pending` | symlinks `sets/<n>` (relative): the last good set, and the set on trial. Renaming `pending` into place is the commit of a change |
+| `proven` | `<id> <fsverity>` lines: images that passed a boot |
+| `failed` | `<fingerprint>` lines: sets whose trial failed (sha256 of their sorted `id fsverity` lines and module options) |
+| `skip-once` | present: the next boot mounts no extension, then the initramfs removes it |
+| `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest |
+| `settings/<id>.json` | the extension's settings (never in config.json) |
+| `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
+
+`/run/vos/ext.lock` (flock) serialises every write to `wanted`, the sets,
+`enabled`, `pending`, `proven`, `failed` and the store's garbage collection.
+GC keeps the images that `wanted` ∪ core resolve to in the booted catalog and
+in both slot files, and those mounted this boot.
+
+**Boot** (the initramfs hook, after `/state`, `/var` and `/etc` are mounted;
+never in live mode; never `vos_die`):
+1. Before mounting vos_data (after e2fsck), it sets the ext4 `verity` feature
+   if missing (`tune2fs -O verity`).
+2. It picks the set: nothing with `vos.ext=0` or `skip-once` (removed first);
+   else, while systemd-boot counts this boot (`LoaderBootCountPath` in efivars:
+   an OS trial), `enabled` at the booted catalog's digests, with `pending`
+   left for later; else `pending` if its `tries` > 0 (decremented, temp +
+   rename + sync, before anything mounts; if that fails, `enabled`); else
+   `enabled`, mounting only images listed in `proven`.
+3. For each id of the set in catalog order: skipped if a requirement was
+   skipped, if the catalog does not list it, if `images/<sha256>.raw` is
+   missing or the wrong size, if `fsverity measure` differs from the catalog,
+   if `mount -t erofs -o ro` fails, or if the image has no `usr/`. Mounted at
+   `/run/vos/x/<n>`.
+4. With at least one mounted, `/usr` becomes `overlay -o ro,lowerdir=/run/vos/x/<k>/usr:...:<root>/usr`
+   (no upper; mounted with `LIBMOUNT_FORCE_MOUNT2=always`). If that fails,
+   every image is unmounted and skipped.
+5. `/run/modprobe.d/vos-ext.conf` gets the set's `options` lines whose
+   `module param` pair is in a mounted image's `module-options` and whose
+   value matches `[0-9A-Za-z_x.-]+`.
+6. It writes `/run/vos/extensions.json`:
+   `{"mode":"pending|enabled|os-trial|off","set":"<n>","tries_left":N,"reason":"...","mounted":[{"id","sha256","fsverity"}],"skipped":[{"id","reason"}]}`.
+   Skip reasons: `requires`, `not-in-catalog`, `missing`, `size`, `fsverity`,
+   `unproven`, `mount`, `no-usr`, `overlay`. Everything at runtime (generator,
+   Steam settings, the control center) follows this file, not intent.
+
+**Trial and promotion:** a boot in mode `pending` is an extension trial. `vos
+health` treats it like a counted boot with a fallback: a failure exits 1 (so
+`FailureAction=reboot` tries again and, once the tries are used up, the next
+boot uses `enabled`), and `vos.health.fail=1` applies. On success, under the
+lock: every mounted `id fsverity` is added to `proven` (also on an OS trial);
+then, if `pending` still points at the booted set and every id of the set
+mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
+(rename, directory fsync) and `pending` removed. On trial boots (mode
+`pending`, or an OS trial) the generator gives `vos-health.service` a drop-in
+with `JobTimeoutSec=10min` and `JobTimeoutAction=reboot-force`.
+
+**Reconcile** (vosd, at start and after every change, under the lock): the
+desired set is `wanted` ∪ core, with their requirements, as the booted catalog
+lists them, limited to images sealed in the store, plus the module options
+their settings render. Equal to the booted set (ids, digests, options): no
+`pending`. Equal to `pending`: left alone. Its fingerprint in `failed`: not
+proposed (the extension needs attention; "Try again" removes the fingerprint).
+Otherwise a new set becomes `pending` with `tries` 2. A `pending` with `tries` 0
+that this boot did not use moves to `failed`. Missing images are fetched for
+the booted version (from `config.update.source` at that version, by name, and
+from an OCI registry also by digest) and, best effort, for the other slot's.
+Once per boot, at idle I/O priority, vosd reads every mounted image through; an
+I/O error or a wrong digest deletes it, fetches it again (once per digest per
+boot) and proposes a new set.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
@@ -362,6 +506,8 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 - `vos-health.service`: `FailureAction=reboot` (see "Health")
 - `seatd.service.d/vos.conf`
 - `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
+- every `systemd-sysext*` and `systemd-confext*` unit is masked: only the initramfs merges extensions
+- `system.conf.d/vos.conf` also sets `RuntimeWatchdogSec=60s` (a no-op without a hardware watchdog)
 
 No keypress, local or from a Moonlight client, reboots or suspends the box: `ctrl-alt-del.target` is masked, `system.conf.d/vos.conf` sets `CtrlAltDelBurstAction=none`, `sysctl.d/99-vos.conf` sets `kernel.sysrq = 0`, and logind ignores the reboot, suspend and hibernate keys (and their long presses).
 

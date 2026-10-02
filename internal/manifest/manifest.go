@@ -65,7 +65,26 @@ type Manifest struct {
 	Cmdline       string              `json:"cmdline"`
 	MinUpdater    int                 `json:"min_updater"`
 	Artifacts     map[string]Artifact `json:"artifacts"` // "root", "kernel", "initrd"
+	// Extensions are the sealed extension images built with this image
+	// (docs/CONTRACTS.md "Extensions"), by id. Optional: older manifests
+	// have none, and older updaters ignore the field.
+	Extensions map[string]Extension `json:"extensions,omitempty"`
 }
+
+// Extension is one sealed extension image: an erofs file whose fs-verity
+// digest (sha256, 4096-byte blocks, no salt) the image's catalog records.
+type Extension struct {
+	Name     string   `json:"name"`
+	Size     int64    `json:"size"`
+	SHA256   string   `json:"sha256"`
+	FSVerity string   `json:"fsverity"`
+	Core     bool     `json:"core,omitempty"`
+	Requires []string `json:"requires,omitempty"`
+	Key      string   `json:"key,omitempty"` // the build's input key, for reuse
+}
+
+// Artifact is e as a download: what Source.Fetch verifies.
+func (e Extension) Artifact() Artifact { return Artifact{Name: e.Name, Size: e.Size, SHA256: e.SHA256} }
 
 var (
 	// A version becomes a directory on the ESP (/vos/<ver>/) and part of a
@@ -74,7 +93,16 @@ var (
 	versionRe  = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
 	fileNameRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$`)
 	sha256Re   = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	extIDRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	extKeyRe   = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 )
+
+// ValidExtensionID reports whether id can name an extension: it becomes a
+// file name, a mount point and a word in the initramfs's catalog.
+func ValidExtensionID(id string) bool { return extIDRe.MatchString(id) }
+
+// ExtensionFile is the published name of extension id's image.
+func ExtensionFile(id string) string { return "ext-" + id + ".raw" }
 
 // ValidVersion reports whether v is safe to use as an image version: as an
 // ESP directory name and inside a loader entry's file name.
@@ -133,6 +161,75 @@ func (m *Manifest) Validate() error {
 		}
 		if !sha256Re.MatchString(a.SHA256) {
 			return fmt.Errorf("manifest: artifact %q has an invalid sha256 %q", key, a.SHA256)
+		}
+	}
+	return validateExtensions(m.Extensions)
+}
+
+// validateExtensions checks every entry and that requires names extensions
+// of the same manifest, without cycles.
+func validateExtensions(exts map[string]Extension) error {
+	for id, e := range exts {
+		if !ValidExtensionID(id) {
+			return fmt.Errorf("manifest: invalid extension id %q", id)
+		}
+		if e.Name != ExtensionFile(id) {
+			return fmt.Errorf("manifest: extension %q has name %q, not %q", id, e.Name, ExtensionFile(id))
+		}
+		if e.Size <= 0 {
+			return fmt.Errorf("manifest: extension %q has size %d", id, e.Size)
+		}
+		if !sha256Re.MatchString(e.SHA256) {
+			return fmt.Errorf("manifest: extension %q has an invalid sha256 %q", id, e.SHA256)
+		}
+		if !sha256Re.MatchString(e.FSVerity) {
+			return fmt.Errorf("manifest: extension %q has an invalid fsverity digest %q", id, e.FSVerity)
+		}
+		if e.Key != "" && !extKeyRe.MatchString(e.Key) {
+			return fmt.Errorf("manifest: extension %q has an invalid key %q", id, e.Key)
+		}
+		for _, r := range e.Requires {
+			if r == id {
+				return fmt.Errorf("manifest: extension %q requires itself", id)
+			}
+			if _, ok := exts[r]; !ok {
+				return fmt.Errorf("manifest: extension %q requires %q, which the manifest does not carry", id, r)
+			}
+		}
+	}
+	// Depth-first search for a cycle; ids are visited in sorted order so
+	// the error names the same extension every time.
+	ids := make([]string, 0, len(exts))
+	for id := range exts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	const (
+		unseen = iota
+		active
+		done
+	)
+	state := map[string]int{}
+	var visit func(id string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case active:
+			return fmt.Errorf("manifest: extension %q is part of a requires cycle", id)
+		case done:
+			return nil
+		}
+		state[id] = active
+		for _, r := range exts[id].Requires {
+			if err := visit(r); err != nil {
+				return err
+			}
+		}
+		state[id] = done
+		return nil
+	}
+	for _, id := range ids {
+		if err := visit(id); err != nil {
+			return err
 		}
 	}
 	return nil

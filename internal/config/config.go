@@ -54,6 +54,37 @@ func HealthOKPath() string       { return filepath.Join(StateDir, "health-ok") }
 func SessionSock() string        { return filepath.Join(RunDir, "session.sock") }
 func WelcomeStatePath() string   { return filepath.Join(RunDir, "welcome.json") }
 
+// Extensions (docs/CONTRACTS.md "Extensions"). The catalog and the
+// descriptors are part of the read-only image; everything under ExtDir is
+// per machine.
+var (
+	ExtCatalogPath     = "/usr/lib/vos/extensions.list"
+	ExtDescriptorsDir  = "/usr/share/vos/extensions"
+	ExtMountedLibDir   = "/usr/lib/vos/ext" // <id>/ inside a mounted image
+	CompatToolsDir     = "/usr/share/steam/compatibilitytools.d"
+	ModprobeRunDir     = "/run/modprobe.d"
+	ExtGamerDataSubdir = ".local/share/vaporos/ext" // under GamerHome
+	ExtGamerStateFile  = ".local/state/vaporos/steam.json"
+)
+
+func ExtDir() string             { return filepath.Join(StateDir, "ext") }
+func ExtImagesDir() string       { return filepath.Join(ExtDir(), "images") }
+func ExtSetsDir() string         { return filepath.Join(ExtDir(), "sets") }
+func ExtSlotsDir() string        { return filepath.Join(ExtDir(), "slots") }
+func ExtSettingsDir() string     { return filepath.Join(ExtDir(), "settings") }
+func ExtDataDir() string         { return filepath.Join(ExtDir(), "data") }
+func ExtWantedPath() string      { return filepath.Join(ExtDir(), "wanted") }
+func ExtEnabledLink() string     { return filepath.Join(ExtDir(), "enabled") }
+func ExtPendingLink() string     { return filepath.Join(ExtDir(), "pending") }
+func ExtProvenPath() string      { return filepath.Join(ExtDir(), "proven") }
+func ExtFailedPath() string      { return filepath.Join(ExtDir(), "failed") }
+func ExtSkipOncePath() string    { return filepath.Join(ExtDir(), "skip-once") }
+func ExtAutoRestartPath() string { return filepath.Join(ExtDir(), "autorestart.json") }
+func ExtSteamPath() string       { return filepath.Join(ExtDir(), "steam.json") }
+func ExtPortsPath() string       { return filepath.Join(ExtDir(), "ports") }
+func ExtBootPath() string        { return filepath.Join(RunDir, "extensions.json") }
+func ExtLockPath() string        { return filepath.Join(RunDir, "ext.lock") }
+
 type Config struct {
 	Schema  int           `json:"schema"`
 	Update  UpdateConfig  `json:"update"`

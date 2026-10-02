@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "proton",
+  "name": "CachyOS Proton",
+  "summary": "Runs Windows games in Steam, with CachyOS's own fixes and tuning.",
+  "category": "runtime",
+  "core": true,
+  "upstream": {
+    "name": "CachyOS",
+    "url": "https://github.com/CachyOS/proton-cachyos",
+    "license": "LGPL-2.1-or-later and others"
+  },
+  "caveats": [
+    "VaporOS adds it for you and keeps it apart like every extension. Pick another Proton for a single game in that game's Steam properties."
+  ],
+  "packages": ["cachyos/proton-cachyos-slr", "cachyos/umu-launcher"],
+  "elf_exempt": ["usr/share/steam/compatibilitytools.d"],
+  "permissions": ["modules", "compat-tool"],
+  "steam": {
+    "default_compat_tool": "proton-cachyos-slr"
+  }
+}

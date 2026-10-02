@@ -202,3 +202,71 @@ func TestValidVersion(t *testing.T) {
 		}
 	}
 }
+
+func withExtensions(m *Manifest) *Manifest {
+	m.Extensions = map[string]Extension{
+		"proton":     {Name: "ext-proton.raw", Size: 9, SHA256: sum, FSVerity: sum, Core: true},
+		"truckersmp": {Name: "ext-truckersmp.raw", Size: 9, SHA256: sum, FSVerity: sum, Requires: []string{"proton"}, Key: "0123456789abcdef"},
+	}
+	return m
+}
+
+func TestParseExtensions(t *testing.T) {
+	m, err := Parse(encode(t, withExtensions(validManifest())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := m.Extensions["truckersmp"]
+	if !m.Extensions["proton"].Core || len(e.Requires) != 1 || e.Artifact() != (Artifact{Name: "ext-truckersmp.raw", Size: 9, SHA256: sum}) {
+		t.Fatalf("parsed %+v", m.Extensions)
+	}
+	// A manifest without the field is still valid: older builds have none.
+	if m, err := Parse(encode(t, validManifest())); err != nil || m.Extensions != nil {
+		t.Fatalf("no extensions: %v %+v", err, m)
+	}
+}
+
+func TestParseRejectsExtensions(t *testing.T) {
+	cases := map[string]func(map[string]Extension){
+		"bad id": func(x map[string]Extension) {
+			x["Bad_ID"] = Extension{Name: "ext-Bad_ID.raw", Size: 1, SHA256: sum, FSVerity: sum}
+		},
+		"wrong name":   func(x map[string]Extension) { e := x["proton"]; e.Name = "proton.raw"; x["proton"] = e },
+		"zero size":    func(x map[string]Extension) { e := x["proton"]; e.Size = 0; x["proton"] = e },
+		"bad sha":      func(x map[string]Extension) { e := x["proton"]; e.SHA256 = "abc"; x["proton"] = e },
+		"no fsverity":  func(x map[string]Extension) { e := x["proton"]; e.FSVerity = ""; x["proton"] = e },
+		"bad key":      func(x map[string]Extension) { e := x["proton"]; e.Key = "../x"; x["proton"] = e },
+		"self require": func(x map[string]Extension) { e := x["proton"]; e.Requires = []string{"proton"}; x["proton"] = e },
+		"missing dep":  func(x map[string]Extension) { e := x["proton"]; e.Requires = []string{"nope"}; x["proton"] = e },
+		"cycle": func(x map[string]Extension) {
+			e := x["proton"]
+			e.Requires = []string{"truckersmp"}
+			x["proton"] = e
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := withExtensions(validManifest())
+			mutate(m.Extensions)
+			if _, err := Parse(encode(t, m)); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+}
+
+func TestValidExtensionID(t *testing.T) {
+	for _, id := range []string{"proton", "star-citizen", "a1"} {
+		if !ValidExtensionID(id) {
+			t.Errorf("%q rejected", id)
+		}
+	}
+	for _, id := range []string{"", "1proton", "Proton", "a/b", "a.b", "a b", strings.Repeat("a", 33)} {
+		if ValidExtensionID(id) {
+			t.Errorf("%q accepted", id)
+		}
+	}
+	if ExtensionFile("proton") != "ext-proton.raw" {
+		t.Fatal(ExtensionFile("proton"))
+	}
+}
