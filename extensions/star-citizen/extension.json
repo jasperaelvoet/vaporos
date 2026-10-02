@@ -11,10 +11,10 @@
   },
   "caveats": [
     "Easy Anti-Cheat isn't tested on VaporOS yet.",
-    "Star Citizen wants 16 GB of memory, and 48 GB of memory and swap together. With less, it may stutter or close."
+    "Star Citizen wants 16 GB of memory, and 32 GB of memory and swap together. With less, it may stutter or close."
   ],
   "copy": {
-    "install": "Star Citizen needs a drive with 150 GB free, formatted as ext4, btrfs, xfs or f2fs. Pick it on its card before the restart that adds it, or it goes on the system drive. VaporOS then downloads the RSI Launcher's installer, and the first start in Steam installs the launcher.",
+    "install": "Star Citizen needs a drive with 150 GB free: a game drive formatted as ext4, btrfs, xfs or f2fs, or the system drive. After the restart that adds it, VaporOS downloads the RSI Launcher's installer, and the first start in Steam installs the launcher.",
     "remove": "Its shortcut leaves Steam. Deleting its downloads also deletes the RSI Launcher and the game from its drive, which can be more than 100 GB."
   },
   "requires": ["proton"],
@@ -31,9 +31,10 @@
   "downloads": [
     {"what": "The RSI Launcher", "from": "install.robertsspaceindustries.com", "checked": "publisher-hash", "runs_code": true, "when": "install"},
     {"what": "PowerShell, which the RSI Launcher uses", "from": "github.com", "checked": "none", "runs_code": true, "when": "launch"},
-    {"what": "Microsoft's Visual C++ runtime", "from": "aka.ms", "checked": "none", "runs_code": true, "when": "launch"}
+    {"what": "Microsoft's Visual C++ runtime", "from": "aka.ms", "checked": "none", "runs_code": true, "when": "launch"},
+    {"what": "Updates to the RSI Launcher, and the game", "from": "robertsspaceindustries.com", "checked": "none", "runs_code": true, "when": "launch"}
   ],
   "settings": [
-    {"key": "disk", "type": "disk", "label": "Game drive", "required": true, "help": "Where Star Citizen keeps its game, which needs 150 GB free. Without a game drive, it goes on the system drive. Pick it before the restart that adds Star Citizen: it doesn't move later."}
+    {"key": "disk", "type": "disk", "label": "Game drive", "help": "Needs 150 GB free. Pick it before the restart: it doesn't move later.", "required": true}
   ]
 }

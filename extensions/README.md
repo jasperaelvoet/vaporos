@@ -33,9 +33,10 @@ internal/extensions/<id>/           its Go helper, built into vos (optional)
   `extensions.RegisterCommand` from an `init` function, and is linked into vos
   by a blank import in `internal/extensions/all`. vosd calls it as root,
   except an action, which runs as vapor in `vos ext action` unless its
-  `run_as` is `root`; work in vapor's home or a game drive goes through
-  `internal/gamerfs` or a `vos ext <id> …` subprocess run as vapor
-  (`sysd.AsGamer`).
+  `run_as` is `root`. Root never writes into vapor's trees (its home, its
+  game drives' folders) except through `internal/gamerfs` or a
+  `vos ext <id> …` subprocess run as vapor (`sysd.AsGamer`); see CONTRACTS
+  "Users".
 
 ## Rules
 

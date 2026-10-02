@@ -2,11 +2,12 @@ package starcitizen
 
 import (
 	"context"
-	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 )
@@ -147,8 +148,9 @@ func TestLaunchLaterStart(t *testing.T) {
 
 func TestLaunchSystemDrive(t *testing.T) {
 	newBox(t)
-	p, _ := placeFor("")
+	p, _ := placeFor("/var")
 	writeFile(t, filepath.Join(p.Prefix(), markerName), sysUUID+"\n")
+	writeFile(t, filepath.Join(p.Prefix(), "installer/RSI Launcher-Setup-2.17.0.exe"), "MZ")
 	l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(p.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe", false)}
 	if err := (helper{}).LaunchHook(context.Background(), l); err != nil {
 		t.Fatal(err)
@@ -163,28 +165,108 @@ func TestLaunchRefuses(t *testing.T) {
 	prefix := b.installed()
 	setup := prefix + "/installer/RSI Launcher-Setup-2.17.0.exe"
 
+	refused := func(name string, l *extensions.Launch, want string) {
+		t.Helper()
+		before, env := slices.Clone(l.Argv), slices.Clone(l.Env)
+		err := (helper{}).LaunchHook(context.Background(), l)
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: %v\nwant %s", name, err, want)
+		}
+		if !slices.Equal(l.Argv, before) || !slices.Equal(l.Env, env) {
+			t.Errorf("%s: a refused launch was changed", name)
+		}
+	}
+
 	// The drive is unplugged: nothing may start on the system drive.
 	b.mounted = false
 	b.writeMounts()
-	l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, true), Env: slices.Clone(steamEnv)}
-	before := slices.Clone(l.Argv)
-	err := (helper{}).LaunchHook(context.Background(), l)
-	if !errors.Is(err, errDrive) {
-		t.Errorf("unplugged: %v", err)
-	}
-	if !slices.Equal(l.Argv, before) || !slices.Equal(l.Env, steamEnv) {
-		t.Error("a refused launch was changed")
-	}
-	if !strings.HasPrefix(err.Error(), "its drive isn't connected.") {
-		t.Errorf("message %q", err)
-	}
+	refused("unplugged", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, true), Env: slices.Clone(steamEnv)},
+		"Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again.")
 	b.mounted = true
 	b.writeMounts()
 
+	// Its files on the system drive are gone.
+	sys, _ := placeFor("/var")
+	refused("system drive", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(sys.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe", false)},
+		"Star Citizen's files on the system drive are missing. Remove Star Citizen and add it again.")
+
 	// An installer somewhere VaporOS never put one.
-	l = &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine("/var/home/vapor/Downloads/installer/RSI Launcher-Setup-2.17.0.exe", false)}
-	if err := (helper{}).LaunchHook(context.Background(), l); err == nil || errors.Is(err, errDrive) {
-		t.Errorf("a stray installer: %v", err)
+	refused("a stray installer", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine("/var/home/vapor/Downloads/installer/RSI Launcher-Setup-2.17.0.exe", false)},
+		"Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again.")
+
+	// No installer at all for a first start.
+	must(t, os.Remove(setup))
+	refused("no installer", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, false), Env: slices.Clone(steamEnv)},
+		"Star Citizen's installer is missing. Remove Star Citizen and add it again.")
+}
+
+// A newer installer replaced the one Steam's shortcut names: the first
+// start runs the one that is there.
+func TestLaunchMissingInstaller(t *testing.T) {
+	b := newBox(t)
+	prefix := b.installed() // with 2.17.0
+	l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(prefix+"/installer/RSI Launcher-Setup-2.16.0.exe", false)}
+	must(t, (helper{}).LaunchHook(context.Background(), l))
+	if l.Argv[len(l.Argv)-3] != `C:\windows\system32\cmd.exe` {
+		t.Errorf("argv %q", l.Argv)
+	}
+	if text := readFile(t, prefix+"/installer/first-start.bat"); !strings.Contains(text, `start "" /wait "%~dp0RSI Launcher-Setup-2.17.0.exe" /S`) {
+		t.Errorf("first-start.bat:\n%s", text)
+	}
+
+	// With two there, the newest.
+	writeFile(t, prefix+"/installer/RSI Launcher-Setup-2.18.0.exe", "MZ")
+	writeFile(t, prefix+"/installer/RSI Launcher-Setup-2.17.0.exe.part", "MZ")
+	old := time.Now().Add(-time.Hour)
+	must(t, os.Chtimes(prefix+"/installer/RSI Launcher-Setup-2.17.0.exe", old, old))
+	l = &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(prefix+"/installer/RSI Launcher-Setup-2.16.0.exe", false)}
+	must(t, (helper{}).LaunchHook(context.Background(), l))
+	if text := readFile(t, prefix+"/installer/first-start.bat"); !strings.Contains(text, `"%~dp0RSI Launcher-Setup-2.18.0.exe" /S`) {
+		t.Errorf("first-start.bat:\n%s", text)
+	}
+}
+
+// The installer Steam's shortcut named before stays until the shortcut
+// names the newest one.
+func TestLaunchPrunesInstallers(t *testing.T) {
+	b := newBox(t)
+	prefix := b.installed()
+	dir := prefix + "/installer"
+	old := time.Now().Add(-time.Hour)
+	must(t, os.Chtimes(dir+"/RSI Launcher-Setup-2.17.0.exe", old, old))
+	writeFile(t, dir+"/RSI Launcher-Setup-2.18.0.exe", "MZ")
+	start := func(file string) {
+		t.Helper()
+		l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(dir+"/"+file, false)}
+		must(t, (helper{}).LaunchHook(context.Background(), l))
+	}
+	installers := func() []string {
+		return slices.DeleteFunc(dirNames(t, dir), func(n string) bool { return !installerRe.MatchString(n) })
+	}
+
+	start("RSI Launcher-Setup-2.17.0.exe") // Steam has not picked up the new target yet
+	if got := installers(); !slices.Equal(got, []string{"RSI Launcher-Setup-2.17.0.exe", "RSI Launcher-Setup-2.18.0.exe"}) {
+		t.Errorf("Steam on the old one: %v", got)
+	}
+	if text := readFile(t, dir+"/first-start.bat"); !strings.Contains(text, `"%~dp0RSI Launcher-Setup-2.17.0.exe" /S`) {
+		t.Errorf("first-start.bat:\n%s", text)
+	}
+	start("RSI Launcher-Setup-2.18.0.exe")
+	if got := installers(); !slices.Equal(got, []string{"RSI Launcher-Setup-2.18.0.exe"}) {
+		t.Errorf("Steam on the new one: %v", got)
+	}
+
+	// Later starts prune the same way.
+	writeFile(t, prefix+launcherPath, "MZ")
+	writeFile(t, dir+"/RSI Launcher-Setup-2.19.0.exe", "MZ")
+	must(t, os.Chtimes(dir+"/RSI Launcher-Setup-2.18.0.exe", old, old))
+	start("RSI Launcher-Setup-2.18.0.exe")
+	if got := installers(); len(got) != 2 {
+		t.Errorf("launcher in, Steam on the old one: %v", got)
+	}
+	start("RSI Launcher-Setup-2.19.0.exe")
+	if got := installers(); !slices.Equal(got, []string{"RSI Launcher-Setup-2.19.0.exe"}) {
+		t.Errorf("launcher in, Steam on the new one: %v", got)
 	}
 }
 
