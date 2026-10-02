@@ -1,15 +1,16 @@
 // pages/login.js: sign in (spec-cc-screens §13). One password, then back to
-// where the visitor was going (?next=, kept on this origin by safeNext).
-// A bare page: no event stream.
+// where the visitor was going (?next=, kept on this origin by safeNext, or
+// an extension's page on this host by webNext). A bare page: no event
+// stream.
 
 import { ApiError, api, errorText, url } from '../core/api.js';
 import { boot } from '../core/boot.js';
 import { byId } from '../core/dom.js';
-import { safeNext } from '../validate.js';
+import { safeNext, webNext } from '../validate.js';
 import { bindReveal, heat, retrySeconds, wait } from './entry-kit.js';
 
 const params = new URLSearchParams(location.search);
-const next = () => url(safeNext(params.get('next') || '/'));
+const next = () => webNext(params.get('next'), location) || url(safeNext(params.get('next') || '/'));
 
 // The lead line follows why the visitor is here, set before /auth/me
 // answers so the default never shows first: signed out by a 401 (N4), or

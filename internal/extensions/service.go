@@ -78,7 +78,8 @@ type Service struct {
 	publish         func(topic string, data any)
 	missingAccounts string
 
-	cc ccState // the control center's side (routes.go)
+	cc  ccState  // the control center's side (routes.go)
+	web webState // the extensions' ports and web UIs (ports.go, proxy.go)
 }
 
 // NewService returns the extensions service; Run does the work.
@@ -98,6 +99,7 @@ func NewService(cfg *config.Config) *Service {
 		full:      map[string]int64{},
 		publish:   events.Publish,
 		cc:        newCCState(events.Publish),
+		web:       newWebState(),
 	}
 	s.options = s.moduleOptions
 	return s
@@ -133,13 +135,24 @@ func loadBooted() (*booted, error) {
 // something a later one could do, again after retryBase, doubling up to
 // retryMax. After the first pass it re-reads the mounted images once,
 // beside the passes; a damaged image it deletes brings on another pass. The
-// live system has no store: Run returns at once. WatchSteam runs beside it.
+// live system has no store: Run returns at once. Beside the passes it serves
+// the extensions' web UIs (runWeb); WatchSteam runs beside it.
 func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
 	}
 	// steam.json first: vosd's first gamescope start waits for it.
 	s.syncSteam()
+	s.syncPorts()
+	webCtx, stopWeb := context.WithCancel(ctx)
+	var web sync.WaitGroup
+	web.Add(1)
+	go func() {
+		defer web.Done()
+		s.runWeb(webCtx)
+	}()
+	defer web.Wait()
+	defer stopWeb()
 	if err := store.CleanTemp(); err != nil {
 		log.Printf("extensions: %v", err)
 	}
@@ -175,6 +188,7 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		}
 		s.syncSteam()
+		s.syncPorts()
 		if first {
 			rehash.Add(1)
 			go func() {

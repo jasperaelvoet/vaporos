@@ -13,12 +13,19 @@
 #   web.https            tcp 443 from the local network (like port 80)
 #   web.allow_public     tcp 80 (443 with https, 22 with ssh) from anywhere
 #
-# VOS_NFT_RULES and VOS_CONFIG override the two input paths (the build uses
-# them to check the rules against test configurations).
+# and the ports of the extensions this boot runs, which vosd lists in
+# /var/lib/vos/ext/ports (one "tcp PORT" or "udp PORT" line each, PORT
+# 1024-65535 and never Sunshine's admin port 47990). Those are opened to
+# the local network only, whatever web.allow_public says; one line that is
+# not exactly that, or more than 64, and the file opens nothing.
+#
+# VOS_NFT_RULES, VOS_CONFIG and VOS_EXT_PORTS override the three input
+# paths (the build uses them to check the rules against test files).
 set -euo pipefail
 
 rules=${VOS_NFT_RULES:-/usr/lib/vos/nftables.nft}
 config=${VOS_CONFIG:-/var/lib/vos/config.json}
+ports=${VOS_EXT_PORTS:-/var/lib/vos/ext/ports}
 
 # True only for a literal JSON true. A missing file, a missing key or
 # malformed JSON all read as false, so a broken config.json can close ports
@@ -41,9 +48,33 @@ allow() { # allow PORT COMMENT
                    "ip6 saddr @lan6 tcp dport $1 accept comment \"$2\"")
     fi
 }
+allow_lan() { # allow_lan PROTO PORT COMMENT: from the LAN sets only, always
+    optional+=("ip saddr @lan4 $1 dport $2 accept comment \"$3\""
+               "ip6 saddr @lan6 $1 dport $2 accept comment \"$3\"")
+}
+
+# The extensions' ports, all or nothing: a damaged or hand-edited file
+# never opens a port it did not mean to.
+ext_ports() {
+    [[ -f $ports && -r $ports ]] || return 0
+    local line proto port n=0 found=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ ^(tcp|udp)\ ([1-9][0-9]{3,4})$ ]] || return 0
+        port=${BASH_REMATCH[2]}
+        (( port <= 65535 && port != 47990 && ++n <= 64 )) || return 0
+        found+=("${BASH_REMATCH[1]} $port")
+    done <"$ports"
+    (( n )) || return 0
+    for line in "${found[@]}"; do
+        read -r proto port <<<"$line"
+        allow_lan "$proto" "$port" "extension $proto $port"
+    done
+}
+
 (( public )) && allow 80 web.allow_public
 enabled .web.https && allow 443 web.https
 enabled .ssh.enabled && allow 22 ssh.enabled
+ext_ports
 
 ruleset() {
     cat "$rules"

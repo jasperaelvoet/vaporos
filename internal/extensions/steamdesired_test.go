@@ -466,7 +466,8 @@ func TestSlotsChangedFollowsTheDispatcher(t *testing.T) {
 	bootsOtherVersion()
 	slotB(t, true)
 	_, restarts := watching(t, s, 1000)
-	waitFor(t, dispatcherOn)
+	// The restart is asked for just after the file is written.
+	waitFor(t, func() bool { return dispatcherOn() && len(restarts()) > 0 })
 	asked := len(restarts())
 
 	slotB(t, false)
@@ -482,7 +483,8 @@ func TestWatchSteamRechecksTheDispatcher(t *testing.T) {
 	bootsOtherVersion()
 	slotB(t, true)
 	_, restarts := watching(t, s, 2)
-	waitFor(t, dispatcherOn)
+	// The restart is asked for just after the file is written.
+	waitFor(t, func() bool { return dispatcherOn() && len(restarts()) > 0 })
 	asked := len(restarts())
 	slotB(t, false)
 	waitFor(t, func() bool { return !dispatcherOn() && len(restarts()) == asked+1 })

@@ -67,6 +67,7 @@ func (s *Service) Remove(ctx context.Context, id string, purge bool) error {
 		log.Printf("extensions: removing %s: %v", id, err)
 	}
 	s.syncSteam() // Steam drops it now, not at the restart
+	s.syncPorts() // and the firewall its ports
 	s.Reconcile()
 	return nil
 }

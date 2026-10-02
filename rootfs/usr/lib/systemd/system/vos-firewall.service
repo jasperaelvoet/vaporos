@@ -13,7 +13,8 @@ Conflicts=shutdown.target
 Type=oneshot
 RemainAfterExit=yes
 # nft -f /usr/lib/vos/nftables.nft, plus the ports config.json switches on
-# (SSH, HTTPS, public web). vosd applies a change to those settings with
+# (SSH, HTTPS, public web) and the running extensions' ports, LAN only
+# (/var/lib/vos/ext/ports). vosd applies a change to either with
 # `systemctl reload vos-firewall.service`.
 ExecStart=/usr/lib/vos/vos-firewall
 ExecReload=/usr/lib/vos/vos-firewall

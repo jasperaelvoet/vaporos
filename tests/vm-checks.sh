@@ -11,6 +11,7 @@
 #   fallback --slot S --version V --failed F     after F failed its health check
 #   web                                          the control center's pages only
 #   extensions [--mode M] [--mounted ID]...      the extension store and merge
+#   coolercontrol [--password P]                 CoolerControl, added and booted
 #
 # Every check prints one line, "VOS-CHECK <ok|warn|FAIL> <name> <detail>", and
 # the run ends with "VOS-CHECKS-DONE pass=N warn=N fail=N". dev.sh reads those
@@ -527,6 +528,93 @@ check_extensions() {
     fi
 }
 
+# CoolerControl (docs/CONTRACTS.md "Extensions", CoolerControl), once added
+# and booted: its daemon runs and listens on loopback only, vosd's page on
+# :11987 asks for a sign-in (and, with the password, passes a signed-in
+# request through), the firewall lets 11987 in from the LAN sets only, and
+# the daemon got the VaporOS password. A VM has no fan chips, so a daemon
+# that does not run there only warns.
+check_coolercontrol() {
+    local password=$1 state code loc rules line i hash fans jar=$tmp/cc-cookies
+    local data=/var/lib/vos/ext/data/coolercontrol
+
+    fans=0
+    compgen -G '/sys/class/hwmon/hwmon*/pwm*_enable' >/dev/null && fans=1
+    state=$(systemctl is-active coolercontrold.service 2>/dev/null)
+    if [[ $state == active ]]; then
+        ok cc-unit "coolercontrold.service is active"
+    elif ((fans)); then
+        bad cc-unit "coolercontrold.service is '${state:-?}': $(journalctl -u coolercontrold.service -n 3 -o cat --no-pager 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
+    else
+        warn cc-unit "coolercontrold.service is '${state:-?}' on a machine without fan controls: $(journalctl -u coolercontrold.service -n 3 -o cat --no-pager 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
+    fi
+
+    # 11986 (2EE2) listens on 127.0.0.1 and ::1 only.
+    line=$(awk '$4 == "0A" && $2 ~ /:2EE2$/ && $2 != "0100007F:2EE2" && $2 != "00000000000000000000000001000000:2EE2"' \
+        /proc/net/tcp /proc/net/tcp6 2>/dev/null | head -n1)
+    if [[ -n $line ]]; then
+        bad cc-loopback "coolercontrold listens beyond loopback: $line"
+    elif [[ $state == active ]]; then
+        ok cc-loopback "coolercontrold listens on loopback only"
+    fi
+
+    if [[ $(cat /var/lib/vos/ext/ports 2>/dev/null) == *"tcp 11987"* ]]; then
+        ok cc-ports "/var/lib/vos/ext/ports lists tcp 11987"
+    else
+        bad cc-ports "/var/lib/vos/ext/ports: '$(tr '\n' ' ' </var/lib/vos/ext/ports 2>/dev/null)'"
+    fi
+    rules=$(nft list chain inet vos optional 2>/dev/null | grep 'dport 11987')
+    if [[ -n $rules ]] && ! grep -v 'saddr @lan[46] ' <<<"$rules" | grep -q .; then
+        ok cc-firewall "11987 is accepted from the LAN sets only ($(grep -c . <<<"$rules") rules)"
+    else
+        bad cc-firewall "11987 in the optional chain: '${rules:-none}'"
+    fi
+
+    # vosd serves the page only while the daemon runs; it looks every 5 s.
+    for ((i = 0; i < 6; i++)); do
+        : >"$tmp/headers"
+        code=$(curl -sS -m 10 -o /dev/null -D "$tmp/headers" -w '%{http_code}' http://127.0.0.1:11987/ 2>/dev/null) || true
+        [[ $code == 000 ]] || break
+        sleep 5
+    done
+    loc=$(header Location)
+    if [[ $code == 303 && $loc == "http://127.0.0.1/login?next=http%3A%2F%2F127.0.0.1%3A11987%2F" ]]; then
+        ok cc-web "GET :11987 without a session -> 303 to the sign-in page"
+    elif [[ $code == 000 && $state != active && $fans == 0 ]]; then
+        warn cc-web ":11987 does not answer while coolercontrold is not running"
+    else
+        bad cc-web "GET :11987 without a session -> $code, Location '$loc'"
+    fi
+    if [[ -n $password && $code == 303 ]]; then
+        code=$(http POST /auth/login -c "$jar" -H 'Content-Type: application/json' -d "{\"password\":$(json_quote "$password")}")
+        code=$(curl -sS -m 10 -o "$tmp/body" -w '%{http_code}' -b "$jar" http://127.0.0.1:11987/handshake 2>/dev/null) || true
+        if [[ $code == 200 ]]; then
+            ok cc-web-authed "GET :11987/handshake signed in -> 200 from CoolerControl"
+        else
+            bad cc-web-authed "GET :11987/handshake signed in -> $code $(head -c 200 "$tmp/body")"
+        fi
+    fi
+
+    line=$(stat -c '%a %U' "$data/config/.passwd" 2>/dev/null)
+    hash=$(json_str hash </var/lib/vos/auth.json 2>/dev/null)
+    if [[ $line != "600 root" ]]; then
+        bad cc-passwd "$data/config/.passwd: '${line:-missing}', expected 600 root"
+    elif [[ $(cat "$data/config/.passwd") == "$hash" ]]; then
+        ok cc-passwd ".passwd is 0600 and holds the VaporOS admin password"
+    else
+        warn cc-passwd ".passwd is 0600 but differs from auth.json (changed in CoolerControl?)"
+    fi
+
+    if ((fans)); then
+        if [[ -s /run/vos/coolercontrol-fans.json ]]; then
+            ok cc-fans "/run/vos/coolercontrol-fans.json records the fans' first modes"
+        else
+            bad cc-fans "no /run/vos/coolercontrol-fans.json with fan controls present"
+        fi
+    fi
+    if [[ -d /sys/module/drivetemp ]]; then ok cc-drivetemp "drivetemp is loaded"; else warn cc-drivetemp "drivetemp is not loaded"; fi
+}
+
 # ------------------------------------------------------------------ main ----
 
 # Sourced rather than run: define the checks and stop here.
@@ -539,6 +627,7 @@ usage: vm-checks.sh system   --slot S --version V --password P
        vm-checks.sh fallback --slot S --version V --failed F
        vm-checks.sh web
        vm-checks.sh extensions [--mode M] [--mounted ID]...
+       vm-checks.sh coolercontrol [--password P]
 USAGE
     exit 2
 }
@@ -558,7 +647,7 @@ while (($#)); do
         *) usage ;;
     esac
 done
-[[ $group == web || $group == extensions || -n $slot && -n $version ]] || usage
+[[ $group == web || $group == extensions || $group == coolercontrol || -n $slot && -n $version ]] || usage
 
 case $group in
     system)
@@ -594,6 +683,9 @@ case $group in
         ;;
     extensions)
         check_extensions "$mode" "${mounted[@]}"
+        ;;
+    coolercontrol)
+        check_coolercontrol "$password"
         ;;
     *) usage ;;
 esac

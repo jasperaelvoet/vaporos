@@ -1,7 +1,8 @@
 #!/usr/bin/nft -f
 # VaporOS firewall. vos-firewall.service loads this through
 # /usr/lib/vos/vos-firewall, which appends to the "optional" chain the rules
-# that /var/lib/vos/config.json switches on (SSH, HTTPS, public web access).
+# that /var/lib/vos/config.json switches on (SSH, HTTPS, public web access)
+# and the running extensions' ports (/var/lib/vos/ext/ports, LAN only).
 # The whole load is one nft transaction: there is never a moment with half a
 # ruleset.
 
@@ -24,7 +25,8 @@ table inet vos {
         elements = { fc00::/7, fe80::/10 }
     }
 
-    # Filled by vos-firewall from config.json; empty means closed.
+    # Filled by vos-firewall from config.json and the extensions' ports;
+    # empty means closed.
     chain optional {
     }
 

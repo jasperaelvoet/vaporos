@@ -1,0 +1,3 @@
+Empty on purpose: CoolerControl reads its plugins here (CC_PLUGINS_DIR), and
+VaporOS runs none, since a plugin would run as root. Nothing on the box can
+add one: this directory is in the extension's read-only image.

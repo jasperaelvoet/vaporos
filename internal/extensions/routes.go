@@ -111,6 +111,7 @@ var helperTimeout = 10 * time.Minute
 // Routes registers /extensions* (docs/CONTRACTS.md "HTTP API").
 func (s *Service) Routes(srv *api.Server) {
 	s.cc.reauth = srv.Reauth
+	s.SetWebGuard(srv.GuardWeb)
 	srv.Handle("GET", "/extensions", api.Authed, s.handleGet)
 	srv.Handle("POST", "/extensions/skip-once", api.Authed, s.handleSkipOnce)
 	srv.Handle("DELETE", "/extensions/skip-once", api.Authed, s.handleKeepOnce)

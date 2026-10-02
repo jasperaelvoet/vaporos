@@ -110,6 +110,7 @@ func (s *Service) Install(ctx context.Context, id string, options map[string]any
 		cancel()
 	}
 	s.syncSteam() // one removed until the restart is back in Steam at once
+	s.syncPorts()
 	s.Reconcile()
 	return nil
 }

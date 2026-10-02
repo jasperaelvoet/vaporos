@@ -184,7 +184,8 @@ func TestReAddStartsTheUnitsRemoveStopped(t *testing.T) {
 	if code, body := r.do("POST", "/extensions/coolercontrol", `{"password":"`+rigPassword+`"}`); code != 200 {
 		t.Fatalf("add again: %d %s", code, body)
 	}
-	want := []string{"stop -- coolercontrold.service cc-fans@*.service", "start -- coolercontrold.service cc-fans@hwmon2.service"}
+	// And the firewall opens its port again.
+	want := []string{"stop -- coolercontrold.service cc-fans@*.service", "start -- coolercontrold.service cc-fans@hwmon2.service", "reload vos-firewall.service"}
 	if !slices.Equal(r.units, want) {
 		t.Fatalf("systemctl %q, want %q", r.units, want)
 	}
@@ -196,7 +197,7 @@ func TestReAddStartsTheUnitsRemoveStopped(t *testing.T) {
 	if x := r.card("coolercontrol"); x.State != StateInstalled || !isInstalled("coolercontrol") {
 		t.Fatalf("after the pass = %+v", x)
 	}
-	if code, _ := r.do("POST", "/extensions/coolercontrol", `{"password":"`+rigPassword+`"}`); code != 200 || len(r.units) != 2 {
+	if code, _ := r.do("POST", "/extensions/coolercontrol", `{"password":"`+rigPassword+`"}`); code != 200 || len(r.units) != len(want) {
 		t.Fatalf("adding it once more ran systemctl %q", r.units)
 	}
 }
