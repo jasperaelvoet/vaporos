@@ -254,3 +254,47 @@ func TestCleanTemp(t *testing.T) {
 	check(t, CleanTemp())
 	eq(t, "images", strs(entries(t, dir)), strs([]string{tempPrefix + "proton-2"}))
 }
+
+// A symlinked images/ is never used, as the initramfs takes it for missing:
+// Has, Put, the temp cleanup and GC replace it with a real directory, and
+// what it pointed at stays as it was.
+func TestImagesDirIsReal(t *testing.T) {
+	img := newImage(t, "proton", 4_096)
+	link := func(t *testing.T) string {
+		t.Helper()
+		put(t, img)
+		temp := filepath.Join(config.ExtImagesDir(), tempPrefix+"proton-1")
+		writeFile(t, temp, "x")
+		age(t, temp, 2*time.Hour)
+		elsewhere := filepath.Join(t.TempDir(), "images")
+		check(t, os.Rename(config.ExtImagesDir(), elsewhere))
+		check(t, os.Symlink(elsewhere, config.ExtImagesDir()))
+		return elsewhere
+	}
+	for _, c := range []struct {
+		name string
+		use  func(t *testing.T)
+	}{
+		{"Has", func(t *testing.T) { eq(t, "Has", has(t, img.entry), false) }},
+		{"Put", func(t *testing.T) { put(t, img) }},
+		{"CleanTemp", func(t *testing.T) { check(t, CleanTemp()) }},
+		{"GC", func(t *testing.T) {
+			_, err := GC(nil)
+			check(t, err)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			setup(t)
+			elsewhere := link(t)
+			c.use(t)
+			fi, err := os.Lstat(config.ExtImagesDir())
+			check(t, err)
+			if !fi.IsDir() {
+				t.Fatalf("images is %v, not a directory", fi.Mode())
+			}
+			eq(t, "left where the link pointed", strs(entries(t, elsewhere)),
+				strs([]string{tempPrefix + "proton-1", img.entry.SHA256 + ".raw"}))
+			eq(t, "Has after", has(t, img.entry), c.name == "Put")
+		})
+	}
+}

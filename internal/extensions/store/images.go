@@ -30,6 +30,27 @@ func ImagePath(sha256 string) string {
 	return filepath.Join(config.ExtImagesDir(), sha256+".raw")
 }
 
+// imagesDir returns the images directory, first replacing a symlink there
+// with a real directory: the initramfs takes a symlinked images/ for
+// missing, so vosd never uses one, and its images are fetched again.
+func imagesDir() (string, error) {
+	dir := config.ExtImagesDir()
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return dir, nil
+	}
+	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		return dir, err
+	}
+	if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, syncDir(filepath.Dir(dir))
+}
+
 func checkEntry(e catalog.Entry) error {
 	if !manifest.ValidExtensionID(e.ID) || !isHex64(e.SHA256) || !isHex64(e.FSVerity) || e.Size <= 0 {
 		return fmt.Errorf("invalid catalog entry for extension %q", e.ID)
@@ -52,7 +73,10 @@ func Put(ctx context.Context, e catalog.Entry, fetch func(w io.Writer, onChunk f
 	if ok, err := Has(e); err != nil || ok {
 		return err
 	}
-	dir := config.ExtImagesDir()
+	dir, err := imagesDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -145,11 +169,14 @@ func (w *imageWriter) Write(p []byte) (int, error) {
 }
 
 // Has reports whether e's image is in the store and sealed: the file under
-// its final name has the fs-verity attribute and measures to e.FSVerity. A
-// file there that fails this is deleted (so it is fetched again) and Has
-// reports false.
+// its final name, in a real images directory (imagesDir), has the
+// fs-verity attribute and measures to e.FSVerity. A file there that fails
+// this is deleted (so it is fetched again) and Has reports false.
 func Has(e catalog.Entry) (bool, error) {
 	if err := checkEntry(e); err != nil {
+		return false, err
+	}
+	if _, err := imagesDir(); err != nil {
 		return false, err
 	}
 	path := ImagePath(e.SHA256)
@@ -212,7 +239,10 @@ func CleanTemp() error {
 }
 
 func cleanImageTemps(now time.Time) ([]string, error) {
-	dir := config.ExtImagesDir()
+	dir, err := imagesDir()
+	if err != nil {
+		return nil, err
+	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
