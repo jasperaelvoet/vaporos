@@ -204,9 +204,17 @@ func (s *syncer) current(old *manifest, f modFile) (manifestFile, bool) {
 // too little free space, a download that fails or does not match) leaves
 // the files and the manifest as they were, so multiplayer keeps working.
 // It sizes every file first (HEAD) for the free space and the progress
-// total; files of one MD5 download once.
+// total; files of one MD5 download once, and the other files of that MD5
+// get copies of it, counted up front when HEAD gives its size.
 func (s *syncer) fetchAll(ctx context.Context, need []modFile) error {
 	parts := uniqueMD5(need)
+	copies := map[string]int64{}
+	for _, f := range need {
+		copies[f.MD5]++
+	}
+	for _, f := range parts {
+		copies[f.MD5]--
+	}
 	sizes := make([]int64, len(parts))
 	known := true
 	var room int64
@@ -223,7 +231,7 @@ func (s *syncer) fetchAll(ctx context.Context, need []modFile) error {
 		if err := s.count(n); err != nil {
 			return err
 		}
-		room += max(n-s.partSize(f), 0)
+		room += max(n-s.partSize(f), 0) + n*copies[f.MD5]
 	}
 	if err := s.roomFor(room); err != nil {
 		return err
@@ -238,19 +246,17 @@ func (s *syncer) fetchAll(ctx context.Context, need []modFile) error {
 		}
 	}
 	s.total = max(s.total, s.done)
-	if len(need) == len(parts) {
+	// The copies of the downloads only the GET sized.
+	var later int64
+	for i, f := range parts {
+		if sizes[i] < 0 {
+			later += s.partSize(f) * copies[f.MD5]
+		}
+	}
+	if later == 0 {
 		return nil
 	}
-	// The other files of a download's MD5 get copies of it.
-	seen := map[string]bool{}
-	var copies int64
-	for _, f := range need {
-		if seen[f.MD5] {
-			copies += s.partSize(f)
-		}
-		seen[f.MD5] = true
-	}
-	return s.roomFor(copies)
+	return s.roomFor(later)
 }
 
 // uniqueMD5 is need's first file of each MD5, in order.
@@ -426,7 +432,8 @@ var errRestart = errors.New("restart the download")
 
 // download appends what the server has beyond part's size (a Range
 // request), or starts over when the server sends the whole file. A size
-// HEAD did not give (-1) is taken from the GET's answer.
+// HEAD did not give (-1) is taken from the GET's answer, a 416 that sizes
+// the file at the part's size included.
 func (s *syncer) download(ctx context.Context, f modFile, part string, size *int64) error {
 	var have int64
 	exists := false
@@ -463,6 +470,11 @@ func (s *syncer) download(ctx context.Context, f modFile, part string, size *int
 	start, total := contentRange(resp)
 	switch {
 	case resp.StatusCode == http.StatusPartialContent && have > 0 && start == have:
+	case resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && have > 0 && *size < 0 && total == have:
+		// "bytes */<our size>": the part is the whole file already (a sync
+		// stopped after it), so its MD5 decides, not a second download.
+		*size = have
+		return s.count(have)
 	case resp.StatusCode == http.StatusOK:
 		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 		s.add(-have)
@@ -531,8 +543,9 @@ func (s *syncer) download(ctx context.Context, f modFile, part string, size *int
 	return nil
 }
 
-// contentRange reads a 206 answer's Content-Range ("bytes 100-199/200"):
-// its first byte and the whole file's size, -1 for what it does not say.
+// contentRange reads a 206 answer's Content-Range ("bytes 100-199/200"),
+// or a 416's ("bytes */200"): its first byte and the whole file's size, -1
+// for what it does not say.
 func contentRange(resp *http.Response) (start, total int64) {
 	start, total = -1, -1
 	cr, ok := strings.CutPrefix(resp.Header.Get("Content-Range"), "bytes ")

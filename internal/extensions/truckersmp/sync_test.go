@@ -132,6 +132,61 @@ func TestSyncResumes(t *testing.T) {
 	}
 }
 
+// Without HEAD, a part an earlier sync downloaded whole is asked for the
+// bytes after it, which the server answers 416 "bytes */<its size>": the
+// part is kept for its MD5 to decide, not downloaded again.
+func TestSyncKeepsWholePartWithoutHead(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	srv.noHead = true
+	srv.cut["ui/ui.zip"] = 3000 // the last download breaks off
+	s, _ := testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err == nil {
+		t.Fatal("a broken download passed")
+	}
+	for _, p := range []string{"core_ets2mp.dll", "data/ets2mp.adb"} {
+		part := filepath.Join(homeDir(), partialRel, sum(srv.files[p])+".part")
+		if fi, err := os.Stat(part); err != nil || fi.Size() != int64(len(srv.files[p])) {
+			t.Fatalf("%s: %v %v", p, fi, err)
+		}
+	}
+	s, out := testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// One Range request each, and no download from the start.
+	for _, p := range []string{"core_ets2mp.dll", "data/ets2mp.adb", "ui/ui.zip"} {
+		if n := srv.getCount(p); n != 2 {
+			t.Errorf("%s: %d GETs", p, n)
+		}
+		if read(t, modFilePath(p)) != string(srv.files[p]) {
+			t.Errorf("%s differs", p)
+		}
+	}
+	if srv.ranges != 3 || !strings.HasSuffix(out.String(), "{\"bytes\":15000,\"total\":15000}\n") {
+		t.Errorf("ranges %d, progress %q", srv.ranges, out.String())
+	}
+	if err := quickCheck(homeDir(), games[0]); err != nil {
+		t.Error(err)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(homeDir(), partialRel)); len(ents) != 0 {
+		t.Errorf("left over: %v", ents)
+	}
+
+	// A 416 that sizes the file otherwise starts it over.
+	newBox(t)
+	part := filepath.Join(homeDir(), partialRel, sum(srv.files["ui/ui.zip"])+".part")
+	write(t, part, string(srv.files["ui/ui.zip"])+"tail")
+	before := srv.getCount("ui/ui.zip")
+	s, _ = testSyncer(srv, "ets2")
+	if err := s.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := srv.getCount("ui/ui.zip") - before; n != 2 || read(t, modFilePath("ui/ui.zip")) != string(srv.files["ui/ui.zip"]) {
+		t.Errorf("%d GETs", n)
+	}
+}
+
 // A partial download that is not the start of the file (another
 // version's leftovers under the same MD5 cannot be, but a damaged one can)
 // fails its MD5 and is not kept.
@@ -433,6 +488,39 @@ func TestSyncSharedDownload(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(filepath.Join(homeDir(), partialRel)); len(ents) != 0 {
 		t.Errorf("left over: %v", ents)
+	}
+}
+
+// The copies of a shared download count in the free space: up front when
+// HEAD sizes it, so nothing is downloaded, and once it is downloaded when
+// only the GET does.
+func TestSyncSharedDownloadSpace(t *testing.T) {
+	newBox(t)
+	srv := newTMPServer(t)
+	logo := bytes.Repeat([]byte("L"), 1500)
+	srv.add("data/ats/ui/logo.png", "ats", logo)
+	srv.add("data/ets2/ui/logo.png", "ets2", logo)
+	s, _ := testSyncer(srv, "ets2", "ats")
+	s.free = func(string) (int64, error) { return store.ExtReserve + 18500, nil } // the downloads, not the copy
+	var space *spaceError
+	if err := s.run(context.Background()); !errors.As(err, &space) || space.short != 1500 {
+		t.Fatalf("err %v", err)
+	}
+	if len(srv.gets) != 0 {
+		t.Errorf("gets %v", srv.gets)
+	}
+
+	srv.noHead = true
+	s, _ = testSyncer(srv, "ets2", "ats")
+	s.free = func(string) (int64, error) { return store.ExtReserve + 18500 + 1499 - s.done, nil }
+	if err := s.run(context.Background()); !errors.As(err, &space) || space.short != 1 {
+		t.Fatalf("sized by the GET: %v", err)
+	}
+	if m, _ := readManifest(homeDir()); m != nil {
+		t.Error("a manifest after a refused sync")
+	}
+	if _, err := os.Stat(modFilePath("data/ats/ui/logo.png")); err == nil {
+		t.Error("a file was placed")
 	}
 }
 

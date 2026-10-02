@@ -1493,13 +1493,17 @@ saying how often in their `what`.
   once per MD5 (HEAD for the size; where HEAD gives none, the GET's
   `Content-Length`, or its `Content-Range` total when resumed; then GET into
   `partial/<md5>.part`, resumed with `Range` where a part exists, a file of
-  no bytes included; at most 2 GiB a file and 8 GiB in all, the bytes
-  downloaded counted against it as they come; given up after 60 s without
-  data) and MD5-checked. Before downloading, the home data area's
-  filesystem must have the bytes still to come (the sizes known, less what
-  `partial/` holds) plus 2 GiB free, checked again for each size only the
-  GET gives and, once all are downloaded, for the copies below; otherwise
-  the sync prints `{"short":N}` (the bytes missing) and exits 5. Every
+  no bytes included: a 416 whose `Content-Range` is `bytes */N`, N the
+  part's size, takes the part as whole when HEAD gave no size, and any
+  other answer but the bytes after the part starts the file over; at most
+  2 GiB a file and 8 GiB in all, the bytes downloaded counted against it
+  as they come; given up after 60 s without data) and MD5-checked. Before
+  downloading, the home data area's filesystem must have the bytes still to
+  come (the sizes known, less what `partial/` holds, and the copies below
+  of each file HEAD sized) plus 2 GiB free, checked again for each size
+  only the GET gives and, once all are downloaded, for the copies of the
+  files only the GET sized; otherwise the sync prints `{"short":N}` (the
+  bytes missing) and exits 5. Every
   refusal and failure so far leaves `files/` and the manifest as they were,
   so multiplayer keeps working with the files it has. Only once every
   download is checked does the sync delete the manifest and move the
