@@ -307,31 +307,93 @@ is "ext db: one entry a package" "" ext_local_dupes "$db"
 mkdir -p "$db/foo-1.1-1" "$db/mesa-1:25.3-1"
 is "ext db: two versions of a package" "foo mesa" ext_local_dupes "$db"
 
+# A cached image, and whether this build may use it in place of a new one.
+ca=$ext/cache
+mkdir -p "$ca/db/foo-1.0-1" "$ca/db/lib32-foo-2-1" "$ca/db/bar-3-1"
+for e in foo-1.0-1 lib32-foo-2-1 bar-3-1; do echo "%NAME%" >"$ca/db/$e/desc"; done
+c=$ca/key
+echo image >"$c.raw"
+sha256sum <"$c.raw" | cut -d' ' -f1 >"$c.sha256"
+echo '{}' >"$c.build.json"
+printf 'foo 1.0-1\nlib32-foo 2-1\n' >"$c.packages.txt"
+tar -C "$ca/db" -cf "$c.local.tar" foo-1.0-1 lib32-foo-2-1
+cp "$c.local.tar" "$ca/good.tar"
+printf 'glibc\nmesa\nproton\n' >"$ca/have"
+expect pass "ext cache: a complete entry" ext_cache_check "$c" "$ca/have"
+for f in raw sha256 build.json packages.txt local.tar; do
+    mv "$c.$f" "$ca/aside"
+    expect fail "ext cache: an entry without .$f fails" ext_cache_check "$c" "$ca/have"
+    has "ext cache: ... and says so" "it has no .$f"
+    mv "$ca/aside" "$c.$f"
+done
+expect fail "ext cache: no list of the database's packages fails" ext_cache_check "$c" "$ca/nonexistent"
+echo other >"$c.raw"
+expect fail "ext cache: an image its sha256 does not name fails" ext_cache_check "$c" "$ca/have"
+has "ext cache: ... and says so" "not the one its sha256 names"
+echo image >"$c.raw"
+tar -C "$ca/db" -cf "$c.local.tar" foo-1.0-1 lib32-foo-2-1 bar-3-1
+expect fail "ext cache: a database entry of another package fails" ext_cache_check "$c" "$ca/have"
+has "ext cache: ... and says so" "not those of its packages"
+tar -C "$ca/db" -cf "$c.local.tar" foo-1.0-1
+expect fail "ext cache: a package without its database entry fails" ext_cache_check "$c" "$ca/have"
+echo garbage >"$c.local.tar"
+expect fail "ext cache: a database archive tar cannot read fails" ext_cache_check "$c" "$ca/have"
+cp "$ca/good.tar" "$c.local.tar"
+printf 'glibc\nlib32-foo\nmesa\n' >"$ca/have-lib32"
+expect fail "ext cache: a package the database has already fails" ext_cache_check "$c" "$ca/have-lib32"
+has "ext cache: ... and names it" "has already: lib32-foo"
+expect pass "ext cache: ... and the complete entry again" ext_cache_check "$c" "$ca/have"
+: >"$c.packages.txt"
+tar -C "$ca/db" -cf "$c.local.tar" -T /dev/null
+expect pass "ext cache: an image without packages" ext_cache_check "$c" "$ca/have"
+
+# status NAME WANT CMD...: CMD exits with WANT; its output is in $tmp/out.
+status() {
+    local name=$1 want=$2 got=0
+    shift 2
+    "$@" >"$tmp/out" 2>&1 || got=$?
+    result "$([[ $got == "$want" ]] && echo 1 || echo 0)" "$name (exit $got, want $want)"
+}
+
 # Whiteouts and trusted.* xattrs need a filesystem of their own: the
 # container's root is an overlay, which hides both.
 fs=$tmp/fs
 mkdir -p "$fs"
 mount -t tmpfs tmpfs "$fs" 2>/dev/null || true
 up=$fs/upper
-mkdir -p "$up/usr/share/kept" "$up/usr/share/redone" "$up/etc"
+mkdir -p "$up/usr/share/kept" "$up/usr/share/redone" "$up/usr/lib" "$up/usr/bin" "$up/etc"
 echo new >"$up/usr/share/kept/file"
-expect pass "ext removals: an upper layer that only adds" ext_upper_removals "$up"
+# Links in an upper layer mostly point into the layers below it, or at
+# absolute paths of the image: on the builder they dangle.
+ln -s libfoo.so.1 "$up/usr/lib/libfoo.so"
+ln -s /usr/lib/vos-selftest/nonexistent "$up/usr/bin/tool"
+status "ext removals: an upper layer that only adds, dangling links included" 0 ext_upper_removals "$up"
 if mknod "$up/usr/share/gone" c 0 0 2>/dev/null && [[ -c $up/usr/share/gone ]] &&
         mknod "$up/etc/gone" c 0 0; then
-    expect fail "ext removals: a whiteout under usr/ fails" ext_upper_removals "$up"
+    status "ext removals: a whiteout under usr/ fails" 1 ext_upper_removals "$up"
     has "ext removals: ... and names it" "removed /usr/share/gone (a whiteout)"
     lacks "ext removals: ... (not one outside usr/)" "/etc/gone"
     rm "$up/usr/share/gone"
 else
     skip "ext removals: whiteouts (mknod)"
 fi
-if setfattr -n trusted.overlay.opaque -v y "$up/usr/share/redone" 2>/dev/null; then
-    expect fail "ext removals: an opaque directory under usr/ fails" ext_upper_removals "$up"
+mkdir -p "$fs/opaque"
+if setfattr -n trusted.overlay.opaque -v y "$fs/opaque" 2>/dev/null; then
+    ln -s "$fs/opaque" "$up/usr/share/elsewhere"
+    status "ext removals: a link to an opaque directory is no removal" 0 ext_upper_removals "$up"
+    setfattr -n trusted.overlay.opaque -v y "$up/usr/share/redone"
+    status "ext removals: an opaque directory under usr/ fails" 1 ext_upper_removals "$up"
     has "ext removals: ... and names it" "replaced /usr/share/redone (an opaque directory"
     lacks "ext removals: ... (not the others)" "/usr/share/kept"
+    lacks "ext removals: ... (nor the link)" "/usr/share/elsewhere"
 else
     skip "ext removals: opaque directories (trusted.* xattrs)"
 fi
+getfattr() { echo "getfattr: cannot do that" >&2; return 1; }
+status "ext removals: xattrs it cannot read fail apart" 2 ext_upper_removals "$up"
+unset -f getfattr
+has "ext removals: ... and say so" "cannot read the xattrs under"
+lacks "ext removals: ... (no removal named)" "replaced /"
 
 # An extension's package layer: what its packages own, and what their
 # scriptlets and hooks left behind, in and outside usr/.

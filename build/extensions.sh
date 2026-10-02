@@ -124,7 +124,7 @@ ext_build_all() {
 # Makes (or reuses) ext-ID.raw in $EXT_STAGE and checks it.
 ext_build() {
     local id=$1 x=$EXT_WORK/$1 desc=$EXT_SRC/$1/extension.json img=$EXT_STAGE/ext-$1.raw
-    local list key c r e why a b fresh=0 started=$SECONDS
+    local list key c r e why a b sha fresh=0 started=$SECONDS
     local -a pkgs=() reqs=() others=()
     step "Extension $id"
     mkdir -p "$x/mnt"
@@ -169,9 +169,12 @@ ext_build() {
     cp "$desc" "$EXT_STAGE/$id.json"
 
     c=$EXT_CACHE/$key
-    if [[ -e $c.raw ]] && ! why=$(ext_cache_check "$id" "$c"); then
-        warn "$id: dropping the cached image of input key ${key:0:16}: $why"
-        rm -f "$c.raw" "$c.sha256" "$c.build.json" "$c.packages.txt" "$c.local.tar"
+    if [[ -e $c.raw ]]; then
+        ext_pacman "$x/db" -Qq >"$x/db.names" || die "$id: pacman cannot list its package database"
+        if ! why=$(ext_cache_check "$c" "$x/db.names"); then
+            warn "$id: dropping the cached image of input key ${key:0:16}: $why"
+            rm -f "$c.raw" "$c.sha256" "$c.build.json" "$c.packages.txt" "$c.local.tar"
+        fi
     fi
     if [[ -e $c.raw ]]; then
         info "reusing the image of input key ${key:0:16} (checked again below)"
@@ -180,6 +183,12 @@ ext_build() {
         ext_local_entries "$c.packages.txt" >"$x/local.added"
         tar -xf "$c.local.tar" -C "$x/db/local" || die "$id: cannot unpack its cached package database entries"
         touch "$c.raw" "$c.sha256" "$c.build.json" "$c.packages.txt" "$c.local.tar"
+        # Its fetch[] downloads stay as fresh as the image, so the prune
+        # keeps them for its next rebuild, even once their URLs are gone.
+        list=$(jq -r '.fetch // [] | .[].sha256' "$desc") || die "$id: cannot read its fetch[]"
+        for sha in $list; do
+            if [[ $sha =~ ^[0-9a-f]{64}$ ]]; then touch -c -- "$EXT_FETCH/$sha"; fi
+        done
         EXT_REUSED[$id]=1
     else
         info "input key ${key:0:16}: making the image"
@@ -229,37 +238,6 @@ ext_build() {
     info "ext-$id.raw  $(mib "$(stat -c %s "$img")") MiB  fsverity ${a:0:16}  (${EXT_REUSED[$id]:+reused, }$((SECONDS - started))s)"
 }
 
-# Whether cache entry C (the path without its extension) can stand in for
-# extension ID's image in this build: complete, its image still the one its
-# sha256 names, and its package database entries exactly its packages, none
-# of which ID's database (the base's and the requirements') has yet. Says
-# why not, and fails, otherwise.
-# Usage: ext_cache_check ID C
-ext_cache_check() {
-    local id=$1 c=$2 f entries have
-    for f in sha256 build.json packages.txt local.tar; do
-        if [[ ! -f $c.$f ]]; then
-            echo "it has no .$f"
-            return 1
-        fi
-    done
-    if [[ $(sha256sum <"$c.raw" | cut -d' ' -f1) != "$(<"$c.sha256")" ]]; then
-        echo "its image is not the one its sha256 names"
-        return 1
-    fi
-    if ! entries=$(set -o pipefail; tar -tf "$c.local.tar" | cut -d/ -f1 | LC_ALL=C sort -u) ||
-            [[ $entries != "$(ext_local_entries "$c.packages.txt" | LC_ALL=C sort -u)" ]]; then
-        echo "its package database entries are not those of its packages"
-        return 1
-    fi
-    have=$(LC_ALL=C comm -12 <(ext_pacman "$EXT_WORK/$id/db" -Qq | LC_ALL=C sort) \
-        <(cut -d' ' -f1 "$c.packages.txt" | LC_ALL=C sort))
-    if [[ -n $have ]]; then
-        echo "it adds packages the base or a requirement has already: ${have//$'\n'/ }"
-        return 1
-    fi
-}
-
 # Fails the build when extension ID's package database has two entries for
 # one package: pacman would see only one of them.
 # Usage: ext_db_single ID
@@ -277,7 +255,7 @@ ext_db_single() {
 # under usr/: an image can only add to the layers below it.
 # Usage: ext_install ID PKG...
 ext_install() {
-    local id=$1 x=$EXT_WORK/$1 m=$EXT_WORK/$1/merged r lowerdir="" n e p inputs
+    local id=$1 x=$EXT_WORK/$1 m=$EXT_WORK/$1/merged r lowerdir="" n e p inputs rc
     local -a reqs=() lowers=() new=()
     shift
     mapfile -t reqs <"$x/requires"
@@ -315,10 +293,16 @@ ext_install() {
         sed 's/^/      /' "$x/changed" >&2
         die "$id: installing its packages changed packages of the base or a requirement (above); an extension may only add packages"
     fi
-    if ! ext_upper_removals "$x/upper" >"$x/removed"; then
-        sed 's/^/      /' "$x/removed" >&2
-        die "$id: installing its packages removed paths under usr/ of the base or a requirement (above); an extension may only add files"
-    fi
+    rc=0
+    ext_upper_removals "$x/upper" >"$x/removed" || rc=$?
+    case $rc in
+        0) ;;
+        1)
+            sed 's/^/      /' "$x/removed" >&2
+            die "$id: installing its packages removed paths under usr/ of the base or a requirement (above); an extension may only add files"
+            ;;
+        *) die "$id: cannot read the xattrs of its overlay's upper layer (above), so cannot tell whether its install removed paths under usr/" ;;
+    esac
     LC_ALL=C comm -13 "$x/before.q" "$x/after.q" >"$x/packages.txt"
     ext_local_entries "$x/packages.txt" >"$x/local.added"
     while IFS= read -r e; do
