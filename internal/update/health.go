@@ -266,7 +266,7 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 			}
 			return nil
 		})
-		if trial {
+		if trial && rep.Set != "" {
 			// Written first: should health not get ext.lock in time, vosd
 			// still knows this trial passed and promotes the set itself.
 			if err := config.WriteFileAtomic(config.ExtTrialOKPath(), []byte(rep.Set+"\n"), 0o644); err != nil {
