@@ -34,6 +34,6 @@
     {"what": "Microsoft's Visual C++ runtime", "from": "aka.ms", "checked": "none", "runs_code": true, "when": "launch"}
   ],
   "settings": [
-    {"key": "disk", "type": "disk", "label": "Game drive", "help": "Where Star Citizen keeps its game, which needs 150 GB free. Without a game drive, it goes on the system drive. Pick it before the restart that adds Star Citizen: it doesn't move later."}
+    {"key": "disk", "type": "disk", "label": "Game drive", "required": true, "help": "Where Star Citizen keeps its game, which needs 150 GB free. Without a game drive, it goes on the system drive. Pick it before the restart that adds Star Citizen: it doesn't move later."}
   ]
 }

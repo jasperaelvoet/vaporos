@@ -33,7 +33,9 @@ import (
 // setting's needs_password says it feeds kernel module options, and a
 // card's runs_as_root and module_options whether adding it takes the
 // password (its needs_password, which the fake keeps up to date, adds its
-// requirements not added yet).
+// requirements not added yet); a required disk setting without a drive
+// refuses the add. A card's web_running follows its mount: on while it is
+// mounted and wanted.
 
 // extTick is how often a download moves on.
 const extTick = 400 * time.Millisecond
@@ -104,7 +106,7 @@ func checkExtSettings(x map[string]any, change map[string]any) (map[string]any, 
 		if m == nil {
 			return nil, fmt.Errorf("unknown setting %q", k)
 		}
-		st := descriptor.Setting{Key: k, Type: asStr(m["type"]), Restart: m["restart"] == true}
+		st := descriptor.Setting{Key: k, Type: asStr(m["type"]), Restart: m["restart"] == true, Required: m["required"] == true}
 		for _, c := range asList(m["choices"]) {
 			st.Choices = append(st.Choices, asStr(c))
 		}
@@ -196,6 +198,9 @@ func (f *devFake) extInstall(w http.ResponseWriter, r *http.Request) any {
 		return refused(w, http.StatusBadRequest, err.Error())
 	}
 	adding := f.addingLocked(x)
+	if msg := missingDrive(x, values, adding); msg != "" {
+		return refused(w, http.StatusBadRequest, msg)
+	}
 	needs := false
 	for k := range values {
 		needs = needs || moduleSetting(x, k)
@@ -213,6 +218,34 @@ func (f *devFake) extInstall(w http.ResponseWriter, r *http.Request) any {
 		f.addExtLocked(a)
 	}
 	return f.extChangedLocked()
+}
+
+// missingDrive is why adding x is refused for a drive (extensions'
+// checkDrives): x, or a requirement it adds, has a required disk setting
+// without one (in values for x, else the card's value); "" when none is.
+func missingDrive(x, values map[string]any, adding []map[string]any) string {
+	name := asStr(x["name"])
+	for _, a := range append(slices.Clone(adding), x) {
+		for _, s := range asList(a["settings"]) {
+			m := asObj(s)
+			if m["type"] != "disk" || m["required"] != true {
+				continue
+			}
+			v := m["value"]
+			if nv, ok := values[asStr(m["key"])]; ok && asStr(a["id"]) == asStr(x["id"]) {
+				v = nv
+			}
+			if asStr(v) != "" {
+				continue
+			}
+			if asStr(a["id"]) == asStr(x["id"]) {
+				return name + " needs a game drive. Pick one to add it."
+			}
+			n := asStr(a["name"])
+			return fmt.Sprintf("%s needs %s, which needs a game drive. Add %s first.", name, n, n)
+		}
+	}
+	return ""
 }
 
 // addingLocked is what adding x adds: x and what it requires, directly or
@@ -247,7 +280,7 @@ func (f *devFake) addExtLocked(x map[string]any) {
 	x["wanted"], x["reason"], x["progress"] = true, "", nil
 	switch {
 	case x["mounted"] == true:
-		x["state"] = extensions.StateInstalled
+		x["state"], x["web_running"] = extensions.StateInstalled, x["web"] != nil
 	case f.d != nil:
 		x["state"] = extensions.StateInstalling
 		x["progress"] = map[string]any{"bytes": 0.0, "total": extTotal(x)}
@@ -330,7 +363,7 @@ func (f *devFake) extRemove(w http.ResponseWriter, r *http.Request) any {
 		n := joinNames(names)
 		return refused(w, http.StatusConflict, fmt.Sprintf("%s needs %s. Remove %s first.", n, name, n))
 	}
-	x["wanted"], x["reason"], x["progress"] = false, "", nil
+	x["wanted"], x["reason"], x["progress"], x["web_running"] = false, "", nil, false
 	x["state"] = extensions.StateNotInstalled
 	if x["mounted"] == true {
 		x["state"] = extensions.StateRestartNeeded
@@ -446,8 +479,8 @@ func (f *devFake) extChangedLocked() any {
 // refreshExtensions recomputes what follows from the cards: who requires
 // whom, whether adding one takes the password, and the restart a
 // restart-needed card waits for. A restart that is needed may happen by
-// itself (restart.auto), as the circuit breaker of a fresh set allows,
-// unless the next start leaves the extensions out.
+// itself (restart.auto), as the circuit breaker of a fresh set allows;
+// none is needed while the next start leaves the extensions out.
 func refreshExtensions(doc map[string]any) {
 	cards := asList(doc["extensions"])
 	byID := map[string]map[string]any{}
@@ -478,7 +511,8 @@ func refreshExtensions(doc map[string]any) {
 			changing = append(changing, name)
 		}
 	}
-	if len(adding)+len(removing)+len(changing) == 0 {
+	// With skip_once the next start mounts nothing: no restart tries the change.
+	if len(adding)+len(removing)+len(changing) == 0 || doc["skip_once"] == true {
 		doc["restart"] = map[string]any{"needed": false, "auto": false, "reason": ""}
 		return
 	}
@@ -492,7 +526,7 @@ func refreshExtensions(doc map[string]any) {
 	if len(changing) > 0 {
 		parts = append(parts, "changing the settings of "+joinNames(changing))
 	}
-	doc["restart"] = map[string]any{"needed": true, "auto": doc["skip_once"] != true, "reason": "Restart to finish " + joinNames(parts) + "."}
+	doc["restart"] = map[string]any{"needed": true, "auto": true, "reason": "Restart to finish " + joinNames(parts) + "."}
 }
 
 // needsPassword is whether adding x takes the password: it, or a
@@ -559,6 +593,7 @@ func bootExtensions(docs map[string]any) {
 				m["state"], m["reason"] = extensions.StateNeedsAttention, startedOffText
 			}
 		}
+		m["web_running"] = m["mounted"] == true && wanted && m["web"] != nil
 	}
 	doc["skip_once"] = false
 	refreshExtensions(doc)
@@ -620,9 +655,14 @@ func TestFakeExtensions(t *testing.T) {
 	if code, ans := do("POST", "/extensions/coolercontrol", `{"password":"`+devPassword+`","options":{"gpu_fan_curves":1}}`); code != 400 || ans["error"] != "gpu_fan_curves must be true or false" {
 		t.Fatalf("bad option: %d %v", code, ans)
 	}
-	if code, ans := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"disk":"-x"}}`); code != 400 ||
-		ans["error"] != "disk must be a folder on a disk (an absolute path), or empty" {
-		t.Fatalf("a disk that is no path: %d %v", code, ans)
+	for _, v := range []string{"-x", "", "/state"} {
+		if code, ans := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"disk":"`+v+`"}}`); code != 400 ||
+			ans["error"] != "disk must be the system drive (/var) or a game drive (a folder in /var/mnt)" {
+			t.Fatalf("a drive %q: %d %v", v, code, ans)
+		}
+	}
+	if code, ans := do("POST", "/extensions/star-citizen", `{}`); code != 400 || ans["error"] != "Star Citizen needs a game drive. Pick one to add it." {
+		t.Fatalf("no drive picked: %d %v", code, ans)
 	}
 	if code, _ := do("PUT", "/extensions/star-citizen/settings", `{"settings":{"disk":"/var/mnt/Games"}}`); code != 200 {
 		t.Fatalf("a disk: %d", code)
@@ -655,7 +695,7 @@ func TestFakeExtensions(t *testing.T) {
 	bootExtensions(f.docs)
 	f.mu.Unlock()
 	_, doc = do("GET", "/extensions", "")
-	if c := card(doc, "coolercontrol"); c["state"] != "installed" || c["mounted"] != true || asObj(doc["restart"])["needed"] != false {
+	if c := card(doc, "coolercontrol"); c["state"] != "installed" || c["mounted"] != true || c["web_running"] != true || asObj(doc["restart"])["needed"] != false {
 		t.Fatalf("after the restart: %v, restart %v", c, doc["restart"])
 	}
 	if code, ans := do("POST", "/extensions/truckersmp/actions/copy-profiles", `{"args":{}}`); code != 200 {
@@ -678,7 +718,7 @@ func TestFakeExtensions(t *testing.T) {
 		t.Fatalf("module setting: %v, restart %v", c, doc["restart"])
 	}
 	_, doc = do("DELETE", "/extensions/coolercontrol?purge=1", "")
-	if c := card(doc, "coolercontrol"); c["state"] != "restart-needed" || c["wanted"] != false ||
+	if c := card(doc, "coolercontrol"); c["state"] != "restart-needed" || c["wanted"] != false || c["web_running"] != false ||
 		extSetting(c, "gpu_fan_curves")["value"] != false || extSetting(c, "it87_conflicts")["value"] != false || asObj(doc["restart"])["reason"] != "Restart to finish removing CoolerControl." {
 		t.Fatalf("removed: %v, restart %v", c, doc["restart"])
 	}
@@ -686,14 +726,14 @@ func TestFakeExtensions(t *testing.T) {
 		t.Fatal("skip-once")
 	}
 	_, doc = do("GET", "/extensions", "")
-	if doc["skip_once"] != true || asObj(doc["restart"])["auto"] != false {
+	if doc["skip_once"] != true || asObj(doc["restart"])["needed"] != false || asObj(doc["restart"])["auto"] != false {
 		t.Fatalf("after skip-once: skip_once %v, restart %v", doc["skip_once"], doc["restart"])
 	}
 	if code, _ := do("DELETE", "/extensions/skip-once", ""); code != 200 {
 		t.Fatal("taking skip-once back")
 	}
 	_, doc = do("GET", "/extensions", "")
-	if doc["skip_once"] != false || asObj(doc["restart"])["auto"] != true {
+	if doc["skip_once"] != false || asObj(doc["restart"])["needed"] != true || asObj(doc["restart"])["auto"] != true {
 		t.Fatalf("after taking it back: skip_once %v, restart %v", doc["skip_once"], doc["restart"])
 	}
 

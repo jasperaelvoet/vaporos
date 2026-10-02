@@ -62,6 +62,7 @@ type ExtensionDoc struct {
 	Settings      []SettingDoc        `json:"settings"`
 	Actions       []ActionDoc         `json:"actions"`
 	Web           *WebDoc             `json:"web"`
+	WebRunning    bool                `json:"web_running"` // vosd serves its web UI now
 	Status        []StatusLine        `json:"status"`
 	Copy          CopyDoc             `json:"copy"`
 	Requires      []string            `json:"requires"`
@@ -109,6 +110,7 @@ type SettingDoc struct {
 	Choices       []string `json:"choices"`
 	Value         any      `json:"value"`
 	NeedsPassword bool     `json:"needs_password"` // it feeds kernel module options: changing it takes the admin password
+	Required      bool     `json:"required"`       // a disk setting adding it asks for: "" is no drive picked yet
 }
 
 type ActionDoc struct {
@@ -150,6 +152,12 @@ func installNote(name string, core bool) string {
 		return "Setting up " + name + " didn't finish. Try again."
 	}
 	return "Setting up " + name + " didn't finish. Try again, or remove it."
+}
+
+// pickDriveNote is a card's reason while a required disk setting has no
+// drive, so its helper does not set it up.
+func pickDriveNote(name string) string {
+	return "Pick a game drive for " + name + ", then select Try again."
 }
 
 // removeNote is a card's reason when its helper's Remove failed.
@@ -202,7 +210,7 @@ func (s *Service) Document(ctx context.Context) Document {
 	for _, x := range st.Extensions {
 		byID[x.ID] = x
 	}
-	names := appNames(s.steamApps(st.Extensions))
+	names := s.appNames(s.steamApps(st.Extensions))
 	doc := Document{Extensions: []ExtensionDoc{}, SkipOnce: skipOnce()}
 	var adding, removing, changing []string
 	for _, x := range st.Extensions {
@@ -214,7 +222,8 @@ func (s *Service) Document(ctx context.Context) Document {
 		xd.RequiredBy = requiredBy(v.cat, want, x.ID)
 		xd.NeedsPassword = s.needsPassword(v.cat, want, x.ID)
 		f := cardFacts{inWant: want[x.ID] || xd.Wanted, note: notes[x.ID], lines: xd.Status}
-		f.settingUp = running[x.ID] || (x.Mounted && f.inWant && d != nil && f.note == "" &&
+		// Also after a failed try while another comes by itself.
+		f.settingUp = running[x.ID] || (x.Mounted && f.inWant && d != nil &&
 			tries[x.ID] < maxHelperInstalls && !isInstalled(x.ID))
 		if f.inWant && !x.Mounted {
 			f.blocker = s.blocker(v.cat, byID, x.ID)
@@ -232,8 +241,9 @@ func (s *Service) Document(ctx context.Context) Document {
 		}
 		doc.Extensions = append(doc.Extensions, xd)
 	}
-	doc.Restart.Needed = st.RestartNeeded
-	if st.RestartNeeded {
+	// The next start mounts nothing with skip-once: it would not try pending.
+	doc.Restart.Needed = st.RestartNeeded && !doc.SkipOnce
+	if doc.Restart.Needed {
 		doc.Restart.Reason = restartReason(adding, removing, changing)
 		doc.Restart.Auto = s.autoAllowed(&v)
 	}
@@ -302,6 +312,7 @@ func (s *Service) card(ctx context.Context, id string, e catalog.Entry, inCat bo
 	}
 	if d.Web != nil {
 		x.Web = &WebDoc{Port: d.Web.Port, Label: d.Web.Label}
+		x.WebRunning = s.serving(d.Web.Port) == id
 	}
 	x.RunsAsRoot = d.RunsAsRoot()
 	x.ModuleOptions = d.HasModuleOptions()
@@ -317,7 +328,8 @@ func (s *Service) card(ctx context.Context, id string, e catalog.Entry, inCat bo
 			choices = slices.Clone(st.Choices)
 		}
 		x.Settings = append(x.Settings, SettingDoc{Key: st.Key, Type: st.Type, Label: st.Label, Help: st.Help,
-			Restart: st.Restart, Choices: choices, Value: ext.Settings[st.Key], NeedsPassword: modules[st.Key]})
+			Restart: st.Restart, Choices: choices, Value: ext.Settings[st.Key], NeedsPassword: modules[st.Key],
+			Required: st.Required})
 	}
 	for _, a := range d.Actions {
 		ad := ActionDoc{Name: a.Name, Label: a.Label}
@@ -343,7 +355,7 @@ type cardFacts struct {
 	inWant    bool         // wanted or core, or required by one
 	note      string       // why its helper did not finish
 	lines     []StatusLine // its helper's status lines
-	settingUp bool         // its helper's Install runs, or waits for its turn
+	settingUp bool         // its helper's Install runs, waits for its turn or comes again by itself
 	blocker   string       // a requirement whose image cannot be had, by name
 }
 
@@ -386,7 +398,7 @@ func (s *Service) cardState(x ExtensionStatus, v *view, f cardFacts) (string, st
 // written, no boot report).
 func attention(x ExtensionStatus, v *view, f cardFacts) string {
 	switch {
-	case x.State == StateNeedsAttention:
+	case x.State == StateNeedsAttention && f.inWant: // the last pass's; one removed since falls through
 		return attentionReason(x, v)
 	case f.note != "" && (f.inWant || x.Mounted):
 		return f.note

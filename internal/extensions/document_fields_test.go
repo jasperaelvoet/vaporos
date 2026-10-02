@@ -3,10 +3,12 @@ package extensions
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
@@ -14,19 +16,24 @@ import (
 )
 
 // A card says what it changes in Steam by the names Steam shows (from the
-// appmanifests of any library, "" for an app without one), whether it
-// sets kernel module options, and which settings take the password.
+// appmanifests of Steam's own library and of the adopted game drives, ""
+// for an app without one), whether it sets kernel module options, and
+// which settings take the password.
 func TestDocumentSteamAndPasswords(t *testing.T) {
 	r := newRig(t)
 	steamapps := filepath.Join(config.GamerHome, steamRel, "steamapps")
-	writeFile(t, filepath.Join(steamapps, "appmanifest_227300.acf"),
-		"\"AppState\"\n{\n\t\"appid\"\t\t\"227300\"\n\t\"name\"\t\t\"Euro Truck Simulator 2\"\n\t\"StateFlags\"\t\t\"4\"\n}\n")
-	lib := t.TempDir()
-	writeFile(t, filepath.Join(lib, "steamapps", "appmanifest_270880.acf"),
-		"\"AppState\"\n{\n\t\"appid\"\t\t\"270880\"\n\t\"name\"\t\t\"American  Truck\tSimulator\"\n}\n")
+	writeFile(t, filepath.Join(steamapps, "appmanifest_227300.acf"), acf(227300, "Euro Truck Simulator 2"))
+	drives := useGameDrives(t)
+	r.cfg.Storage.Libraries = []config.Library{{UUID: "u1", Label: "Games", Mountpoint: "/var/mnt/Games", FSType: "ext4"}}
+	ats := filepath.Join(drives, "Games", "Deep", "Lib", "steamapps", "appmanifest_270880.acf")
+	writeFile(t, ats, acf(270880, "American  Truck\tSimulator"))
+	// libraryfolders.vdf is vapor's: a library it lists off the adopted
+	// drives is never read, one on a drive is found there.
+	planted := t.TempDir()
+	writeFile(t, filepath.Join(planted, "steamapps", "appmanifest_270880.acf"), acf(270880, "Planted"))
 	writeFile(t, filepath.Join(steamapps, "libraryfolders.vdf"),
-		"\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\""+filepath.Join(config.GamerHome, steamRel)+
-			"\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\""+lib+"\"\n\t}\n}\n")
+		"\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\""+planted+
+			"\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"/mnt/Games/Deep/Lib\"\n\t}\n}\n")
 
 	tm := r.card("truckersmp")
 	want := &SteamDoc{CompatTool: "proton-cachyos-slr",
@@ -36,7 +43,7 @@ func TestDocumentSteamAndPasswords(t *testing.T) {
 	if got, w := mustJSON(t, tm.Steam), mustJSON(t, want); got != w || tm.ModuleOptions {
 		t.Fatalf("truckersmp steam = %s, want %s (module options %v)", got, w, tm.ModuleOptions)
 	}
-	must(t, os.Remove(filepath.Join(lib, "steamapps", "appmanifest_270880.acf")))
+	must(t, os.Remove(ats))
 	if tm := r.card("truckersmp"); tm.Steam.Forces[1] != (SteamAppDoc{App: 270880}) {
 		t.Fatalf("an app without a manifest = %+v", tm.Steam.Forces)
 	}
@@ -51,6 +58,53 @@ func TestDocumentSteamAndPasswords(t *testing.T) {
 	for _, k := range []string{`"steam":null`, `"module_options":true`, `"skip_once":false`, `"needs_password":true`} {
 		if !strings.Contains(string(b), k) {
 			t.Errorf("the document has no %s", k)
+		}
+	}
+}
+
+// acf is an appmanifest of app, named name.
+func acf(app int, name string) string {
+	return fmt.Sprintf("\"AppState\"\n{\n\t\"appid\"\t\t\"%d\"\n\t\"name\"\t\t\"%s\"\n}\n", app, name)
+}
+
+// useGameDrives redirects the game drives' folders to a temp dir.
+func useGameDrives(t *testing.T) string {
+	t.Helper()
+	saved := gameDrivesDir
+	t.Cleanup(func() { gameDrivesDir = saved })
+	gameDrivesDir = t.TempDir()
+	return gameDrivesDir
+}
+
+// A name is read again only once its manifest's mtime or size changed; a
+// drive's library at its top or in its SteamLibrary needs no
+// libraryfolders.vdf; a library whose folder is not a game drive's is not
+// read.
+func TestAppNamesCache(t *testing.T) {
+	r := newRig(t)
+	drives := useGameDrives(t)
+	r.cfg.Storage.Libraries = []config.Library{{UUID: "u1", Label: "Games", Mountpoint: "/var/mnt/Games", FSType: "ext4"},
+		{UUID: "u2", Label: "home", Mountpoint: config.GamerHome, FSType: "ext4"}}
+	m := filepath.Join(drives, "Games", "SteamLibrary", "steamapps", "appmanifest_227300.acf")
+	writeFile(t, m, acf(227300, "Euro Truck Sim 2"))
+	if n := r.s.appNames([]uint32{227300}); n[227300] != "Euro Truck Sim 2" {
+		t.Fatalf("names = %v", n)
+	}
+	fi, err := os.Stat(m)
+	must(t, err)
+	writeFile(t, m, acf(227300, "Euro Truck Sim X"))
+	must(t, os.Chtimes(m, fi.ModTime(), fi.ModTime()))
+	if n := r.s.appNames([]uint32{227300}); n[227300] != "Euro Truck Sim 2" {
+		t.Fatalf("read again with the same mtime and size: %v", n)
+	}
+	later := fi.ModTime().Add(time.Second)
+	must(t, os.Chtimes(m, later, later))
+	if n := r.s.appNames([]uint32{227300}); n[227300] != "Euro Truck Sim X" {
+		t.Fatalf("not read again with a new mtime: %v", n)
+	}
+	for _, l := range r.s.steamLibs()[1:] {
+		if filepath.Dir(l.root) != drives {
+			t.Fatalf("library root %q is not a game drive", l.root)
 		}
 	}
 }
@@ -110,8 +164,11 @@ func TestDocumentNoPermanentInstalling(t *testing.T) {
 	r := newRig(t)
 	must(t, os.Remove(filepath.Join(r.src, "ext-star-citizen.raw")))
 	r.seal(r.imgs["sc-hotas"])
-	if code, _ := r.do("POST", "/extensions/sc-hotas", `{}`); code != 200 {
-		t.Fatal("install")
+	if code, _ := r.do("PUT", "/extensions/star-citizen/settings", `{"settings":{"disk":"/var"}}`); code != 200 {
+		t.Fatal("picking a drive")
+	}
+	if code, body := r.do("POST", "/extensions/sc-hotas", `{}`); code != 200 {
+		t.Fatalf("install: %d %s", code, body)
 	}
 	r.pass()
 	if x := r.card("star-citizen"); x.State != StateNeedsAttention || x.Reason == "" {
@@ -122,11 +179,16 @@ func TestDocumentNoPermanentInstalling(t *testing.T) {
 	}
 }
 
-// A core extension whose helper failed cannot be removed: its card only
-// says to try again.
+// A core extension whose helper failed cannot be removed: once its tries
+// are used, its card only says to try again.
 func TestCoreSetupFailure(t *testing.T) {
 	useHelper(t, "proton", &recHelper{installErr: errors.New("boom")})
 	r := newRig(t)
+	if x := r.card("proton"); x.State != StateInstalling || x.Reason != "" {
+		t.Fatalf("proton with tries left = %+v", x)
+	}
+	r.pass()
+	r.pass()
 	if x := r.card("proton"); x.State != StateNeedsAttention || x.Reason != "Setting up CachyOS Proton didn't finish. Try again." {
 		t.Fatalf("proton = %+v", x)
 	}

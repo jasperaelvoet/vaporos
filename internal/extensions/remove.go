@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
@@ -55,9 +56,10 @@ func (s *Service) Remove(ctx context.Context, id string, purge bool) error {
 	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), helperTimeout)
 	defer cancel()
 	err = s.undo(hctx, id, d, purge)
+	back, _ := stillWanted(s.catalog(), id)
 	s.mu.Lock()
 	delete(s.cc.tries, id)
-	if err != nil {
+	if err != nil && !back {
 		s.cc.notes[id] = removeNote(s.name(id))
 	} else {
 		delete(s.cc.notes, id)
@@ -115,14 +117,17 @@ func (s *Service) unwant(ctx context.Context, id string) (*descriptor.Descriptor
 }
 
 // undo is a removal's work on what runs now, under id's helper lock. An
-// extension added back meanwhile is left as it is.
+// extension added back before it starts is left as it is; one added back
+// while it runs keeps its data and gets its units back at the end (Install
+// starts what is stopped after that), and the next pass sets it up again.
 func (s *Service) undo(ctx context.Context, id string, d *descriptor.Descriptor, purge bool) error {
 	unlock, err := s.lockID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("waiting for its helper: %w", err)
 	}
 	defer unlock()
-	if w, err := store.Wanted(); err == nil && wantSet(s.catalog(), w)[id] {
+	cat := s.catalog()
+	if back, _ := stillWanted(cat, id); back {
 		log.Printf("extensions: %s was added again before its removal ran; it stays", id)
 		return nil
 	}
@@ -132,8 +137,9 @@ func (s *Service) undo(ctx context.Context, id string, d *descriptor.Descriptor,
 		s.stopUnits(ctx, id, d)
 	}
 	if d != nil && (mounted || isInstalled(id)) {
+		back, _ := stillWanted(cat, id)
 		s.helperBusy(1)
-		err := HelperFor(id).Remove(ctx, s.ext(id, d), purge)
+		err := HelperFor(id).Remove(ctx, s.ext(id, d), purge && !back)
 		s.helperBusy(-1)
 		if err != nil {
 			errs = append(errs, err)
@@ -143,9 +149,13 @@ func (s *Service) undo(ctx context.Context, id string, d *descriptor.Descriptor,
 		errs = append(errs, err)
 	}
 	if purge {
-		if err := s.purge(ctx, id); err != nil {
+		if err := s.purge(ctx, cat, id); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if back, _ := stillWanted(cat, id); back && mounted {
+		log.Printf("extensions: %s was added again while its removal ran; starting it again", id)
+		s.restore(ctx, id)
 	}
 	return errors.Join(errs...)
 }
@@ -194,8 +204,21 @@ func (s *Service) stopUnits(ctx context.Context, id string, d *descriptor.Descri
 		}
 	}
 	s.mu.Lock()
-	s.cc.stopped[id] = rec
+	// A second removal finds them stopped: what the first stopped stays.
+	old := s.cc.stopped[id]
+	s.cc.stopped[id] = stoppedUnits{system: union(old.system, rec.system), user: union(old.user, rec.user)}
 	s.mu.Unlock()
+}
+
+// union is a, then the names of b it lacks.
+func union(a, b []string) []string {
+	out := slices.Clone(a)
+	for _, n := range b {
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // startUnits starts the units a removal stopped this boot again: id is
@@ -241,10 +264,17 @@ func listActiveUnits(ctx context.Context, user bool, patterns ...string) ([]stri
 	return units, nil
 }
 
-// purge deletes id's system and home data areas and its settings. Library
-// areas are the helper's to delete: only it knows the disk. The home area
-// is deleted as vapor, whose tree it is (CONTRACTS Users).
-func (s *Service) purge(ctx context.Context, id string) error {
+// purge deletes id's system and home data areas and its settings, unless
+// it was added back: under the change lock, so no add comes in between.
+// Library areas are the helper's to delete: only it knows the disk. The
+// home area is deleted as vapor, whose tree it is (CONTRACTS Users).
+func (s *Service) purge(ctx context.Context, cat *catalog.Catalog, id string) error {
+	s.cc.change.Lock()
+	defer s.cc.change.Unlock()
+	if back, _ := stillWanted(cat, id); back {
+		log.Printf("extensions: %s was added again; its data stays", id)
+		return nil
+	}
 	var errs []error
 	if err := os.RemoveAll(filepath.Join(config.ExtDataDir(), id)); err != nil {
 		errs = append(errs, err)
@@ -310,7 +340,7 @@ func (s *Service) SetSettings(ctx context.Context, id string, change map[string]
 // Action runs one of id's descriptor actions through its helper while the
 // extension runs, one helper call for id at a time and counting as busy:
 // as vapor through `vos ext action` (run_as vapor, the default), or in
-// vosd (run_as root).
+// vosd (run_as root). A failure answers in the action's label alone.
 func (s *Service) Action(ctx context.Context, id, name string, args json.RawMessage) error {
 	if _, _, _, err := s.known(id); err != nil {
 		return err
@@ -330,9 +360,17 @@ func (s *Service) Action(ctx context.Context, id, name string, args json.RawMess
 	}
 	hctx, cancel := context.WithTimeout(ctx, helperTimeout)
 	defer cancel()
+	// Why it failed, and its args, go to the log only.
+	failed := func(err error) error {
+		log.Printf("extensions: %s: %s %s: %v", id, name, oneLine(string(args), maxLoggedArgs), err)
+		if errors.Is(hctx.Err(), context.DeadlineExceeded) {
+			return refuse(http.StatusInternalServerError, a.Label+" didn't finish in time. Try again.")
+		}
+		return refuse(http.StatusInternalServerError, a.Label+" didn't finish. Try again.")
+	}
 	unlock, err := s.lockID(hctx, id)
 	if err != nil {
-		return fmt.Errorf("%s: %w", s.name(id), err)
+		return failed(fmt.Errorf("waiting for its helper: %w", err))
 	}
 	defer unlock()
 	s.helperBusy(1)
@@ -346,7 +384,7 @@ func (s *Service) Action(ctx context.Context, id, name string, args json.RawMess
 		return refuse(http.StatusNotFound, fmt.Sprintf("%s has no action %q", s.name(id), name))
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", s.name(id), err)
+		return failed(err)
 	}
 	log.Printf("extensions: %s: ran %s", id, name)
 	s.syncSteam() // a helper's Steam parts may follow its actions (TruckersMP's branch)

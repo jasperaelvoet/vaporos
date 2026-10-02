@@ -102,9 +102,16 @@ var (
 	extKeyRe   = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 )
 
+// reservedExtensionIDs are the words vosd's routes use where an extension
+// id goes (POST /extensions/skip-once), so no extension can take them.
+var reservedExtensionIDs = []string{"skip-once"}
+
 // ValidExtensionID reports whether id can name an extension: it becomes a
-// file name, a mount point and a word in the initramfs's catalog.
-func ValidExtensionID(id string) bool { return extIDRe.MatchString(id) }
+// file name, a mount point, a word in the initramfs's catalog and a path
+// segment of vosd's routes.
+func ValidExtensionID(id string) bool {
+	return extIDRe.MatchString(id) && !slices.Contains(reservedExtensionIDs, id)
+}
 
 // ExtensionFile is the published name of extension id's image.
 func ExtensionFile(id string) string { return "ext-" + id + ".raw" }

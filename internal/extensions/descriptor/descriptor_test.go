@@ -111,6 +111,8 @@ func TestValidateRejects(t *testing.T) {
 		"download host":      func(d *Descriptor) { d.Downloads[0].From = "https://x" },
 		"download checked":   func(d *Descriptor) { d.Downloads[0].Checked = "maybe" },
 		"setting type":       func(d *Descriptor) { d.Settings[0].Type = "text" },
+		"required bool":      func(d *Descriptor) { d.Settings[0].Required = true },
+		"reserved id":        func(d *Descriptor) { d.ID = "skip-once" },
 		"action run_as":      func(d *Descriptor) { d.Actions[0].RunAs = "admin" },
 		"confirm tone":       func(d *Descriptor) { d.Actions[0].Confirm.Tone = "loud" },
 	}
@@ -122,6 +124,18 @@ func TestValidateRejects(t *testing.T) {
 				t.Fatal("accepted")
 			}
 		})
+	}
+}
+
+// Only a disk setting may be required: the drive an extension needs.
+func TestRequiredDisk(t *testing.T) {
+	d := valid()
+	d.Settings = append(d.Settings, Setting{Key: "disk", Type: "disk", Label: "Game drive", Required: true})
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := d.Setting("disk"); !s.Required {
+		t.Fatal("not required")
 	}
 }
 

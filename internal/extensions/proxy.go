@@ -27,9 +27,10 @@ type webState struct {
 	kick    chan struct{} // the ports or the services may have changed
 	lastErr string        // the last error listing the ports, logged once (runWeb's goroutine only)
 
-	mu     sync.Mutex
-	guard  func(w http.ResponseWriter, r *http.Request) bool // api.Server.GuardWeb
-	failed map[int]string                                    // by port: the last error starting its listener, logged once
+	mu      sync.Mutex
+	guard   func(w http.ResponseWriter, r *http.Request) bool // api.Server.GuardWeb
+	failed  map[int]string                                    // by port: the last error starting its listener, logged once
+	serving map[int]string                                    // by port: the extension whose web UI is served now (web_running)
 
 	// Seams.
 	state  func(ctx context.Context, unit string, user bool) string
@@ -38,10 +39,11 @@ type webState struct {
 
 func newWebState() webState {
 	return webState{
-		kick:   make(chan struct{}, 1),
-		failed: map[int]string{},
-		state:  sysd.ActiveState,
-		listen: func(port int) (net.Listener, error) { return net.Listen("tcp", fmt.Sprintf(":%d", port)) },
+		kick:    make(chan struct{}, 1),
+		failed:  map[int]string{},
+		serving: map[int]string{},
+		state:   sysd.ActiveState,
+		listen:  func(port int) (net.Listener, error) { return net.Listen("tcp", fmt.Sprintf(":%d", port)) },
 	}
 }
 
@@ -82,8 +84,9 @@ func (s *Service) webGuard() func(w http.ResponseWriter, r *http.Request) bool {
 func (s *Service) runWeb(ctx context.Context) {
 	servers := map[int]*webServer{}
 	defer func() {
-		for _, w := range servers {
+		for port, w := range servers {
 			w.close()
+			s.setServing(port, "")
 		}
 	}()
 	t := time.NewTicker(webPoll)
@@ -120,6 +123,7 @@ func (s *Service) serveWeb(ctx context.Context, servers map[int]*webServer) {
 		if !ok || p.upstream != w.upstream || !s.webUp(ctx, p, true) {
 			w.close()
 			delete(servers, port)
+			s.setServing(port, "")
 			log.Printf("extensions: stopped serving :%d", port)
 		}
 	}
@@ -140,8 +144,29 @@ func (s *Service) serveWeb(ctx context.Context, servers map[int]*webServer) {
 		delete(s.web.failed, port)
 		s.web.mu.Unlock()
 		servers[port] = w
+		s.setServing(port, p.id)
 		log.Printf("extensions: %s: serving its web UI on :%d", p.id, port)
 	}
+}
+
+// setServing records that port serves id's web UI now ("" for none) and
+// tells the document, whose cards say so (web_running).
+func (s *Service) setServing(port int, id string) {
+	s.web.mu.Lock()
+	if id == "" {
+		delete(s.web.serving, port)
+	} else {
+		s.web.serving[port] = id
+	}
+	s.web.mu.Unlock()
+	s.changed()
+}
+
+// serving is the extension whose web UI port serves now, or "".
+func (s *Service) serving(port int) string {
+	s.web.mu.Lock()
+	defer s.web.mu.Unlock()
+	return s.web.serving[port]
 }
 
 // webUp reports whether p's extension runs: each of its services (not

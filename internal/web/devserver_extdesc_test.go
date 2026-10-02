@@ -15,7 +15,8 @@ import (
 // descriptorCard is what a card of GET /extensions takes from the shipped
 // descriptor d (internal/extensions document.go), as JSON: everything but
 // the state, the build's facts (size, permissions, runs_as_root), the
-// settings' values, the helper's status lines and Steam's app names.
+// settings' values, the helper's status lines, Steam's app names and
+// whether its web UI is served now.
 func descriptorCard(d *descriptor.Descriptor) map[string]any {
 	x := extensions.ExtensionDoc{ID: d.ID, Name: d.Name, Summary: d.Summary, Category: d.Category, Core: d.Core, Upstream: d.Upstream,
 		Caveats: append([]string{}, d.Caveats...), Copy: extensions.CopyDoc{Install: d.Copy.Install, Remove: d.Copy.Remove},
@@ -33,7 +34,7 @@ func descriptorCard(d *descriptor.Descriptor) map[string]any {
 	}
 	for _, s := range d.Settings {
 		x.Settings = append(x.Settings, extensions.SettingDoc{Key: s.Key, Type: s.Type, Label: s.Label, Help: s.Help, Restart: s.Restart,
-			Choices: append([]string{}, s.Choices...), NeedsPassword: modules[s.Key]})
+			Choices: append([]string{}, s.Choices...), NeedsPassword: modules[s.Key], Required: s.Required})
 	}
 	for _, a := range d.Actions {
 		ad := extensions.ActionDoc{Name: a.Name, Label: a.Label}
@@ -61,7 +62,7 @@ func descriptorCard(d *descriptor.Descriptor) map[string]any {
 	b, _ := json.Marshal(x)
 	var m map[string]any
 	json.Unmarshal(b, &m)
-	for _, k := range []string{"state", "wanted", "mounted", "size", "progress", "reason", "permissions", "runs_as_root", "status", "required_by", "needs_password"} {
+	for _, k := range []string{"state", "wanted", "mounted", "size", "progress", "reason", "permissions", "runs_as_root", "status", "required_by", "needs_password", "web_running"} {
 		delete(m, k)
 	}
 	for _, s := range asList(m["settings"]) {

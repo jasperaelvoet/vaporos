@@ -119,9 +119,15 @@ func TestProxyServesWhileTheServiceRuns(t *testing.T) {
 			s.close()
 		}
 	})
+	if w.card("coolercontrol").WebRunning {
+		t.Fatal("web_running before vosd serves the port")
+	}
 	w.s.serveWeb(t.Context(), servers)
 	if servers[11987] == nil {
 		t.Fatal("not serving 11987 while coolercontrold is active")
+	}
+	if !w.card("coolercontrol").WebRunning || w.card("lact").WebRunning {
+		t.Fatal("the card does not say its web UI is served")
 	}
 
 	resp, err := w.get("/", nil)
@@ -178,7 +184,7 @@ func TestProxyServesWhileTheServiceRuns(t *testing.T) {
 	}
 	w.set("coolercontrold.service", "inactive")
 	w.s.serveWeb(t.Context(), servers)
-	if servers[11987] != nil {
+	if servers[11987] != nil || w.card("coolercontrol").WebRunning {
 		t.Fatal("still serving with coolercontrold stopped")
 	}
 	if _, err := w.get("/", nil); err == nil {

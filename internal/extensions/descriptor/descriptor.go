@@ -211,6 +211,9 @@ type Setting struct {
 	Restart bool     `json:"restart,omitempty"`
 	Choices []string `json:"choices,omitempty"`
 	Default any      `json:"default,omitempty"`
+	// Required is a disk setting the extension cannot do without: adding
+	// it asks for the drive, and it is not set up until one is picked.
+	Required bool `json:"required,omitempty"`
 }
 
 type Action struct {
@@ -411,6 +414,9 @@ func (d *Descriptor) Validate() error {
 		settings[s.Key] = s
 		text(fmt.Sprintf("settings[%d].label", i), s.Label, 60, true)
 		text(fmt.Sprintf("settings[%d].help", i), s.Help, 200, false)
+		if s.Required && s.Type != "disk" {
+			bad("settings[%d] is required, which only a disk setting may be", i)
+		}
 		switch s.Type {
 		case "bool", "disk":
 			if len(s.Choices) > 0 {

@@ -39,10 +39,20 @@ func makeDataAreas(rep *store.BootReport) {
 			}
 			continue
 		}
-		for _, area := range d.Data {
-			if err := makeDataArea(m.ID, area.Where); err != nil {
-				log.Printf("extensions: %s: data area %s: %v", m.ID, area.Name, err)
-			}
+		makeDataAreasOf(m.ID, d)
+	}
+}
+
+// makeDataAreasOf creates id's system and home data areas: at start, again
+// before its helper's Install, and when it is added back after a removal
+// that purged them.
+func makeDataAreasOf(id string, d *descriptor.Descriptor) {
+	if d == nil {
+		return
+	}
+	for _, area := range d.Data {
+		if err := makeDataArea(id, area.Where); err != nil {
+			log.Printf("extensions: %s: data area %s: %v", id, area.Name, err)
 		}
 	}
 }

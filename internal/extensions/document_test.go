@@ -3,6 +3,7 @@ package extensions
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -179,6 +180,27 @@ func TestDocumentNeedsAttention(t *testing.T) {
 	useHelper(t, "proton", h)
 	if x := r.card("proton"); x.State != StateNeedsAttention || !strings.Contains(x.Reason, "deleted its Steam shortcut") {
 		t.Fatalf("status line of tone error = %+v", x)
+	}
+}
+
+// An extension whose image could not be had needs attention only while it
+// is wanted: removed, its card is not installed at once, before the next
+// pass.
+func TestRemovedNeedsNoAttention(t *testing.T) {
+	r := newRig(t)
+	must(t, os.Remove(filepath.Join(r.src, "ext-truckersmp.raw")))
+	if code, _ := r.do("POST", "/extensions/truckersmp", `{}`); code != 200 {
+		t.Fatal("install")
+	}
+	r.pass()
+	if x := r.card("truckersmp"); x.State != StateNeedsAttention || x.Reason == "" {
+		t.Fatalf("fetch failed = %+v", x)
+	}
+	if code, _ := r.do("DELETE", "/extensions/truckersmp", ""); code != 200 {
+		t.Fatal("remove")
+	}
+	if x := r.card("truckersmp"); x.State != StateNotInstalled || x.Reason != "" {
+		t.Fatalf("removed = %+v", x)
 	}
 }
 

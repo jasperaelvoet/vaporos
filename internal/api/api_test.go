@@ -879,6 +879,8 @@ func TestFirstRunSetup(t *testing.T) {
 	var codes []string
 	s.SetSetupCode("K7M2-P9QX")
 	s.OnSetupCodeChange(func(c string) { codes = append(codes, c) })
+	changed := 0
+	s.OnPasswordChanged(func() { changed++ })
 	hdr := map[string]string{"X-VOS-Setup": "K7M2-P9QX"}
 
 	if rec := do(t, s, req{method: "POST", path: "/api/v1/auth/setup", body: `{"password":"new-admin-pw"}`}); rec.Code != 403 {
@@ -897,8 +899,8 @@ func TestFirstRunSetup(t *testing.T) {
 	if out.CSRF == "" || c == nil {
 		t.Fatalf("setup did not log in: %s", rec.Body)
 	}
-	if !auth.HasAdmin() {
-		t.Fatal("no auth.json after setup")
+	if !auth.HasAdmin() || changed != 1 {
+		t.Fatalf("after setup: auth.json %v, %d password hooks", auth.HasAdmin(), changed)
 	}
 	if s.SetupCode() != "" || len(codes) != 1 || codes[0] != "" {
 		t.Fatalf("code after setup %q, hook saw %v", s.SetupCode(), codes)
@@ -930,6 +932,14 @@ func TestChangePassword(t *testing.T) {
 	env(t)
 	writeAdmin(t, "old-password")
 	s, _ := newServer(t, Options{})
+	changed := 0
+	for range 2 {
+		s.OnPasswordChanged(func() {
+			if ok, _ := auth.VerifyAdmin("new-password"); ok {
+				changed++
+			}
+		})
+	}
 	c1, csrf1 := login(t, s, "old-password")
 	c2, _ := login(t, s, "old-password")
 	change := func(body string) *httptest.ResponseRecorder {
@@ -942,8 +952,14 @@ func TestChangePassword(t *testing.T) {
 	if rec := change(`{"current":"old-password","new":"short"}`); rec.Code != 400 {
 		t.Fatalf("short new: %d", rec.Code)
 	}
+	if changed != 0 {
+		t.Fatal("a refused change ran the password hooks")
+	}
 	if rec := change(`{"current":"old-password","new":"new-password"}`); rec.Code != 200 {
 		t.Fatalf("change: %d %s", rec.Code, rec.Body)
+	}
+	if changed != 2 {
+		t.Fatalf("%d password hooks ran after the change, with the new password saved; want both", changed)
 	}
 	var me meResponse
 	decode(t, do(t, s, req{path: "/api/v1/auth/me", cookies: []*http.Cookie{c1}}), &me)

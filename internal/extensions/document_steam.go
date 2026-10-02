@@ -2,10 +2,13 @@ package extensions
 
 import (
 	"fmt"
+	"io"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -69,41 +72,120 @@ const (
 // prepare` requires).
 const steamRel = ".local/share/Steam"
 
+// gameDrivesDir is where the game drives' folders (GameDrives/<name>) are
+// mounted; a variable for tests.
+var gameDrivesDir = GameDrives
+
+// steamLib is a library appNames reads: a directory rel beneath root, a
+// gamerfs root vosd trusts.
+type steamLib struct{ root, rel string }
+
+// manifestName is what appNames last read of one appmanifest.
+type manifestName struct {
+	mtime time.Time
+	size  int64
+	name  string // "" when it named another app, or none
+}
+
+// steamNames caches appNames' reads, by library and file.
+type steamNames struct {
+	mu   sync.Mutex
+	read map[steamLib]manifestName
+}
+
+// steamLibs are where appNames looks, in order: Steam's own library in
+// vapor's home, then each game drive config.json adopted (at its top, in
+// its SteamLibrary, and wherever on it libraryfolders.vdf lists one). The
+// roots are vapor's home and the drives' folders, never a path vapor
+// wrote: libraryfolders.vdf only picks a directory on a drive.
+func (s *Service) steamLibs() []steamLib {
+	libs := []steamLib{{config.GamerHome, steamRel}}
+	var listed []string
+	if b, err := gamerfs.ReadFile(config.GamerHome, steamRel+"/steamapps/libraryfolders.vdf", maxSteamMeta); err == nil {
+		listed, _ = steam.ParseLibraryFolders(b)
+	}
+	for _, l := range s.cfg.Snapshot().Storage.Libraries {
+		drive := l.Mountpoint
+		name, ok := strings.CutPrefix(drive, GameDrives+"/")
+		if !ok || !drivePath(drive) {
+			continue
+		}
+		rels := []string{".", "SteamLibrary"}
+		for _, p := range listed {
+			p = path.Clean(p)
+			if strings.HasPrefix(p, "/mnt/") {
+				p = "/var" + p // /mnt is a link to /var/mnt
+			}
+			if rel, ok := strings.CutPrefix(p, drive+"/"); ok && filepath.IsLocal(rel) {
+				rels = append(rels, rel)
+			}
+		}
+		for _, rel := range rels {
+			lib := steamLib{filepath.Join(gameDrivesDir, name), rel}
+			if len(libs) < maxLibraries && !slices.Contains(libs, lib) {
+				libs = append(libs, lib)
+			}
+		}
+	}
+	return libs
+}
+
 // appNames is each app's name in the appmanifest of the first library that
-// has one for it: Steam's own library, then those libraryfolders.vdf
-// lists. vapor owns these files, so they are read through gamerfs, and a
-// name is only shown, as text. Apps found nowhere are left out.
-func appNames(apps []uint32) map[uint32]string {
+// has one for it (steamLibs). vapor owns these files, so they are read
+// through gamerfs, and a name is only shown, as text. A manifest is read
+// again only once its mtime or size changed. Apps found nowhere are left
+// out.
+func (s *Service) appNames(apps []uint32) map[uint32]string {
 	out := map[uint32]string{}
 	if len(apps) == 0 {
 		return out
 	}
-	type lib struct{ root, rel string }
-	libs := []lib{{config.GamerHome, steamRel}}
-	if b, err := gamerfs.ReadFile(config.GamerHome, steamRel+"/steamapps/libraryfolders.vdf", maxSteamMeta); err == nil {
-		if paths, err := steam.ParseLibraryFolders(b); err == nil {
-			for _, p := range paths {
-				if len(libs) < maxLibraries && p != filepath.Join(config.GamerHome, steamRel) {
-					libs = append(libs, lib{p, "."})
-				}
-			}
-		}
-	}
+	libs := s.steamLibs()
+	c := &s.cc.names
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	looked := map[steamLib]manifestName{}
 	for _, app := range apps {
 		for _, l := range libs {
-			b, err := gamerfs.ReadFile(l.root, path.Join(l.rel, "steamapps", fmt.Sprintf("appmanifest_%d.acf", app)), maxSteamMeta)
-			if err != nil {
+			f := steamLib{l.root, path.Join(l.rel, "steamapps", fmt.Sprintf("appmanifest_%d.acf", app))}
+			m, ok := readManifestName(f, app, c.read[f])
+			if !ok {
 				continue
 			}
-			if a, err := steam.ParseManifest(b); err == nil && a.ID == int(app) {
-				if name := cleanName(a.Name); name != "" {
-					out[app] = name
-					break
-				}
+			looked[f] = m
+			if m.name != "" {
+				out[app] = m.name
+				break
 			}
 		}
 	}
+	c.read = looked // what was not looked at this time goes
 	return out
+}
+
+// readManifestName reads app's name from the appmanifest f, unless last
+// (what the previous read found) has its mtime and size. It reports false
+// when there is no such file.
+func readManifestName(f steamLib, app uint32, last manifestName) (manifestName, bool) {
+	fh, err := gamerfs.Open(f.root, f.rel)
+	if err != nil {
+		return manifestName{}, false
+	}
+	defer fh.Close()
+	fi, err := fh.Stat()
+	if err != nil {
+		return manifestName{}, false
+	}
+	if !last.mtime.IsZero() && last.mtime.Equal(fi.ModTime()) && last.size == fi.Size() {
+		return last, true
+	}
+	m := manifestName{mtime: fi.ModTime(), size: fi.Size()}
+	if b, err := io.ReadAll(io.LimitReader(fh, maxSteamMeta+1)); err == nil && len(b) <= maxSteamMeta {
+		if a, err := steam.ParseManifest(b); err == nil && a.ID == int(app) {
+			m.name = cleanName(a.Name)
+		}
+	}
+	return m, true
 }
 
 // cleanName keeps a name Steam wrote short and on one line.

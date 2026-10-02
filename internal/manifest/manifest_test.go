@@ -275,7 +275,7 @@ func TestValidExtensionID(t *testing.T) {
 			t.Errorf("%q rejected", id)
 		}
 	}
-	for _, id := range []string{"", "1proton", "Proton", "a/b", "a.b", "a b", strings.Repeat("a", 33)} {
+	for _, id := range []string{"", "1proton", "Proton", "a/b", "a.b", "a b", strings.Repeat("a", 33), "skip-once"} {
 		if ValidExtensionID(id) {
 			t.Errorf("%q accepted", id)
 		}

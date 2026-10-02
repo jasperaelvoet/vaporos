@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -68,6 +69,7 @@ type Server struct {
 	codeWaiver  func() bool
 	allowPublic func() bool
 	onActivity  func()
+	onPassword  []func()
 	setupMu     sync.Mutex // serialises POST /auth/setup
 
 	lastActivity atomic.Int64 // unix nanoseconds
@@ -205,6 +207,26 @@ func (s *Server) OnActivity(f func()) {
 	s.mu.Lock()
 	s.onActivity = f
 	s.mu.Unlock()
+}
+
+// OnPasswordChanged registers f to run each time the admin password
+// changes through the API (POST /auth/password, or POST /auth/setup on an
+// installed system), after auth.json holds the new one: vosd's extensions
+// pass it on to what keeps a copy. f runs in the request and must not
+// block.
+func (s *Server) OnPasswordChanged(f func()) {
+	s.mu.Lock()
+	s.onPassword = append(s.onPassword, f)
+	s.mu.Unlock()
+}
+
+func (s *Server) passwordChanged() {
+	s.mu.RLock()
+	fs := slices.Clone(s.onPassword)
+	s.mu.RUnlock()
+	for _, f := range fs {
+		f()
+	}
 }
 
 // LastActivity is when the web UI was last used (see OnActivity); the zero

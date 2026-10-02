@@ -13,19 +13,24 @@ import (
 // <id>). The descriptor says what an extension is; a helper does what a
 // descriptor cannot say: download TruckersMP's files, place Star Citizen's
 // prefix, copy CoolerControl's password. Embed NopHelper and override only
-// what the extension needs. vosd calls every method but LaunchHook as root;
-// work in vapor's trees goes through sysd.AsGamer (see CONTRACTS Users).
+// what the extension needs. Status, Install, Remove, ModuleOptions and
+// Steam run as root in vosd, where work in vapor's trees goes through
+// internal/gamerfs or sysd.AsGamer (see CONTRACTS Users). Action runs as
+// vapor in `vos ext action` unless the action's run_as is root (then in
+// vosd), and LaunchHook as vapor in `vos ext launch`.
 type Helper interface {
 	// Status returns the lines its card shows under the summary. It must be
 	// cheap: the control center asks often.
 	Status(ctx context.Context, x *Ext) []StatusLine
 	// Install runs once the extension is mounted for the first time (and
-	// again after Remove), with its data areas made.
+	// again after Remove), with its data areas made and a drive picked for
+	// each of its required disk settings.
 	Install(ctx context.Context, x *Ext) error
 	// Remove undoes what Install did, while the extension is still mounted;
 	// purge also deletes its data areas.
 	Remove(ctx context.Context, x *Ext, purge bool) error
-	// Action runs one of the descriptor's actions.
+	// Action runs one of the descriptor's actions: as vapor in `vos ext
+	// action`, unless the action's run_as is root, which runs in vosd.
 	Action(ctx context.Context, x *Ext, name string, args json.RawMessage) error
 	// ModuleOptions renders "options <module> <param>=<value>" lines from
 	// its settings, for the set's modprobe.conf.
@@ -140,6 +145,14 @@ func HelperFor(id string) Helper {
 // every registered helper that has the method.
 type Busier interface {
 	Busy() (bool, string)
+}
+
+// PasswordChanger is a helper that keeps the VaporOS admin password in its
+// extension, such as CoolerControl's sign-in. Once POST /auth/password
+// changed it, vosd calls PasswordChanged as root, under the helper lock,
+// for each extension this boot mounted that is still wanted.
+type PasswordChanger interface {
+	PasswordChanged(ctx context.Context, x *Ext) error
 }
 
 // helpersBusy is the first busy reason of a Busier helper, in id order.

@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -233,7 +234,7 @@ func TestRemoveNeverMounted(t *testing.T) {
 	r := newRig(t)
 	h := &recHelper{}
 	useHelper(t, "star-citizen", h)
-	if code, _ := r.do("POST", "/extensions/star-citizen", `{"options":{"library":"/var/mnt/games"}}`); code != 200 {
+	if code, _ := r.do("POST", "/extensions/star-citizen", `{"options":{"disk":"/var/mnt/games"}}`); code != 200 {
 		t.Fatal("install")
 	}
 	data := filepath.Join(config.ExtDataDir(), "star-citizen")
@@ -251,7 +252,7 @@ func TestRemoveNeverMounted(t *testing.T) {
 		t.Fatalf("card = %+v", x)
 	}
 
-	if code, _ := r.do("POST", "/extensions/star-citizen", `{}`); code != 200 {
+	if code, _ := r.do("POST", "/extensions/star-citizen", `{"options":{"disk":"/var"}}`); code != 200 {
 		t.Fatal("install again")
 	}
 	must(t, markInstalled("star-citizen"))
@@ -265,7 +266,7 @@ func TestRemoveNeverMounted(t *testing.T) {
 	// A helper that fails says so on the card in plain words, and the
 	// removal stands.
 	h.removeErr = errors.New("EACCES")
-	if code, _ := r.do("POST", "/extensions/star-citizen", `{}`); code != 200 {
+	if code, _ := r.do("POST", "/extensions/star-citizen", `{}`); code != 200 { // its drive is kept
 		t.Fatal("install a third time")
 	}
 	must(t, markInstalled("star-citizen"))
@@ -316,9 +317,13 @@ func TestActionsRunAs(t *testing.T) {
 	if code, body := r.do("POST", "/extensions/coolercontrol/actions/curves", `{}`); code != 404 || !strings.Contains(body, `CoolerControl has no action \"curves\"`) {
 		t.Fatalf("unknown to the helper: %d %s", code, body)
 	}
-	h.actionErr = errors.New("there are no profiles to copy")
-	if code, body := r.do("POST", "/extensions/truckersmp/actions/copy-profiles", `{}`); code != 500 || !strings.Contains(body, "TruckersMP: there are no profiles to copy") {
+	// A failure says which action, in its label; why goes to the log.
+	h.actionErr = errors.New("open /var/home/vapor/x: permission denied")
+	if code, body := r.do("POST", "/extensions/truckersmp/actions/copy-profiles", `{"args":{"game":"ats"}}`); code != 500 || body != `{"error":"Copy profiles didn't finish. Try again."}` {
 		t.Fatalf("failed: %d %s", code, body)
+	}
+	if code, body := r.do("POST", "/extensions/coolercontrol/actions/restore-fans", `{}`); code != 500 || body != `{"error":"Restore fans didn't finish. Try again."}` {
+		t.Fatalf("root action failed: %d %s", code, body)
 	}
 	if code, body := r.do("POST", "/extensions/truckersmp/actions/copy-profiles", `{"args":{"x":"`+strings.Repeat("a", maxActionArgs)+`"}}`); code != 400 || !strings.Contains(body, "args is too large") {
 		t.Fatalf("large args: %d %.80s", code, body)
@@ -377,7 +382,7 @@ func TestActionCLIRefuses(t *testing.T) {
 // nothing.
 func TestUnreadableDescriptorRefuses(t *testing.T) {
 	r := newRig(t)
-	if code, _ := r.do("POST", "/extensions/star-citizen", `{}`); code != 200 {
+	if code, _ := r.do("POST", "/extensions/star-citizen", `{"options":{"disk":"/var"}}`); code != 200 {
 		t.Fatal("install")
 	}
 	broken := func(id string) {
@@ -407,4 +412,74 @@ func TestUnreadableDescriptorRefuses(t *testing.T) {
 	if w := wantedNow(t); !slices.Equal(w, []string{"star-citizen"}) {
 		t.Fatalf("wanted = %v", w)
 	}
+}
+
+// slowHelper's Action and Remove each say they started and wait for
+// release, or for their context.
+type slowHelper struct {
+	NopHelper
+	started chan string
+	release chan struct{}
+}
+
+func (h *slowHelper) wait(ctx context.Context, call string) error {
+	h.started <- call
+	select {
+	case <-h.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *slowHelper) Action(ctx context.Context, x *Ext, name string, _ json.RawMessage) error {
+	return h.wait(ctx, "action "+name)
+}
+
+func (h *slowHelper) Remove(ctx context.Context, x *Ext, _ bool) error {
+	return h.wait(ctx, "remove")
+}
+
+// The PC stays awake while an action runs and while a helper undoes its
+// extension; an action that runs out of time says so in its label alone.
+func TestHelperCallsKeepThePCAwake(t *testing.T) {
+	h := &slowHelper{started: make(chan string, 1), release: make(chan struct{})}
+	r := runningCoolerControl(t, h)
+	busyWhile := func(call string, do func() int) {
+		t.Helper()
+		done := make(chan int, 1)
+		go func() { done <- do() }()
+		if got := <-h.started; got != call {
+			t.Fatalf("started %q, want %q", got, call)
+		}
+		if on, why := r.s.Busy(); !on || why != busyReason {
+			t.Fatalf("busy = %v %q during %s", on, why, call)
+		}
+		h.release <- struct{}{}
+		if code := <-done; code != 200 {
+			t.Fatalf("%s: %d", call, code)
+		}
+		if on, _ := r.s.Busy(); on {
+			t.Fatalf("still busy after %s", call)
+		}
+	}
+	busyWhile("action restore-fans", func() int {
+		code, _ := r.do("POST", "/extensions/coolercontrol/actions/restore-fans", `{}`)
+		return code
+	})
+
+	timeout := helperTimeout
+	t.Cleanup(func() { helperTimeout = timeout })
+	helperTimeout = 50 * time.Millisecond
+	go func() { <-h.started }()
+	if code, body := r.do("POST", "/extensions/coolercontrol/actions/restore-fans", `{"args":{"fan":"secret"}}`); code != 500 ||
+		body != `{"error":"Restore fans didn't finish in time. Try again."}` {
+		t.Fatalf("timed out: %d %s", code, body)
+	}
+	helperTimeout = timeout
+
+	busyWhile("remove", func() int {
+		code, _ := r.do("DELETE", "/extensions/coolercontrol", "")
+		return code
+	})
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"slices"
 	"time"
@@ -82,8 +83,8 @@ func wantSet(cat *catalog.Catalog, wanted []string) map[string]bool {
 // the images and proposes the set a restart tries. options are its first
 // settings. authorize checks the admin password, which adding an
 // extension that runs as root or sets kernel module options needs. One
-// that is still mounted, removed before the restart, gets back the units
-// its removal stopped.
+// that is still mounted, removed before the restart, gets back its data
+// areas and the units its removal stopped.
 func (s *Service) Install(ctx context.Context, id string, options map[string]any, authorize func() error) error {
 	ids, err := s.want(ctx, id, options, authorize)
 	if err != nil {
@@ -91,28 +92,47 @@ func (s *Service) Install(ctx context.Context, id string, options map[string]any
 	}
 	cat := s.catalog()
 	for _, a := range ids {
-		s.mu.Lock()
-		_, stopped := s.cc.stopped[a]
-		s.mu.Unlock()
-		if !stopped || !bootMounted(a) {
-			continue
+		if bootMounted(a) {
+			s.addBack(ctx, cat, a)
 		}
-		// After its removal's helper call, if one still runs.
-		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), helperTimeout)
-		if unlock, err := s.lockID(uctx, a); err != nil {
-			log.Printf("extensions: %s: starting its units again: %v", a, err)
-		} else {
-			if w, err := store.Wanted(); err == nil && wantSet(cat, w)[a] {
-				s.startUnits(uctx, a)
-			}
-			unlock()
-		}
-		cancel()
 	}
 	s.syncSteam() // one removed until the restart is back in Steam at once
 	s.syncPorts()
 	s.Reconcile()
 	return nil
+}
+
+// addBack restores what a removal this boot took from id, which is
+// mounted and wanted again. A removal under way is waited for (it holds
+// the helper lock): what it stops before it sees id wanted again is
+// started here, and what it stops after that it starts itself (undo).
+func (s *Service) addBack(ctx context.Context, cat *catalog.Catalog, id string) {
+	s.mu.Lock()
+	_, stopped := s.cc.stopped[id]
+	removing := s.cc.removing[id] > 0
+	s.mu.Unlock()
+	if !stopped && !removing {
+		return
+	}
+	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), helperTimeout)
+	defer cancel()
+	unlock, err := s.lockID(uctx, id)
+	if err != nil {
+		log.Printf("extensions: %s: starting its units again: %v", id, err)
+		return
+	}
+	defer unlock()
+	if ok, _ := stillWanted(cat, id); ok {
+		s.restore(uctx, id)
+	}
+}
+
+// restore makes id's data areas (a purge deleted them) and starts the
+// units a removal stopped, under its helper lock: id was added back
+// before the restart that would have dropped it.
+func (s *Service) restore(ctx context.Context, id string) {
+	makeDataAreasOf(id, s.desc(id))
+	s.startUnits(ctx, id)
 }
 
 // want checks an addition and writes it, one change at a time: id and
@@ -201,6 +221,9 @@ func (s *Service) checkAdd(id string, options map[string]any, authorize func() e
 	if err := s.checkConflicts(cat, want, adding); err != nil {
 		return nil, err
 	}
+	if err := s.checkDrives(id, opts, append(slices.Clone(adding), id)); err != nil {
+		return nil, err
+	}
 	if err := s.checkSpace(cat, adding); err != nil {
 		return nil, err
 	}
@@ -243,6 +266,27 @@ func (s *Service) checkConflicts(cat *catalog.Catalog, want map[string]bool, add
 				return refuse(http.StatusConflict, fmt.Sprintf("%s cannot run together with %s.", s.name(a), s.name(o)))
 			}
 		}
+	}
+	return nil
+}
+
+// checkDrives refuses adding an extension with a required disk setting and
+// no drive for it: in opts for id, else in its settings file (one kept
+// from an earlier add). The install dialog asks for the drive.
+func (s *Service) checkDrives(id string, opts map[string]any, adding []string) error {
+	for _, a := range adding {
+		d := s.desc(a)
+		values := loadSettings(a, d)
+		if a == id {
+			maps.Copy(values, opts)
+		}
+		if _, missing := missingDrive(d, values); !missing {
+			continue
+		}
+		if a == id {
+			return refuse(http.StatusBadRequest, s.name(a)+" needs a game drive. Pick one to add it.")
+		}
+		return refuse(http.StatusBadRequest, fmt.Sprintf("%s needs %s, which needs a game drive. Add %s first.", s.name(id), s.name(a), s.name(a)))
 	}
 	return nil
 }
@@ -376,11 +420,12 @@ func (s *Service) waitInstalls() { s.cc.installs.Wait() }
 // runInstalls runs the helper's Install, once, for every extension this
 // boot mounted that is wanted and has not been set up (no installed
 // marker), as root, one at a time and each within helperTimeout, under
-// its helper lock. A failure is the card's reason until a later try works
-// (at most maxHelperInstalls per boot, then only "Try again"); the error
-// itself goes to the log. An extension removed while its Install ran gets
-// no marker, and its helper's Remove undoes it unless the removal does.
-// It returns the most tries of one that failed with tries left, or 0.
+// its helper lock. A failure with tries left is tried again by itself (the
+// card stays installing); after maxHelperInstalls a boot it is the card's
+// reason, and only "Try again" tries more. The error itself goes to the
+// log. An extension removed while its Install ran gets no marker, and its
+// helper's Remove undoes it unless the removal does. It returns the most
+// tries of one that failed with tries left, or 0.
 func (s *Service) runInstalls(ctx context.Context, cat *catalog.Catalog, rep *store.BootReport) (retry int) {
 	for _, m := range rep.Mounted {
 		if ctx.Err() != nil {
@@ -419,6 +464,18 @@ func (s *Service) install(ctx context.Context, cat *catalog.Catalog, id string) 
 	if ok, _ := stillWanted(cat, id); !ok || isInstalled(id) || tries >= maxHelperInstalls {
 		return 0, false
 	}
+	x := s.ext(id, d)
+	if st, missing := missingDrive(d, x.Settings); missing {
+		// No try brings a drive: the card asks for one, and "Try again"
+		// looks once it is picked.
+		log.Printf("extensions: %s: not set up: no drive picked for %s", id, st.Key)
+		s.mu.Lock()
+		s.cc.notes[id], s.cc.tries[id] = pickDriveNote(s.name(id)), maxHelperInstalls
+		s.mu.Unlock()
+		s.changed()
+		return 0, false
+	}
+	makeDataAreasOf(id, d) // a purge before it was added back deleted them
 	hctx, cancel := context.WithTimeout(ctx, helperTimeout)
 	defer cancel()
 	s.mu.Lock()
@@ -426,7 +483,7 @@ func (s *Service) install(ctx context.Context, cat *catalog.Catalog, id string) 
 	s.cc.installing[id] = cancel
 	s.mu.Unlock()
 	s.helperBusy(1)
-	err = HelperFor(id).Install(hctx, s.ext(id, d))
+	err = HelperFor(id).Install(hctx, x)
 	s.mu.Lock()
 	delete(s.cc.installing, id)
 	removing := s.cc.removing[id] > 0

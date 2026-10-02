@@ -14,7 +14,9 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
@@ -30,7 +32,10 @@ type ccState struct {
 	idMu sync.Mutex
 	ids  map[string]chan struct{} // per id, held across its helper's Install, Remove or Action (lockID)
 
-	installs sync.WaitGroup // the helper installs' goroutine (startInstalls)
+	installs  sync.WaitGroup // the helper installs' goroutine (startInstalls)
+	passwords sync.WaitGroup // the helpers' PasswordChanged calls (passwordChanged)
+
+	names steamNames // the Steam app names the cards show (appNames)
 
 	// Under Service.mu.
 	notes      map[string]string             // by id: why its helper did not finish setting it up or removing it
@@ -112,6 +117,7 @@ var helperTimeout = 10 * time.Minute
 func (s *Service) Routes(srv *api.Server) {
 	s.cc.reauth = srv.Reauth
 	s.SetWebGuard(srv.GuardWeb)
+	srv.OnPasswordChanged(s.passwordChanged)
 	srv.Handle("GET", "/extensions", api.Authed, s.handleGet)
 	srv.Handle("POST", "/extensions/skip-once", api.Authed, s.handleSkipOnce)
 	srv.Handle("DELETE", "/extensions/skip-once", api.Authed, s.handleKeepOnce)
@@ -269,6 +275,55 @@ func (s *Service) handleKeepOnce(w http.ResponseWriter, r *http.Request) {
 func skipOnce() bool {
 	_, err := os.Lstat(config.ExtSkipOncePath())
 	return err == nil
+}
+
+// passwordChanged has the helpers that keep the admin password in their
+// extension (PasswordChanger) take the new one, beside the request that
+// changed it.
+func (s *Service) passwordChanged() {
+	s.cc.passwords.Add(1)
+	go func() {
+		defer s.cc.passwords.Done()
+		rep, err := store.LoadBootReport()
+		if err != nil {
+			log.Printf("extensions: passing on the new admin password: %v", err)
+			return
+		}
+		cat := s.catalog()
+		for _, m := range rep.Mounted {
+			if pc, ok := HelperFor(m.ID).(PasswordChanger); ok {
+				s.passPassword(cat, m.ID, pc)
+			}
+		}
+	}()
+}
+
+// passPassword runs id's PasswordChanged under its helper lock, within
+// helperTimeout and counting as busy, while id is still wanted.
+func (s *Service) passPassword(cat *catalog.Catalog, id string, pc PasswordChanger) {
+	d := s.desc(id)
+	if d == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), helperTimeout)
+	defer cancel()
+	unlock, err := s.lockID(ctx, id)
+	if err != nil {
+		log.Printf("extensions: %s: passing on the new admin password: %v", id, err)
+		return
+	}
+	defer unlock()
+	if ok, _ := stillWanted(cat, id); !ok {
+		return
+	}
+	s.helperBusy(1)
+	err = pc.PasswordChanged(ctx, s.ext(id, d))
+	s.helperBusy(-1)
+	if err != nil {
+		log.Printf("extensions: %s: passing on the new admin password: %v", id, err)
+		return
+	}
+	log.Printf("extensions: %s took the new admin password", id)
 }
 
 // name is id's name for messages: its descriptor's, else the id.
