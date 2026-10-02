@@ -960,6 +960,42 @@ func TestChangePassword(t *testing.T) {
 	login(t, s, "new-password")
 }
 
+// Reauth shares the login limit: a wrong password is 403 and counts, and
+// after the free failures even the right one is refused for a while.
+func TestReauthSharesTheLoginLimit(t *testing.T) {
+	env(t)
+	writeAdmin(t, "correct-pass")
+	s, _ := newServer(t, Options{})
+	c, csrf := login(t, s, "correct-pass")
+	s.Handle("POST", "/guarded", Authed, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Password string `json:"password"`
+		}
+		ReadJSON(r, &body)
+		if s.Reauth(w, r, body.Password) {
+			OK(w)
+		}
+	})
+	try := func(pw string) *httptest.ResponseRecorder {
+		return do(t, s, req{method: "POST", path: "/api/v1/guarded", body: `{"password":"` + pw + `"}`,
+			cookies: []*http.Cookie{c}, hdr: map[string]string{"X-VOS-CSRF": csrf}})
+	}
+	if rec := try("correct-pass"); rec.Code != 200 {
+		t.Fatalf("right password: %d %s", rec.Code, rec.Body)
+	}
+	for i := range 5 {
+		if rec := try("wrong"); rec.Code != 403 || !strings.Contains(rec.Body.String(), "the password is wrong") {
+			t.Fatalf("wrong password %d: %d %s", i, rec.Code, rec.Body)
+		}
+	}
+	if rec := try("correct-pass"); rec.Code != 429 {
+		t.Fatalf("after 5 failures: %d, want the login limit's 429", rec.Code)
+	}
+	if rec := do(t, s, req{method: "POST", path: "/api/v1/auth/login", body: `{"password":"correct-pass"}`}); rec.Code != 429 {
+		t.Fatalf("sign-in after 5 wrong re-auths: %d, want 429", rec.Code)
+	}
+}
+
 func TestLocalAccess(t *testing.T) {
 	env(t)
 	s, _ := newServer(t, Options{})

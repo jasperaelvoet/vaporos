@@ -226,6 +226,37 @@ func TestPowerRespondsThenActs(t *testing.T) {
 	}
 }
 
+// Reboot shares the web UI's guard: it never reboots while a reboot or
+// poweroff is on its way, and a failure lets the next one through.
+func TestRebootSharesTheGuard(t *testing.T) {
+	f := newFixture(t)
+	reboots := 0
+	var fail error
+	f.svc.reboot = func(context.Context) error { reboots++; return fail }
+	if ok, err := f.svc.Reboot(context.Background(), "Restarting to finish adding CoolerControl"); !ok || err != nil || reboots != 1 {
+		t.Fatalf("Reboot = %v, %v (%d reboots)", ok, err, reboots)
+	}
+	if ok, _ := f.svc.Reboot(context.Background(), "again"); ok || reboots != 1 {
+		t.Fatalf("rebooted twice: %v, %d", ok, reboots)
+	}
+	f.mu.Lock()
+	evs := strings.Join(f.evs, "\n")
+	f.mu.Unlock()
+	if evs != `system.message {"level":"info","text":"Restarting to finish adding CoolerControl"}` {
+		t.Fatalf("events: %s", evs)
+	}
+
+	f.svc.powerPending.Store(false)
+	fail = errors.New("boom")
+	if ok, err := f.svc.Reboot(context.Background(), "x"); !ok || err == nil || f.svc.powerPending.Load() {
+		t.Fatalf("failed Reboot = %v, %v, pending %v", ok, err, f.svc.powerPending.Load())
+	}
+	f.svc.powerPending.Store(true) // the web UI's poweroff is on its way
+	if ok, _ := f.svc.Reboot(context.Background(), "x"); ok {
+		t.Fatal("rebooted while a poweroff was pending")
+	}
+}
+
 func TestInfo(t *testing.T) {
 	f := newFixture(t)
 	f.write(config.HostnamePath, "vapor\n")

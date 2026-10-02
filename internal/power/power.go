@@ -62,6 +62,7 @@ type Service struct {
 	prevIO      uint64
 	haveIO      bool
 	poweringOff bool // poweroff requested; never ask twice
+	onTick      func(context.Context, Tick)
 
 	// Seams for tests. The defaults read the real system.
 	now          func() time.Time
@@ -249,8 +250,37 @@ type idleEvent struct {
 	Busy        *busyInfo `json:"busy"`        // null while idle
 }
 
+// Tick is what one pass of the policy saw, with every busy reason checked
+// just now (OnTick).
+type Tick struct {
+	Idle        time.Duration // how long nothing has kept the PC awake; 0 while busy
+	ShutdownIn  time.Duration // until idle shutdown; negative while it is off or busy
+	PoweringOff bool          // an idle shutdown is on its way
+}
+
+// OnTick registers f to run at the end of every pass of the policy, in the
+// pass's goroutine: the extensions' auto-restart decides there, on the
+// fresh busy reason rather than a summary up to 15 s old.
+func (s *Service) OnTick(f func(context.Context, Tick)) {
+	s.mu.Lock()
+	s.onTick = f
+	s.mu.Unlock()
+}
+
+func (s *Service) ticked(ctx context.Context, t Tick) {
+	s.mu.Lock()
+	t.PoweringOff = s.poweringOff
+	f := s.onTick
+	s.mu.Unlock()
+	if f != nil {
+		f(ctx, t)
+	}
+}
+
 // tick is one pass of the policy loop.
 func (s *Service) tick(ctx context.Context) {
+	t := Tick{ShutdownIn: -1}
+	defer func() { s.ticked(ctx, t) }()
 	now := s.now()
 	reason := s.busyReason(now)
 	pc := s.settings()
@@ -280,9 +310,11 @@ func (s *Service) tick(ctx context.Context) {
 		log.Printf("power: idle for %d/%d seconds", int(idle.Seconds()), int(limit.Seconds()))
 	}
 	ev := idleEvent{IdleSeconds: int(idle.Seconds())}
+	t.Idle = idle
 	if pc.IdleShutdown && limit > 0 {
 		left := max(int((limit - idle).Seconds()), 0)
 		ev.ShutdownIn = &left
+		t.ShutdownIn = max(limit-idle, 0)
 	}
 	s.publish("power.idle", ev)
 
