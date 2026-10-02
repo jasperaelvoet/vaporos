@@ -207,7 +207,7 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
-0. Fetch kernel and initrd, then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. A data partition that cannot seal (no fs-verity) skips the images: the new image then starts without them. Any other failure fails the stage.
+0. Fetch kernel and initrd, then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. On a boot whose report has reason `no-verity` no image is fetched, counted or given space (they could not be sealed), and a seal refused as unsupported stops the fetching: either way the new image then starts without them (logged). Any other failure fails the stage.
 1. Under ext.lock: remove the idle slot's entries, then write `ext/slots/<idle>.json` from the new manifest (an empty `extensions` object when it has none). An image of step 0 that GC removed in between (no slot file named it yet) is fetched again.
 2. Stream root into the idle slot partition while hashing.
 3. Re-read and verify.
@@ -222,7 +222,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
  "held":{"version":"<ver>","rollback_index":N}}
 ```
 `available.size` is the root plus the extension images this machine would
-still have to fetch for it (Write order step 0).
+still have to fetch for it (Write order step 0; none on a boot with reason
+`no-verity`).
 On daemon start: if `staged.version` ≠ booted, and the staged entry has no
 tries left (or is gone), append it to `failed` and clear `staged`. If it
 equals booted, clear `staged` once the boot is no longer on trial.

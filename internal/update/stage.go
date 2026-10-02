@@ -14,6 +14,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
@@ -175,8 +176,11 @@ func Check(ctx context.Context, cfg *config.Config, opts Options) (*CheckResult,
 	if res.Reason == nil {
 		// Run unprivileged, images the store does not let us see count
 		// as missing.
-		wanted, _ := store.Wanted()
-		_, missing := imagesFor(m, wanted)
+		var missing []catalog.Entry
+		if sealable() {
+			wanted, _ := store.Wanted()
+			_, missing = imagesFor(m, wanted)
+		}
 		size := m.Artifact(manifest.Root).Size + entriesSize(missing)
 		res.Available = &Available{Version: m.Version, Size: size, Checked: now}
 	}
@@ -275,7 +279,12 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 	if err != nil {
 		return res, fmt.Errorf("extension store: %w", err)
 	}
-	have, missing := imagesFor(m, wanted)
+	var have, missing []catalog.Entry
+	if sealable() {
+		have, missing = imagesFor(m, wanted)
+	} else if len(m.Extensions) > 0 {
+		log.Printf("update: the data partition cannot seal extension images (no fs-verity); VaporOS %s starts without its extensions", m.Version)
+	}
 	if err := checkStoreSpace(entriesSize(missing)); err != nil {
 		return res, err
 	}

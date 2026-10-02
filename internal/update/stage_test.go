@@ -790,6 +790,39 @@ func TestStageExtensionsUnsupported(t *testing.T) {
 	}
 }
 
+// On a boot whose data partition got no fs-verity (boot reason no-verity)
+// no image could be sealed: none is fetched, counted or reserved space for.
+func TestStageNoVerity(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	e.write(config.ExtBootPath(), `{"mode":"enabled","reason":"no-set no-verity"}`)
+	fs := e.fakeStore()
+	fs.free = 1 << 20 // far less than the reserve
+
+	res, err := Check(context.Background(), e.cfg(e.srcDir(img)), Options{})
+	if err != nil || res.Available == nil || res.Available.Size != int64(len(img.root())) {
+		t.Fatalf("check: %+v %v", res, err)
+	}
+	var total int64
+	opts := Options{Progress: func(p Progress) {
+		if p.Phase == "download" {
+			total = p.Total
+		}
+	}}
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), opts); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+	if len(fs.puts) != 0 || total != bootFilesSize(img.m) {
+		t.Fatalf("put %v, download total %d", fs.puts, total)
+	}
+	// The slot file still lists the new image's catalog.
+	if slot, err := store.ReadSlot("b"); err != nil || slot == nil || len(slot.Extensions) != 3 {
+		t.Fatalf("slots/b.json: %+v %v", slot, err)
+	}
+}
+
 // An image GC removed before the slot file named it is fetched again once
 // the slot file protects it.
 func TestStageRefetchesCollectedImage(t *testing.T) {

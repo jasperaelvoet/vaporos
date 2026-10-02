@@ -53,6 +53,14 @@ func imagesFor(m *manifest.Manifest, wanted []string) (have, missing []catalog.E
 	return have, missing
 }
 
+// sealable reports whether the store can seal images on this boot: not
+// once the initramfs reported that vos_data has no fs-verity. Nothing is
+// fetched for an image that could never be sealed, and nothing counted.
+func sealable() bool {
+	rep, err := store.LoadBootReport()
+	return err != nil || !rep.HasReason(store.ReasonNoVerity)
+}
+
 func entriesSize(es []catalog.Entry) int64 {
 	var n int64
 	for _, e := range es {
