@@ -62,3 +62,34 @@ func TestPatchSettingsRefuses(t *testing.T) {
 		}
 	}
 }
+
+func TestAddTables(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"empty", "", "[devices]\n\n[legacy690]\n\n[device-settings]\n"},
+		{"only settings, no newline at the end", "[settings]\nport = 11986",
+			"[settings]\nport = 11986\n\n[devices]\n\n[legacy690]\n\n[device-settings]\n"},
+		{"all there, as headers, sub-tables and dotted keys",
+			"legacy690.x = true\n[devices]\n[[profiles]]\n[device-settings.ab12]\npump = { speed_fixed = 30 }\n",
+			"legacy690.x = true\n[devices]\n[[profiles]]\n[device-settings.ab12]\npump = { speed_fixed = 30 }\n"},
+		{"headers inside values do not count",
+			"[settings]\nnote = \"\"\"\n[devices]\n\"\"\"\nx = [\n[1]]\n\"legacy690\" = 1\n[\"device-settings\"]\n",
+			"[settings]\nnote = \"\"\"\n[devices]\n\"\"\"\nx = [\n[1]]\n\"legacy690\" = 1\n[\"device-settings\"]\n\n[devices]\n\n[legacy690]\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := addTables(tc.in, requiredTables)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got\n%s\nwant\n%s", got, tc.want)
+			}
+			if again, err := addTables(got, requiredTables); err != nil || again != got {
+				t.Fatalf("not idempotent: %v\n%s", err, again)
+			}
+		})
+	}
+	if out, err := addTables("[settings]\nnote = '''\nnever closed\n", requiredTables); err == nil {
+		t.Fatalf("patched an open string into\n%s", out)
+	}
+}

@@ -13,7 +13,14 @@ var (
 	settingsHeaderRe = regexp.MustCompile(`^\s*\[\s*settings\s*\]\s*(#.*)?$`)
 	keyRe            = regexp.MustCompile(`^\s*(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)")\s*=`)
 	topSettingsRe    = regexp.MustCompile(`^\s*settings\s*[.=]`)
+	tableHeaderRe    = regexp.MustCompile(`^\s*\[\[?\s*(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)")\s*[.\]]`)
+	topKeyRe         = regexp.MustCompile(`^\s*(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)")\s*[.=]`)
 )
+
+// requiredTables are the top-level tables coolercontrold 5 reads without
+// checking that they exist: it panics on a config.toml that lacks one. Its
+// own new file has them all.
+var requiredTables = []string{"devices", "legacy690", "device-settings"}
 
 var errTOML = errors.New("config.toml is not TOML VaporOS can change; delete CoolerControl's settings to start over")
 
@@ -125,6 +132,42 @@ func patchSettings(doc string, force, defaults []setting) (string, error) {
 		i++
 	}
 	return strings.Join(out, ""), nil
+}
+
+// addTables returns doc with an empty table at its end for each of names
+// it lacks. A table counts when it has a header of its own or of a
+// sub-table, or a dotted key before the first header.
+func addTables(doc string, names []string) (string, error) {
+	have := map[string]bool{}
+	depth, ml, seenHeader := 0, "", false
+	for _, l := range strings.SplitAfter(doc, "\n") {
+		if depth == 0 && ml == "" {
+			if m := tableHeaderRe.FindStringSubmatch(l); m != nil {
+				seenHeader = true
+				have[m[1]+m[2]] = true
+			} else if m := topKeyRe.FindStringSubmatch(l); m != nil && !seenHeader {
+				have[m[1]+m[2]] = true
+			}
+		}
+		depth, ml = scanTOML(l, depth, ml)
+	}
+	if depth != 0 || ml != "" {
+		return "", errTOML
+	}
+	out := doc
+	for _, n := range names {
+		if have[n] {
+			continue
+		}
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += "[" + n + "]\n"
+	}
+	return out, nil
 }
 
 // scanTOML follows one line of a TOML document: how deep it leaves us in

@@ -102,7 +102,7 @@ func TestPrepareFirstStart(t *testing.T) {
 		t.Fatalf(".passwd: %v %v", fi, err)
 	}
 	cfg := r.configToml()
-	for _, want := range []string{"[settings]\n", `trusted_proxies = ["127.0.0.1", "::1"]`, "\npoll_rate = 1.0\n",
+	for _, want := range []string{"[devices]\n", "\n[legacy690]\n", "\n[device-settings]\n", "\n[settings]\n", "\npoll_rate = 1.0\n",
 		"\ndrivetemp_suspend = true\n", "\nport = 11986\n", "\ntls_enabled = false\n", `ipv4_address = "127.0.0.1"`} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config.toml lacks %q:\n%s", want, cfg)
@@ -193,7 +193,7 @@ func TestPrepareKeepsTheUsersConfig(t *testing.T) {
 	must(t, os.WriteFile(cfg, []byte("[devices]\n[settings]\npoll_rate = 0.5\nport = 9000\n[legacy690]\n"), 0o640))
 	must(t, r.prepare())
 	got := r.configToml()
-	if !strings.Contains(got, "poll_rate = 0.5\n") || strings.Contains(got, "port = 9000") || !strings.HasSuffix(got, "[legacy690]\n") {
+	if !strings.Contains(got, "poll_rate = 0.5\n") || strings.Contains(got, "port = 9000") || !strings.HasSuffix(got, "[legacy690]\n\n[device-settings]\n") {
 		t.Fatalf("config.toml:\n%s", got)
 	}
 	if fi, _ := os.Stat(cfg); fi.Mode().Perm() != 0o640 {

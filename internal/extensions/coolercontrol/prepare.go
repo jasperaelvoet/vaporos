@@ -27,12 +27,11 @@ const daemonPackage = "coolercontrold"
 const backupWait = 2 * time.Minute
 
 // The settings vosd's proxy depends on, written at every start: it is the
-// only way in (loopback, plain HTTP behind it), and the only proxy whose
-// X-Forwarded-For counts. The others are VaporOS's choices, written only
-// where config.toml lacks them, so a change made in CoolerControl stays.
+// only way in (loopback, plain HTTP behind it). The others are VaporOS's
+// choices, written only where config.toml lacks them, so a change made in
+// CoolerControl stays.
 var (
 	forcedSettings = []setting{
-		{"trusted_proxies", `["127.0.0.1", "::1"]`},
 		{"ipv4_address", `"127.0.0.1"`},
 		{"ipv6_address", `"::1"`},
 		{"port", "11986"},
@@ -204,8 +203,9 @@ func runBackup(ctx context.Context, d dirs) error {
 	return nil
 }
 
-// patchConfig writes VaporOS's settings into config.toml (made when
-// missing), keeping everything else in it.
+// patchConfig writes the tables coolercontrold needs and VaporOS's
+// settings into config.toml (made when missing), keeping everything else
+// in it.
 func patchConfig(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -215,7 +215,10 @@ func patchConfig(path string) error {
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
 	}
-	out, err := patchSettings(string(b), forcedSettings, defaultSettings)
+	out, err := addTables(string(b), requiredTables)
+	if err == nil {
+		out, err = patchSettings(out, forcedSettings, defaultSettings)
+	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}

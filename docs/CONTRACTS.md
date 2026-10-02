@@ -1230,14 +1230,15 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
      and records the version; a failed backup is logged and tried again at
      the next start, and without `config.toml` the version is only
      recorded;
-  3. writes `config.toml`'s `[settings]` (the file made when missing,
-     everything else in it kept): `trusted_proxies = ["127.0.0.1", "::1"]`,
-     `ipv4_address = "127.0.0.1"`, `ipv6_address = "::1"`, `port = 11986`
-     and `tls_enabled = false` at every start; `poll_rate = 1.0` and
-     `drivetemp_suspend = true` only where the table lacks them, so a choice
-     made in CoolerControl stays. A `config.toml` it cannot change (settings
-     as dotted keys or an inline table, a table or key twice, a value never
-     closed) fails the start.
+  3. writes `config.toml` (the file made when missing, everything else in
+     it kept): an empty `[devices]`, `[legacy690]` and `[device-settings]`
+     table where the file lacks one (coolercontrold stops on a file without
+     them), and in `[settings]` `ipv4_address = "127.0.0.1"`,
+     `ipv6_address = "::1"`, `port = 11986` and `tls_enabled = false` at
+     every start; `poll_rate = 1.0` and `drivetemp_suspend = true` only
+     where the table lacks them, so a choice made in CoolerControl stays. A
+     `config.toml` it cannot change (settings as dotted keys or an inline
+     table, a table or key twice, a value never closed) fails the start.
 - `fans snapshot` records the value of every
   `/sys/class/hwmon/hwmon*/pwm<N>_enable` under the key
   `<realpath of hwmon*/device, else of hwmon* itself>/pwm<N>_enable` in
