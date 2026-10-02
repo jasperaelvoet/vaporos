@@ -20,6 +20,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/events"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
@@ -124,6 +125,7 @@ type Service struct {
 	follow        func(ctx context.Context) (<-chan string, error)
 	journalTail   func(ctx context.Context, n int) (string, error)
 	games         func() []steam.App
+	extApps       func() []extensions.SunshineApp
 }
 
 func NewService(cfg *config.Config) *Service {
@@ -150,6 +152,7 @@ func NewService(cfg *config.Config) *Service {
 		follow:        followJournal,
 		journalTail:   journalTail,
 		games:         func() []steam.App { return installedGames(config.GamerHome) },
+		extApps:       extensions.SunshineApps,
 	}
 }
 
@@ -434,7 +437,7 @@ func (s *Service) writeConf() (bool, error) {
 }
 
 func (s *Service) writeApps() (bool, error) {
-	return writeGamerFile(appsPath(), renderApps(s.games()), 0o600)
+	return writeGamerFile(appsPath(), renderApps(s.games(), s.extApps()), 0o600)
 }
 
 // requestRestart restarts Sunshine now, or after the current stream: a

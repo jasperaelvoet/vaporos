@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -32,12 +33,15 @@ const launchCmd = "/usr/bin/vos session launch steam://rungameid/%d"
 
 // renderApps builds apps.json: "Steam" first, which streams the Steam UI
 // that gamescope already shows, then one entry per installed game that
-// asks the Steam in gamescope to launch it (launchCmd).
+// asks the Steam in gamescope to launch it (launchCmd), then the apps the
+// extensions add (extensions.SunshineApps: their Steam shortcuts, started
+// the same way by game id, and their helpers' own entries), whose
+// commands are taken literally.
 //
 // Sunshine derives each app's id from its name (and image), so names are
 // kept unique; that also keeps ids, and Moonlight's shortcuts, stable
 // when the list is regenerated.
-func renderApps(games []steam.App) []byte {
+func renderApps(games []steam.App, extra []extensions.SunshineApp) []byte {
 	f := appsFile{
 		// Sunshine's default: the gaming user's scripts are on PATH.
 		Env:  map[string]string{"PATH": "$(PATH):$(HOME)/.local/bin"},
@@ -54,6 +58,18 @@ func renderApps(games []steam.App) []byte {
 			Name:     escapeEnv(name),
 			Detached: []string{fmt.Sprintf(launchCmd, g.ID)},
 		})
+	}
+	for _, a := range extra {
+		name := a.Name
+		for n := 2; used[strings.ToLower(name)]; n++ {
+			name = fmt.Sprintf("%s (%d)", a.Name, n)
+		}
+		used[strings.ToLower(name)] = true
+		cmds := make([]string, len(a.Detached))
+		for i, c := range a.Detached {
+			cmds[i] = escapeEnv(c)
+		}
+		f.Apps = append(f.Apps, appEntry{Name: escapeEnv(name), Detached: cmds})
 	}
 	b, _ := json.MarshalIndent(f, "", "  ")
 	return append(b, '\n')

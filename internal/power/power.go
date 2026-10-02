@@ -25,6 +25,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/api"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
+	"github.com/jasperaelvoet/vaporos/internal/gameproc"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
@@ -78,14 +79,12 @@ type Service struct {
 
 func NewService(cfg *config.Config, busy ...BusyFunc) *Service {
 	return &Service{
-		cfg:      cfg,
-		busy:     busy,
-		now:      time.Now,
-		poweroff: sysd.Poweroff,
-		publish:  events.Publish,
-		gameRunning: func() bool {
-			return gameRunning("/proc", config.GamerUID)
-		},
+		cfg:         cfg,
+		busy:        busy,
+		now:         time.Now,
+		poweroff:    sysd.Poweroff,
+		publish:     events.Publish,
+		gameRunning: gameproc.Default().GameRunning,
 		downloading: func(now time.Time) bool {
 			libs := steam.Libraries(steam.Root(config.GamerHome))
 			return steamDownloading(libs, now.Add(-downloadWindow))

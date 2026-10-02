@@ -249,31 +249,6 @@ func TestRunDoesNothingLive(t *testing.T) {
 	}
 }
 
-func TestGameRunning(t *testing.T) {
-	proc := t.TempDir()
-	write := func(pid, env string) {
-		os.MkdirAll(filepath.Join(proc, pid), 0o755)
-		os.WriteFile(filepath.Join(proc, pid, "environ"), []byte(env), 0o644)
-	}
-	write("100", "HOME=/var/home/vapor\x00SteamAppId=0\x00")
-	write("101", "SteamAppId=12x\x00")
-	write("self", "SteamAppId=5\x00") // not a pid
-	uid := os.Getuid()
-	if gameRunning(proc, uid) {
-		t.Fatal("no game should be running")
-	}
-	write("202", "A=1\x00SteamAppId=1091500\x00B=2")
-	if !gameRunning(proc, uid) {
-		t.Fatal("game not found")
-	}
-	if gameRunning(proc, uid+1) {
-		t.Error("another user's game counted")
-	}
-	if gameRunning(filepath.Join(proc, "missing"), uid) {
-		t.Error("missing /proc reported a game")
-	}
-}
-
 func TestSteamDownloading(t *testing.T) {
 	now := time.Now()
 	lib := t.TempDir()

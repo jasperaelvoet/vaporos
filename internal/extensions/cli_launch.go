@@ -1,18 +1,17 @@
 package extensions
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 
-	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
@@ -85,31 +84,17 @@ func parseLaunch(args []string) (launch, error) {
 	return l, nil
 }
 
-// launchCmd is the dispatcher's first step (docs/CONTRACTS.md "Binary"):
-// it runs CMD unchanged, with this environment, except that a shortcut of
-// an extension this boot did not mount is refused rather than run.
+// launchCmd is `vos ext launch` (docs/CONTRACTS.md "Binary"): it runs
+// the launch hooks of what starts, then execs CMD (dispatch.go). A hook
+// may wait on the network or the disk, so SIGTERM and SIGINT (Steam
+// stopping the game) end its context.
 func launchCmd(args []string, stderr io.Writer) int {
 	l, err := parseLaunch(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "vos ext launch: %v\n%s\n", err, launchUsage)
 		return 2
 	}
-	if l.shortcut != "" {
-		rep, err := store.LoadBootReport()
-		if err != nil || !rep.IsMounted(l.shortcut) {
-			fmt.Fprintf(stderr, "vos ext launch: the %s extension is not installed in this boot of VaporOS, so %s/%s does not start\n",
-				l.shortcut, l.shortcut, l.key)
-			return 1
-		}
-	}
-	path := l.argv[0]
-	if !filepath.IsAbs(path) {
-		if path, err = exec.LookPath(path); err != nil {
-			fmt.Fprintf(stderr, "vos ext launch: %v\n", err)
-			return 1
-		}
-	}
-	err = execve(path, l.argv, os.Environ())
-	fmt.Fprintf(stderr, "vos ext launch: %s: %v\n", path, err)
-	return 1
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	return dispatch(ctx, l, os.Environ(), stderr)
 }

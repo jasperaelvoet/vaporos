@@ -116,6 +116,7 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	switch {
 	case !gsUp:
 		if err = m.writeGamescopeEnv(virtual, hdr); err == nil {
+			m.awaitSteamJSON(ctx)
 			err = m.h.StartUnit(ctx, GamescopeUnit, true)
 		}
 	case m.gsHDR != hdr:

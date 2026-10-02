@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/events"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
@@ -66,6 +67,15 @@ type Service struct {
 	// options renders the module options of a set's ids from their
 	// settings; nil until an extension has any.
 	options func(ids []string) []string
+
+	// Steam (steamdesired.go, steamwatch.go): steamMu serialises writes of
+	// steam.json; steamRestart (under mu) asks for a Steam restart;
+	// publish sends events; missingAccounts is the last set of accounts
+	// prepare lacked (watchSteam's goroutine only).
+	steamMu         sync.Mutex
+	steamRestart    func(reason string)
+	publish         func(topic string, data any)
+	missingAccounts string
 }
 
 // NewService returns the extensions service; Run does the work.
@@ -82,6 +92,7 @@ func NewService(cfg *config.Config) *Service {
 		damaged:  map[string]bool{},
 		bad:      map[string]bool{},
 		full:     map[string]int64{},
+		publish:  events.Publish,
 	}
 }
 
@@ -120,6 +131,17 @@ func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
 	}
+	// steam.json first: vosd's first gamescope start waits for it.
+	s.syncSteam()
+	steamCtx, stopSteam := context.WithCancel(ctx)
+	var watch sync.WaitGroup
+	watch.Add(1)
+	go func() {
+		defer watch.Done()
+		s.watchSteam(steamCtx)
+	}()
+	defer watch.Wait()
+	defer stopSteam()
 	if err := store.CleanTemp(); err != nil {
 		log.Printf("extensions: %v", err)
 	}
@@ -142,6 +164,7 @@ func (s *Service) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		s.syncSteam()
 		if first {
 			rehash.Add(1)
 			go func() {

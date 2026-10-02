@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -58,7 +59,7 @@ func TestAppsFromReferenceLibraries(t *testing.T) {
 	isolate(t)
 	steamFixture(t)
 	var f appsFile
-	if err := json.Unmarshal(renderApps(installedGames(config.GamerHome)), &f); err != nil {
+	if err := json.Unmarshal(renderApps(installedGames(config.GamerHome), nil), &f); err != nil {
 		t.Fatal(err)
 	}
 	if f.Env["PATH"] == "" {
@@ -84,7 +85,7 @@ func TestAppsFromReferenceLibraries(t *testing.T) {
 // game's `steam steam://…` started before gamescope's Steam is up starts a
 // second Steam outside gamescope.
 func TestAppsHaveNoCmd(t *testing.T) {
-	out := renderApps([]steam.App{{ID: 10, Name: "Game"}})
+	out := renderApps([]steam.App{{ID: 10, Name: "Game"}}, nil)
 	var raw struct {
 		Apps []map[string]any `json:"apps"`
 	}
@@ -107,7 +108,7 @@ func TestAppsHaveNoCmd(t *testing.T) {
 func TestAppsWithoutSteam(t *testing.T) {
 	isolate(t)
 	var f appsFile
-	if err := json.Unmarshal(renderApps(installedGames(config.GamerHome)), &f); err != nil {
+	if err := json.Unmarshal(renderApps(installedGames(config.GamerHome), nil), &f); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.Apps) != 1 || f.Apps[0].Name != "Steam" {
@@ -121,7 +122,7 @@ func TestAppsNamesUniqueAndEscaped(t *testing.T) {
 		{ID: 20, Name: "Twin"},
 		{ID: 30, Name: "twin"},
 		{ID: 40, Name: "Cash $(HOME) Grab"},
-	})
+	}, nil)
 	var f appsFile
 	json.Unmarshal(out, &f)
 	var names []string
@@ -134,5 +135,46 @@ func TestAppsNamesUniqueAndEscaped(t *testing.T) {
 	}
 	if !json.Valid(out) || out[len(out)-1] != '\n' {
 		t.Error("apps.json is not valid JSON ending in a newline")
+	}
+}
+
+// The extensions' apps follow the games: their Steam shortcuts, started by
+// a game id above 2^63, and a helper's own entry, all with unique names.
+func TestAppsFromExtensions(t *testing.T) {
+	const scGame = "13866671359666421760" // (0xC0705022 << 32) | 0x02000000
+	out := renderApps([]steam.App{{ID: 227300, Name: "Euro Truck Simulator 2"}, {ID: 1, Name: "Star Citizen"}}, []extensions.SunshineApp{
+		{Name: "Star Citizen", Detached: []string{"/usr/bin/vos session launch steam://rungameid/" + scGame}},
+		{Name: "ETS2 Multiplayer", Detached: []string{"/usr/bin/vos ext truckersmp mp ets2", "echo $(HOME)"}},
+	})
+	var f appsFile
+	if err := json.Unmarshal(out, &f); err != nil {
+		t.Fatal(err)
+	}
+	want := []appEntry{
+		{Name: "Steam", ImagePath: "steam.png"},
+		{Name: "Euro Truck Simulator 2", Detached: []string{"/usr/bin/vos session launch steam://rungameid/227300"}},
+		{Name: "Star Citizen", Detached: []string{"/usr/bin/vos session launch steam://rungameid/1"}},
+		{Name: "Star Citizen (2)", Detached: []string{"/usr/bin/vos session launch steam://rungameid/" + scGame}},
+		{Name: "ETS2 Multiplayer", Detached: []string{"/usr/bin/vos ext truckersmp mp ets2", "echo $$(HOME)"}},
+	}
+	if !reflect.DeepEqual(f.Apps, want) {
+		t.Errorf("apps:\n%+v\nwant\n%+v", f.Apps, want)
+	}
+}
+
+// writeApps asks the extensions for their apps each time.
+func TestWriteAppsAddsTheExtensions(t *testing.T) {
+	isolate(t)
+	s := NewService(config.Defaults())
+	s.games = func() []steam.App { return nil }
+	s.extApps = func() []extensions.SunshineApp {
+		return []extensions.SunshineApp{{Name: "ETS2 Multiplayer", Detached: []string{"/usr/bin/vos ext truckersmp mp ets2"}}}
+	}
+	if changed, err := s.writeApps(); err != nil || !changed {
+		t.Fatalf("writeApps: %v %v", changed, err)
+	}
+	b, err := os.ReadFile(appsPath())
+	if err != nil || !strings.Contains(string(b), `"/usr/bin/vos ext truckersmp mp ets2"`) {
+		t.Fatalf("apps.json: %s %v", b, err)
 	}
 }
