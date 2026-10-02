@@ -127,6 +127,56 @@ func TestBranchAfterAReinstall(t *testing.T) {
 	}
 }
 
+// A libraryfolders.vdf that does not parse may hide the library an app is
+// in: the app is not taken for uninstalled, so its record stays and the
+// branch the user picked is not taken away once the file reads again.
+func TestBranchKeptWhileTheLibraryListIsDamaged(t *testing.T) {
+	b := newBox(t)
+	lib := filepath.Join(b.dir, "var", "mnt", "games", "SteamLibrary")
+	manifest := filepath.Join(lib, "steamapps", "appmanifest_227300.acf")
+	b.write(manifest, b.steamFile("steamapps/appmanifest_227300.acf"))
+	b.check(os.Remove(filepath.Join(b.root, "steamapps", "appmanifest_227300.acf")))
+	vdf := filepath.Join(b.root, "steamapps", "libraryfolders.vdf")
+	folders := []byte("\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"" + b.root + "\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"" + lib + "\"\n\t}\n}\n")
+	b.write(vdf, folders)
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61", "r1"))
+	b.run(false)
+	branch := func() string {
+		data, err := readRegular(manifest, steam.VDFMax)
+		b.check(err)
+		k, _, err := steam.BetaKey(data)
+		b.check(err)
+		return k
+	}
+	if k := branch(); k != "temporary_1_61" {
+		t.Fatalf("BetaKey %q", k)
+	}
+	data, err := readRegular(manifest, steam.VDFMax)
+	b.check(err)
+	picked, _, err := steam.SetBetaKey(data, "temporary_1_58")
+	b.check(err)
+	b.write(manifest, picked)
+
+	b.write(vdf, folders[:len(folders)-12])
+	b.run(false)
+	st := b.state()
+	if a := st.peekApp(ets2); a == nil || a.Beta == nil || a.Beta.Request != "r1" {
+		t.Fatalf("record dropped while the library list is damaged: %+v\n%s", a, b.logs.String())
+	}
+	if !strings.Contains(st.Error, "libraryfolders.vdf") || st.Fingerprint != "" {
+		t.Errorf("error %q, fingerprint %q", st.Error, st.Fingerprint)
+	}
+
+	b.write(vdf, folders)
+	b.run(false)
+	if k := branch(); k != "temporary_1_58" {
+		t.Errorf("the user's branch was taken away: %q", k)
+	}
+	if st := b.state(); st.Error != "" || st.peekApp(ets2).Beta.Request != "r1" {
+		t.Errorf("record %+v, error %q", st.peekApp(ets2).Beta, st.Error)
+	}
+}
+
 func TestBranchAlreadySoIsAdopted(t *testing.T) {
 	b := newBox(t)
 	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_53", "r1"))

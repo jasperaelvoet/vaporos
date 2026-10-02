@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,24 +30,40 @@ func Root(home string) string {
 // keeps that file in steamapps/ (and a copy in config/); both are read, as
 // either can be the newer one right after a library is added. Duplicates,
 // including the same directory reached through a symlink such as
-// /mnt -> /var/mnt, are removed.
+// /mnt -> /var/mnt, are removed. A file that cannot be read or parsed
+// adds nothing; ReadLibraries says when that happened.
 func Libraries(root string) []string {
+	libs, _ := ReadLibraries(root)
+	return libs
+}
+
+// ReadLibraries is Libraries that also says when the list may lack a
+// library: a libraryfolders.vdf that is there but cannot be read or parsed
+// (damaged, or caught mid-write) may list more than the libraries
+// returned. A missing one is no error.
+func ReadLibraries(root string) ([]string, error) {
 	libs := []string{root}
+	var errs []error
 	for _, f := range []string{
 		filepath.Join(root, "steamapps", "libraryfolders.vdf"),
 		filepath.Join(root, "config", "libraryfolders.vdf"),
 	} {
 		data, err := ReadFileLimited(f)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
+			errs = append(errs, err) // it names the file
 			continue
 		}
 		paths, err := ParseLibraryFolders(data)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", f, err))
 			continue
 		}
 		libs = append(libs, paths...)
 	}
-	return dedupePaths(libs)
+	return dedupePaths(libs), errors.Join(errs...)
 }
 
 // ParseLibraryFolders returns the library paths in a libraryfolders.vdf.

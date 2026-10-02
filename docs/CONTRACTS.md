@@ -883,7 +883,7 @@ of `vos-gamescope.service`, and vosd's run when `dispatcher` turns false):
    `--unwrap`, whether the boot report's mode is `off` (step 5.3),
    whether each tool `steam.json` names or VaporOS owns an entry
    for is installed, loginusers.vdf's bytes, and the size, mtime and mode of
-   config.vdf, `steamapps/libraryfolders.vdf`, each account's localconfig.vdf
+   config.vdf, both libraryfolders.vdf (`steamapps/` and `config/`), each account's localconfig.vdf
    and shortcuts.vdf and, in every library, the appmanifests of the apps a
    branch is asked or recorded for, and whether each library's `steamapps`
    is there (with such apps only). When it
@@ -1025,8 +1025,12 @@ of `vos-gamescope.service`, and vosd's run when `dispatcher` turns false):
       first library that has the manifest. An app that is not installed
       waits, and loses its branch record once no library has its
       manifest while every library's `steamapps` is there (a drive that
-      is away may hold it), so a reinstall gets the request that still
-      stands. Each `beta` request is applied once (`""` removes the key:
+      is away may hold it) and every libraryfolders.vdf there is
+      (`steamapps/` and `config/`) reads and parses (one that does not
+      may list the library that holds it, and goes into `error`), so a
+      reinstall gets the request that still stands, and a branch the
+      user picked is never asked for again just because the list of
+      libraries could not be read. Each `beta` request is applied once (`""` removes the key:
       the public branch) and its `request` recorded; while the record
       holds that id the manifest is left as it is, so a branch the user
       picks in Steam afterwards stays. `before` is the manifest's value

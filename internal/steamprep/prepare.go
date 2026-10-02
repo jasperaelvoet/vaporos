@@ -47,6 +47,9 @@ type prep struct {
 	// report), a boot without extensions that says nothing about which
 	// ones stay: no shortcut goes.
 	extOff bool
+	// libsPartial: a libraryfolders.vdf could not be read or parsed, so
+	// libs may lack the library an app is in.
+	libsPartial bool
 }
 
 func prepare(ctx context.Context, o Options) {
@@ -318,6 +321,7 @@ func (p *prep) fingerprint(desired []byte) string {
 	}
 	statLine(h, steam.ConfigVDFPath(p.root))
 	statLine(h, filepath.Join(p.root, "steamapps", "libraryfolders.vdf"))
+	statLine(h, filepath.Join(p.root, "config", "libraryfolders.vdf"))
 	if apps := p.betaApps(); len(apps) > 0 {
 		libs := p.libraries()
 		for _, lib := range libs {
@@ -364,10 +368,15 @@ func (p *prep) isTool(app uint32) bool {
 	return is
 }
 
-// libraries returns Steam's libraries, read once a run.
+// libraries returns Steam's libraries, read once a run. A
+// libraryfolders.vdf that cannot be read or parsed is the run's error.
 func (p *prep) libraries() []string {
 	if p.libs == nil {
-		p.libs = steam.Libraries(p.root)
+		var err error
+		if p.libs, err = steam.ReadLibraries(p.root); err != nil {
+			p.libsPartial = true
+			p.fail("libraryfolders.vdf", err)
+		}
 	}
 	return p.libs
 }
