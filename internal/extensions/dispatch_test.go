@@ -330,4 +330,51 @@ func TestDispatchStoppedBySteam(t *testing.T) {
 	if recs := launchMessages(t); len(recs) != 0 {
 		t.Fatalf("records %+v", recs)
 	}
+
+	// A hook that returns nil after Steam stopped the launch: no later
+	// hook runs, and neither does the game.
+	ctx, cancel = context.WithCancel(context.Background())
+	writeSteamJSON(t, SteamDesired{Set: "3", Apps: []SteamApp{{App: 227300, Hooks: []string{"proton", "truckersmp"}}}})
+	withHelper(t, "proton", testHelper{id: "proton", calls: hooks, hook: func(context.Context, *Launch) error {
+		cancel()
+		return nil
+	}})
+	*hooks = nil
+	stderr.Reset()
+	if rc := dispatch(ctx, l, nil, &stderr); rc != 1 || len(*calls) != 0 || !slices.Equal(*hooks, []string{"proton"}) ||
+		!strings.Contains(stderr.String(), "proton: Steam stopped the launch") {
+		t.Fatalf("exit %d, calls %d, hooks %q: %s", rc, len(*calls), *hooks, stderr.String())
+	}
+	if recs := launchMessages(t); len(recs) != 0 {
+		t.Fatalf("records %+v", recs)
+	}
+
+	// Stopped before any hook ran: no exec either.
+	stderr.Reset()
+	if rc := dispatch(ctx, launch{argv: []string{"/games/other"}}, nil, &stderr); rc != 1 || len(*calls) != 0 {
+		t.Fatalf("exit %d, calls %d: %s", rc, len(*calls), stderr.String())
+	}
+}
+
+// A hook's error of any length still reaches vosd: the record's detail is
+// cut to what vosd logs, so the file stays within what it reads.
+func TestDispatchLongError(t *testing.T) {
+	e, _, hooks := dispatchBox(t)
+	s, _ := e.service()
+	got := capture(s)
+	long := strings.Repeat("<&\" ", 2500) // 15 KB, longer still as JSON
+	withHelper(t, "truckersmp", testHelper{id: "truckersmp", calls: hooks, hook: func(context.Context, *Launch) error {
+		return errors.New(long)
+	}})
+	if rc, _ := runLaunch("--app", "227300", "/games/ets2"); rc != 1 {
+		t.Fatalf("exit %d", rc)
+	}
+	recs := launchMessages(t)
+	if len(recs) != 1 || recs[0].Code != codeHookFailed || len([]rune(recs[0].Detail)) != maxMessageDetail {
+		t.Fatalf("records %+v", recs)
+	}
+	s.pollMessages()
+	if len(*got) != 1 || (*got)[0].topic != "system.message" {
+		t.Fatalf("published %+v", *got)
+	}
 }
