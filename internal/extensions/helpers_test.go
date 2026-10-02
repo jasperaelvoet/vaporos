@@ -85,20 +85,40 @@ func writeFile(t *testing.T, path, data string) {
 // final name with the catalog's size, whatever happens to its bytes later
 // (the kernel only notices those when it reads them).
 type fakeSealer struct {
-	mu     sync.Mutex
-	sealed map[string]bool // paths
-	puts   []string        // ids, in order
-	err    error           // Put fails with it after fetching
+	mu       sync.Mutex
+	sealed   map[string]bool // paths
+	puts     []string        // ids, in order
+	attempts int             // Puts of an image not sealed yet
+	err      error           // Put fails with it after fetching
+	before   error           // Put fails with it before fetching (store.ErrNoSpace)
+	writeErr error           // writes to the image fail with it (a full disk)
+	free     int64           // what storeFree reports
 }
 
 func fakeStore(t *testing.T) *fakeSealer {
-	f := &fakeSealer{sealed: map[string]bool{}}
-	p, h := putImage, hasImage
-	t.Cleanup(func() { putImage, hasImage = p, h })
+	f := &fakeSealer{sealed: map[string]bool{}, free: -1}
+	p, h, fr := putImage, hasImage, storeFree
+	t.Cleanup(func() { putImage, hasImage, storeFree = p, h, fr })
 	putImage = f.put
 	hasImage = f.has
+	storeFree = func() (int64, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.free, nil
+	}
 	return f
 }
+
+func (f *fakeSealer) set(fn func(f *fakeSealer)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+// failWriter is a disk that refuses every write.
+type failWriter struct{ err error }
+
+func (w failWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func (f *fakeSealer) has(e catalog.Entry) (bool, error) {
 	path := store.ImagePath(e.SHA256)
@@ -118,8 +138,19 @@ func (f *fakeSealer) put(ctx context.Context, e catalog.Entry, fetch func(io.Wri
 	if ok, err := f.has(e); err != nil || ok {
 		return err
 	}
+	f.mu.Lock()
+	f.attempts++
+	before, writeErr := f.before, f.writeErr
+	f.mu.Unlock()
+	if before != nil {
+		return fmt.Errorf("extension %s: %w", e.ID, before)
+	}
 	var buf bytes.Buffer
-	if err := fetch(&buf, func(int64) error { return ctx.Err() }); err != nil {
+	var w io.Writer = &buf
+	if writeErr != nil {
+		w = failWriter{writeErr}
+	}
+	if err := fetch(w, func(int64) error { return ctx.Err() }); err != nil {
 		return fmt.Errorf("extension %s: %w", e.ID, err)
 	}
 	sum := sha256.Sum256(buf.Bytes())

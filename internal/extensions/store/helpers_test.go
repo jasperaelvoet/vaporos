@@ -22,13 +22,15 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions/fsverity"
 )
 
-// setup points the store at a temp dir and fakes the kernel's fs-verity.
+// setup points the store at a temp dir and fakes the kernel's fs-verity,
+// on a disk whose free space is not known (whatever the test machine has).
 func setup(t *testing.T) *fakeVerity {
 	t.Helper()
-	state, run := config.StateDir, config.RunDir
+	state, run, free := config.StateDir, config.RunDir, freeBytes
 	config.StateDir = t.TempDir()
 	config.RunDir = filepath.Join(t.TempDir(), "run")
-	t.Cleanup(func() { config.StateDir, config.RunDir = state, run })
+	freeBytes = func(string) (int64, error) { return -1, nil }
+	t.Cleanup(func() { config.StateDir, config.RunDir, freeBytes = state, run, free })
 	return fakeKernel(t)
 }
 

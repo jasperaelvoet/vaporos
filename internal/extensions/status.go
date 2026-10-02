@@ -54,7 +54,7 @@ func (s *Service) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v := s.view
-	st := Status{Version: v.version, RestartNeeded: v.restart, Busy: s.fetching > 0 || s.rehashing, Error: v.err,
+	st := Status{Version: v.version, RestartNeeded: v.restart, Busy: s.busyLocked(), Error: v.err,
 		Extensions: []ExtensionStatus{}}
 	if v.rep != nil {
 		st.Mode, st.Reason, st.Set = v.rep.Mode, v.rep.Reason, v.rep.Set

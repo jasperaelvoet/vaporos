@@ -2,7 +2,13 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
+	"os"
+	"strings"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
 )
 
 // AfterHealthy records a boot that passed `vos health`: every image it
@@ -16,17 +22,21 @@ func AfterHealthy(rep *BootReport) error { return AfterHealthyWant(rep, "") }
 // want is its fingerprint (Plan.Fingerprint), and the tried set is promoted
 // only when what booted has that fingerprint, so a set the user has since
 // changed is never made the fallback. An empty want skips this check.
-// Caller holds Lock.
+// The promotion does not depend on proven: a failure to record the images
+// is returned after it. Caller holds Lock.
 func AfterHealthyWant(rep *BootReport, want string) error {
 	if rep == nil {
 		return nil
 	}
+	var provenErr error
 	switch rep.Mode {
 	case ModePending, ModeOSTrial, ModeEnabled:
-		if err := AddProven(rep.MountedPairs()); err != nil {
-			return err
-		}
+		provenErr = AddProven(rep.MountedPairs())
 	}
+	return errors.Join(provenErr, promoteTrial(rep, want))
+}
+
+func promoteTrial(rep *BootReport, want string) error {
 	if rep.Mode != ModePending || rep.Set == "" {
 		return nil
 	}
@@ -47,4 +57,35 @@ func AfterHealthyWant(rep *BootReport, want string) error {
 	}
 	_, err = Promote(rep.Set)
 	return err
+}
+
+// WriteTrialOK records, for this boot only (on /run), that the trial of
+// set passed `vos health`. Written before the promotion under Lock, so
+// vosd can still promote it when health could not.
+func WriteTrialOK(set string) error {
+	if !setNameRe.MatchString(set) {
+		return fmt.Errorf("invalid set name %q", set)
+	}
+	return config.WriteFileAtomic(config.ExtTrialOKPath(), []byte(set+"\n"), 0o644)
+}
+
+// TrialOK returns the set whose trial passed `vos health` this boot, or ""
+// when none did (or the marker does not hold a set name).
+func TrialOK() (string, error) {
+	f, err := os.Open(config.ExtTrialOKPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxSetTriesFile))
+	if err != nil {
+		return "", err
+	}
+	if s := strings.TrimSpace(string(b)); setNameRe.MatchString(s) {
+		return s, nil
+	}
+	return "", nil
 }

@@ -51,12 +51,16 @@ func runFetch(t *testing.T, args ...string) (int, string, string) {
 	return rc, stdout.String(), stderr.String()
 }
 
-func enabledIDs(t *testing.T) []string {
+// pendingIDs returns the pending set's ids, which must have every try left.
+func pendingIDs(t *testing.T) []string {
 	t.Helper()
-	s, err := store.Enabled()
+	s, err := store.Pending()
 	must(t, err)
 	if s == nil {
 		return nil
+	}
+	if s.Tries != store.ProposeTries {
+		t.Errorf("pending %s has %d tries", s.Name, s.Tries)
 	}
 	return s.IDs
 }
@@ -102,8 +106,12 @@ func TestFetchSeedsAnInstall(t *testing.T) {
 	if w, err := store.Wanted(); err != nil || len(w) != 0 || !exists(config.ExtWantedPath()) {
 		t.Fatalf("wanted %v %v", w, err)
 	}
-	if got := enabledIDs(t); !slices.Equal(got, []string{"proton"}) {
-		t.Fatalf("enabled %v", got)
+	// The first boot tries core, and its health check makes it enabled.
+	if got := pendingIDs(t); !slices.Equal(got, []string{"proton"}) {
+		t.Fatalf("pending %v", got)
+	}
+	if exists(config.ExtEnabledLink()) {
+		t.Fatal("enabled written without a trial")
 	}
 
 	// With ids: what they need is fetched and they become wanted.
@@ -117,8 +125,8 @@ func TestFetchSeedsAnInstall(t *testing.T) {
 	if w, _ := store.Wanted(); !slices.Equal(w, []string{"truckersmp"}) {
 		t.Fatalf("wanted %v", w)
 	}
-	if got := enabledIDs(t); !slices.Equal(got, []string{"proton", "truckersmp"}) {
-		t.Fatalf("enabled %v", got)
+	if got := pendingIDs(t); !slices.Equal(got, []string{"proton", "truckersmp"}) {
+		t.Fatalf("pending %v", got)
 	}
 }
 
@@ -131,26 +139,43 @@ func TestFetchSeedsWhatSealed(t *testing.T) {
 	if w, _ := store.Wanted(); !slices.Equal(w, []string{"coolercontrol"}) {
 		t.Fatalf("wanted %v (core is implicit)", w)
 	}
-	if got := enabledIDs(t); !slices.Equal(got, []string{"proton"}) {
-		t.Fatalf("enabled %v: core is always seeded", got)
+	if got := pendingIDs(t); !slices.Equal(got, []string{"proton"}) {
+		t.Fatalf("pending %v: core is always seeded", got)
 	}
 	if sl, _ := store.ReadSlot("a"); sl == nil {
 		t.Fatal("no slot a")
 	}
+
+	// Offline, nothing is pending.
+	g := newFetchFixture(t)
+	must(t, os.Remove(filepath.Join(g.src, "ext-proton.raw")))
+	if rc, _, _ := runFetch(t, "--from", g.src, "--version", bootedVersion, "--state-dir", g.target, "--seed"); rc != 1 {
+		t.Fatalf("exit %d", rc)
+	}
+	if exists(config.ExtPendingLink()) || exists(config.ExtEnabledLink()) {
+		t.Fatal("a set without images")
+	}
 }
 
+// A repair tries core alone: the wanted images are fetched and kept, and
+// vosd proposes them through a trial of their own; the old enabled,
+// pending and failed sets and slot b's catalog go.
 func TestFetchRepair(t *testing.T) {
 	f := newFetchFixture(t)
 	config.StateDir = f.target
 	must(t, store.WriteSlot("b", otherVersion, nil))
-	locked(t, func() error {
+	var old *store.Set
+	locked(t, func() (err error) {
 		if err := store.WriteWanted([]string{"truckersmp"}); err != nil {
 			return err
 		}
 		if err := store.AddFailed(strings.Repeat("a", 64)); err != nil {
 			return err
 		}
-		_, err := store.Propose([]string{"proton"}, nil)
+		if _, err := store.WriteEnabled([]string{"proton", "coolercontrol"}, nil); err != nil {
+			return err
+		}
+		old, err = store.Propose([]string{"proton"}, nil)
 		return err
 	})
 	rc, _, errs := runFetch(t, "--from", f.src, "--version", bootedVersion, "--state-dir", f.target, "--seed", "--repair")
@@ -160,14 +185,55 @@ func TestFetchRepair(t *testing.T) {
 	if sl, _ := store.ReadSlot("b"); sl != nil {
 		t.Fatalf("slot b kept: %+v", sl)
 	}
-	if exists(config.ExtPendingLink()) || exists(config.ExtFailedPath()) {
-		t.Fatal("pending or failed kept")
+	if exists(config.ExtEnabledLink()) || exists(config.ExtFailedPath()) {
+		t.Fatal("enabled or failed kept")
+	}
+	if p, _ := store.Pending(); p == nil || p.Name == old.Name {
+		t.Fatalf("pending %+v: the old one kept", p)
+	}
+	if got := pendingIDs(t); !slices.Equal(got, []string{"proton"}) {
+		t.Fatalf("pending %v: core only", got)
 	}
 	if w, _ := store.Wanted(); !slices.Equal(w, []string{"truckersmp"}) {
 		t.Fatalf("wanted %v: a repair keeps it", w)
 	}
-	if got := enabledIDs(t); !slices.Equal(got, []string{"proton", "truckersmp"}) {
-		t.Fatalf("enabled %v", got)
+	if !slices.Contains(f.sealer.putIDs(), "truckersmp") {
+		t.Fatalf("fetched %v: the wanted images too", f.sealer.putIDs())
+	}
+}
+
+// A disk that cannot seal stops the run: the images left are reported, and
+// the progress still ends at the total.
+func TestFetchStopsWhereItCannotSeal(t *testing.T) {
+	f := newFetchFixture(t)
+	f.sealer.err = store.ErrUnsupported
+	rc, out, errs := runFetch(t, "--from", f.src, "--version", bootedVersion, "truckersmp")
+	if rc != 1 || !strings.Contains(errs, "truckersmp: not sealed: the disk cannot seal") {
+		t.Fatalf("exit %d: %s", rc, errs)
+	}
+	if strings.Count(errs, "\n") != 2 {
+		t.Fatalf("stderr %q: one failure, then the image left", errs)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if lines[len(lines)-1] != `{"bytes":8000,"total":8000}` {
+		t.Fatalf("progress %q", lines)
+	}
+}
+
+// On this system's own store, a boot that found no verity fetches nothing;
+// another system's store (--state-dir) is not that disk.
+func TestFetchHonoursNoVerity(t *testing.T) {
+	f := newFetchFixture(t)
+	f.report(store.BootReport{Mode: store.ModeEnabled, Reason: "no-set no-verity"})
+	rc, _, errs := runFetch(t, "--from", f.src, "--version", bootedVersion)
+	if rc != 1 || !strings.Contains(errs, "proton: not sealed: the disk cannot seal") {
+		t.Fatalf("exit %d: %s", rc, errs)
+	}
+	if got := f.sealer.putIDs(); len(got) != 0 {
+		t.Fatalf("fetched %v", got)
+	}
+	if rc, _, errs := runFetch(t, "--from", f.src, "--version", bootedVersion, "--state-dir", f.target, "--seed"); rc != 0 {
+		t.Fatalf("exit %d: %s", rc, errs)
 	}
 }
 

@@ -341,15 +341,21 @@ func WriteEnabled(ids, options []string) (*Set, error) {
 }
 
 // ClearPending removes the pending link. Caller holds Lock.
-func ClearPending() error {
-	err := os.Remove(config.ExtPendingLink())
+func ClearPending() error { return removeLink(config.ExtPendingLink()) }
+
+// ClearEnabled removes the enabled link: a repair starts over from core,
+// through a trial. Caller holds Lock.
+func ClearEnabled() error { return removeLink(config.ExtEnabledLink()) }
+
+func removeLink(link string) error {
+	err := os.Remove(link)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return syncDir(config.ExtDir())
+	return syncDir(filepath.Dir(link))
 }
 
 // Promote makes the set this boot tried the enabled one, if pending still

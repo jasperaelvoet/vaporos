@@ -39,8 +39,8 @@ func fetchCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	from := f.String("from", "", "the source (default: config.json's update.source)")
 	version := f.String("version", "", "the image version (default: the booted one)")
 	stateDir := f.String("state-dir", "", "the /var/lib/vos the store is in (default: this system's)")
-	seed := f.Bool("seed", false, "also write slots/a.json, wanted and enabled, as an install does (needs --from)")
-	repair := f.Bool("repair", false, "with --seed: also remove slots/b.json, pending and failed, as a repair does")
+	seed := f.Bool("seed", false, "also write slots/a.json, wanted and a pending set to try, as an install does (needs --from)")
+	repair := f.Bool("repair", false, "with --seed: try core only, and remove enabled, slots/b.json, pending and failed, as a repair does")
 	if err := f.Parse(args); err != nil {
 		return 2
 	}
@@ -58,11 +58,16 @@ func fetchCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
+	// This system's own store cannot seal on a disk the initramfs found
+	// without verity; another system's (--state-dir) is not that disk.
+	stop := ""
 	if *stateDir != "" {
 		if fi, err := os.Stat(*stateDir); err != nil || !fi.IsDir() {
 			return fail("%s is not a directory", *stateDir)
 		}
 		config.StateDir = *stateDir
+	} else if rep, err := store.LoadBootReport(); err == nil && rep.HasReason(store.ReasonNoVerity) {
+		stop = "the disk cannot seal extension images (no fs-verity)"
 	}
 	v := *version
 	if v == "" {
@@ -80,7 +85,7 @@ func fetchCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		spec = c.Update.Source
 	}
-	src, err := update.OpenSourceAt(spec, v)
+	src, err := openSource(spec, v)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -111,13 +116,13 @@ func fetchCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	targets := cat.Closure(base)
 
-	ok, failed := fetchEntries(ctx, src, cat, targets, stdout, stderr)
+	ok, failed := fetchEntries(ctx, src, cat, targets, stop, stdout, stderr)
 	rc := 0
 	if failed {
 		rc = 1
 	}
 	if *seed {
-		if err := seedStore(ctx, m, cat, ids, targets, ok, *repair); err != nil {
+		if err := seedStore(ctx, m, cat, ids, ok, *repair); err != nil {
 			rc = fail("seeding the store: %v", err)
 		}
 	}
@@ -125,9 +130,12 @@ func fetchCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 }
 
 // fetchEntries seals each of ids' images that the store lacks, printing
-// {"bytes","total"} lines on stdout as they come. It returns the ids whose
-// image is sealed, and whether any failed.
-func fetchEntries(ctx context.Context, src *update.Source, cat *catalog.Catalog, ids []string, stdout, stderr io.Writer) (map[string]bool, bool) {
+// {"bytes","total"} lines on stdout as they come (for the whole run, never
+// going down). It stops at a disk that cannot seal or a source that cannot
+// be reached, and with stop set does not start: the images left are
+// reported not sealed. It returns the ids whose image is sealed, and
+// whether any is not.
+func fetchEntries(ctx context.Context, src source, cat *catalog.Catalog, ids []string, stop string, stdout, stderr io.Writer) (map[string]bool, bool) {
 	ok := map[string]bool{}
 	var todo []catalog.Entry
 	var total int64
@@ -145,13 +153,26 @@ func fetchEntries(ctx context.Context, src *update.Source, cat *catalog.Catalog,
 	failed := false
 	var base int64
 	for _, e := range todo {
-		err := fetchImage(ctx, src, e, func(done int64) { p.show(base + done) })
-		if err != nil {
+		switch {
+		case stop != "":
+			fmt.Fprintf(stderr, "vos ext fetch: %s: not sealed: %s\n", e.ID, stop)
+		default:
+			err := fetchImage(ctx, src, e, func(done int64) { p.show(base + done) })
+			if err == nil {
+				ok[e.ID] = true
+				break
+			}
 			fmt.Fprintf(stderr, "vos ext fetch: %s: %v\n", e.ID, err)
-			failed = true
-		} else {
-			ok[e.ID] = true
+			switch {
+			case errors.Is(err, store.ErrUnsupported):
+				stop = "the disk cannot seal extension images (no fs-verity)"
+			case ctx.Err() != nil:
+				stop = "stopped"
+			case unreachable(err):
+				stop = fmt.Sprintf("%s cannot be reached", src)
+			}
 		}
+		failed = failed || !ok[e.ID]
 		base += e.Size
 		p.show(base)
 	}
@@ -173,62 +194,73 @@ func (p *progressLines) show(done int64) {
 	fmt.Fprintf(p.w, "{\"bytes\":%d,\"total\":%d}\n", done, p.total)
 }
 
-// seedStore writes what an install starts the store with: slots/a.json
-// from the manifest (under the update lock); then, under the store lock,
-// with repair the removal of pending and failed (and of slots/b.json
-// before that), wanted (the ids given less core, which is always wanted;
-// without ids an existing wanted stays, as a repair keeps the user's), and
-// an enabled set of the target ids whose image sealed, with their
-// requirements.
-func seedStore(ctx context.Context, m *manifest.Manifest, cat *catalog.Catalog, ids, targets []string, ok map[string]bool, repair bool) error {
-	err := update.WithLock(ctx, func() error {
+// seedStore writes what an install starts the store with, under the update
+// lock and then the store lock: slots/a.json from the manifest; with
+// repair, the removal of slots/b.json, enabled, pending and failed; wanted
+// (the ids given less core, which is always wanted; without ids an
+// existing wanted stays, as a repair keeps the user's); and a pending set
+// to try at the first boot, of core and the ids given (with repair, of
+// core only: vosd proposes what else is wanted through a trial of its
+// own), with their requirements, as far as their images sealed. enabled is
+// never written: the first boot's trial makes it.
+func seedStore(ctx context.Context, m *manifest.Manifest, cat *catalog.Catalog, ids []string, ok map[string]bool, repair bool) error {
+	return update.WithLock(ctx, func() error {
+		unlock, err := store.Lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		if repair {
 			if err := store.RemoveSlot("b"); err != nil {
 				return err
 			}
 		}
-		return store.WriteSlot("a", m.Version, m.Extensions)
-	})
-	if err != nil {
-		return err
-	}
-	unlock, err := store.Lock(ctx)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if repair {
-		if err := store.ClearPending(); err != nil {
+		if err := store.WriteSlot("a", m.Version, m.Extensions); err != nil {
 			return err
 		}
-		if err := os.Remove(config.ExtFailedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	if _, err := os.Lstat(config.ExtWantedPath()); len(ids) > 0 || errors.Is(err, fs.ErrNotExist) {
-		var user []string
-		for _, id := range ids {
-			if e, _ := cat.Get(id); !e.Core {
-				user = append(user, id)
+		if repair {
+			if err := store.ClearEnabled(); err != nil {
+				return err
+			}
+			if err := store.ClearPending(); err != nil {
+				return err
+			}
+			if err := os.Remove(config.ExtFailedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
 			}
 		}
-		if err := store.WriteWanted(user); err != nil {
-			return err
+		if _, err := os.Lstat(config.ExtWantedPath()); len(ids) > 0 || errors.Is(err, fs.ErrNotExist) {
+			var user []string
+			for _, id := range ids {
+				if e, _ := cat.Get(id); !e.Core {
+					user = append(user, id)
+				}
+			}
+			if err := store.WriteWanted(user); err != nil {
+				return err
+			}
 		}
-	}
-	var enabled []string
-	in := map[string]bool{}
-	for _, id := range targets {
-		e, _ := cat.Get(id)
-		met := ok[id]
-		for _, r := range e.Requires {
-			met = met && in[r]
+		try := cat.Core()
+		if !repair {
+			try = append(try, ids...)
 		}
-		if met {
-			in[id] = true
-			enabled = append(enabled, id)
+		var set []string
+		in := map[string]bool{}
+		for _, id := range cat.Closure(try) {
+			e, _ := cat.Get(id)
+			met := ok[id]
+			for _, r := range e.Requires {
+				met = met && in[r]
+			}
+			if met {
+				in[id] = true
+				set = append(set, id)
+			}
 		}
-	}
-	_, err = store.WriteEnabled(enabled, nil)
-	return err
+		if len(set) == 0 {
+			return nil
+		}
+		_, err = store.Propose(set, nil)
+		return err
+	})
 }
