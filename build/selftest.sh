@@ -14,7 +14,7 @@ firewall=$here/../rootfs/usr/lib/vos/vos-firewall
 rules=$here/../rootfs/usr/lib/vos/nftables.nft
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'umount "$tmp/fs" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 failures=0
 
 result() { # result OK NAME
@@ -26,6 +26,7 @@ result() { # result OK NAME
         failures=$((failures + 1))
     fi
 }
+skip() { printf 'skip  %s\n' "$1"; }
 
 # expect pass|fail NAME CMD...: run CMD, keep its output in $tmp/out for the
 # has/lacks checks that follow.
@@ -274,29 +275,101 @@ else
     result 0 "fsverity: the digest of fsverity-utils"
 fi
 
+# What an extension's install did to the packages that were there.
+pk=$ext/pkgs-q
+mkdir -p "$pk"
+printf 'glibc 2.42-1\nlib32-foo 1-1\nmesa 1:25.2-1\n' >"$pk/before"
+printf 'glibc 2.42-1\nlib32-foo 1-1\nmesa 1:25.2-1\nproton 10-1\n' >"$pk/after"
+printf '%s\n' '[2026-10-02T10:00:00+0000] [PACMAN] Running '\''pacman -S -- proton'\''' \
+    '[2026-10-02T10:00:01+0000] [ALPM] transaction started' \
+    '[2026-10-02T10:00:02+0000] [ALPM] installed proton (10-1)' \
+    '[2026-10-02T10:00:03+0000] [ALPM] transaction completed' >"$pk/alpm.log"
+expect pass "ext packages: an install that only adds" ext_pkg_changes "$pk/before" "$pk/after" "$pk/alpm.log"
+printf 'glibc 2.42-1\nlib32-foo 1-1\nmesa 1:25.3-1\nproton 10-1\n' >"$pk/upgraded"
+expect fail "ext packages: an upgrade fails" ext_pkg_changes "$pk/before" "$pk/upgraded"
+has "ext packages: ... and says from what to what" "mesa: 1:25.2-1 -> 1:25.3-1"
+printf 'glibc 2.42-0\nlib32-foo 1-1\nmesa 1:25.2-1\n' >"$pk/downgraded"
+expect fail "ext packages: a downgrade fails" ext_pkg_changes "$pk/before" "$pk/downgraded"
+printf 'glibc 2.42-1\nmesa 1:25.2-1\nproton 10-1\n' >"$pk/removed"
+expect fail "ext packages: a removed (or replaced) package fails" ext_pkg_changes "$pk/before" "$pk/removed"
+has "ext packages: ... and names it" "lib32-foo 1-1: removed"
+cp "$pk/alpm.log" "$pk/reinstalled.log"
+echo '[2026-10-02T10:00:02+0000] [ALPM] reinstalled glibc (2.42-1)' >>"$pk/reinstalled.log"
+expect fail "ext packages: a reinstall, which keeps the version, fails" \
+    ext_pkg_changes "$pk/before" "$pk/after" "$pk/reinstalled.log"
+has "ext packages: ... from pacman's log" "reinstalled glibc (2.42-1)"
+is "ext db: entries of packages" "foo-1:2.0-1 lib32-bar-3-2" ext_local_entries <(printf 'foo 1:2.0-1\nlib32-bar 3-2\n')
+
+db=$ext/db/local
+mkdir -p "$db/foo-1.0-1" "$db/foo-bar-2-1" "$db/lib32-foo-1.0-1" "$db/mesa-1:25.2-1"
+echo 9 >"$db/ALPM_DB_VERSION"
+is "ext db: one entry a package" "" ext_local_dupes "$db"
+mkdir -p "$db/foo-1.1-1" "$db/mesa-1:25.3-1"
+is "ext db: two versions of a package" "foo mesa" ext_local_dupes "$db"
+
+# Whiteouts and trusted.* xattrs need a filesystem of their own: the
+# container's root is an overlay, which hides both.
+fs=$tmp/fs
+mkdir -p "$fs"
+mount -t tmpfs tmpfs "$fs" 2>/dev/null || true
+up=$fs/upper
+mkdir -p "$up/usr/share/kept" "$up/usr/share/redone" "$up/etc"
+echo new >"$up/usr/share/kept/file"
+expect pass "ext removals: an upper layer that only adds" ext_upper_removals "$up"
+if mknod "$up/usr/share/gone" c 0 0 2>/dev/null && [[ -c $up/usr/share/gone ]] &&
+        mknod "$up/etc/gone" c 0 0; then
+    expect fail "ext removals: a whiteout under usr/ fails" ext_upper_removals "$up"
+    has "ext removals: ... and names it" "removed /usr/share/gone (a whiteout)"
+    lacks "ext removals: ... (not one outside usr/)" "/etc/gone"
+    rm "$up/usr/share/gone"
+else
+    skip "ext removals: whiteouts (mknod)"
+fi
+if setfattr -n trusted.overlay.opaque -v y "$up/usr/share/redone" 2>/dev/null; then
+    expect fail "ext removals: an opaque directory under usr/ fails" ext_upper_removals "$up"
+    has "ext removals: ... and names it" "replaced /usr/share/redone (an opaque directory"
+    lacks "ext removals: ... (not the others)" "/usr/share/kept"
+else
+    skip "ext removals: opaque directories (trusted.* xattrs)"
+fi
+
 # An extension's package layer: what its packages own, and what their
 # scriptlets and hooks left behind, in and outside usr/.
-pr=$ext/prune
+pr=$fs/prune
 mkdir -p "$pr/lower/usr/share/icons/hicolor" "$pr/lower/usr/lib/copied" "$pr/lower/etc" \
+    "$pr/lower/usr/share/glib-2.0/schemas" "$pr/lower/usr/share/mime" \
     "$pr/tree/usr/bin" "$pr/tree/usr/share/icons/hicolor/48x48/apps" "$pr/tree/usr/lib/copied" \
+    "$pr/tree/usr/share/glib-2.0/schemas" "$pr/tree/usr/share/mime" \
     "$pr/tree/usr/share/tool/empty" "$pr/tree/etc" "$pr/tree/var/log"
-echo base >"$pr/lower/usr/share/icons/hicolor/icon-theme.cache"
+for f in usr/share/icons/hicolor/icon-theme.cache usr/share/glib-2.0/schemas/gschemas.compiled \
+         usr/share/mime/mime.cache; do
+    echo base >"$pr/lower/$f"
+    echo redone >"$pr/tree/$f"
+done
 echo tool >"$pr/tree/usr/bin/tool"
 echo icon >"$pr/tree/usr/share/icons/hicolor/48x48/apps/tool.png"
-echo redone >"$pr/tree/usr/share/icons/hicolor/icon-theme.cache"
+echo schema >"$pr/tree/usr/share/glib-2.0/schemas/org.tool.gschema.xml"
 echo cache >"$pr/tree/usr/lib/newcache"
 echo ld >"$pr/tree/etc/ld.so.cache"
 echo log >"$pr/tree/var/log/pacman.log"
 echo dot >"$pr/tree/.hidden"
-whiteout=0
-if mknod "$pr/tree/usr/lib/gone" c 0 0 2>/dev/null; then whiteout=1; fi
 printf '%s\n' /usr/ /usr/bin/ /usr/bin/tool /usr/share/icons/hicolor/48x48/apps/tool.png \
-    /usr/share/tool/ /usr/share/tool/empty/ /etc/ >"$pr/owned"
+    /usr/share/glib-2.0/schemas/org.tool.gschema.xml /usr/share/tool/ /usr/share/tool/empty/ /etc/ >"$pr/owned"
 printf '/etc/tool.conf\n/usr/bin/tool\n' >"$pr/payload"
 expect fail "ext prune: a packaged file outside usr/ fails" ext_prune_tree "$pr/tree" "$pr/payload" "$pr/lower"
 has "ext prune: ... and names it" "/etc/tool.conf"
 there "ext prune: ... and changes nothing" "$pr/tree/etc/ld.so.cache"
+if mknod "$pr/tree/usr/lib/gone" c 0 0 2>/dev/null && [[ -c $pr/tree/usr/lib/gone ]]; then
+    expect fail "ext prune: a whiteout in usr/ fails" ext_prune_tree "$pr/tree" "$pr/owned" "$pr/lower"
+    has "ext prune: ... and names it" "/usr/lib/gone"
+    there "ext prune: ... and changes nothing" "$pr/tree/etc/ld.so.cache"
+    there "ext prune: ... (the whiteout stays too)" "$pr/tree/usr/lib/gone"
+    rm "$pr/tree/usr/lib/gone"
+else
+    skip "ext prune: whiteouts (mknod)"
+fi
 expect pass "ext prune: scriptlet and hook leftovers" ext_prune_tree "$pr/tree" "$pr/owned" "$pr/lower"
+cp "$tmp/out" "$pr/pruned"
 gone "ext prune: ... nothing outside usr/ (etc)" "$pr/tree/etc"
 gone "ext prune: ... (var)" "$pr/tree/var"
 gone "ext prune: ... (a dotfile)" "$pr/tree/.hidden"
@@ -308,9 +381,45 @@ there "ext prune: ... keeps what it owns" "$pr/tree/usr/bin/tool"
 there "ext prune: ... (in a directory the base has)" "$pr/tree/usr/share/icons/hicolor/48x48/apps/tool.png"
 there "ext prune: ... an empty directory of its own" "$pr/tree/usr/share/tool/empty"
 there "ext prune: ... a new file it does not own (check-tree judges it)" "$pr/tree/usr/lib/newcache"
-if (( whiteout )); then
-    gone "ext prune: ... an overlay whiteout" "$pr/tree/usr/lib/gone"
-fi
+stale() { ext_stale_caches "$@" | LC_ALL=C sort; }
+is "ext stale caches: those whose inputs the extension ships (mime.cache: none)" \
+    "usr/share/glib-2.0/schemas/gschemas.compiled usr/share/glib-2.0/schemas usr/share/icons/hicolor/icon-theme.cache usr/share/icons/hicolor" \
+    stale "$pr/tree" "$pr/pruned"
+
+# A fetch[] download into the image, and its licence text.
+fe=$ext/fetch
+mkdir -p "$fe/src/tool-1.0/bin" "$fe/src/other"
+echo binary >"$fe/src/tool-1.0/bin/tool"
+echo 'MIT License' >"$fe/src/tool-1.0/LICENSE"
+echo 'Apache License' >"$fe/src/other/LICENSE"
+: >"$fe/src/tool-1.0/empty"
+tar -C "$fe/src" -czf "$fe/tool.tar.gz" tool-1.0 other
+echo plain >"$fe/plain.exe"
+own=$fe/img/usr/lib/vos/ext/x
+lics=$fe/img/usr/share/licenses/x
+expect pass "ext fetch: a member of an archive" ext_place_fetch "$fe/tool.tar.gz" tool-1.0/bin/tool "$own/bin/tool"
+result "$([[ $(<"$own/bin/tool") == binary && $(stat -c %a "$own/bin/tool") == 644 ]] && echo 1 || echo 0)" \
+    "ext fetch: ... in place, mode 0644"
+expect pass "ext fetch: a file as it is" ext_place_fetch "$fe/plain.exe" "" "$own/plain.exe"
+result "$([[ $(<"$own/plain.exe") == plain ]] && echo 1 || echo 0)" "ext fetch: ... in place"
+expect fail "ext fetch: a member the archive lacks fails" ext_place_fetch "$fe/tool.tar.gz" tool-1.0/nope "$own/nope"
+has "ext fetch: ... and names it" "no member tool-1.0/nope"
+expect fail "ext fetch: an empty member fails" ext_place_fetch "$fe/tool.tar.gz" tool-1.0/empty "$own/empty"
+expect pass "ext fetch: with its licence text" \
+    ext_place_fetch "$fe/tool.tar.gz" tool-1.0/bin/tool "$own/bin/tool" tool-1.0/LICENSE "$lics"
+result "$([[ $(<"$lics/LICENSE") == 'MIT License' ]] && echo 1 || echo 0)" "ext fetch: ... under its base name"
+expect pass "ext fetch: the same licence text again" \
+    ext_place_fetch "$fe/tool.tar.gz" tool-1.0/bin/tool "$own/bin/tool2" tool-1.0/LICENSE "$lics"
+expect fail "ext fetch: another licence text of that name fails" \
+    ext_place_fetch "$fe/tool.tar.gz" tool-1.0/bin/tool "$own/bin/tool3" other/LICENSE "$lics"
+result "$([[ $(<"$lics/LICENSE") == 'MIT License' ]] && echo 1 || echo 0)" "ext fetch: ... and keeps the first"
+expect fail "ext fetch: a licence file the archive lacks fails" \
+    ext_place_fetch "$fe/tool.tar.gz" tool-1.0/bin/tool "$own/bin/tool" tool-1.0/COPYING "$lics"
+has "ext fetch: ... and names it" "no licence file tool-1.0/COPYING"
+expect fail "ext fetch: a licence file needs an archive" \
+    ext_place_fetch "$fe/plain.exe" "" "$own/plain.exe" LICENSE "$lics"
+expect fail "ext fetch: a licence file named fetched.txt fails" \
+    ext_place_fetch "$fe/tool.tar.gz" tool-1.0/bin/tool "$own/bin/tool" tool-1.0/fetched.txt "$lics"
 
 # ------------------------------------------------------------------- iso.sh --
 iso=$tmp/iso

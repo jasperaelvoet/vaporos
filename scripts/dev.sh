@@ -195,7 +195,7 @@ ensure_http() {
 
 # Put the update payload next to the VM, for `vos update --from http://…/`.
 stage_update() {
-    local f e files=()
+    local f e served files=()
     [[ -f out/manifest.json.sig ]] ||
         die "out/manifest.json.sig is missing: the build did not sign its manifest (the dev key lives on the builder)"
     say "Staging $(build_version) for update"
@@ -203,7 +203,9 @@ stage_update() {
     # Older builds served manifest.env; a stale manifest must never be served.
     pve "rm -f $SERVE_DIR/manifest.env $SERVE_DIR/manifest.json $SERVE_DIR/manifest.json.sig"
     # Images of extensions this build no longer has.
-    for f in $(pve "cd $SERVE_DIR && ls ext-*.raw 2>/dev/null" || true); do
+    served=$(pve "find $SERVE_DIR -maxdepth 1 -name 'ext-*.raw' -printf '%f\n'") ||
+        die "cannot list the extension images in $SERVE_DIR on $PVE_HOST"
+    for f in $served; do
         if [[ ! -e out/$f ]]; then pve "rm -f $SERVE_DIR/$f"; fi
     done
     for f in "${UPDATE_FILES[@]}"; do

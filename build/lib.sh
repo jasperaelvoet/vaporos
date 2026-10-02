@@ -302,24 +302,86 @@ fsverity_hex() {
     echo "$d"
 }
 
+# The changes to packages that were there before an install: those of BEFORE
+# ("name version" lines, as `pacman -Q` prints them) that AFTER has at
+# another version or not at all, and every package pacman's log ALPMLOG says
+# it reinstalled, upgraded, downgraded or removed (a reinstall keeps the
+# version). An extension may only add packages, so each one is a failure.
+# Prints one line per change; fails if there is any.
+# Usage: ext_pkg_changes BEFORE AFTER [ALPMLOG]
+ext_pkg_changes() {
+    local rc=0
+    awk 'FILENAME == ARGV[1] { now[$1] = $2; next }
+         !($1 in now) { print $1 " " $2 ": removed"; bad = 1; next }
+         now[$1] != $2 { print $1 ": " $2 " -> " now[$1]; bad = 1 }
+         END { exit bad }' "$2" "$1" || rc=1
+    if [[ -n ${3:-} && -f $3 ]] &&
+            grep -E '^\[[^]]*\] \[ALPM\] (reinstalled|upgraded|downgraded|removed) ' "$3"; then
+        rc=1
+    fi
+    return "$rc"
+}
+
+# The package database entries (directories of local/) of the packages in
+# PACKAGES ("name version" lines): name-version, one per line.
+# Usage: ext_local_entries PACKAGES
+ext_local_entries() {
+    awk 'NF >= 2 { print $1 "-" $2 }' "$1"
+}
+
+# The packages with more than one entry in DIR, a package database's local/
+# (an entry is name-pkgver-pkgrel). pacman sees only one of them, so a
+# database with any is broken.
+# Usage: ext_local_dupes DIR
+ext_local_dupes() {
+    [[ -d $1 ]] || return 0
+    find "$1" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
+        sed -E 's/-[^-]+-[^-]+$//' | LC_ALL=C sort | uniq -d
+}
+
+# What an install into an overlay with upper layer UPPER removed under usr/
+# from the layers below it: whiteouts (0/0 character devices) and opaque
+# directories (trusted.overlay.opaque: removed, then made again). An image
+# can only add to those layers, so each is a failure. Prints one line per
+# removal; fails if there is any, or if it cannot read the xattrs.
+# Usage: ext_upper_removals UPPER
+ext_upper_removals() {
+    local up=$1 p out="" opaque
+    [[ -d $up/usr ]] || return 0
+    while IFS= read -r -d '' p; do
+        if [[ $(stat -c %t:%T "$up/$p") == 0:0 ]]; then
+            out+="removed /$p (a whiteout)"$'\n'
+        fi
+    done < <(cd "$up" && find usr -type c -print0)
+    if ! opaque=$(cd "$up" && getfattr -R -P --absolute-names -m '^trusted\.overlay\.opaque$' usr 2>&1); then
+        printf 'getfattr cannot read the xattrs under %s/usr:\n%s\n' "$up" "$opaque" >&2
+        return 1
+    fi
+    out+=$(sed -n 's|^# file: \(.*\)$|replaced /\1 (an opaque directory: removed, then made again)|p' <<<"$opaque")
+    [[ -n $out ]] || return 0
+    printf '%s\n' "${out%$'\n'}"
+    return 1
+}
+
 # Readies TREE, a copy of the overlay upper layer an extension's packages
 # were installed into, for an image that holds usr/ alone:
 #  - a file the packages own (OWNED, as `pacman -Qlq` lists them) outside
-#    usr/ is payload no extension may have: it fails, naming each, and
-#    changes nothing;
+#    usr/ is payload no extension may have, and a whiteout in usr/ is a file
+#    of a lower layer the install removed, which no image can do: either
+#    fails, naming each, and changes nothing;
 #  - anything else outside usr/ is what their scriptlets and hooks left
 #    behind (ld.so.cache, users, logs, caches under var/): removed;
-#  - in usr/, overlay whiteouts, and files a LOWER layer (the base, a
-#    requirement) has that the packages do not own: removed, so the lower
-#    layer's copy shows. Those are hooks redoing a cache the base has (icon
-#    caches, gschemas.compiled, ...). So are directories that end up empty
-#    and that a lower layer has as well.
+#  - in usr/, files a LOWER layer (the base, a requirement) has that the
+#    packages do not own: removed, so the lower layer's copy shows. Those are
+#    hooks redoing a cache the base has (icon caches, mime.cache, ...; see
+#    ext_stale_caches). So are directories that end up empty and that a
+#    lower layer has as well.
 # Prints "removed PATH" (relative to TREE) for every file it removes.
 # Usage: ext_prune_tree TREE OWNED LOWER...
 ext_prune_tree() {
     local tree=$1 owned_list=$2 p l top
     local -A owned=()
-    local -a payload=()
+    local -a payload=() whiteouts=()
     shift 2
     while IFS= read -r p; do
         p=${p#/}
@@ -327,8 +389,18 @@ ext_prune_tree() {
         owned[$p]=1
         [[ $p == usr/* ]] || payload+=("$p")
     done <"$owned_list"
+    if [[ -d $tree/usr ]]; then
+        while IFS= read -r -d '' p; do
+            if [[ $(stat -c %t:%T "$tree/$p") == 0:0 ]]; then whiteouts+=("$p"); fi
+        done < <(cd "$tree" && find usr -type c -print0)
+    fi
     if (( ${#payload[@]} )); then
         printf 'payload outside usr/: /%s\n' "${payload[@]}" >&2
+    fi
+    if (( ${#whiteouts[@]} )); then
+        printf 'removed from a lower layer (a whiteout): /%s\n' "${whiteouts[@]}" >&2
+    fi
+    if (( ${#payload[@]} + ${#whiteouts[@]} )); then
         return 1
     fi
     for top in "$tree"/* "$tree"/.[!.]* "$tree"/..?*; do
@@ -339,11 +411,6 @@ ext_prune_tree() {
     done
     [[ -d $tree/usr ]] || return 0
     while IFS= read -r -d '' p; do
-        if [[ -c $tree/$p ]]; then
-            rm -f "$tree/$p"
-            echo "removed $p"
-            continue
-        fi
         [[ -z ${owned[$p]:-} ]] || continue
         for l in "$@"; do
             if [[ -e $l/$p || -L $l/$p ]]; then
@@ -362,4 +429,63 @@ ext_prune_tree() {
             fi
         done
     done < <(cd "$tree" && find usr -type d | LC_ALL=C sort -r)
+}
+
+# The caches among PRUNED (ext_prune_tree's "removed PATH" lines) that hooks
+# regenerate from inputs TREE ships: the image leaves them out, so the base's
+# copy stays, and it does not know those inputs. Prints "PATH INPUTDIR" for
+# each.
+# Usage: ext_stale_caches TREE PRUNED
+ext_stale_caches() {
+    local tree=$1 p name inputs
+    while IFS= read -r p; do
+        p=${p#removed }
+        name=${p##*/}
+        case $name in
+            icon-theme.cache | gschemas.compiled | giomodule.cache) inputs=${p%/*} ;;
+            mime.cache) inputs=${p%/*}/packages ;;
+            loaders.cache) inputs=${p%/*}/loaders ;;
+            *) continue ;;
+        esac
+        if [[ -d $tree/$inputs && -n $(find "$tree/$inputs" ! -type d ! -name "$name" -print -quit) ]]; then
+            echo "$p $inputs"
+        fi
+    done <"$2"
+}
+
+# Puts a downloaded fetch[] entry into an image: OUT gets the member EXTRACT
+# of the tar archive FILE (FILE itself when EXTRACT is empty), mode 0644;
+# with LICENSE, the archive's licence text goes into LICDIR under the
+# member's base name. Fails, saying why, on a member the archive lacks or
+# that is empty, and on a licence name another entry took with other text.
+# Usage: ext_place_fetch FILE EXTRACT OUT [LICENSE LICDIR]
+ext_place_fetch() {
+    local f=$1 ex=$2 out=$3 lic=${4:-} dir=${5:-} name
+    mkdir -p "${out%/*}" || return 1
+    if [[ -z $ex ]]; then
+        install -m0644 "$f" "$out" || return 1
+    elif ! tar -xOf "$f" -- "$ex" >"$out" || [[ ! -s $out ]]; then
+        echo "the archive has no member $ex, or it is empty" >&2
+        return 1
+    fi
+    chmod 0644 "$out"
+    [[ -n $lic ]] || return 0
+    name=${lic##*/}
+    if [[ -z $ex || $name == fetched.txt ]]; then
+        echo "license_file $lic needs an archive (extract) and another name than fetched.txt" >&2
+        return 1
+    fi
+    mkdir -p "$dir" || return 1
+    if ! tar -xOf "$f" -- "$lic" >"$dir/.$name.tmp" || [[ ! -s $dir/.$name.tmp ]]; then
+        rm -f "$dir/.$name.tmp"
+        echo "the archive has no licence file $lic, or it is empty" >&2
+        return 1
+    fi
+    if [[ -e $dir/$name && $(sha256sum <"$dir/$name") != "$(sha256sum <"$dir/.$name.tmp")" ]]; then
+        rm -f "$dir/.$name.tmp"
+        echo "another fetch[] entry's licence text is $name already, and it differs from $lic" >&2
+        return 1
+    fi
+    mv "$dir/.$name.tmp" "$dir/$name"
+    chmod 0644 "$dir/$name"
 }

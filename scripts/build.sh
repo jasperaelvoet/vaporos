@@ -135,6 +135,8 @@ ensure_builder() {
 
 # ---------------------------------------------------------------- build ----
 
+# (Fetching the result reads the extension images' names from its manifest.)
+command -v jq >/dev/null || die "jq is not installed (brew install jq)"
 ensure_builder
 rm -f out/.built-on
 
@@ -148,18 +150,28 @@ for var in VERSION COMPRESS REFRESH VOS_DEBUG CHANNEL GIT VOS_ALLOW_STUB; do
 done
 pve "pct exec $BUILDER_ID -- env$env_args bash /vos/src/build/run.sh /vos/src /vos/out /vos/keys"
 
-# Pull the result back. Consecutive builds share most of their bytes, so
-# rsync against the previous build: rename the old ISO to the new name first,
-# since the name carries the version.
+# Pull the result back. The builder's manifest.json names this build's
+# extension images: it comes first, and nothing in out/ changes until it is
+# read. Consecutive builds share most of their bytes, so rsync against the
+# previous build: rename the old ISO to the new name first, since the name
+# carries the version.
 say "Fetching the build into out/"
+rsync -t "$PVE_USER@$PVE_HOST:$BUILD_DIR/out/manifest.json" out/.manifest.json.part ||
+    die "cannot fetch the builder's manifest.json"
+ext=$(jq -r '.extensions // {} | .[].name' out/.manifest.json.part) ||
+    die "the builder's manifest.json cannot be read"
+for f in $ext; do
+    [[ $f =~ ^ext-[a-z][a-z0-9-]{0,31}\.raw$ ]] || die "the builder's manifest.json names an extension image '$f'"
+done
+sig=$(pve "if test -f $BUILD_DIR/out/manifest.json.sig; then echo signed; fi") ||
+    die "cannot reach $PVE_HOST to fetch the build"
 iso=vaporos-$VERSION.iso
 old=$(ls out/vaporos-*.iso 2>/dev/null | head -1) || true
 [[ -z $old || $old == "out/$iso" ]] || mv "$old" "out/$iso"
-rm -f out/manifest.env out/manifest.json.sig
-# The extension images: the builder's out/ holds exactly this build's. Their
-# names carry no version, so rsync deltas against the last build's as is;
-# only those of extensions this build no longer has go.
-ext=$(pve "cd $BUILD_DIR/out && ls ext-*.raw 2>/dev/null" || true)
+rm -f out/manifest.env out/manifest.json out/manifest.json.sig
+# The extension images: their names carry no version, so rsync deltas
+# against the last build's as is; only those of extensions this build no
+# longer has go.
 for f in out/ext-*.raw; do
     [[ -e $f ]] || continue
     case $'\n'$ext$'\n' in
@@ -167,10 +179,12 @@ for f in out/ext-*.raw; do
         *) rm -f "$f" ;;
     esac
 done
-for f in root.erofs vmlinuz initramfs.img $ext manifest.json "$iso"; do
+for f in root.erofs vmlinuz initramfs.img $ext "$iso"; do
     rsync -t --inplace --partial "$PVE_USER@$PVE_HOST:$BUILD_DIR/out/$f" "out/$f"
 done
-if pve "test -f $BUILD_DIR/out/manifest.json.sig"; then
+# The manifest last, so out/ never pairs a new one with older files.
+mv out/.manifest.json.part out/manifest.json
+if [[ $sig == signed ]]; then
     rsync -t "$PVE_USER@$PVE_HOST:$BUILD_DIR/out/manifest.json.sig" out/manifest.json.sig
 fi
 find out -name 'vaporos-*.iso' ! -name "$iso" -delete
