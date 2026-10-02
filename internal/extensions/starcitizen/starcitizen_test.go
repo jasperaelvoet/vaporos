@@ -227,6 +227,66 @@ func TestInstallDownloadFails(t *testing.T) {
 	}
 }
 
+// A prefix Install recorded stays on its filesystem. With another drive of
+// the same name at its folder, a later Install (Try again, or the retry at
+// each start) agrees with the card's status that Star Citizen's drive
+// isn't connected, and touches nothing on that drive.
+func TestInstallStaysOnItsDrive(t *testing.T) {
+	b := newBox(t)
+	f := newFeed(t, "2.17.0")
+	x := b.ext(b.mnt)
+	feedURL = f.srv.URL + "/rel/2/gone.yml"
+	if err := (helper{}).Install(context.Background(), x); codeOf(err) != codeFeed {
+		t.Fatalf("no feed: %v", err)
+	}
+	prefix := b.mnt + "/VaporOS/star-citizen"
+	first := state{Disk: b.mnt, Prefix: prefix, UUID: gameUUID}
+	if st, _ := readState(x.DataDir); st != first {
+		t.Fatalf("state %+v", st)
+	}
+
+	b.swapDrive()
+	must(t, os.Rename(b.mnt+"/VaporOS", b.root+"/elsewhere")) // not on the other drive
+	f = newFeed(t, "2.17.0")
+	b.calls = nil
+	const notConnected = "Star Citizen's drive isn't connected. Connect it, then try again."
+	if got := statusTexts((helper{}).Status(context.Background(), x)); !slices.Contains(got, "warning: "+notConnected) {
+		t.Errorf("status %q", got)
+	}
+	err := (helper{}).Install(context.Background(), x)
+	if codeOf(err) != codeNotConnected || said(err) != notConnected {
+		t.Errorf("another drive with its name: %v", err)
+	}
+	if len(b.calls) != 0 {
+		t.Errorf("ran %q", b.calls)
+	}
+	if _, err := os.Lstat(b.mnt + "/VaporOS"); err == nil {
+		t.Error("made the prefix on the other drive")
+	}
+	if st, _ := readState(x.DataDir); st != first {
+		t.Errorf("state %+v", st)
+	}
+
+	// Its own drive back, Install goes on where it stopped.
+	must(t, os.Rename(b.root+"/elsewhere", b.mnt+"/VaporOS"))
+	b.gameDev = "sdb1"
+	b.writeMounts()
+	must(t, (helper{}).Install(context.Background(), x))
+	if st, _ := readState(x.DataDir); st != (state{Disk: b.mnt, Prefix: prefix, UUID: gameUUID, Installer: f.file, Version: "2.17.0"}) {
+		t.Errorf("state %+v", st)
+	}
+
+	// A record of the prefix on the system drive, from another filesystem:
+	// its files are missing, as the card's status says.
+	b = newBox(t)
+	newFeed(t, "2.17.0")
+	x = b.ext("/var")
+	must(t, saveState(x.DataDir, state{Disk: "/var", Prefix: systemPrefix(), UUID: otherUUID, Installer: f.file, Version: "2.17.0"}))
+	if err := (helper{}).Install(context.Background(), x); codeOf(err) != codeFilesMissing || len(b.calls) != 0 {
+		t.Errorf("system drive, another filesystem: %v, ran %q", err, b.calls)
+	}
+}
+
 func TestSteamWithoutInstall(t *testing.T) {
 	b := newBox(t)
 	x := b.ext(b.mnt)
@@ -563,7 +623,7 @@ func TestMessageText(t *testing.T) {
 	if !ok {
 		t.Fatal("the helper words no codes")
 	}
-	codes := []string{codeNotConnected, codeFilesMissing, codeFilesElsewhere, codeInstallerMissing, codeNoDrive,
+	codes := []string{codeNotConnected, codeFilesMissing, codeFilesElsewhere, codeSettingUp, codeInstallerMissing, codeNoDrive,
 		codeUnknownDrive, codeWrongFS, codeNoSpace, codeCantWrite, codeFeed, codeDownload, codeMismatch,
 		codeFilesStay, codeCantDelete}
 	for _, code := range codes {

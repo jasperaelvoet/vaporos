@@ -58,7 +58,7 @@ func fetchInstallerCmd(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stdout, string(b))
 		return 1
 	}
-	if err := recorded(*prefix); err != nil {
+	if _, err := recorded(*prefix, false); err != nil {
 		return refused(err)
 	}
 	dir := filepath.Join(*prefix, installerDir)

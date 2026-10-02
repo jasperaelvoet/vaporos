@@ -44,23 +44,30 @@ const regText = "REGEDIT4\r\n\r\n" +
 // replaced it before Steam picked up the new target), into a start of the
 // launcher: the installed launcher, or on the first start a batch file
 // that installs it silently and then starts it, all in one Proton run.
-// It refuses with a code its helper words (MessageText), so the person
-// reads that sentence. It runs as vapor, in front of Steam's command line:
+// A target in the other place, where Star Citizen was before it was set
+// up again, starts it in the recorded prefix instead. It refuses with a
+// code its helper words (MessageText), so the person reads that sentence.
+// It runs as vapor, in front of Steam's command line:
 //
 //	…/_v2-entry-point --verb=waitforexitandrun -- …/proton waitforexitandrun <prefix>/installer/RSI Launcher-Setup-<v>.exe
 func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 	if l.Shortcut != ID+"/"+shortcutKey {
 		return nil
 	}
-	i, prefix := setupArg(l.Argv)
+	i, given := setupArg(l.Argv)
 	if i < 0 {
 		return nil // not the installer: Steam starts what it was asked to
 	}
-	if err := recorded(prefix); err != nil {
+	st, err := recorded(given, true)
+	if err != nil {
 		return err
 	}
+	prefix := st.Prefix
 	dir := filepath.Join(prefix, installerDir)
 	named := filepath.Base(l.Argv[i])
+	if prefix != given {
+		named = st.Installer // what the shortcut names once Steam picks up the recorded prefix
+	}
 	var with []string
 	if launcher := filepath.Join(prefix, launcherRel); isFile(launcher) {
 		if err := seedLive(prefix); err != nil {
@@ -69,7 +76,10 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 		with = append([]string{launcher}, launcherFlags...)
 	} else {
 		setup := pickInstaller(dir, named)
-		if setup == "" {
+		switch {
+		case setup == "" && st.Installer == "":
+			return refuse(codeSettingUp, "no installer in %s yet", dir) // Install is still downloading one, or that failed
+		case setup == "":
 			return refuse(codeInstallerMissing, "no installer in %s", dir)
 		}
 		if err := writeFirstStart(prefix, setup); err != nil {

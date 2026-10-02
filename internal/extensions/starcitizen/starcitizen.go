@@ -80,9 +80,12 @@ func gamerID() int {
 // Install puts the prefix on the drive the disk setting names and has
 // vapor download the launcher's installer into it. It refuses before it
 // touches a drive when none is picked, and a drive that is not connected,
-// has another filesystem or too little space. What it refuses with is a
-// code the person reads as its sentence (MessageText); the rest of the
-// error goes to the journal.
+// has another filesystem or too little space. A prefix state.json already
+// records stays on the filesystem it records, as the card's status and
+// the launch hook judge it: another drive at its folder isn't connected,
+// and moving Star Citizen to it is removing it and adding it again. What
+// it refuses with is a code the person reads as its sentence
+// (MessageText); the rest of the error goes to the journal.
 func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 	p, err := placeFor(diskSetting(x))
 	if err != nil {
@@ -92,7 +95,14 @@ func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 	if err != nil {
 		return fmt.Errorf("reading the mount table: %w", err)
 	}
-	m, err := locate(ms, p, "")
+	old, again := readState(x.DataDir)
+	again = again && old.Prefix == p.Prefix()
+	var m mount
+	if again {
+		m, err = onDrive(ms, p, old.UUID) // its files may be gone: Install puts them back
+	} else {
+		m, err = driveMount(ms, p)
+	}
 	if err != nil {
 		return err
 	}
@@ -123,7 +133,7 @@ func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 		return extensions.Refuse(codeCantWrite, fmt.Errorf("marking %s: %w", p.Prefix(), err))
 	}
 	st := state{Disk: p.Disk, Prefix: p.Prefix(), UUID: uuid}
-	if old, ok := readState(x.DataDir); ok && old.Prefix == st.Prefix {
+	if again && strings.EqualFold(old.UUID, uuid) {
 		st.Installer, st.Version = old.Installer, old.Version // Steam keeps its shortcut meanwhile
 	}
 	if err := saveState(x.DataDir, st); err != nil {
