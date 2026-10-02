@@ -339,11 +339,50 @@ ext_local_dupes() {
         sed -E 's/-[^-]+-[^-]+$//' | LC_ALL=C sort | uniq -d
 }
 
+# Whether cache entry C (the path without its extension: C.raw, .sha256,
+# .build.json, .packages.txt, .local.tar) can stand in for an extension's
+# image in this build: complete, its image still the one its sha256 names,
+# and its package database entries exactly its packages, none of which the
+# extension's database has yet. HAVE lists that database's package names
+# (the base's and the requirements'), one per line. Says why not, and
+# fails, otherwise.
+# Usage: ext_cache_check C HAVE
+ext_cache_check() {
+    local c=$1 f entries have
+    for f in raw sha256 build.json packages.txt local.tar; do
+        if [[ ! -f $c.$f ]]; then
+            echo "it has no .$f"
+            return 1
+        fi
+    done
+    if [[ ! -f $2 ]]; then
+        echo "there is no list of the packages its database has ($2)"
+        return 1
+    fi
+    if [[ $(sha256sum <"$c.raw" | cut -d' ' -f1) != "$(<"$c.sha256")" ]]; then
+        echo "its image is not the one its sha256 names"
+        return 1
+    fi
+    if ! entries=$(set -o pipefail; tar -tf "$c.local.tar" | cut -d/ -f1 | LC_ALL=C sort -u) ||
+            [[ $entries != "$(ext_local_entries "$c.packages.txt" | LC_ALL=C sort -u)" ]]; then
+        echo "its package database entries are not those of its packages"
+        return 1
+    fi
+    have=$(LC_ALL=C comm -12 <(LC_ALL=C sort -u "$2") <(cut -d' ' -f1 "$c.packages.txt" | LC_ALL=C sort -u))
+    if [[ -n $have ]]; then
+        echo "it adds packages the base or a requirement has already: ${have//$'\n'/ }"
+        return 1
+    fi
+}
+
 # What an install into an overlay with upper layer UPPER removed under usr/
 # from the layers below it: whiteouts (0/0 character devices) and opaque
 # directories (trusted.overlay.opaque: removed, then made again). An image
 # can only add to those layers, so each is a failure. Prints one line per
-# removal; fails if there is any, or if it cannot read the xattrs.
+# removal and fails (1) if there is any; fails with 2, saying so, if it
+# cannot read the xattrs. A symlink's own xattrs are read (-h), never its
+# target's: links in an upper layer mostly point into the layers below it
+# or at absolute paths of the image, which the builder does not have.
 # Usage: ext_upper_removals UPPER
 ext_upper_removals() {
     local up=$1 p out="" opaque
@@ -353,9 +392,9 @@ ext_upper_removals() {
             out+="removed /$p (a whiteout)"$'\n'
         fi
     done < <(cd "$up" && find usr -type c -print0)
-    if ! opaque=$(cd "$up" && getfattr -R -P --absolute-names -m '^trusted\.overlay\.opaque$' usr 2>&1); then
-        printf 'getfattr cannot read the xattrs under %s/usr:\n%s\n' "$up" "$opaque" >&2
-        return 1
+    if ! opaque=$(cd "$up" && getfattr -h -R -P --absolute-names -m '^trusted\.overlay\.opaque$' usr 2>&1); then
+        printf 'cannot read the xattrs under %s/usr (getfattr):\n%s\n' "$up" "$opaque" >&2
+        return 2
     fi
     out+=$(sed -n 's|^# file: \(.*\)$|replaced /\1 (an opaque directory: removed, then made again)|p' <<<"$opaque")
     [[ -n $out ]] || return 0

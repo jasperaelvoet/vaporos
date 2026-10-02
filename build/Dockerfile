@@ -35,9 +35,12 @@ RUN pacman-key --init \
 # the Go code that made it. (edid-decode is not in the Arch repos; the EDID is
 # checked by the Go tests instead.) fsverity-utils gives each extension image
 # its fs-verity digest independently of vos's own; uuidgen (util-linux, in the
-# base image) names its filesystem.
+# base image) names its filesystem. attr's getfattr finds the opaque
+# directories an extension's install leaves in its overlay, and selftest.sh
+# makes some with setfattr: listed, not left to come with coreutils.
 RUN pacman -Syu --noconfirm --needed \
         arch-install-scripts \
+        attr \
         erofs-utils \
         fsverity-utils \
         dosfstools mtools \
