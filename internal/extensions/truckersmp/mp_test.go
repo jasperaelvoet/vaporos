@@ -169,7 +169,7 @@ func TestNotReady(t *testing.T) {
 	if got := notReady(homeDir(), ets2); got != msgUpdating {
 		t.Errorf("a changed file: %q", got)
 	}
-	// A sync that changes files deleted the manifest.
+	// A sync that moves files into place deleted the manifest.
 	os.Remove(filepath.Join(homeDir(), manifestRel))
 	if got := notReady(homeDir(), ets2); got != msgUpdating {
 		t.Errorf("during a sync: %q", got)

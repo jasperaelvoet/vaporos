@@ -81,6 +81,8 @@ func (h *Helper) Status(ctx context.Context, x *extensions.Ext) []extensions.Sta
 	switch {
 	case j != nil && total > 0:
 		add("", "Downloading the TruckersMP mod: %d %%", min(done*100/total, 100))
+	case j != nil && done > 0:
+		add("", "Downloading the TruckersMP mod: %s so far", sizeText(done))
 	case j != nil:
 		add("", "Checking the TruckersMP mod for updates")
 	case len(installed) == 0:

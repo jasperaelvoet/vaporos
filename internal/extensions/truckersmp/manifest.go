@@ -19,7 +19,8 @@ import (
 // whose files it holds and every file with its size and mtime, so a
 // launch can tell quickly whether the files are still the ones the sync
 // checked. Only a finished sync writes it, and a sync that changes files
-// deletes it first: a manifest on disk always describes complete files.
+// deletes it just before it moves its checked downloads into place: a
+// manifest on disk always describes complete files.
 type manifest struct {
 	Version string         `json:"version"`
 	Checked time.Time      `json:"checked"`

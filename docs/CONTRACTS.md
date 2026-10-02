@@ -46,7 +46,7 @@ multi-call:
 | `vos ext action ID NAME [--args JSON]` | runs action NAME of extension ID through its helper (Go in `vos`, `Helper.Action`) in this process, with its shipped descriptor, its settings and its data areas; vosd runs it as `vapor` for every action whose `run_as` is not `root` (see Extensions, Control center). `--args` (or `--args=JSON`) is a JSON object. It refuses an extension `/run/vos/extensions.json` does not name as mounted, and an action with `run_as` `root` when it does not run as root. Exit 0 when the action ran, 1 when it failed (why, as the last line on stderr), 2 on bad arguments, 3 when the extension has no such action |
 | `vos ext coolercontrol prepare` / `fans snapshot` / `fans restore` | the steps of the CoolerControl extension's `coolercontrold.service`, as root (see Extensions, CoolerControl): exit 0, 1 on failure (a failed `prepare` stops the start), 2 on bad arguments |
 | `vos ext star-citizen fetch-installer --prefix DIR` | as `vapor` (it refuses as root), run by the star-citizen helper's install: downloads the RSI Launcher's installer that the publisher's `latest.yml` names into `DIR/installer/`, resuming and checking it, and prints `{"installer","version"}` (see Extensions, Star Citizen). DIR must be a Star Citizen prefix on its own drive. The last line on stderr says what went wrong, for the card. Exit 0, 1 on failure, 2 on bad arguments |
-| `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (exit 3 while another sync runs, 4 when the version API does not vouch for a wanted game's core library, 5 when the files do not fit, after a `{"short":N}` line); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
+| `vos ext truckersmp sync\|mp ets2\|ats\|handoff ets2\|ats ID NONCE\|setup\|copy-profiles` | TruckersMP's own commands, as `vapor` only (exit 2 as root or on bad arguments; see Extensions, TruckersMP): `sync` brings the mod's files up to date and prints `{"bytes":N,"total":N}` lines (`total` 0 while the whole size is not known; exit 3 while another sync runs, 4 when the version API does not vouch for a wanted game's core library, 5 when the files do not fit, after a `{"short":N}` line); `mp` starts multiplayer through Steam; `handoff` is what `mp` runs in the transient unit; `setup` copies the injector into the home data area; `copy-profiles` copies the Linux builds' profiles into the Proton prefixes. Exit 0, or 1 with the reason as the last line on stderr |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam and after every stop (`vos-gamescope.service`), and from vosd when `dispatcher` turns false while that unit is down: brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
@@ -1409,8 +1409,9 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   says), `manifest.json`
   (`{"version","checked","games","files":[{"path","type","md5","size","mtime"}]}`,
   `mtime` in unix nanoseconds: written by a sync that finished, and deleted
-  first by one that changes files, so it always describes whole files),
-  `partial/<md5>.part` (downloads to resume) and `.sync.lock` (flock).
+  by one that changes files just before it moves its checked downloads into
+  `files/`, so it always describes whole files),
+  `partial/<md5>.part` (downloads, kept to resume) and `.sync.lock` (flock).
 - *Sync* (`vos ext truckersmp sync`, as `vapor`, one at a time): it asks
   `https://api.truckersmp.com/v2/version` and
   `https://update.ets2mp.com/files.json` (`{"Files":[{"Md5","Type","FilePath"}]}`),
@@ -1421,17 +1422,25 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   (`atsmp_checksum.dll`), and files.json the same one; otherwise the sync
   downloads nothing and exits 4 (it tries again later). A file
   the manifest recorded with that MD5, size and mtime, or whose MD5 matches,
-  stays; the others come from `https://download.ets2mp.com/files<FilePath>`
-  (HEAD for the size; where HEAD gives none, the GET's `Content-Length`, or
-  its `Content-Range` total when resumed; then GET, resumed with `Range`
-  where a part exists, a file of no bytes included; at most 2 GiB a file
-  and 8 GiB in all, the bytes downloaded counted against it as they come;
-  given up after 60 s without data), are MD5-checked and renamed into
-  place. Before downloading, the home data area's filesystem must have the
-  bytes still to come (the sizes known, less what `partial/` holds) plus
-  2 GiB free, checked again for each size only the GET gives; otherwise the
-  sync prints `{"short":N}` (the bytes missing) and exits 5. Files of the
-  old manifest no longer listed go.
+  stays; the others come from `https://download.ets2mp.com/files<FilePath>`,
+  once per MD5 (HEAD for the size; where HEAD gives none, the GET's
+  `Content-Length`, or its `Content-Range` total when resumed; then GET into
+  `partial/<md5>.part`, resumed with `Range` where a part exists, a file of
+  no bytes included; at most 2 GiB a file and 8 GiB in all, the bytes
+  downloaded counted against it as they come; given up after 60 s without
+  data) and MD5-checked. Before downloading, the home data area's
+  filesystem must have the bytes still to come (the sizes known, less what
+  `partial/` holds) plus 2 GiB free, checked again for each size only the
+  GET gives and, once all are downloaded, for the copies below; otherwise
+  the sync prints `{"short":N}` (the bytes missing) and exits 5. Every
+  refusal and failure so far leaves `files/` and the manifest as they were,
+  so multiplayer keeps working with the files it has. Only once every
+  download is checked does the sync delete the manifest and move the
+  downloads into place (renamed; the other files of an MD5 get a copy).
+  Files of the old manifest no longer listed go. Its progress lines'
+  `total` is the sum of HEAD's sizes, known before the first byte, or 0
+  (not known) until every download is done when HEAD gives a size for not
+  every file.
 - *vosd* runs the sync as `vapor` (runuser; its progress lines read as they
   come; within 4 hours; exit 3 counts as done, exits 4 and 5 the card words
   itself) from `Install` (after `setup`), and, while this boot
@@ -1488,7 +1497,8 @@ from `update.ets2mp.com` and the version API from `api.truckersmp.com`.
   `Documents/<game>`, else of `~/.local/share/<game>`, read through
   gamerfs) against them or the branch it is held on (and, once the API
   supports a newer version than that, whether that one is the game's
-  latest), and the files (downloading n %, ready, out of date, or, while
+  latest), and the files (downloading n %, or the bytes so far while the
+  sync's total is 0, ready, out of date, or, while
   they are behind, a sync that failed: for want of free space, with how
   much to free; for want of the API's checksum; or otherwise).
 - *Actions:* `copy-profiles` (as `vapor`, through `vos ext action`) copies each folder of

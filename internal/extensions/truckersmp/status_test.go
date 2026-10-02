@@ -257,6 +257,30 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+// A sync that cannot tell its whole size shows the bytes so far, never a
+// percentage.
+func TestStatusProgressWithoutTotal(t *testing.T) {
+	b := newBox(t)
+	b.install(b.disk, games[0])
+	h := newStatusHelper(t)
+	h.runSync = func(ctx context.Context, progress func(done, total int64)) error {
+		progress(3<<20+1, 0)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	x := testExt()
+	h.Status(context.Background(), x)
+	waitFor(t, func() bool {
+		h.Helper.mu.Lock()
+		defer h.Helper.mu.Unlock()
+		return h.job != nil && h.job.bytes > 0
+	})
+	lines := texts(h.Status(context.Background(), x))
+	if got := lines[len(lines)-1]; got != "|Downloading the TruckersMP mod: 4 MiB so far" {
+		t.Errorf("%q", lines)
+	}
+}
+
 // When a sync is due: none while not installed; one when there is no
 // manifest, when TruckersMP's version changed, when a game is installed
 // that the files lack and once a day; never two within syncGap.

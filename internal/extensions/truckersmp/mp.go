@@ -133,10 +133,10 @@ func (m *mp) run(ctx context.Context, g game) error {
 }
 
 // notReady is the code for g's files failing the quick check: not
-// downloaded for g yet, or updating. A sync that changes files deletes
-// the manifest first, so a manifest without g means no sync has fetched
-// g's files; without a manifest, g's core library in MODDIR tells that
-// one did.
+// downloaded for g yet, or updating. A sync deletes the manifest only
+// while it moves files into place, so a manifest without g means no sync
+// has fetched g's files; without a manifest, g's core library in MODDIR
+// tells that one did.
 func notReady(home string, g game) string {
 	if m, err := readManifest(home); err == nil && m != nil {
 		if m.has(g) {
