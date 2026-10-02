@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -80,8 +79,9 @@ func gamerID() int {
 }
 
 // Install puts the prefix on the drive the disk setting names and has
-// vapor download the launcher's installer into it. It refuses a drive that
-// is not connected, has another filesystem or too little space.
+// vapor download the launcher's installer into it. It refuses before it
+// touches a drive when none is picked, and a drive that is not connected,
+// has another filesystem or too little space.
 func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 	p, err := placeFor(diskSetting(x))
 	if err != nil {
@@ -89,76 +89,116 @@ func (helper) Install(ctx context.Context, x *extensions.Ext) error {
 	}
 	ms, err := readMounts()
 	if err != nil {
-		return fmt.Errorf("reading the mount table: %w", err)
+		log.Printf("star-citizen: reading the mount table: %v", err)
+		return errors.New("VaporOS couldn't check which drives are connected. Try again.")
 	}
 	m, err := driveMount(ms, p)
 	if err != nil {
-		return fmt.Errorf("%s isn't connected. Connect it, or pick another drive for it.", p.Name)
+		return errors.New(p.problem(err))
 	}
 	area := games(x.Desc)
 	if !slices.Contains(area.FS, m.FSType) {
-		return fmt.Errorf("%s is formatted as %s, which Star Citizen can't run from. Pick a drive formatted as %s.", p.Name, m.FSType, orList(area.FS))
+		return fmt.Errorf("%s is formatted as %s, which Star Citizen can't run from. Pick a drive formatted as %s.", capital(p.Name), m.FSType, orList(area.FS))
 	}
 	if !safeRe.MatchString(p.Prefix()) {
-		return fmt.Errorf("the folder on %s has characters the RSI Launcher can't handle. Pick another drive.", p.Name)
+		return fmt.Errorf("The folder on %s has characters the RSI Launcher can't handle. Pick another drive.", p.Name)
 	}
 	uuid, err := fsUUID(m.Source)
 	if err != nil {
 		log.Printf("star-citizen: %v", err)
 		return fmt.Errorf("VaporOS couldn't tell which drive %s is. Pick another drive.", p.Name)
 	}
+	installed := launcherInstalled(p)
 	need := uint64(area.MinFreeGB) * 1e9
-	if !launcherInstalled(p) {
+	if !installed {
 		if free, err := freeBytes(m.Point); err == nil && free < need {
-			return fmt.Errorf("%s has %d GB free, and Star Citizen needs %d GB. Free up space or pick another drive.", p.Name, free/1e9, area.MinFreeGB)
+			return fmt.Errorf("%s has %d GB free, and Star Citizen needs %d GB. Free up space or pick another drive.", capital(p.Name), free/1e9, area.MinFreeGB)
 		}
 	}
 
 	uid := gamerID()
+	cantWrite := fmt.Errorf("VaporOS couldn't write to %s. Check that it has space, then try again.", p.Name)
 	if err := gamerfs.MkdirAll(p.Base, p.Rel, 0o755, uid, uid); err != nil {
-		return fmt.Errorf("making its folder on %s: %w", p.Name, err)
+		log.Printf("star-citizen: making %s: %v", p.Prefix(), err)
+		return cantWrite
 	}
 	if err := gamerfs.WriteFile(p.Base, path.Join(p.Rel, markerName), []byte(uuid+"\n"), 0o644, uid, uid); err != nil {
-		return fmt.Errorf("marking its folder on %s: %w", p.Name, err)
+		log.Printf("star-citizen: marking %s: %v", p.Prefix(), err)
+		return cantWrite
 	}
 	st := state{Disk: p.Disk, Prefix: p.Prefix(), UUID: uuid}
 	if old, ok := readState(x.DataDir); ok && old.Prefix == st.Prefix {
 		st.Installer, st.Version = old.Installer, old.Version // Steam keeps its shortcut meanwhile
 	}
-	if err := os.MkdirAll(x.DataDir, 0o755); err != nil {
+	if err := saveState(x.DataDir, st); err != nil {
 		return err
 	}
-	if err := writeState(x.DataDir, st); err != nil {
-		return err
+	if installed && st.Installer != "" && hasInstaller(p, st.Installer) {
+		// The installer only runs on a first start; the shortcut needs it there.
+		log.Printf("star-citizen: prefix %s on %s (%s): the RSI Launcher is installed, keeping %s", st.Prefix, p.Name, uuid, st.Installer)
+		logMemory()
+		return nil
 	}
 
 	out, err := asGamer(ctx, vosBin, "ext", ID, "fetch-installer", "--prefix", st.Prefix)
 	if err != nil {
 		log.Printf("star-citizen: %v", err)
-		if line := lastLine(out); line != "" && !strings.HasPrefix(line, "{") {
+		if line := lastLine(out); plainLine(line) {
 			return errors.New(line)
 		}
-		return errors.New("the RSI Launcher's installer didn't download. Check the internet connection, then try again.")
+		return errFetch
 	}
 	var res fetchResult
 	if err := json.Unmarshal([]byte(lastLine(out)), &res); err != nil || !installerRe.MatchString(res.Installer) {
-		return fmt.Errorf("vos ext %s fetch-installer said %q", ID, lastLine(out))
+		log.Printf("star-citizen: fetch-installer printed %q", lastLine(out))
+		return errFetch
 	}
 	st.Installer, st.Version = res.Installer, res.Version
-	if err := writeState(x.DataDir, st); err != nil {
+	if err := saveState(x.DataDir, st); err != nil {
 		return err
 	}
 	log.Printf("star-citizen: prefix %s on %s (%s), RSI Launcher %s", st.Prefix, p.Name, uuid, st.Version)
-	if w := memoryWarning(); w != "" {
-		log.Printf("star-citizen: %s", w)
+	logMemory()
+	return nil
+}
+
+var errFetch = errors.New("The RSI Launcher's installer didn't download. Check the internet connection, then try again.")
+
+// plainLine reports whether fetch-installer's last line is one of its
+// sentences for the person, not JSON or Go's words.
+func plainLine(line string) bool {
+	return line != "" && line[0] >= 'A' && line[0] <= 'Z' && strings.HasSuffix(line, ".")
+}
+
+// saveState writes state.json, logging why it could not.
+func saveState(dataDir string, st state) error {
+	err := os.MkdirAll(dataDir, 0o755)
+	if err == nil {
+		err = writeState(dataDir, st)
+	}
+	if err != nil {
+		log.Printf("star-citizen: %v", err)
+		return errors.New("VaporOS couldn't save where Star Citizen is. Try again.")
 	}
 	return nil
 }
 
+func logMemory() {
+	if w := memoryWarning(); w != "" {
+		log.Printf("star-citizen: %s", w)
+	}
+}
+
 // launcherInstalled reports whether the RSI Launcher is in the prefix at p,
 // looked at as root without following a symlink (CONTRACTS Users).
-func launcherInstalled(p place) bool {
-	f, err := gamerfs.Open(p.Base, path.Join(p.Rel, launcherRel))
+func launcherInstalled(p place) bool { return isFileAt(p, launcherRel) }
+
+// hasInstaller reports whether the installer file is in p's installer
+// folder, which fetch-installer gives that name only once it checked it.
+func hasInstaller(p place, file string) bool { return isFileAt(p, path.Join(installerDir, file)) }
+
+func isFileAt(p place, rel string) bool {
+	f, err := gamerfs.Open(p.Base, path.Join(p.Rel, rel))
 	if err != nil {
 		return false
 	}
@@ -166,43 +206,38 @@ func launcherInstalled(p place) bool {
 	return true
 }
 
-// Remove leaves the prefix alone unless purge: then vapor deletes it, game
-// and all, from the drive it is on.
+// Remove leaves the prefix alone unless purge: then vapor deletes the
+// recorded one, game and all, while the drive that holds it is the one
+// Install recorded. On the system drive the prefix is the home data area,
+// which vosd's purge deletes.
 func (helper) Remove(ctx context.Context, x *extensions.Ext, purge bool) error {
 	if !purge {
 		return nil
 	}
-	var places []place
-	if st, ok := readState(x.DataDir); ok {
-		if p, err := placeFor(st.Disk); err == nil && p.Prefix() == st.Prefix {
-			places = append(places, p)
-		}
+	st, ok := readState(x.DataDir)
+	if !ok {
+		return nil
 	}
-	if p, err := placeFor(diskSetting(x)); err == nil && !slices.ContainsFunc(places, func(q place) bool { return q.Prefix() == p.Prefix() }) {
-		places = append(places, p)
+	p, ok := placeOf(st.Prefix)
+	if !ok || p.System {
+		return nil
 	}
 	ms, err := readMounts()
 	if err != nil {
-		return fmt.Errorf("reading the mount table: %w", err)
+		log.Printf("star-citizen: reading the mount table: %v", err)
 	}
-	var errs []error
-	for _, p := range places {
-		if _, err := driveMount(ms, p); err != nil {
-			if st, ok := readState(x.DataDir); ok && st.Prefix == p.Prefix() {
-				errs = append(errs, fmt.Errorf("%s isn't connected, so the files in VaporOS/%s on it stay.", p.Name, ID))
-			}
-			continue
-		}
-		if _, err := asGamer(ctx, "rm", "-rf", "--one-file-system", "--", p.Prefix()); err != nil {
-			log.Printf("star-citizen: %v", err)
-			errs = append(errs, fmt.Errorf("VaporOS couldn't delete its files on %s.", p.Name))
-			continue
-		}
-		if !p.System {
-			syscall.Rmdir(filepath.Dir(p.Prefix())) // <drive>/VaporOS, if nothing else is in it
-		}
+	if _, err := onDrive(ms, p, st.UUID); err != nil {
+		return fmt.Errorf("Star Citizen's drive, %s, isn't connected, so its files stay on it.", p.Name)
 	}
-	return errors.Join(errs...)
+	if _, err := asGamer(ctx, "rm", "-rf", "--one-file-system", "--", p.Prefix()); err != nil {
+		log.Printf("star-citizen: deleting %s: %v", p.Prefix(), err)
+		return fmt.Errorf("VaporOS couldn't delete Star Citizen's files on %s.", p.Name)
+	}
+	// <drive>/VaporOS goes too when nothing else is in it.
+	if _, err := asGamer(ctx, "rmdir", "--ignore-fail-on-non-empty", "--", filepath.Dir(p.Prefix())); err != nil {
+		log.Printf("star-citizen: %v", err)
+	}
+	return nil
 }
 
 // Steam gives the shortcut its target once the installer is there: the
@@ -232,24 +267,18 @@ func (helper) Status(ctx context.Context, x *extensions.Ext) []extensions.Status
 }
 
 func driveLines(x *extensions.Ext, st state) []extensions.StatusLine {
-	p, err := placeFor(st.Disk)
-	if err != nil || p.Prefix() != st.Prefix {
+	p, ok := placeOf(st.Prefix)
+	if !ok {
 		return nil
 	}
 	var out []extensions.StatusLine
-	ms, _ := readMounts()
-	m, err := driveMount(ms, p)
-	if err == nil {
-		if uuid, uerr := fsUUID(m.Source); uerr != nil || !strings.EqualFold(uuid, st.UUID) {
-			err = errNotConnected
-		}
+	ms, err := readMounts()
+	if err != nil {
+		log.Printf("star-citizen: reading the mount table: %v", err)
 	}
-	switch {
-	case err != nil && p.System:
-		out = append(out, extensions.StatusLine{Text: "Its files on the system drive are missing. Remove Star Citizen and install it again.", Tone: "warning"})
-	case err != nil:
-		out = append(out, extensions.StatusLine{Text: fmt.Sprintf("Its drive, %s, isn't connected. Connect it to play.", p.Name), Tone: "warning"})
-	default:
+	if m, err := reach(ms, p, st.UUID); err != nil {
+		out = append(out, extensions.StatusLine{Text: p.problem(err), Tone: "warning"})
+	} else {
 		where := fmt.Sprintf("Its files are on %s", p.Name)
 		if free, err := freeBytes(m.Point); err == nil {
 			where += fmt.Sprintf(", which has %d GB free", free/1e9)
@@ -262,8 +291,8 @@ func driveLines(x *extensions.Ext, st state) []extensions.StatusLine {
 			out = append(out, extensions.StatusLine{Text: "Start Star Citizen in Steam: its first start installs the RSI Launcher."})
 		}
 	}
-	if picked := diskSetting(x); picked != st.Disk {
-		out = append(out, extensions.StatusLine{Text: fmt.Sprintf("You picked another drive. Star Citizen stays on %s until you remove it and install it again.", p.Name), Tone: "warning"})
+	if picked := diskSetting(x); picked != "" && picked != p.Disk {
+		out = append(out, extensions.StatusLine{Text: fmt.Sprintf("You picked another drive. Star Citizen stays on %s until you remove it and add it again.", p.Name), Tone: "warning"})
 	}
 	return out
 }
@@ -279,6 +308,15 @@ func statfsFree(p string) (uint64, error) {
 func lastLine(s string) string {
 	s = strings.TrimSpace(s)
 	return strings.TrimSpace(s[strings.LastIndexByte(s, '\n')+1:])
+}
+
+// capital starts s, a drive's name at the head of a sentence, with a
+// capital letter.
+func capital(s string) string {
+	if s != "" && s[0] >= 'a' && s[0] <= 'z' {
+		return string(s[0]-'a'+'A') + s[1:]
+	}
+	return s
 }
 
 // orList is "a, b or c".

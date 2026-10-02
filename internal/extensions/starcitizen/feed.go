@@ -212,10 +212,15 @@ func checkFile(p string, r release) (bool, error) {
 
 // fetchInstaller puts r's installer into dir, resuming a download that
 // stopped (<file>.part) and checking size and SHA-512 before the file gets
-// its name. Other installers in dir go once it is there.
+// its name. Partial downloads go once it is there; other installers stay
+// for the launch hook, since Steam's shortcut may name one until Steam
+// picks up the new target.
 func fetchInstaller(ctx context.Context, r release, dir string) error {
 	final := filepath.Join(dir, r.File)
-	if ok, _ := checkFile(final, r); !ok {
+	if ok, _ := checkFile(final, r); ok {
+		now := time.Now()
+		os.Chtimes(final, now, now) // the newest, for the launch hook
+	} else {
 		part := final + ".part"
 		var err error
 		for try := 0; try < fetchTries; try++ {
@@ -248,7 +253,7 @@ func fetchInstaller(ctx context.Context, r release, dir string) error {
 	}
 	for _, e := range ents {
 		n := e.Name()
-		if n != r.File && strings.HasPrefix(n, "RSI Launcher-Setup-") && (strings.HasSuffix(n, ".exe") || strings.HasSuffix(n, ".exe.part")) {
+		if strings.HasPrefix(n, "RSI Launcher-Setup-") && strings.HasSuffix(n, ".exe.part") {
 			os.Remove(filepath.Join(dir, n))
 		}
 	}

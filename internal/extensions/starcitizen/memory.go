@@ -11,11 +11,15 @@ import (
 
 var meminfoPath = "/proc/meminfo"
 
-// What Star Citizen wants (the LUG's numbers), less what firmware and the
-// graphics card keep of a PC that has them.
+// What Star Citizen wants: 16 GiB of memory, and 32 GiB of memory and swap
+// together. SwapTotal counts zram, which CachyOS sizes as the memory.
+// Firmware and integrated graphics keep up to a GiB of a PC's memory, so a
+// 16 GiB PC reports a little less, and with zram that shortfall counts
+// twice.
 const (
-	wantRAM   = 15 << 30 // a 16 GB PC
-	wantTotal = 46 << 30 // 48 GB of memory and swap
+	reserved  = 1 << 30
+	wantRAM   = 16<<30 - reserved
+	wantTotal = 32<<30 - 2*reserved
 )
 
 // memory returns the PC's memory and swap in bytes.
@@ -60,9 +64,9 @@ func memoryWarning() string {
 	case err != nil:
 		return ""
 	case ram < wantRAM:
-		return fmt.Sprintf("This PC has %d GB of memory, and Star Citizen needs 16 GB. It may not start, or close while you play.", gb(ram))
+		return fmt.Sprintf("This PC has %d GB of memory, and Star Citizen needs 16 GB. It may not start, or it may close while you play.", gb(ram))
 	case ram+swap < wantTotal:
-		return fmt.Sprintf("This PC has %d GB of memory and swap together, and Star Citizen wants 48 GB. It may stutter or close in busy places.", gb(ram+swap))
+		return fmt.Sprintf("This PC has %d GB of memory and swap together, and Star Citizen wants 32 GB. It may stutter or close in busy places.", gb(ram+swap))
 	}
 	return ""
 }

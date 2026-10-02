@@ -47,31 +47,34 @@ func fetchInstallerCmd(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "vos ext star-citizen fetch-installer runs as vapor, not as root.")
 		return 1
 	}
-	if !knownPrefix(*prefix) {
+	p, ok := placeOf(*prefix)
+	if !ok {
 		fmt.Fprintf(stderr, "%s is not a folder Star Citizen uses.\n", *prefix)
+		fmt.Fprintln(stderr, errStray)
 		return 1
 	}
-	if err := checkPrefix(*prefix); err != nil {
-		fmt.Fprintln(stderr, "its drive isn't connected. Connect it, then try again.")
+	if err := checkPrefix(p); err != nil {
+		fmt.Fprintln(stderr, p.problem(err))
 		return 1
 	}
 	dir := filepath.Join(*prefix, installerDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fmt.Fprintf(stderr, "making %s: %v\n", dir, err)
+		fmt.Fprintf(stderr, "VaporOS couldn't write to %s. Check that it has space, then try again.\n", p.Name)
 		return 1
 	}
 	r, err := readFeed(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "reading the RSI Launcher's release: %v\n", err)
-		fmt.Fprintln(stderr, "the RSI Launcher's download page didn't answer. Check the internet connection, then try again.")
+		fmt.Fprintln(stderr, "The RSI Launcher's download page didn't answer. Check the internet connection, then try again.")
 		return 1
 	}
 	if err := fetchInstaller(ctx, r, dir); err != nil {
 		fmt.Fprintf(stderr, "downloading %s: %v\n", installerURL(r.File), err)
 		if errors.Is(err, errMismatch) {
-			fmt.Fprintln(stderr, "the RSI Launcher's installer didn't match the fingerprint its publisher lists, so VaporOS deleted it. Try again later.")
+			fmt.Fprintln(stderr, "The RSI Launcher's installer didn't match the fingerprint its publisher lists, so VaporOS deleted it. Try again later.")
 		} else {
-			fmt.Fprintln(stderr, "the RSI Launcher's installer didn't download. Check the internet connection, then try again.")
+			fmt.Fprintln(stderr, errFetch)
 		}
 		return 1
 	}

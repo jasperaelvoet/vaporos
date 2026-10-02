@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // latestYML is latest.yml as install.robertsspaceindustries.com/rel/2/
@@ -119,14 +120,22 @@ func TestFetchInstaller(t *testing.T) {
 	if got := readFile(t, filepath.Join(dir, r.File)); got != string(f.installer) {
 		t.Errorf("installer has %d bytes, not the publisher's", len(got))
 	}
+	// Partial downloads go; the old installer stays for the launch hook,
+	// as Steam's shortcut may still name it.
 	names := dirNames(t, dir)
-	if strings.Join(names, ",") != "RSI Launcher-Setup-2.17.0.exe,first-start.bat" {
+	if strings.Join(names, ",") != "RSI Launcher-Setup-2.16.0.exe,RSI Launcher-Setup-2.17.0.exe,first-start.bat" {
 		t.Errorf("left %v", names)
 	}
 
-	// A file that is already there is checked, not fetched again.
+	// A file that is already there is checked, not fetched again, and
+	// counts as the newest.
+	old := time.Now().Add(-time.Hour)
+	must(t, os.Chtimes(filepath.Join(dir, r.File), old, old))
 	if err := fetchInstaller(ctx, r, dir); err != nil || len(f.ranges) != 1 {
 		t.Errorf("fetched again (%v, %v)", f.ranges, err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, r.File)); err != nil || !fi.ModTime().After(old) {
+		t.Errorf("the kept installer is not the newest: %v", err)
 	}
 }
 

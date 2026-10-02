@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 )
@@ -39,7 +40,10 @@ const regText = "REGEDIT4\r\n\r\n" +
 	`[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer]` + "\r\n" +
 	`"NoTrayItemsDisplay"=dword:00000001` + "\r\n"
 
-var errDrive = errors.New("its drive isn't connected. Connect the drive, then start it again.")
+var (
+	errStray       = errors.New("Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again.")
+	errNoInstaller = errors.New("Star Citizen's installer is missing. Remove Star Citizen and add it again.")
+)
 
 // LaunchHook turns the Star Citizen shortcut, whose target is the RSI
 // Launcher's installer (a file that is always there), into a start of the
@@ -56,14 +60,15 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 	if i < 0 {
 		return nil // not the installer: Steam starts what it was asked to
 	}
-	if !knownPrefix(prefix) {
-		return errors.New("its files aren't where VaporOS put them. Remove Star Citizen in Extensions and install it again.")
+	p, ok := placeOf(prefix)
+	if !ok {
+		return errStray
 	}
-	if err := checkPrefix(prefix); err != nil {
-		return errDrive
+	if err := checkPrefix(p); err != nil {
+		return errors.New(p.problem(err))
 	}
-	l.Env = setEnv(l.Env, "STEAM_COMPAT_DATA_PATH", prefix)
-	l.Env = setEnv(l.Env, "UMU_ID", umuID) // protonfixes add what the launcher needs
+	dir := filepath.Join(prefix, installerDir)
+	named := filepath.Base(l.Argv[i])
 	var with []string
 	if launcher := filepath.Join(prefix, launcherRel); isFile(launcher) {
 		if err := seedLive(prefix); err != nil {
@@ -71,14 +76,77 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 		}
 		with = append([]string{launcher}, launcherFlags...)
 	} else {
-		if err := writeFirstStart(prefix, filepath.Base(l.Argv[i])); err != nil {
-			log.Printf("star-citizen: %v", err)
-			return errors.New("VaporOS couldn't prepare its first start on its drive. Check that the drive has space, then start it again.")
+		setup := pickInstaller(dir, named)
+		if setup == "" {
+			return errNoInstaller
 		}
-		with = []string{cmdExe, "/c", dosPath(filepath.Join(prefix, installerDir, firstStart))}
+		if err := writeFirstStart(prefix, setup); err != nil {
+			log.Printf("star-citizen: %v", err)
+			return fmt.Errorf("VaporOS couldn't write to %s. Check that it has space, then try again.", p.Name)
+		}
+		with = []string{cmdExe, "/c", dosPath(filepath.Join(dir, firstStart))}
 	}
+	pruneInstallers(dir, named)
+	l.Env = setEnv(l.Env, "STEAM_COMPAT_DATA_PATH", prefix)
+	l.Env = setEnv(l.Env, "UMU_ID", umuID) // protonfixes add what the launcher needs
 	l.Argv = slices.Concat(l.Argv[:i], with, l.Argv[i+1:])
 	return nil
+}
+
+// installers are the RSI Launcher's installers in dir, with the time each
+// was written.
+func installers(dir string) map[string]time.Time {
+	ents, _ := os.ReadDir(dir)
+	out := map[string]time.Time{}
+	for _, e := range ents {
+		if !installerRe.MatchString(e.Name()) || !e.Type().IsRegular() {
+			continue
+		}
+		if fi, err := e.Info(); err == nil {
+			out[e.Name()] = fi.ModTime()
+		}
+	}
+	return out
+}
+
+// pickInstaller is the installer a first start runs: the one Steam's
+// shortcut names, or, when a newer download replaced it, the newest in
+// dir; "" when there is none.
+func pickInstaller(dir, named string) string {
+	all := installers(dir)
+	if _, ok := all[named]; ok {
+		return named
+	}
+	newest := ""
+	for n, t := range all {
+		if newest == "" || t.After(all[newest]) || (t.Equal(all[newest]) && n > newest) {
+			newest = n
+		}
+	}
+	return newest
+}
+
+// pruneInstallers deletes the other installers in dir once Steam's
+// shortcut names the newest one. Until then the shortcut may still name an
+// older one, which stays.
+func pruneInstallers(dir, named string) {
+	all := installers(dir)
+	t, ok := all[named]
+	if !ok {
+		return
+	}
+	for n, u := range all {
+		if n != named && !u.Before(t) {
+			return
+		}
+	}
+	for n := range all {
+		if n != named {
+			if err := os.Remove(filepath.Join(dir, n)); err != nil {
+				log.Printf("star-citizen: %v", err)
+			}
+		}
+	}
 }
 
 // setupArg finds the installer in Steam's command line: the last argument

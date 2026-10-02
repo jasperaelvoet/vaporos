@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/sha512"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,8 +24,9 @@ import (
 
 // UUIDs of the fake system's filesystems.
 const (
-	sysUUID  = "5f0c1e8a-3b2d-4c6e-9a71-0d2f4b6c8e10"
-	gameUUID = "a1b2c3d4-e5f6-4789-8abc-def012345678"
+	sysUUID   = "5f0c1e8a-3b2d-4c6e-9a71-0d2f4b6c8e10"
+	gameUUID  = "a1b2c3d4-e5f6-4789-8abc-def012345678"
+	otherUUID = "0f1e2d3c-4b5a-4697-8877-665544332211"
 )
 
 // box is a fake PC: a system drive (vos_data, mounted at root, holding
@@ -35,6 +39,7 @@ type box struct {
 	free    map[string]uint64
 	mounted bool   // whether the game drive is in the mount table
 	gameFS  string // the game drive's filesystem type
+	gameDev string // the device mounted as the game drive, in dev/
 	calls   [][]string
 }
 
@@ -44,7 +49,7 @@ func newBox(t *testing.T) *box {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &box{t: t, root: root, mounted: true, gameFS: "ext4", free: map[string]uint64{}}
+	b := &box{t: t, root: root, mounted: true, gameFS: "ext4", gameDev: "sdb1", free: map[string]uint64{}}
 	save := struct {
 		mi, uuid, mnt, home, meminfo, vos string
 		asGamer                           func(context.Context, string, ...string) (string, error)
@@ -92,9 +97,20 @@ func (b *box) writeMounts() {
 		fmt.Sprintf("23 22 259:4 /var %s rw,relatime shared:2 - ext4 %s/dev/nvme0n1p4 rw", b.root, b.root),
 	}
 	if b.mounted {
-		lines = append(lines, fmt.Sprintf("40 23 8:17 / %s rw,nosuid,nodev,noatime shared:20 - %s %s/dev/sdb1 rw", b.mnt, b.gameFS, b.root))
+		lines = append(lines, fmt.Sprintf("40 23 8:17 / %s rw,nosuid,nodev,noatime shared:20 - %s %s/dev/%s rw", b.mnt, b.gameFS, b.root, b.gameDev))
 	}
 	writeFile(b.t, mountInfoPath, strings.Join(lines, "\n")+"\n")
+}
+
+// swapDrive mounts another drive where SATA1TB was: the same name, another
+// filesystem (otherUUID), with Star Citizen's files copied onto it.
+func (b *box) swapDrive() {
+	writeFile(b.t, filepath.Join(b.root, "dev/sdc1"), "")
+	if _, err := os.Lstat(filepath.Join(byUUIDDir, otherUUID)); err != nil {
+		must(b.t, os.Symlink("../../sdc1", filepath.Join(byUUIDDir, otherUUID)))
+	}
+	b.gameDev = "sdc1"
+	b.writeMounts()
 }
 
 func (b *box) memory(ramGB, swapGB uint64) {
@@ -102,7 +118,8 @@ func (b *box) memory(ramGB, swapGB uint64) {
 		ramGB<<20-300<<10, swapGB<<20))
 }
 
-// asGamer runs vapor's side in this process: fetch-installer, and rm.
+// asGamer runs vapor's side in this process: fetch-installer, rm and
+// rmdir.
 func (b *box) asGamer(ctx context.Context, name string, args ...string) (string, error) {
 	b.calls = append(b.calls, append([]string{name}, args...))
 	switch {
@@ -114,6 +131,12 @@ func (b *box) asGamer(ctx context.Context, name string, args ...string) (string,
 		return strings.TrimSpace(out.String()), nil
 	case name == "rm":
 		return "", os.RemoveAll(args[len(args)-1])
+	case name == "rmdir":
+		err := os.Remove(args[len(args)-1])
+		if errors.Is(err, syscall.ENOTEMPTY) && slices.Contains(args, "--ignore-fail-on-non-empty") {
+			err = nil
+		}
+		return "", err
 	}
 	return "", fmt.Errorf("unexpected command %s %v", name, args)
 }

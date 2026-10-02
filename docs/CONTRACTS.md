@@ -1368,22 +1368,37 @@ into the launcher's start. The image ships one udev rule,
 so vapor (group `input`) opens the hidraw nodes of VKB, Virpil and
 Thrustmaster sticks on USB. No sysctl: the base's `vm.max_map_count` is
 already 1048576.
-- *Drive.* The setting `disk` ("Game drive") is the drive's folder:
+- *Drive.* The setting `disk` ("Game drive") is the drive's folder: `""`
+  is no drive picked yet; `/var` (or `/state`, as earlier control centers
+  offered it) is the system drive, and the prefix is its home data area,
+  `/var/home/vapor/.local/share/vaporos/ext/star-citizen`;
   `/var/mnt/<name>` (`/mnt/<name>` reads the same) is a game drive, and the
   prefix is `/var/mnt/<name>/VaporOS/star-citizen` (its `library` data
-  area); `""` (or `/state`, the system drive's folder System › Extensions
-  offers, or `/var`) is the system drive, and the prefix is its home
-  data area, `/var/home/vapor/.local/share/vaporos/ext/star-citizen`. Any
-  other value is refused. The prefix is fixed at install: a drive picked
-  later applies only after removing Star Citizen and adding it again (its
-  card says so).
+  area). Any other value is refused ("VaporOS doesn't know the drive picked
+  for Star Citizen. Pick another one on its card, then select Try
+  again."). The prefix is fixed at install: a drive picked later applies
+  only after removing Star Citizen and adding it again (its card says so).
+  `state.json`'s `prefix` names the place; its `disk` is the setting the
+  install used, normalized (`/var` for the system drive).
+- *Out of reach.* One sentence per situation, the same on the card's status,
+  as Install's and fetch-installer's reason and as the launch hook's
+  refusal: a game drive that is not mounted exactly at its folder, with
+  nothing mounted between it and the prefix (`/proc/self/mountinfo`; an
+  empty mount point lies on the system drive, where 100+ GB must never land
+  by accident), or that holds another filesystem than the recorded one (the
+  marker's, for vapor's checks), is "Star Citizen's drive, <name>, isn't
+  connected. Connect it, then try again."; files gone from a drive that is
+  there (no marker, a symlink in the prefix), and anything wrong on the
+  system drive, are "Star Citizen's files on <drive> are missing. Remove
+  Star Citizen and add it again." (<drive> is "the system drive" or the
+  game drive's name).
 - *Install* (the helper's `Install`, root, after the restart that mounts
-  it). It refuses, as the card's reason: a game drive that is not mounted
-  exactly at its folder in the mount table (`/proc/self/mountinfo`; an empty
-  mount point lies on the system drive, where 100+ GB must never land by
-  accident), a filesystem not in the `games` area's `fs` (ext4, btrfs, xfs,
-  f2fs), a prefix path with anything but `[A-Za-z0-9/._-]` (the LUG: no
-  special characters), a filesystem without a UUID (the link in
+  it). Before it touches any drive it refuses while none is picked ("Pick a
+  game drive for Star Citizen on its card, then select Try again.") and an
+  unknown one (above). Then it refuses, as the card's reason: a game drive
+  out of reach (above), a filesystem not in the `games` area's `fs` (ext4,
+  btrfs, xfs, f2fs), a prefix path with anything but `[A-Za-z0-9/._-]` (the
+  LUG: no special characters), a filesystem without a UUID (the link in
   `/dev/disk/by-uuid` that resolves to the mount's source device), and,
   unless the launcher is already in the prefix, less than `min_free_gb`
   (150 GB, 10^9 bytes) free (`statfs` of the mount point). Then it makes the
@@ -1391,12 +1406,23 @@ already 1048576.
   marker `<prefix>/.vaporos-drive` (the filesystem's UUID, one line) and
   `/var/lib/vos/ext/data/star-citizen/state.json`
   (`{"disk","prefix","uuid","installer","version"}`, root's, atomic; vosd
-  trusts only this file), and runs `vos ext star-citizen fetch-installer
-  --prefix <prefix>` as vapor (`sysd.AsGamer`). On success `installer` and
-  `version` are recorded; a failed download keeps the prefix recorded, so
-  a removal finds it. A PC with less than 15 GiB of memory, or less than
-  46 GiB of memory and swap (what Star Citizen asks for, 16 GB and 48 GB,
-  less what firmware keeps), gets a warning line, never a refusal.
+  trusts only this file; an earlier `installer` and `version` for the same
+  prefix are kept), and runs `vos ext star-citizen fetch-installer --prefix
+  <prefix>` as vapor (`sysd.AsGamer`). On success `installer` and `version`
+  are recorded; a failed download keeps the prefix recorded, so a removal
+  finds it. When the launcher is already in the prefix and the recorded
+  installer is in `installer/` (looked at through gamerfs), nothing is
+  downloaded: the installer only runs on a first start. Its other reasons
+  are plain sentences too; Go's errors go to the journal only.
+- *Memory.* A PC with less than 16 GiB of memory, or less than 32 GiB of
+  memory and swap together (`MemTotal` and `SwapTotal` in `/proc/meminfo`;
+  swap counts zram, which CachyOS sizes as the memory), gets a warning
+  line, never a refusal: "This PC has N GB of memory, and Star Citizen needs
+  16 GB. It may not start, or it may close while you play." or "This PC has
+  N GB of memory and swap together, and Star Citizen wants 32 GB. It may
+  stutter or close in busy places." (N rounded to whole GiB). The limits
+  allow 1 GiB and 2 GiB less: firmware and integrated graphics keep up to a
+  GiB of a PC's memory, and zram sized as the memory counts that twice.
 - *fetch-installer* (vapor) checks the prefix as the launch hook does (below),
   reads `https://install.robertsspaceindustries.com/rel/2/latest.yml`
   (electron-builder's feed, at most 64 KiB, read line by line: top-level
@@ -1409,19 +1435,26 @@ already 1048576.
   `<prefix>/installer/<path>.part`, asking with `Range` for the bytes it
   lacks (a whole answer starts over), up to 3 times; checks size and
   SHA-512, deletes a file that does not match, renames it to `<path>`, and
-  deletes other `RSI Launcher-Setup-*.exe(.part)` files there. A file already
-  there with the right size and hash is kept.
+  deletes the partial downloads (`RSI Launcher-Setup-*.exe.part`) there;
+  other installers stay for the launch hook. A file already there with the
+  right size and hash is kept, with its modification time set to now. Its
+  last line on stderr is a sentence for the person (an out-of-reach one
+  above, or that the feed or the download failed); Install shows it, and
+  its own sentence for anything else.
 - *Steam.* Once `state.json` names an installer, `SteamParts` gives the
   shortcut `exe` `<prefix>/installer/<installer>` (always there) and
   `start_dir` `<prefix>`.
 - *Launch hook* (vapor, `vos ext launch --shortcut star-citizen/launcher`).
   It acts on the last argument that is an absolute
   `<prefix>/installer/RSI Launcher-Setup-<v>.exe`; without one the command
-  passes untouched. It refuses (exit 1, "Star Citizen did not start: its
-  drive isn't connected. Connect the drive, then start it again.") unless
-  `<prefix>` is one of the two places above, resolves to itself (no
-  symlink), and its marker equals the UUID of the filesystem the mount
-  table puts it on. Then it sets `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's
+  passes untouched. It refuses (exit 1; the person reads the dispatcher's
+  sentence, this one goes to Steam's log and the journal), changing
+  nothing, when `<prefix>` is not one of the two places above ("Star
+  Citizen's files aren't where VaporOS put them. Remove Star Citizen and add
+  it again."), or is out of reach (above): a game drive must be mounted
+  exactly at its folder, and the prefix must resolve to itself (no symlink)
+  and hold a marker equal to the UUID of the filesystem the mount table
+  puts it on. Then it sets `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's
   prefix is `<prefix>/pfx`) and `UMU_ID=umu-starcitizen` (protonfixes then
   add PowerShell and the Visual C++ runtime on the first start) in the
   game's environment, and replaces that argument:
@@ -1447,19 +1480,34 @@ already 1048576.
     launcher through the Explorer shell as a non-elevated user and returns
     at once, which under Wine and gamescope may start nothing, and it
     leaves no step for the registry and USER.cfg.
+
+  The first start's setup is the installer Steam's shortcut names or, when
+  that one is gone (a newer download replaced it before Steam picked up the
+  new target), the newest `RSI Launcher-Setup-*.exe` in `installer/` (by
+  modification time); with none there it refuses ("Star Citizen's installer
+  is missing. Remove Star Citizen and add it again."). Once the shortcut
+  names the newest installer there, the hook deletes the others; until then
+  they stay, as the shortcut may still name one.
 - *Status* (root; files in the prefix only through gamerfs): "Its files are
   on <drive>, which has N GB free.", then "The RSI Launcher is installed."
   or "Start Star Citizen in Steam: its first start installs the RSI
-  Launcher."; with tone `warning`, a drive that is not connected (or whose
-  UUID is no longer the marker's), another drive picked since the install,
-  and too little memory (the last one also before it is installed).
+  Launcher."; with tone `warning`, the out-of-reach sentence (above; the
+  recorded filesystem must be mounted there and the marker hold its UUID),
+  "You picked another drive. Star Citizen stays on <drive> until you remove
+  it and add it again." when the setting names another drive than the
+  recorded one (not when it is empty), and the memory line (also before it
+  is installed).
 - *Remove:* without `purge` nothing goes (the shortcut leaves steam.json).
-  With `purge`, vapor runs `rm -rf --one-file-system --` on the recorded
-  prefix and on the prefix of the drive the setting names, each only while
-  its drive is mounted (a recorded one that is not is the card's reason:
-  "<drive> isn't connected, so the files in VaporOS/star-citizen on it
-  stay."), then root removes `<drive>/VaporOS` if it is empty (`rmdir`). The
-  remove dialog says the game can be more than 100 GB.
+  With `purge`, the recorded prefix on a game drive goes: vapor runs
+  `rm -rf --one-file-system --` on it only while the filesystem mounted at
+  its folder has the recorded UUID; otherwise its files stay and the card's
+  reason is "Star Citizen's drive, <name>, isn't connected, so its files
+  stay on it.". Then vapor removes `<drive>/VaporOS` when nothing else is
+  in it (`rmdir --ignore-fail-on-non-empty`; a failure, such as a drive
+  whose top folder is root's, is only logged). On the system drive the
+  prefix is the home data area, which vosd's purge deletes; a prefix the
+  state does not record is left alone. The remove dialog says the game can
+  be more than 100 GB.
 - *Not done:* the umu fallback for an Easy Anti-Cheat that fails under
   Steam's runtime (a shortcut without a compatibility tool whose hook runs
   `umu-run` with `PROTONPATH=/usr/share/steam/compatibilitytools.d/proton-cachyos-slr`,
