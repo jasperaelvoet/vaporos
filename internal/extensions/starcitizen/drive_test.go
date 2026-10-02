@@ -176,7 +176,7 @@ func TestLocate(t *testing.T) {
 	check("a missing prefix", game, gameUUID, codeFilesMissing)
 	writeFile(t, filepath.Join(prefix, markerName), gameUUID+"\n")
 	check("the prefix Install made", game, gameUUID, "")
-	check("Install, before it records one", game, "", "")
+	check("no filesystem recorded", game, "", codeNotConnected)
 	check("another filesystem recorded", game, otherUUID, codeNotConnected)
 
 	writeFile(t, filepath.Join(prefix, markerName), sysUUID+"\n")
@@ -189,7 +189,6 @@ func TestLocate(t *testing.T) {
 	ms, err = readMounts()
 	must(t, err)
 	check("a prefix on the system drive", game, gameUUID, codeNotConnected)
-	check("Install, on an empty mount point", game, "", codeNotConnected)
 	b.mounted = true
 	b.writeMounts()
 	ms, err = readMounts()
@@ -217,27 +216,41 @@ func TestLocate(t *testing.T) {
 	check("system drive", sys, sysUUID, "")
 }
 
-// recorded is locate, as vapor, for the prefix state.json records only.
+// recorded is locate, as vapor, for the prefix state.json records: the
+// one it was given, or with follow, the recorded one for another place.
 func TestRecorded(t *testing.T) {
 	b := newBox(t)
 	prefix := b.installed()
-	if err := recorded(prefix); err != nil {
-		t.Errorf("the recorded prefix: %v", err)
+	for _, follow := range []bool{false, true} {
+		if st, err := recorded(prefix, follow); err != nil || st.Prefix != prefix {
+			t.Errorf("follow %v, the recorded prefix: %+v, %v", follow, st, err)
+		}
 	}
 	sys, _ := placeFor("/var")
 	writeFile(t, filepath.Join(sys.Prefix(), markerName), sysUUID+"\n")
-	for name, p := range map[string]string{"another place": sys.Prefix(), "no place": "/tmp/VaporOS/star-citizen"} {
-		if err := recorded(p); codeOf(err) != codeFilesElsewhere {
-			t.Errorf("%s: %v", name, err)
+	if _, err := recorded(sys.Prefix(), false); codeOf(err) != codeFilesElsewhere {
+		t.Errorf("another place: %v", err)
+	}
+	if st, err := recorded(sys.Prefix(), true); err != nil || st.Prefix != prefix {
+		t.Errorf("another place, followed: %+v, %v", st, err)
+	}
+	for _, follow := range []bool{false, true} {
+		if _, err := recorded("/tmp/VaporOS/star-citizen", follow); codeOf(err) != codeFilesElsewhere {
+			t.Errorf("follow %v, no place: %v", follow, err)
 		}
 	}
+	// Followed, the recorded prefix is judged, never the one given.
 	b.mounted = false
 	b.writeMounts()
-	if err := recorded(prefix); codeOf(err) != codeNotConnected {
-		t.Errorf("unplugged: %v", err)
+	for _, p := range []string{prefix, sys.Prefix()} {
+		if _, err := recorded(p, true); codeOf(err) != codeNotConnected {
+			t.Errorf("unplugged, %s: %v", p, err)
+		}
 	}
 	must(t, os.Remove(statePath(dataDir())))
-	if err := recorded(prefix); codeOf(err) != codeFilesElsewhere {
-		t.Errorf("without a record: %v", err)
+	for _, p := range []string{prefix, sys.Prefix()} {
+		if _, err := recorded(p, true); codeOf(err) != codeFilesElsewhere {
+			t.Errorf("without a record, %s: %v", p, err)
+		}
 	}
 }

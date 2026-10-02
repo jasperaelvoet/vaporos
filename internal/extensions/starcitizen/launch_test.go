@@ -208,12 +208,8 @@ func TestLaunchRefuses(t *testing.T) {
 	refused("its files deleted", start(setup), codeFilesMissing)
 	must(t, os.Rename(filepath.Join(prefix, "gone"), filepath.Join(prefix, markerName)))
 
-	// An installer somewhere VaporOS never put one, or not where Install
-	// recorded it.
+	// An installer somewhere VaporOS never put one.
 	refused("a stray installer", start("/var/home/vapor/Downloads/installer/RSI Launcher-Setup-2.17.0.exe"), codeFilesElsewhere)
-	sys, _ := placeFor("/var")
-	writeFile(t, filepath.Join(sys.Prefix(), markerName), sysUUID+"\n")
-	refused("another place", start(sys.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe"), codeFilesElsewhere)
 
 	// A first start that can't write its batch file.
 	mkdir(t, filepath.Join(prefix, "installer", firstStart))
@@ -224,6 +220,13 @@ func TestLaunchRefuses(t *testing.T) {
 	// No installer at all for a first start.
 	must(t, os.Remove(setup))
 	refused("no installer", start(setup), codeInstallerMissing)
+
+	// Nothing recorded, in either place.
+	sys, _ := placeFor("/var")
+	writeFile(t, filepath.Join(sys.Prefix(), markerName), sysUUID+"\n")
+	must(t, os.Remove(statePath(dataDir())))
+	refused("nothing recorded", start(setup), codeFilesElsewhere)
+	refused("nothing recorded, the other place", start(sys.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe"), codeFilesElsewhere)
 
 	// The system drive's files are gone.
 	b = newBox(t)
@@ -300,6 +303,88 @@ func TestLaunchPrunesInstallers(t *testing.T) {
 	start("RSI Launcher-Setup-2.19.0.exe")
 	if got := installers(); !slices.Equal(got, []string{"RSI Launcher-Setup-2.19.0.exe"}) {
 		t.Errorf("launcher in, Steam on the new one: %v", got)
+	}
+}
+
+// Set up again on another drive, Star Citizen starts in the prefix Install
+// recorded there, while Steam's shortcut still names the installer in the
+// place it was before (until Steam picks up the new target). Nothing is
+// written where it was.
+func TestLaunchAfterSetUpElsewhere(t *testing.T) {
+	b := newBox(t)
+	f := newFeed(t, "2.17.0")
+	game := b.ext(b.mnt)
+	must(t, (helper{}).Install(context.Background(), game))
+	gamePrefix := b.mnt + "/VaporOS/star-citizen"
+	stale := gamePrefix + "/installer/" + f.file
+	if parts := (helper{}).Steam(game); parts.Shortcuts["launcher"].Exe != stale {
+		t.Fatalf("Steam parts %+v", parts)
+	}
+	must(t, (helper{}).Remove(context.Background(), game, false))
+	start := func() *extensions.Launch {
+		return &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(stale, true), Env: slices.Clone(steamEnv)}
+	}
+
+	// Added again with the system drive, before its installer is there.
+	sys := b.ext("/var")
+	feedURL = f.srv.URL + "/rel/2/gone.yml"
+	if err := (helper{}).Install(context.Background(), sys); codeOf(err) != codeFeed {
+		t.Fatalf("installing without a feed: %v", err)
+	}
+	l := start()
+	before, env := slices.Clone(l.Argv), slices.Clone(l.Env)
+	if err := (helper{}).LaunchHook(context.Background(), l); codeOf(err) != codeSettingUp || said(err) == "" {
+		t.Errorf("before its installer is there: %v", err)
+	}
+	if !slices.Equal(l.Argv, before) || !slices.Equal(l.Env, env) {
+		t.Error("a refused launch was changed")
+	}
+
+	// Its installer there, the first start runs it on the system drive.
+	f2 := newFeed(t, "2.18.0")
+	must(t, (helper{}).Install(context.Background(), sys))
+	prefix := systemPrefix()
+	l = start()
+	if err := (helper{}).LaunchHook(context.Background(), l); err != nil {
+		t.Fatal(err)
+	}
+	bat := `Z:` + strings.ReplaceAll(prefix, "/", `\`) + `\installer\first-start.bat`
+	if want := append(before[:len(before)-1:len(before)-1], `C:\windows\system32\cmd.exe`, "/c", bat); !slices.Equal(l.Argv, want) {
+		t.Errorf("argv\n%q\nwant\n%q", l.Argv, want)
+	}
+	if got := envOf(l.Env, "STEAM_COMPAT_DATA_PATH"); !slices.Equal(got, []string{prefix}) {
+		t.Errorf("STEAM_COMPAT_DATA_PATH %q", got)
+	}
+	if text := readFile(t, prefix+"/installer/first-start.bat"); !strings.Contains(text, `"%~dp0`+f2.file+`" /S`) {
+		t.Errorf("first-start.bat:\n%s", text)
+	}
+	if names := dirNames(t, gamePrefix+"/installer"); !slices.Equal(names, []string{f.file}) {
+		t.Errorf("the game drive's installer/ holds %v", names)
+	}
+
+	// With the launcher in, a later start runs it.
+	writeFile(t, prefix+launcherPath, "MZ")
+	l = start()
+	must(t, (helper{}).LaunchHook(context.Background(), l))
+	if !slices.Contains(l.Argv, prefix+launcherPath) {
+		t.Errorf("argv %q", l.Argv)
+	}
+
+	// Back on the game drive, the system drive's shortcut starts it there,
+	// and only while that drive is connected.
+	newFeed(t, "2.18.0")
+	must(t, (helper{}).Install(context.Background(), game))
+	stale = prefix + "/installer/" + f2.file
+	l = start()
+	must(t, (helper{}).LaunchHook(context.Background(), l))
+	if got := envOf(l.Env, "STEAM_COMPAT_DATA_PATH"); !slices.Equal(got, []string{gamePrefix}) {
+		t.Errorf("STEAM_COMPAT_DATA_PATH %q", got)
+	}
+	b.mounted = false
+	b.writeMounts()
+	l = start()
+	if err := (helper{}).LaunchHook(context.Background(), l); codeOf(err) != codeNotConnected {
+		t.Errorf("its drive unplugged: %v", err)
 	}
 }
 

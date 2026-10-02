@@ -15,7 +15,8 @@ import (
 const (
 	codeNotConnected     = "drive-not-connected" // a game drive not mounted at its folder, or holding another filesystem
 	codeFilesMissing     = "files-missing"       // the drive is there and the files aren't
-	codeFilesElsewhere   = "files-elsewhere"     // a prefix that isn't the one Install recorded
+	codeFilesElsewhere   = "files-elsewhere"     // no prefix recorded, or one in no place VaporOS uses (fetch-installer: not the recorded one)
+	codeSettingUp        = "setting-up"          // a start before Install recorded an installer
 	codeInstallerMissing = "installer-missing"
 	codeNoDrive          = "no-drive"
 	codeUnknownDrive     = "unknown-drive"
@@ -48,6 +49,8 @@ func messageText(code string) (string, bool) {
 		return "Star Citizen's files are missing from its drive. Remove Star Citizen and add it again.", true
 	case codeFilesElsewhere:
 		return "Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again.", true
+	case codeSettingUp:
+		return "Star Citizen is still being set up. Start it again once its card says it's installed.", true
 	case codeInstallerMissing:
 		return "Star Citizen's installer is missing. Remove Star Citizen and add it again.", true
 	case codeNoDrive:

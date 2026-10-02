@@ -1650,6 +1650,7 @@ already 1048576.
   | `drive-not-connected` | "Star Citizen's drive isn't connected. Connect it, then try again." |
   | `files-missing` | "Star Citizen's files are missing from its drive. Remove Star Citizen and add it again." |
   | `files-elsewhere` | "Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again." |
+  | `setting-up` | "Star Citizen is still being set up. Start it again once its card says it's installed." |
   | `installer-missing` | "Star Citizen's installer is missing. Remove Star Citizen and add it again." |
   | `no-drive` | "Pick a game drive for Star Citizen on its card, then select Try again." |
   | `unknown-drive` | "VaporOS doesn't know the drive picked for Star Citizen. Pick another one on its card, then select Try again." |
@@ -1673,10 +1674,18 @@ already 1048576.
   that is missing, not a regular file reached without a symlink (read
   through gamerfs, by root and by vapor alike) or that holds another UUID
   is `files-missing`; on the system drive, anything wrong is
-  `files-missing`. Install, which records the filesystem, takes whatever is
-  mounted at the drive's folder and looks at nothing in it. vapor's checks
-  (the launch hook, fetch-installer) read `state.json` (root's, 0644) and
-  refuse a prefix it does not record (`files-elsewhere`).
+  `files-missing`. Install, which writes the marker, looks at nothing in
+  the prefix: for a prefix `state.json` does not record it takes whatever
+  is mounted at the drive's folder; for the one it records, that drive
+  must hold the recorded filesystem (`drive-not-connected`; on the system
+  drive `files-missing`), so Install never moves Star Citizen to another
+  drive with the same name. Removing Star Citizen with its downloads, which
+  forgets the prefix once its files are deleted, and adding it again does.
+  vapor's checks (the launch hook, fetch-installer) read `state.json`
+  (root's, 0644) and refuse (`files-elsewhere`) while it records no prefix,
+  and a directory that is not one of the two places above; fetch-installer
+  also refuses the other place, where the launch hook uses the recorded
+  prefix (below).
 - *Install* (the helper's `Install`, root, after the restart that mounts
   it). Before it touches any drive it refuses while none is picked
   (`no-drive`) and an unknown one (`unknown-drive`). Then it refuses, as the
@@ -1692,7 +1701,7 @@ already 1048576.
   `cant-write`) and `/var/lib/vos/ext/data/star-citizen/state.json`
   (`{"disk","prefix","uuid","installer","version"}`, root's, 0644, atomic;
   vosd trusts only this file; an earlier `installer` and `version` for the
-  same prefix are kept), and runs `vos ext star-citizen fetch-installer
+  same prefix on the same filesystem are kept), and runs `vos ext star-citizen fetch-installer
   --prefix <prefix>` as vapor (`sysd.AsGamer`). A failed fetch-installer is
   the code on its last line, `{"refused":"<code>"}`, when it is one
   fetch-installer prints (below), and the generic reason otherwise; none of
@@ -1710,8 +1719,9 @@ already 1048576.
   stutter or close in busy places." (N rounded to whole GiB). The limits
   allow 1 GiB and 2 GiB less: firmware and integrated graphics keep up to a
   GiB of a PC's memory, and zram sized as the memory counts that twice.
-- *fetch-installer* (vapor) checks the prefix as the launch hook does
-  (above: `files-elsewhere`, `drive-not-connected`, `files-missing`), makes
+- *fetch-installer* (vapor) checks the prefix as the launch hook does,
+  except that only the recorded prefix passes (above: `files-elsewhere`,
+  `drive-not-connected`, `files-missing`), makes
   `installer/` (`cant-write`), reads `https://install.robertsspaceindustries.com/rel/2/latest.yml`
   (electron-builder's feed, at most 64 KiB, read line by line: top-level
   `version`, `path`, `sha512`, and the `files` list's `url`, `sha512`,
@@ -1742,11 +1752,15 @@ already 1048576.
   passes untouched. It refuses (exit 1), changing nothing, with a code the
   dispatcher records, so the person reads its sentence (Steam's log and the
   journal get the detail): `files-elsewhere` when `<prefix>` is not one of
-  the two places above or not the one `state.json` records, and an
-  out-of-reach code (above): a game drive must be mounted exactly at its
-  folder and hold the recorded filesystem, and the prefix's marker must be
-  reached without a symlink and hold its UUID. Then it sets
-  `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's prefix is `<prefix>/pfx`) and
+  the two places above or `state.json` records none, and an out-of-reach
+  code (above) for the recorded prefix: a game drive must be mounted
+  exactly at its folder and hold the recorded filesystem, and the prefix's
+  marker must be reached without a symlink and hold its UUID. When
+  `<prefix>` is the other place (Star Citizen was removed and added again
+  on another drive, and Steam's shortcut names its old target until Steam
+  picks up the new one), the hook goes on with the recorded prefix as
+  `<prefix>` below, so nothing is written where Star Citizen was. Then it
+  sets `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's prefix is `<prefix>/pfx`) and
   `UMU_ID=umu-starcitizen` (protonfixes then add PowerShell and the Visual
   C++ runtime on the first start) in the game's environment, and replaces
   that argument:
@@ -1774,10 +1788,14 @@ already 1048576.
     at once, which under Wine and gamescope may start nothing, and it
     leaves no step for the registry and USER.cfg.
 
-  The first start's setup is the installer Steam's shortcut names or, when
-  that one is gone (a newer download replaced it before Steam picked up the
-  new target), the newest `RSI Launcher-Setup-*.exe` in `installer/` (by
-  modification time); with none there it refuses (`installer-missing`).
+  The first start's setup is the installer Steam's shortcut names
+  (`state.json`'s `installer` when the shortcut names the other place) or,
+  when that one is gone (a newer download replaced it before Steam picked
+  up the new target), the newest `RSI Launcher-Setup-*.exe` in
+  `installer/` (by modification time); with none there it refuses:
+  `setting-up` while `state.json` names no installer yet (Install is still
+  downloading it, or that failed and the card says why), `installer-missing`
+  otherwise.
   Once the shortcut names the newest installer there, the hook deletes the
   others; until then they stay, as the shortcut may still name one.
 - *Status* (root; files in the prefix only through gamerfs): "Its files are

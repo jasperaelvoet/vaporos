@@ -188,19 +188,15 @@ func within(p, dir string) bool {
 }
 
 // locate is the one judgement of whether Star Citizen's files at p can
-// be used, for the card's status, Install, fetch-installer and the launch
-// hook alike: the mount of p's drive, or a refusal with codeNotConnected
-// or codeFilesMissing. uuid is the filesystem Install recorded
-// (state.json): the drive must be mounted at its folder and hold that
-// filesystem (onDrive) before its marker, read through gamerfs, is looked
-// at, so another drive with the same name is one that isn't connected,
-// never one whose files are gone. Install, which records the filesystem,
-// passes "": whatever is mounted at p's folder is the drive picked, and
-// nothing in it is looked at.
+// be used, for the card's status, fetch-installer and the launch hook
+// alike: the mount of p's drive, or a refusal with codeNotConnected or
+// codeFilesMissing. uuid is the filesystem Install recorded (state.json):
+// the drive must be mounted at its folder and hold that filesystem
+// (onDrive) before its marker, read through gamerfs, is looked at, so
+// another drive with the same name is one that isn't connected, never one
+// whose files are gone. Install, which writes the marker, asks only for
+// the drive (onDrive, or driveMount for a prefix it has not recorded).
 func locate(ms []mount, p place, uuid string) (mount, error) {
-	if uuid == "" {
-		return driveMount(ms, p)
-	}
 	m, err := onDrive(ms, p, uuid)
 	if err != nil {
 		return mount{}, err

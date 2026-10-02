@@ -41,20 +41,26 @@ func writeState(dataDir string, st state) error {
 	return config.WriteJSONAtomic(statePath(dataDir), st, 0o644)
 }
 
-// recorded checks, as vapor (the launch hook, fetch-installer), that
-// prefix is the one Install recorded and that its files can be used there
-// (locate, with the recorded filesystem). state.json is root's, and
-// vapor may read it.
-func recorded(prefix string) error {
+// recorded is what Install recorded, read as vapor (the launch hook,
+// fetch-installer), once its prefix's files can be used (locate, with the
+// recorded filesystem). prefix is the one the caller was given: it must be
+// a place VaporOS uses, with a state recorded, and, unless follow, the
+// recorded prefix. With follow, another place is where Star Citizen was
+// before it was set up again elsewhere: Steam's shortcut names it until
+// Steam picks up the new target, and the recorded prefix is the one to
+// use. state.json is root's, and vapor may read it.
+func recorded(prefix string, follow bool) (state, error) {
 	st, ok := readState(dataDir())
-	p, known := placeOf(prefix)
-	if !ok || !known || st.Prefix != prefix {
-		return refuse(codeFilesElsewhere, "%s is not the prefix Install recorded", prefix)
+	if _, known := placeOf(prefix); !ok || !known || (st.Prefix != prefix && !follow) {
+		return state{}, refuse(codeFilesElsewhere, "%s is not the prefix Install recorded", prefix)
 	}
+	p, _ := placeOf(st.Prefix) // readState took only a place
 	ms, err := readMounts()
 	if err != nil {
-		return notThere(p, "reading the mount table: %v", err)
+		return state{}, notThere(p, "reading the mount table: %v", err)
 	}
-	_, err = locate(ms, p, st.UUID)
-	return err
+	if _, err := locate(ms, p, st.UUID); err != nil {
+		return state{}, err
+	}
+	return st, nil
 }
