@@ -37,6 +37,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/extensions/descriptor` | `extension.json` (schema 1, unknown fields rejected), from the source tree and as shipped in the image. |
 | `internal/extensions/fsverity` | Pure-Go fs-verity file digest (sha256, 4096-byte blocks, no salt): what the kernel measures. |
 | `internal/extensions/store` | The store in `/var/lib/vos/ext`: sealed images, sets, the `enabled`/`pending` links, `wanted`/`proven`/`failed`, slot catalogs, the boot report, the pure reconcile plan, promotion and GC, under `ext.lock`. |
+| `internal/extensions/starcitizen` | The star-citizen extension's helper (registered through `internal/extensions/all`): the Proton prefix on the picked drive with its filesystem marker, `vos ext star-citizen fetch-installer` (the RSI Launcher's `latest.yml`, resumed download, SHA-512), the launch hook's first-start batch file and launcher swap, status and purge. |
 | `internal/gameproc` | The one "a Steam game runs" probe idle shutdown and the display policy share (Steam's reaper, `SteamAppId`, the extension handoff unit), and the Steam client holding `steam.pipe`. |
 | `internal/install` | `vos install` and the web installer (shared `Install`): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |
