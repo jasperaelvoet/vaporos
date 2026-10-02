@@ -315,6 +315,9 @@ func (p *prep) fingerprint(desired []byte) string {
 	statLine(h, filepath.Join(p.root, "steamapps", "libraryfolders.vdf"))
 	if apps := p.betaApps(); len(apps) > 0 {
 		libs := p.libraries()
+		for _, lib := range libs {
+			fmt.Fprintf(h, "library %q %v\n", lib, dirExists(filepath.Join(lib, "steamapps")))
+		}
 		for _, app := range apps {
 			for _, lib := range libs {
 				statLine(h, manifestPath(lib, app))

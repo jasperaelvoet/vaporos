@@ -32,7 +32,9 @@ type Helper interface {
 	ModuleOptions(x *Ext) []string
 	// Steam returns what the extension adds to Steam beyond its descriptor,
 	// such as a shortcut's executable chosen at install. It must be cheap
-	// too: vosd asks after every change and about once a minute.
+	// too: vosd asks after every change and about once a minute. And it
+	// must be deterministic, the same parts for the same state: vosd
+	// restarts Steam whenever steam.json's bytes change.
 	Steam(x *Ext) SteamParts
 	// LaunchHook may rewrite a Steam launch of one of its hooked apps or
 	// shortcuts. It runs as vapor inside `vos ext launch`, never in vosd.
@@ -70,8 +72,12 @@ type SteamParts struct {
 
 // BetaRequest is one request to switch an app's branch. prepare applies
 // each Request once, so a branch the user picks in Steam afterwards stays
-// theirs; a helper asks again with a new Request (any id it likes,
-// [A-Za-z0-9._-], 1 to 64 characters, not starting with . _ or -).
+// theirs. A helper gives a new Request (any id it likes, [A-Za-z0-9._-],
+// 1 to 64 characters, not starting with . _ or -) only for a new switch,
+// and keeps it, stored, while that switch stands: an id made anew on
+// every call would take the user's branch away at every Steam start.
+// prepare forgets the request of an app that is uninstalled, so a
+// reinstall gets the one that stands again.
 type BetaRequest struct {
 	Branch  string `json:"branch"`  // "" for the public branch
 	Request string `json:"request"` // this request's id

@@ -90,6 +90,43 @@ func TestBranches(t *testing.T) {
 	}
 }
 
+// An app that is uninstalled loses its branch record, so a reinstall
+// gets the request that still stands; while a library's drive is away
+// the app may still be there, and the record stays.
+func TestBranchAfterAReinstall(t *testing.T) {
+	b := newBox(t)
+	manifest := filepath.Join(b.root, "steamapps", "appmanifest_227300.acf")
+	installed := b.steamFile("steamapps/appmanifest_227300.acf")
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61", "r1"))
+	b.run(false)
+	b.setBetaKey("temporary_1_58") // the user's pick stays theirs
+	b.run(false)
+
+	lib := filepath.Join(b.dir, "var", "mnt", "games", "SteamLibrary")
+	b.write(filepath.Join(b.root, "steamapps", "libraryfolders.vdf"),
+		[]byte("\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\""+b.root+"\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\""+lib+"\"\n\t}\n}\n"))
+	b.check(os.Remove(manifest))
+	b.run(false)
+	if bs := b.state().peekApp(ets2).Beta; bs == nil || bs.Request != "r1" {
+		t.Fatalf("record dropped while a library is away: %+v", bs)
+	}
+
+	b.mkdir(filepath.Join(lib, "steamapps"))
+	b.run(false)
+	if a := b.state().peekApp(ets2); a.Beta != nil {
+		t.Fatalf("uninstalled, record %+v", a.Beta)
+	}
+	b.write(manifest, installed)
+	b.setBetaKey("")
+	b.run(false)
+	if k := b.betaKey(); k != "temporary_1_61" {
+		t.Errorf("reinstalled: BetaKey %q", k)
+	}
+	if bs := b.state().peekApp(ets2).Beta; bs == nil || *bs != (BetaState{Wrote: "temporary_1_61", Request: "r1"}) {
+		t.Errorf("record %+v", bs)
+	}
+}
+
 func TestBranchAlreadySoIsAdopted(t *testing.T) {
 	b := newBox(t)
 	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_53", "r1"))

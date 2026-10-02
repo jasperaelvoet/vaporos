@@ -749,7 +749,9 @@ vosd asks for a Steam restart (see Units, Display policy).
   request a helper's `SteamParts.Beta` makes, `null` when none does:
   `branch` the branch to switch to (`""` the public branch) and `request`
   the helper's id for this request (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`),
-  the same while the request stands and new for a new one. prepare applies
+  the same while the request stands and new only for a new switch (a
+  helper's `Steam` gives the same parts for the same state, so steam.json
+  changes only when something did). prepare applies
   each id once (step 5.5), so a branch the user picks in Steam afterwards
   stays theirs until the helper makes a request with a new id. A request
   vosd would not take (a branch or id of another form, app 0) is left out,
@@ -853,7 +855,9 @@ trusts it for display only:
    `--unwrap`, whether each tool `steam.json` names or VaporOS owns an entry
    for is installed, loginusers.vdf's bytes, and the size, mtime and mode of
    config.vdf, `steamapps/libraryfolders.vdf`, each account's localconfig.vdf
-   and shortcuts.vdf and the appmanifests a branch is asked for in. When it
+   and shortcuts.vdf and, in every library, the appmanifests of the apps a
+   branch is asked or recorded for, and whether each library's `steamapps`
+   is there (with such apps only). When it
    equals the record's and the record has no error, there is nothing to do
    (and `skipped` becomes `""`). A run that ends without an error records
    the fingerprint as it is after its writes; any other records `""`.
@@ -984,8 +988,11 @@ trusts it for display only:
       and `icon.png` to `<appid>_icon.png`. A removed shortcut's five files
       go.
    5. **appmanifest_\<app>.acf**, `AppState/UserConfig/BetaKey`, in the
-      first library that has the manifest (an app that is not installed
-      waits). Each `beta` request is applied once (`""` removes the key:
+      first library that has the manifest. An app that is not installed
+      waits, and loses its branch record once no library has its
+      manifest while every library's `steamapps` is there (a drive that
+      is away may hold it), so a reinstall gets the request that still
+      stands. Each `beta` request is applied once (`""` removes the key:
       the public branch) and its `request` recorded; while the record
       holds that id the manifest is left as it is, so a branch the user
       picks in Steam afterwards stays. `before` is the manifest's value
