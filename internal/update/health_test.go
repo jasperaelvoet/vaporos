@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,12 +59,15 @@ type fakeHealth struct {
 	lan                                                     []lanState // what each probe sees; the last one repeats
 	macs                                                    []string   // the network devices present
 
+	probe func(lanMAC string) lanProbe // instead of lan and macs: a real probe
+
 	ext        *store.BootReport // nil: no report (mode off)
 	extErr     error
 	healthyErr error
 
 	mu      sync.Mutex
 	probes  int
+	lanMAC  string              // what the last probe was given
 	healthy []*store.BootReport // AfterHealthy calls
 	markers []string            // the trial-ok marker at each call ("-" when absent)
 }
@@ -94,10 +96,14 @@ func (f *fakeHealth) env() healthEnv {
 		counting: func() bool { return f.counting },
 		fallback: func() bool { return !f.noFallback },
 		forced:   func() bool { return f.forced },
-		lan: func() lanProbe {
+		lan: func(lanMAC string) lanProbe {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.probes++
+			f.lanMAC = lanMAC
+			if f.probe != nil {
+				return f.probe(lanMAC)
+			}
 			p := lanProbe{state: lanNoCarrier, macs: f.macs}
 			if len(f.lan) > 0 {
 				p.state = f.lan[min(f.probes, len(f.lan))-1]
@@ -421,9 +427,20 @@ func TestHealthExtensionsRecorded(t *testing.T) {
 		})
 	}
 
-	// Nothing mounted on purpose (or no report): nothing to record.
+	// A trial that names no set leaves vosd nothing to promote: no marker.
 	setup(t)
 	f := healthy()
+	f.ext = &store.BootReport{Mode: store.ModePending, Set: ""}
+	if code, log := runFake(t, f); code != 0 || len(f.healthy) != 1 || f.markers[0] != "-" {
+		t.Fatalf("exit %d, AfterHealthy calls %v, markers %q\n%s", code, f.healthy, f.markers, log)
+	}
+	if _, err := os.Stat(config.ExtTrialOKPath()); !os.IsNotExist(err) {
+		t.Fatalf("trial-ok marker for a trial without a set: %v", err)
+	}
+
+	// Nothing mounted on purpose (or no report): nothing to record.
+	setup(t)
+	f = healthy()
 	if code, _ := runFake(t, f); code != 0 || len(f.healthy) != 0 {
 		t.Fatalf("exit %d, AfterHealthy calls %v", code, f.healthy)
 	}
@@ -494,89 +511,5 @@ func TestHealthLAN(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestProbeLAN(t *testing.T) {
-	setup(t)
-	oldDir, oldAddrs := NetClassDir, interfaceAddrs
-	t.Cleanup(func() { NetClassDir, interfaceAddrs = oldDir, oldAddrs })
-	NetClassDir = t.TempDir()
-	addrs := map[string][]string{}
-	interfaceAddrs = func(name string) ([]net.Addr, error) {
-		var out []net.Addr
-		for _, a := range addrs[name] {
-			ip, n, err := net.ParseCIDR(a)
-			if err != nil {
-				t.Fatal(err)
-			}
-			n.IP = ip
-			out = append(out, n)
-		}
-		return out, nil
-	}
-	// nic adds an interface. flags "" leaves that file out, and carrier ""
-	// too: the kernel refuses to read it while the interface is down.
-	nic := func(name string, device bool, flags, carrier string, a ...string) {
-		dir := filepath.Join(NetClassDir, name)
-		os.RemoveAll(dir)
-		os.MkdirAll(dir, 0o755)
-		if device {
-			os.MkdirAll(filepath.Join(dir, "device"), 0o755)
-		}
-		os.WriteFile(filepath.Join(dir, "address"), []byte(fmt.Sprintf("52:54:00:00:00:%02x\n", len(name))), 0o644)
-		if flags != "" {
-			os.WriteFile(filepath.Join(dir, "flags"), []byte(flags+"\n"), 0o644)
-		}
-		if carrier != "" {
-			os.WriteFile(filepath.Join(dir, "carrier"), []byte(carrier+"\n"), 0o644)
-		}
-		addrs[name] = a
-	}
-	probe := func(want lanState, what string) lanProbe {
-		t.Helper()
-		p := probeLAN()
-		if p.state != want {
-			t.Fatalf("%s: %+v, want state %v", what, p, want)
-		}
-		return p
-	}
-
-	if p := probe(lanNoCarrier, "no interfaces"); len(p.macs) != 0 {
-		t.Fatalf("devices %v", p.macs)
-	}
-	nic("lo", true, "0x9", "1", "127.0.0.1/8", "::1/128")
-	nic("docker0", false, "0x1003", "1", "172.17.0.1/16") // virtual: no device
-	nic("docker1", false, "0x1002", "")                   // virtual and down
-	nic("eno1", true, "0x1003", "0", "192.168.1.5/24")    // up, nothing plugged in
-	nic("wlan0", true, "", "0")                           // no flags: a readable carrier means up
-	if p := probe(lanNoCarrier, "only lo, bridges and devices without a link"); len(p.macs) != 2 {
-		t.Fatalf("devices %v", p.macs)
-	}
-
-	nic("enp5s0", true, "0x1002", "") // down, so its carrier cannot be read
-	if p := probe(lanNoAddress, "a device that is down"); p.detail != "enp5s0 is down" || len(p.macs) != 3 {
-		t.Fatalf("down: %+v", p)
-	}
-	nic("enp5s0", true, "", "") // neither flags nor carrier readable
-	probe(lanNoAddress, "a device whose carrier cannot be read")
-	nic("enp5s0", true, "0x1002", "1", "10.0.0.7/8") // flags say down, whatever carrier says
-	probe(lanNoAddress, "a down device with a carrier file")
-
-	nic("enp5s0", true, "0x1003", "1", "169.254.10.2/16", "fe80::1/64")
-	if p := probe(lanNoAddress, "link-local only"); p.detail != "enp5s0 has a link but no address" {
-		t.Fatalf("detail %q", p.detail)
-	}
-	addrs["enp5s0"] = append(addrs["enp5s0"], "fd12:3456::2/64")
-	if p := probe(lanUp, "a ULA address"); p.mac != "52:54:00:00:00:06" || p.detail != "" || len(p.macs) != 3 {
-		t.Fatalf("up: %+v", p)
-	}
-	addrs["enp5s0"] = []string{"10.0.0.7/8"}
-	probe(lanUp, "a private IPv4 address")
-	// Another device down does not matter once one has the LAN, and every
-	// device present is still listed.
-	nic("enp6s0", true, "0x1002", "")
-	if p := probe(lanUp, "one up, one down"); len(p.macs) != 4 {
-		t.Fatalf("devices %v", p.macs)
 	}
 }

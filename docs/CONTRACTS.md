@@ -66,7 +66,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (boot disk, virtual connector + EDID) |
 | `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running |
 | `/var/lib/vos/firmware/edid/vaporos.bin` | vosd | EDID with learned modes; overrides the image one via `firmware_class.path=/var/lib/vos/firmware`. vosd also hands each new version to the running kernel, best effort: it writes `/sys/kernel/debug/dri/<minor or PCI address>/<C>/edid_override`, re-probes the connector by switching its sysfs `status` to `on-digital` and back to `on`, and sends a `change` uevent with `HOTPLUG=1`. It counts only when the connector's sysfs `edid` then matches. vosd skips this during a stream (it applies at `session.end`) and when the new EDID drops the mode on screen. If the kernel refuses, or gamescope does not reach a mode added this way within 15 s, vosd stops trying until the next boot and the mode applies after a reboot |
-| `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool,"lan_mac":"<address>"}` from the last good boot; `lan_mac` is the `address` of the network device that had the LAN (omitted when unknown) |
+| `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool,"lan_mac":"<address>"}` from the last good boot; `lan_mac` is the `address` of the network device that had the LAN, recorded only when it is the hardware's own (`addr_assign_type` 0, not random or set by software; omitted otherwise or when unknown) |
 | `/usr/lib/vos/extensions.list` | build | the image's extension catalog (see Extensions) |
 | `/usr/share/vos/extensions/<id>.json` | build | each extension's descriptor, with what the build verified |
 | `/var/lib/vos/ext/` | vosd, initramfs, `vos health`, `vos ext fetch` | the extension store, sets and trial state (see Extensions) |
@@ -241,7 +241,7 @@ or above it passes health.
 - `user@1000.service` is active;
 - if `health-ok.gpu`, a DRM card with an amdgpu (or other supported) driver exists;
 - if `health-ok.stream`, `vos-sunshine.service` is active;
-- if `health-ok.lan`, the LAN is up within 60 s of the start (the check runs alongside the others): some network device (an interface with `/sys/class/net/<if>/device`; not `lo`, bridges or tunnels) that is up (`IFF_UP` in its `flags`; without `flags`, a readable `carrier`) with `carrier` 1 has an IPv4 address that is neither loopback nor link-local, or a global or unique local IPv6 one. If none has by the deadline, it fails when the device whose `address` is `health-ok.lan_mac` is gone, or when a network device is down or has a link without such an address (NetworkManager brings up every device, also without a cable); when every network device is up with `carrier` 0, or there is none (nothing is plugged in), it passes and keeps `health-ok.lan` and `lan_mac`;
+- if `health-ok.lan`, the LAN is up within 60 s of the start (the check runs alongside the others): some network device (an interface with `/sys/class/net/<if>/device`; not `lo`, bridges or tunnels) that is up (`IFF_UP` in its `flags`; without `flags`, a readable `carrier`) with `carrier` 1 has an IPv4 address that is neither loopback nor link-local, or a global or unique local IPv6 one. If none has by the deadline, it fails when no network device has the `address` `health-ok.lan_mac` (the device is gone; not checked without `lan_mac`), when a wired one (`type` 1, without `wireless` or `phy80211`, and neither `DEVTYPE=wlan` nor `DEVTYPE=wwan` in its `uevent`) or the one with the `address` `lan_mac` is down (NetworkManager brings up every wired device, also without a cable, while a radio or modem may be down for a switch or a missing SIM), or when a network device has a link without such an address; when every network device is up with `carrier` 0, or down and neither wired nor the `lan_mac` one, or there is none (nothing is plugged in), it passes and keeps `health-ok.lan` and `lan_mac`;
 - `vos.health.fail=1` forces a failure.
 
 A check that `health-ok` does not require is still looked at once (the LAN
@@ -254,12 +254,13 @@ mode `pending`; see Extensions); otherwise a failing check is logged as degraded
 and it exits 0. It writes `health-ok` unless it fails, and prints the
 `VOS-HEALTH` serial line on every outcome. `FailureAction=reboot`, and
 systemd-boot counting (or the trial's tries) does the rest. After an
-extension trial that passes, it first writes the booted set's number to
-`/run/vos/ext-trial-ok` (temp + rename), so vosd can still promote the set
-should the next step not get the lock. After a good boot whose report
-mounted anything on purpose (mode other than `off`), it takes ext.lock
-(waiting up to 30 s) and records the boot (proven images, promotion; see
-"Trial and promotion"); a problem there is logged and never fails the boot.
+extension trial that passes, it first writes the booted set's number (if
+the report names one) to `/run/vos/ext-trial-ok` (temp + rename), so vosd
+can still promote the set should the next step not get the lock. After a
+good boot whose report mounted anything on purpose (mode other than `off`),
+it takes ext.lock (waiting up to 30 s) and records the boot (proven images,
+promotion; see "Trial and promotion"); a problem there is logged and never
+fails the boot.
 
 ## Extensions
 

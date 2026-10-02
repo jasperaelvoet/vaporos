@@ -69,7 +69,7 @@ type healthEnv struct {
 	counting   func() bool // is this boot on trial (boot counting)?
 	fallback   func() bool // would another entry boot once this one runs out of tries?
 	forced     func() bool // vos.health.fail=1
-	lan        func() lanProbe
+	lan        func(lanMAC string) lanProbe
 	extensions func() (*store.BootReport, error) // what the initramfs mounted
 	// healthy records a boot that passed (store.AfterHealthy, under ext.lock).
 	healthy func(rep *store.BootReport) error
@@ -144,7 +144,7 @@ func checkHealth(ctx context.Context, env healthEnv, prev HealthOK, logf func(st
 	defer lcancel()
 	lanc := make(chan lanProbe, 1)
 	go func() {
-		p := env.lan()
+		p := env.lan(prev.LANMAC)
 		for p.state != lanUp {
 			select {
 			case <-lctx.Done():
@@ -152,7 +152,7 @@ func checkHealth(ctx context.Context, env healthEnv, prev HealthOK, logf func(st
 				return
 			case <-time.After(healthPoll):
 			}
-			p = env.lan()
+			p = env.lan(prev.LANMAC)
 		}
 		lanc <- p
 	}()
