@@ -596,8 +596,13 @@ vm_reboot_ext() {
     send_ "systemctl reboot"
     ext=$(match_ 'VaporOS: extensions (mode=\S+ set=\S+ mounted=\S+)' 300) ||
         fail "the initramfs printed no extensions line after the reboot"
-    expect_ 'VOS-HEALTH result=\S+' 300 || fail "vos health printed nothing after the reboot"
-    expect_ 'VOS-READY mode=os' 300 || fail "the VM did not come back after the reboot"
+    # vosd announces itself before or after vos health ends, whichever is
+    # first, and expect only looks after its last match.
+    case $(match_ '(VOS-HEALTH result=\S+|VOS-READY mode=os)' 300) in
+        VOS-HEALTH*) expect_ 'VOS-READY mode=os' 300 || fail "the VM did not come back after the reboot" ;;
+        VOS-READY*) expect_ 'VOS-HEALTH result=\S+' 300 || fail "vos health printed nothing after the reboot" ;;
+        *) fail "the VM did not come back after the reboot" ;;
+    esac
     echo "$ext"
 }
 
