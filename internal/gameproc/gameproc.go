@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
 // HandoffUnit is the transient user unit an extension hands a launch
@@ -71,13 +72,18 @@ func (p Probe) GameRunning() bool {
 
 // handoffActive reports whether the user manager has the handoff unit
 // loaded: a transient unit's file lives in its runtime directory until
-// the unit is collected.
+// the unit is collected. The user owns that directory, so the file is
+// opened through gamerfs: a symlink anywhere on the way counts as no unit.
 func (p Probe) handoffActive() bool {
 	if p.RuntimeDir == "" {
 		return false
 	}
-	_, err := os.Lstat(filepath.Join(p.RuntimeDir, "systemd", "transient", HandoffUnit))
-	return err == nil
+	f, err := gamerfs.Open(p.RuntimeDir, "systemd/transient/"+HandoffUnit)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
 // ReaperApp reads Steam's reaper command line, the process Steam starts
