@@ -518,6 +518,11 @@ vm_install() {
         fail "the installed system never came up (VOS-READY mode=os)"
     read -r VM_VERSION m <<<"$m"
     [[ $VM_VERSION == "$want" ]] || fail "the installed system runs $VM_VERSION, expected $want"
+    # The first announcement can come before DHCP (ip=-); the address
+    # follows in a later one.
+    if [[ -z $m || $m == - ]]; then
+        m=$(match_ 'VOS-READY mode=os version=\S+ ip=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)' 120) || m=$(vm_ip)
+    fi
     [[ -z $m ]] || VM_IP=$m
     remember_ip "$VM_IP"
     dev_settings
