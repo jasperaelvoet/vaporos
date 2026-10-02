@@ -6,7 +6,8 @@
 # uses build.sh's SRC, WORK, STAGE, ROOT, VOS, COMPRESS, its step/info/warn/
 # die and erofs_flags, and build/lib.sh.
 #
-# Each extensions/<id>/, requirements first:
+# First `vos ext validate` checks every descriptor; nothing here reads one
+# before. Then each extensions/<id>/, requirements first:
 #   key      the input key (ext_input_key): the descriptor, files/, the
 #            packages it resolves to in the base's own sync snapshot, the
 #            mkfs flags, these scripts and the requirements' keys. An image
@@ -14,7 +15,9 @@
 #            still checked against this build's rootfs.
 #   install  a fresh overlay on the rootfs (under the requirements' images),
 #            into which pacman installs its packages from that snapshot (no
-#            -y), recorded in a copy of the base's package database
+#            -y), recorded in a copy of the base's package database. It may
+#            only add: a package of the base or a requirement that changes
+#            or goes, or a path under usr/ it removes, fails the build.
 #   tree     the overlay's upper layer without overlay xattrs and without
 #            what scriptlets and hooks left behind (ext_prune_tree), plus
 #            fetch[], strip[], files/ and usr/lib/vos/ext/<id>/
@@ -27,12 +30,14 @@
 
 EXT_SRC=$SRC/extensions
 # Per extension: its package database (CI trims its package cache against
-# these and the base's), logs, the overlay and the mounted image.
+# these and the base's) and local.added (the entries it adds there), logs,
+# the overlay and the mounted image.
 EXT_WORK=$WORK/ext
-# <key>.raw, .build.json, .packages.txt and .local.tar (the package database
-# entries it adds): images by input key, kept two weeks after their last use.
+# <key>.raw and its .sha256, .build.json, .packages.txt and .local.tar (the
+# package database entries it adds): images by input key, kept two weeks
+# after their last use. The image is checked against its sha256 on reuse.
 EXT_CACHE=$WORK/ext-cache
-# fetch[] downloads, by sha256.
+# fetch[] downloads, by sha256, kept two weeks after their last use.
 EXT_FETCH=$WORK/ext-fetch
 # What `vos ext catalog --stage` reads: ext-<id>.raw, <id>.json (the source
 # descriptor), <id>.build.json (check-tree --json), <id>.key, <id>.packages.txt.
@@ -79,7 +84,7 @@ ext_cleanup() {
 }
 
 ext_build_all() {
-    local id list
+    local id list f
     step "Building extension images"
     ext_cleanup
     # A merged root has /dev mounted in it: never remove through a mount.
@@ -89,6 +94,10 @@ ext_build_all() {
     rm -rf "$EXT_WORK" "$EXT_STAGE" "$EXT_CATALOG"
     mkdir -p "$EXT_WORK" "$EXT_STAGE" "$EXT_CATALOG" "$EXT_CACHE" "$EXT_FETCH"
 
+    for f in "$EXT_SRC"/*/extension.json; do
+        [[ -f $f ]] || continue
+        "$VOS" ext validate "$f" || die "${f#"$SRC"/} is not a valid descriptor (see above)"
+    done
     list=$(ext_order "$EXT_SRC") || die "extensions/ cannot be built (see above)"
     EXT_IDS=()
     EXT_FSVERITY=()
@@ -109,13 +118,13 @@ ext_build_all() {
     done
     ext_catalog
     ext_cleanup
-    find "$EXT_CACHE" -maxdepth 1 -type f -mtime +14 -delete
+    find "$EXT_CACHE" "$EXT_FETCH" -maxdepth 1 -type f -mtime +14 -delete
 }
 
 # Makes (or reuses) ext-ID.raw in $EXT_STAGE and checks it.
 ext_build() {
     local id=$1 x=$EXT_WORK/$1 desc=$EXT_SRC/$1/extension.json img=$EXT_STAGE/ext-$1.raw
-    local list key c r a b fresh=0 started=$SECONDS
+    local list key c r e why a b fresh=0 started=$SECONDS
     local -a pkgs=() reqs=() others=()
     step "Extension $id"
     mkdir -p "$x/mnt"
@@ -126,14 +135,17 @@ ext_build() {
     [[ -z $list ]] || info "requires: ${reqs[*]}"
 
     # Its own copy of the package database: the base's, sync snapshot
-    # included, plus what its requirements installed.
+    # included, plus the entries its requirements added.
     cp -a "$WORK/base/var/lib/pacman" "$x/db"
     rm -f "$x/db/db.lck"
     : >"$x/requires.keys"
     for r in "${reqs[@]}"; do
-        cp -a "$EXT_WORK/$r/db/local/." "$x/db/local/"
+        while IFS= read -r e; do
+            cp -a "$EXT_WORK/$r/db/local/$e" "$x/db/local/"
+        done <"$EXT_WORK/$r/local.added"
         echo "$r $(<"$EXT_STAGE/$r.key")" >>"$x/requires.keys"
     done
+    ext_db_single "$id"
 
     # What its packages resolve to, from that snapshot alone (no -y), so
     # the image matches the base's own package versions.
@@ -141,7 +153,7 @@ ext_build() {
     [[ -z $list ]] || mapfile -t pkgs <<<"$list"
     : >"$x/resolved.txt"
     if (( ${#pkgs[@]} )); then
-        if ! ext_pacman "$x/db" -S --print --needed --noconfirm --print-format '%r %n %v %f %h' \
+        if ! ext_pacman "$x/db" -S --print --needed --noconfirm --print-format '%r %n %v %f %h' -- \
                 "${pkgs[@]}" >"$x/resolved.raw" 2>"$x/resolve.log"; then
             # (pacman says which dependency it cannot satisfy on stdout.)
             cat "$x/resolved.raw" "$x/resolve.log" >&2
@@ -157,12 +169,17 @@ ext_build() {
     cp "$desc" "$EXT_STAGE/$id.json"
 
     c=$EXT_CACHE/$key
-    if [[ -s $c.raw && -f $c.build.json && -f $c.packages.txt && -f $c.local.tar ]]; then
+    if [[ -e $c.raw ]] && ! why=$(ext_cache_check "$id" "$c"); then
+        warn "$id: dropping the cached image of input key ${key:0:16}: $why"
+        rm -f "$c.raw" "$c.sha256" "$c.build.json" "$c.packages.txt" "$c.local.tar"
+    fi
+    if [[ -e $c.raw ]]; then
         info "reusing the image of input key ${key:0:16} (checked again below)"
         ln -f "$c.raw" "$img" 2>/dev/null || cp "$c.raw" "$img"
         cp "$c.packages.txt" "$EXT_STAGE/$id.packages.txt"
-        tar -xf "$c.local.tar" -C "$x/db/local"
-        touch "$c.raw" "$c.build.json" "$c.packages.txt" "$c.local.tar"
+        ext_local_entries "$c.packages.txt" >"$x/local.added"
+        tar -xf "$c.local.tar" -C "$x/db/local" || die "$id: cannot unpack its cached package database entries"
+        touch "$c.raw" "$c.sha256" "$c.build.json" "$c.packages.txt" "$c.local.tar"
         EXT_REUSED[$id]=1
     else
         info "input key ${key:0:16}: making the image"
@@ -177,6 +194,7 @@ ext_build() {
         ext_mkfs "$id"
         fresh=1
     fi
+    ext_db_single "$id"
 
     mount -t erofs -o ro,loop "$img" "$x/mnt" || die "$id: its image does not mount"
     [[ -d $x/mnt/usr ]] || die "$id: its image has no usr/"
@@ -198,23 +216,68 @@ ext_build() {
         cp "$EXT_STAGE/$id.build.json" "$c.build.json"
         cp "$EXT_STAGE/$id.packages.txt" "$c.packages.txt"
         tar -C "$x/db/local" -cf "$c.local.tar" -T "$x/local.added"
-        # The image last, under its final name only once complete: it is
-        # what says the entry is there. (Nothing writes to an image once
-        # made, so the stage and the cache can share it.)
+        sha256sum <"$img" | cut -d' ' -f1 >"$c.sha256"
+        # The image last, under its final name only once the rest is on
+        # disk: it is what says the entry is there. (Nothing writes to an
+        # image once made, so the stage and the cache can share it.)
         rm -f "$c.raw.tmp"
         ln "$img" "$c.raw.tmp" 2>/dev/null || cp "$img" "$c.raw.tmp"
+        sync -- "$c.build.json" "$c.packages.txt" "$c.local.tar" "$c.sha256" "$c.raw.tmp"
         mv "$c.raw.tmp" "$c.raw"
+        sync -- "$EXT_CACHE"
     fi
     info "ext-$id.raw  $(mib "$(stat -c %s "$img")") MiB  fsverity ${a:0:16}  (${EXT_REUSED[$id]:+reused, }$((SECONDS - started))s)"
+}
+
+# Whether cache entry C (the path without its extension) can stand in for
+# extension ID's image in this build: complete, its image still the one its
+# sha256 names, and its package database entries exactly its packages, none
+# of which ID's database (the base's and the requirements') has yet. Says
+# why not, and fails, otherwise.
+# Usage: ext_cache_check ID C
+ext_cache_check() {
+    local id=$1 c=$2 f entries have
+    for f in sha256 build.json packages.txt local.tar; do
+        if [[ ! -f $c.$f ]]; then
+            echo "it has no .$f"
+            return 1
+        fi
+    done
+    if [[ $(sha256sum <"$c.raw" | cut -d' ' -f1) != "$(<"$c.sha256")" ]]; then
+        echo "its image is not the one its sha256 names"
+        return 1
+    fi
+    if ! entries=$(set -o pipefail; tar -tf "$c.local.tar" | cut -d/ -f1 | LC_ALL=C sort -u) ||
+            [[ $entries != "$(ext_local_entries "$c.packages.txt" | LC_ALL=C sort -u)" ]]; then
+        echo "its package database entries are not those of its packages"
+        return 1
+    fi
+    have=$(LC_ALL=C comm -12 <(ext_pacman "$EXT_WORK/$id/db" -Qq | LC_ALL=C sort) \
+        <(cut -d' ' -f1 "$c.packages.txt" | LC_ALL=C sort))
+    if [[ -n $have ]]; then
+        echo "it adds packages the base or a requirement has already: ${have//$'\n'/ }"
+        return 1
+    fi
+}
+
+# Fails the build when extension ID's package database has two entries for
+# one package: pacman would see only one of them.
+# Usage: ext_db_single ID
+ext_db_single() {
+    local dupes
+    dupes=$(ext_local_dupes "$EXT_WORK/$1/db/local")
+    [[ -z $dupes ]] || die "$1: its package database has more than one version of ${dupes//$'\n'/, }"
 }
 
 # Installs PKGS into a fresh overlay on the rootfs (with the requirements'
 # images over it) and leaves its upper layer, without overlay xattrs and
 # pruned, in $x/tree; the packages it added in $x/packages.txt ("name
-# version") and their database entries in $x/local.added.
+# version") and their database entries in $x/local.added. It fails if the
+# install changed or removed a package that was there, or removed a path
+# under usr/: an image can only add to the layers below it.
 # Usage: ext_install ID PKG...
 ext_install() {
-    local id=$1 x=$EXT_WORK/$1 m=$EXT_WORK/$1/merged r lowerdir="" n
+    local id=$1 x=$EXT_WORK/$1 m=$EXT_WORK/$1/merged r lowerdir="" n e p inputs
     local -a reqs=() lowers=() new=()
     shift
     mapfile -t reqs <"$x/requires"
@@ -233,37 +296,49 @@ ext_install() {
         die "$id: cannot mount an overlay on the rootfs"
     ext_api_mounts "$m" || die "$id: cannot mount /proc, /sys, /dev, /run and /tmp in its overlay"
 
-    ext_pacman "$x/db" -Qq | LC_ALL=C sort >"$x/before.q"
-    find "$x/db/local" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort >"$x/before.local"
+    ext_pacman "$x/db" -Q | LC_ALL=C sort >"$x/before.q"
     info "installing ${*}"
     if ! ext_pacman "$x/db" --root "$m" --cachedir /var/cache/pacman/pkg --logfile "$x/alpm.log" \
-            -S --needed --noconfirm "$@" >"$x/pacman.log" 2>&1; then
+            -S --needed --noconfirm -- "$@" >"$x/pacman.log" 2>&1; then
         tail -n 40 "$x/pacman.log" >&2
-        die "$id: pacman could not install its packages (full log: $x/pacman.log)"
+        if grep -q 'returned error: 404' "$x/pacman.log"; then
+            die "$id: the mirrors no longer have some of its packages: the cached base's package snapshot is stale (REFRESH=1 renews it; full log: $x/pacman.log)"
+        fi
+        die "$id: pacman could not install its packages (full log: $x/pacman.log; a stale cached base? REFRESH=1 renews it)"
     fi
     check_pacstrap_log "$x/pacman.log" >&2 ||
         die "$id: a package scriptlet or hook failed (full log: $x/pacman.log)"
     umount -R "$m" || die "$id: cannot unmount its overlay (does a scriptlet's process still run in it?)"
 
-    ext_pacman "$x/db" -Qq | LC_ALL=C sort >"$x/after.q"
-    find "$x/db/local" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort >"$x/after.local"
-    LC_ALL=C comm -13 "$x/before.local" "$x/after.local" >"$x/local.added"
-    mapfile -t new < <(LC_ALL=C comm -13 "$x/before.q" "$x/after.q")
+    ext_pacman "$x/db" -Q | LC_ALL=C sort >"$x/after.q"
+    if ! ext_pkg_changes "$x/before.q" "$x/after.q" "$x/alpm.log" >"$x/changed"; then
+        sed 's/^/      /' "$x/changed" >&2
+        die "$id: installing its packages changed packages of the base or a requirement (above); an extension may only add packages"
+    fi
+    if ! ext_upper_removals "$x/upper" >"$x/removed"; then
+        sed 's/^/      /' "$x/removed" >&2
+        die "$id: installing its packages removed paths under usr/ of the base or a requirement (above); an extension may only add files"
+    fi
+    LC_ALL=C comm -13 "$x/before.q" "$x/after.q" >"$x/packages.txt"
+    ext_local_entries "$x/packages.txt" >"$x/local.added"
+    while IFS= read -r e; do
+        [[ -d $x/db/local/$e ]] || die "$id: pacman lists $e, but its package database has no entry $e"
+    done <"$x/local.added"
+    mapfile -t new < <(cut -d' ' -f1 "$x/packages.txt")
     if (( ${#new[@]} )); then
-        ext_pacman "$x/db" -Q "${new[@]}" >"$x/packages.txt"
-        ext_pacman "$x/db" -Qlq "${new[@]}" >"$x/owned"
+        ext_pacman "$x/db" -Qlq -- "${new[@]}" >"$x/owned"
     else
         : >"$x/owned"
     fi
     info "$(wc -l <"$x/packages.txt") package(s): $(cut -d' ' -f1 "$x/packages.txt" | tr '\n' ' ')"
 
     # The upper layer as plain files: no trusted.overlay.* (an image must
-    # not carry them), and so no stale opaque or redirect markers either.
+    # not carry them; ext_upper_removals has read the opaque markers).
     rsync -aHAX --filter='-x trusted.overlay.*' --filter='-x system.*' "$x/upper/" "$x/tree/"
     rm -rf "$x/upper" "$x/work"
 
     if ! ext_prune_tree "$x/tree" "$x/owned" "${lowers[@]}" >"$x/pruned"; then
-        die "$id: its packages install files outside usr/, and an extension image holds usr/ alone"
+        die "$id: its packages install files outside usr/ (an extension image holds usr/ alone), or their install removed files under usr/ (above)"
     fi
     if [[ -s $x/pruned ]]; then
         n=$(wc -l <"$x/pruned")
@@ -271,20 +346,26 @@ ext_install() {
         head -n 20 "$x/pruned" | sed 's/^removed /      /'
         (( n <= 20 )) || info "  ... and $((n - 20)) more ($x/pruned)"
     fi
+    while read -r p inputs; do
+        warn "$id: a hook redid /$p, which the image leaves out, so the base's copy stays; it does not know the files the extension ships in /$inputs/"
+    done < <(ext_stale_caches "$x/tree" "$x/pruned")
 }
 
 # Adds fetch[], strip[], files/ and usr/lib/vos/ext/ID/ to $x/tree.
 # Usage: ext_fill ID
 ext_fill() {
     local id=$1 x=$EXT_WORK/$1 t=$EXT_WORK/$1/tree desc=$EXT_SRC/$1/extension.json
-    local own=$EXT_WORK/$1/tree/usr/lib/vos/ext/$1 n i url sha ex dest lic f out p
+    local own=$EXT_WORK/$1/tree/usr/lib/vos/ext/$1 lics=$EXT_WORK/$1/tree/usr/share/licenses/$1
+    local n i url sha ex lf dest lic f p
     n=$(jq '.fetch // [] | length' "$desc")
     for ((i = 0; i < n; i++)); do
-        IFS=$'\x1f' read -r url sha ex dest lic < <(jq -r --argjson i "$i" \
-            '.fetch[$i] | [.url, .sha256, (.extract // ""), .dest, .license] | join("\u001f")' "$desc")
+        IFS=$'\x1f' read -r url sha ex lf dest lic < <(jq -r --argjson i "$i" \
+            '.fetch[$i] | [.url, .sha256, (.extract // ""), (.license_file // ""), .dest, .license]
+                        | join("\u001f")' "$desc")
         [[ $url == https://* && $sha =~ ^[0-9a-f]{64}$ ]] || die "$id: fetch[$i] needs an https url and a sha256"
         ext_rel_ok "$dest" || die "$id: fetch[$i].dest '$dest' is not a clean relative path"
         [[ -z $ex ]] || ext_rel_ok "$ex" || die "$id: fetch[$i].extract '$ex' is not a clean relative path"
+        [[ -z $lf ]] || ext_rel_ok "$lf" || die "$id: fetch[$i].license_file '$lf' is not a clean relative path"
         f=$EXT_FETCH/$sha
         if [[ ! -s $f ]] || ! printf '%s  %s\n' "$sha" "$f" | sha256sum -c --quiet >/dev/null 2>&1; then
             info "downloading $url"
@@ -296,18 +377,14 @@ ext_fill() {
             rm -f "$f"
             die "$id: $url is not the file its descriptor pins (sha256 $sha)"
         fi
-        out=$own/$dest
-        mkdir -p "${out%/*}"
-        if [[ -n $ex ]]; then
-            tar -xOf "$f" -- "$ex" >"$out" || die "$id: $url has no member $ex"
-            chmod 0644 "$out"
-        else
-            install -m0644 "$f" "$out"
-        fi
-        mkdir -p "$t/usr/share/licenses/$id"
-        printf '%s: %s\n  from %s\n  sha256 %s%s\n' "$dest" "$lic" "$url" "$sha" "${ex:+, member $ex}" \
-            >>"$t/usr/share/licenses/$id/fetched.txt"
-        info "fetched $dest ($lic)"
+        touch "$f"
+        ext_place_fetch "$f" "$ex" "$own/$dest" "$lf" "$lics" || die "$id: fetch[$i] ($url) cannot be put in the image"
+        mkdir -p "$lics"
+        {
+            printf '%s: %s\n  from %s\n  sha256 %s%s\n' "$dest" "$lic" "$url" "$sha" "${ex:+, member $ex}"
+            [[ -z $lf ]] || printf '  licence text in %s, member %s\n' "${lf##*/}" "$lf"
+        } >>"$lics/fetched.txt"
+        info "fetched $dest ($lic${lf:+, licence text ${lf##*/}})"
     done
 
     while IFS= read -r p; do

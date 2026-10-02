@@ -171,6 +171,12 @@ erofs_flags() {
 # ------------------------------------------------------------------ base ----
 
 mapfile -t PACKAGES < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$SRC/packages.txt")
+# pacstrap puts its own pacman options after the packages, so no `--` can
+# keep a name from reading as an option: each must be a package name.
+for want in "${PACKAGES[@]}"; do
+    [[ $want =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$ ]] ||
+        die "packages.txt: '$want' is not a package name (or repo/name)"
+done
 base_key=$(cat "$SRC/packages.txt" "$SRC/build/pacman.conf" | sha256sum | cut -c1-16)
 
 if [[ $REFRESH == 1 || ! -f $WORK/base/.vos-key || $(<"$WORK/base/.vos-key") != "$base_key" ]]; then
@@ -203,8 +209,8 @@ basepac() {
 for want in "${PACKAGES[@]}"; do
     [[ $want == */* ]] || continue
     pkg=${want#*/}
-    have=$(basepac -Q "$pkg" 2>/dev/null | cut -d' ' -f2) || die "$pkg is not installed"
-    pinned=$(basepac -Si "$want" 2>/dev/null | awk '$1 == "Version" { print $3 }')
+    have=$(basepac -Q -- "$pkg" 2>/dev/null | cut -d' ' -f2) || die "$pkg is not installed"
+    pinned=$(basepac -Si -- "$want" 2>/dev/null | awk '$1 == "Version" { print $3 }')
     [[ $have == "$pinned" ]] || die "$pkg is $have, but packages.txt pins $want ($pinned)"
     info "$pkg $have from ${want%%/*}"
 done

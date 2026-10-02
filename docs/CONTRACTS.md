@@ -262,9 +262,17 @@ made with `mkfs.erofs -T0 --all-root -U <uuid>`, compressed as the root is
 `vaporos-ext-<id>` in the URL namespace. It holds the extension's packages
 (resolved from the base's own sync snapshot), less what their scriptlets and
 hooks leave behind (anything outside `usr/`, and files of the base or a
-requirement they redo, such as caches), its `fetch[]` files (in
-`usr/lib/vos/ext/<id>/`, noted in `usr/share/licenses/<id>/fetched.txt`), its
-`files/`, and `usr/lib/vos/ext/<id>/{extension.json,packages.txt,module-options}`.
+requirement they redo, such as caches; the build warns when the extension
+ships inputs for such a cache: icons, mime packages, schemas, GIO or pixbuf
+modules), its `fetch[]` files (in `usr/lib/vos/ext/<id>/`, each noted with
+its licence, URL and sha256 in `usr/share/licenses/<id>/fetched.txt`; a
+`license_file`, the archive member holding the licence text, goes beside it
+as `usr/share/licenses/<id>/<its base name>`), its `files/`, and
+`usr/lib/vos/ext/<id>/{extension.json,packages.txt,module-options}`.
+Installing the packages may only add to the base and the requirements: the
+build fails if it upgrades, downgrades, reinstalls, replaces or removes a
+package they have, or removes a path under `usr/` (a whiteout or opaque
+directory in the overlay it installs into).
 `module-options` lists the `module param` pairs the extension may set (one per
 line). Its identity is its fs-verity digest: `fsverity digest --hash-alg=sha256
 --block-size=4096`, no salt, as 64 hex digits. The build fails an image that:
