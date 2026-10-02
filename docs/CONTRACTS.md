@@ -813,10 +813,12 @@ trusts it for display only:
 - `shortcuts.<accountid>.<owner>/<key>.deleted`: the user removed a
   shortcut VaporOS added. It is not added again, and the card says so.
 - `accounts`: the accounts in loginusers.vdf at the last run, one that
-  skipped included (step 3). vosd checks every 15 s and asks for a Steam
+  skipped included (step 3); a run that cannot read loginusers.vdf keeps
+  them as they were. vosd checks every 15 s and asks for a Steam
   restart when `~/.local/share/Steam/config/loginusers.vdf` lists an
-  account (SteamID64 & 0xffffffff) that is missing here, once per such set
-  of accounts (never without a record).
+  account that is missing here, once per such set of accounts (never
+  without a record). Both sides count the same accounts (step 5.2:
+  individual ones, never anonymous or id 0), by SteamID64 & 0xffffffff.
 - `skipped`: why the last run changed nothing (step 3): `steam-running`,
   `no-steam-json`, `bad-steam-json` or `other-set`; `""` when it went ahead
   or found nothing to do.
@@ -913,7 +915,8 @@ trusts it for display only:
       - An entry that already holds the tool `steam.json` asks for is taken
         as VaporOS's, with `before` `null`.
    2. **localconfig.vdf** of each account in loginusers.vdf (individual
-      accounts; the account id is the SteamID64's low 32 bits),
+      accounts, never an anonymous one or id 0; the account id is the
+      SteamID64's low 32 bits),
       `userdata/<accountid>/config/localconfig.vdf`, skipped while it is
       missing: `UserLocalConfigStore/Software/Valve/Steam/apps/<app>/LaunchOptions`.
       With `dispatcher` true, each app with `hooks` is wrapped as below.

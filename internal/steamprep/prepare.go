@@ -231,12 +231,15 @@ func (p *prep) readAccounts() ([]uint32, error) {
 }
 
 // loadAccounts reads the accounts that signed in. Without them, which
-// shortcuts VaporOS has is not known either.
+// shortcuts VaporOS has is not known either, and the record keeps the
+// accounts it has: vosd would take an empty list for new accounts and
+// restart Steam for them.
 func (p *prep) loadAccounts() {
 	ids, err := p.readAccounts()
 	if err != nil {
 		p.fail("loginusers.vdf", err)
 		p.shortcutsUnread = true
+		return
 	}
 	p.accounts = ids
 	p.st.Accounts = acctKeys(ids)

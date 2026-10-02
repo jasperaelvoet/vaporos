@@ -291,4 +291,20 @@ func TestStateRecordsAccounts(t *testing.T) {
 	if got := b.state().Accounts; len(got) != 2 || got[0] != "52079950" || got[1] != "127388593" {
 		t.Errorf("accounts %q", got)
 	}
+
+	// A loginusers.vdf that cannot be read keeps the accounts recorded,
+	// so vosd does not take both for new ones and restart Steam: the run
+	// says what failed, and no shortcut's mapping goes meanwhile.
+	b.desire(b.starCitizen(proton()))
+	b.run(false)
+	b.edit("config/loginusers.vdf", func(d []byte) []byte { return d[:len(d)-3] })
+	b.desire(proton())
+	b.run(false)
+	st := b.state()
+	if len(st.Accounts) != 2 || st.Accounts[0] != "52079950" || !strings.Contains(st.Error, "loginusers.vdf") {
+		t.Errorf("accounts %q, error %q", st.Accounts, st.Error)
+	}
+	if got, _ := b.mapping(scApp); got != oursApp {
+		t.Errorf("shortcut mapping %+v", got)
+	}
 }
