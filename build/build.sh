@@ -439,15 +439,27 @@ fi
 cp "$INITRD_CACHE" "$ROOT/vos-initramfs-check.img"
 initrd_files=$(arch-chroot "$ROOT" lsinitcpio -l /vos-initramfs-check.img) || die "lsinitcpio cannot read the initramfs"
 rm -f "$ROOT/vos-initramfs-check.img"
+initrd_module() {
+    grep -Eq "/$1\.ko(\.[a-z]+)?$" <<<"$initrd_files" ||
+        grep -q "/$1\.ko$" "$ROOT/usr/lib/modules/$KVER/modules.builtin"
+}
 for m in erofs overlay loop ext4 vfat isofs exfat ntfs3; do
-    grep -Eq "/$m\.ko(\.[a-z]+)?$" <<<"$initrd_files" ||
-        grep -q "/$m\.ko$" "$ROOT/usr/lib/modules/$KVER/modules.builtin" ||
-        die "the initramfs has no $m module"
+    initrd_module "$m" || die "the initramfs has no $m module"
 done
 # fsverity measures extension images, tune2fs turns on ext4 verity on vos_data.
-for b in find blkid losetup mount e2fsck fsverity tune2fs; do
+# modprobe loads a trial boot's hardware watchdog by name (hooks/vos).
+for b in find blkid losetup mount e2fsck fsverity tune2fs modprobe; do
     grep -Eq "(^|/)bin/$b$" <<<"$initrd_files" || die "the initramfs has no $b"
 done
+# Without one of these, a trial boot that hangs the kernel or PID 1 never
+# reboots, so it never uses up its try.
+watchdogs=()
+for m in sp5100_tco iTCO_wdt wdat_wdt; do
+    if initrd_module "$m"; then watchdogs+=("$m"); fi
+done
+(( ${#watchdogs[@]} )) ||
+    die "the initramfs has none of the watchdog drivers sp5100_tco, iTCO_wdt and wdat_wdt that trial boots arm"
+info "trial watchdogs: ${watchdogs[*]}"
 # The extensions' kernel module options (/run/modprobe.d) reach only modules
 # that load after switch_root.
 if grep -Eq '/(amdgpu|it87)\.ko(\.[a-z]+)?$' <<<"$initrd_files"; then

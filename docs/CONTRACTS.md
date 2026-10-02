@@ -486,7 +486,8 @@ CachyOS blacklists the hardware watchdog drivers, which only stops their
 aliases, so on trial boots (mode `pending`, or any boot systemd-boot counts,
 also with `vos.ext=0` or `skip-once`) the initramfs, after the report, loads
 them by name (`modprobe -q` `sp5100_tco`, `iTCO_wdt` and `wdat_wdt`, carried
-in the initramfs where the kernel has them) and writes
+in the initramfs where the kernel has them; the build fails an initramfs
+without `modprobe` or without any of the three) and writes
 `/run/systemd/system.conf.d/50-vos-trial.conf` (`[Manager]`
 `RuntimeWatchdogSec=60s`), which PID 1 reads when it starts. Other boots load
 no watchdog driver and leave `RuntimeWatchdogSec` as CachyOS ships it.
