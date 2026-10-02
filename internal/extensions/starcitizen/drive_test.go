@@ -1,7 +1,6 @@
 package starcitizen
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +67,7 @@ func TestPlaceFor(t *testing.T) {
 		}
 	}
 	// No drive picked yet is not the system drive.
-	if p, err := placeFor(""); !errors.Is(err, errNoDrive) {
+	if p, err := placeFor(""); codeOf(err) != codeNoDrive {
 		t.Errorf("no drive: %+v, %v", p, err)
 	}
 	p, err := placeFor(b.mnt)
@@ -76,7 +75,7 @@ func TestPlaceFor(t *testing.T) {
 		t.Errorf("game drive: %+v, %v", p, err)
 	}
 	for _, disk := range []string{b.mnt + "/SteamLibrary", "/efi", mntBase, mntBase + "/..", mntBase + "/Games Drive", "/var/lib/vos", "/var/", "/"} {
-		if p, err := placeFor(disk); !errors.Is(err, errUnknownDrive) {
+		if p, err := placeFor(disk); codeOf(err) != codeUnknownDrive {
 			t.Errorf("%q: %+v, %v", disk, p, err)
 		}
 	}
@@ -90,29 +89,13 @@ func TestPlaceFor(t *testing.T) {
 			t.Errorf("%q is known: %+v", p, pl)
 		}
 	}
+	// A label is the drive's name as it is, in any case.
+	if p, err := placeFor(mntBase + "/games"); err != nil || p.Name != "games" {
+		t.Errorf("a lower-case label: %+v, %v", p, err)
+	}
 	// /mnt is a symlink to /var/mnt on VaporOS; the setting may name either.
 	if normalizeDisk("/mnt/SATA1TB") != mntBase+"/SATA1TB" {
 		t.Errorf("/mnt/SATA1TB → %q", normalizeDisk("/mnt/SATA1TB"))
-	}
-}
-
-func TestProblem(t *testing.T) {
-	b := newBox(t)
-	game, _ := placeFor(b.mnt)
-	sys, _ := placeFor("/var")
-	for _, tc := range []struct {
-		p    place
-		err  error
-		want string
-	}{
-		{game, errNotConnected, "Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again."},
-		{game, errMissing, "Star Citizen's files on SATA1TB are missing. Remove Star Citizen and add it again."},
-		{sys, errNotConnected, "Star Citizen's files on the system drive are missing. Remove Star Citizen and add it again."},
-		{sys, errMissing, "Star Citizen's files on the system drive are missing. Remove Star Citizen and add it again."},
-	} {
-		if got := tc.p.problem(tc.err); got != tc.want {
-			t.Errorf("%s, %v: %q", tc.p.Name, tc.err, got)
-		}
 	}
 }
 
@@ -140,13 +123,13 @@ func TestDriveMount(t *testing.T) {
 	b.writeMounts()
 	ms, err = readMounts()
 	must(t, err)
-	if m, err := driveMount(ms, game); !errors.Is(err, errNotConnected) {
+	if m, err := driveMount(ms, game); codeOf(err) != codeNotConnected {
 		t.Errorf("an unplugged drive: %+v, %v", m, err)
 	}
 
 	// Another filesystem mounted between the drive and the prefix.
 	ms = append(ms, mount{Point: b.mnt, FSType: "ext4", Source: "/dev/sdb1"}, mount{Point: b.mnt + "/VaporOS", FSType: "tmpfs", Source: "tmpfs"})
-	if m, err := driveMount(ms, game); !errors.Is(err, errNotConnected) {
+	if m, err := driveMount(ms, game); codeOf(err) != codeNotConnected {
 		t.Errorf("a mount on its VaporOS folder: %+v, %v", m, err)
 	}
 }
@@ -165,7 +148,7 @@ func TestOnDrive(t *testing.T) {
 	}
 	// Another drive with the same name is not the one Install recorded.
 	for _, uuid := range []string{sysUUID, ""} {
-		if _, err := onDrive(ms, game, uuid); !errors.Is(err, errNotConnected) {
+		if _, err := onDrive(ms, game, uuid); codeOf(err) != codeNotConnected {
 			t.Errorf("game drive, %q: %v", uuid, err)
 		}
 	}
@@ -173,69 +156,88 @@ func TestOnDrive(t *testing.T) {
 	if _, err := onDrive(ms, sys, sysUUID); err != nil {
 		t.Errorf("system drive: %v", err)
 	}
-	if _, err := onDrive(ms, sys, gameUUID); !errors.Is(err, errMissing) {
+	if _, err := onDrive(ms, sys, gameUUID); codeOf(err) != codeFilesMissing {
 		t.Errorf("system drive, another filesystem: %v", err)
-	}
-	// reach also wants the marker Install wrote there.
-	if _, err := reach(ms, game, gameUUID); !errors.Is(err, errMissing) {
-		t.Errorf("no marker: %v", err)
-	}
-	writeFile(t, b.mnt+"/VaporOS/star-citizen/"+markerName, gameUUID+"\n")
-	if m, err := reach(ms, game, gameUUID); err != nil || m.Point != b.mnt {
-		t.Errorf("with its marker: %+v, %v", m, err)
 	}
 }
 
-func TestCheckPrefix(t *testing.T) {
+func TestLocate(t *testing.T) {
 	b := newBox(t)
 	game, _ := placeFor(b.mnt)
 	prefix := game.Prefix()
-	if err := checkPrefix(game); !errors.Is(err, errMissing) {
-		t.Errorf("a missing prefix: %v", err)
+	ms, err := readMounts()
+	must(t, err)
+	check := func(name string, p place, uuid, want string) {
+		t.Helper()
+		if _, err := locate(ms, p, uuid); codeOf(err) != want || (want == "") != (err == nil) {
+			t.Errorf("%s: %v, want %q", name, err, want)
+		}
 	}
+	check("a missing prefix", game, gameUUID, codeFilesMissing)
 	writeFile(t, filepath.Join(prefix, markerName), gameUUID+"\n")
-	if err := checkPrefix(game); err != nil {
-		t.Errorf("the prefix Install made: %v", err)
-	}
+	check("the prefix Install made", game, gameUUID, "")
+	check("Install, before it records one", game, "", "")
+	check("another filesystem recorded", game, otherUUID, codeNotConnected)
 
 	writeFile(t, filepath.Join(prefix, markerName), sysUUID+"\n")
-	if err := checkPrefix(game); !errors.Is(err, errNotConnected) {
-		t.Errorf("a prefix copied from another drive: %v", err)
-	}
+	check("a prefix copied from another drive", game, gameUUID, codeFilesMissing)
 	writeFile(t, filepath.Join(prefix, markerName), gameUUID+"\n")
 
 	// The drive is gone and something made the folder on the system drive.
 	b.mounted = false
 	b.writeMounts()
-	if err := checkPrefix(game); !errors.Is(err, errNotConnected) {
-		t.Errorf("a prefix on the system drive passed: %v", err)
-	}
+	ms, err = readMounts()
+	must(t, err)
+	check("a prefix on the system drive", game, gameUUID, codeNotConnected)
+	check("Install, on an empty mount point", game, "", codeNotConnected)
 	b.mounted = true
 	b.writeMounts()
+	ms, err = readMounts()
+	must(t, err)
 
-	// A symlink on the way is not the prefix (and not what the LUG allows).
+	// A symlink on the way is not the prefix.
 	link := mntBase + "/Link"
 	must(t, os.Symlink(b.mnt, link))
-	if p, ok := placeOf(link + "/VaporOS/star-citizen"); !ok || checkPrefix(p) == nil {
-		t.Error("a prefix through a symlink passed")
+	if p, ok := placeOf(link + "/VaporOS/star-citizen"); !ok {
+		t.Error("the link's prefix is unknown")
+	} else {
+		check("a prefix through a symlinked drive", p, gameUUID, codeNotConnected)
 	}
 	must(t, os.Rename(b.mnt+"/VaporOS", b.mnt+"/Elsewhere"))
 	must(t, os.Symlink("Elsewhere", b.mnt+"/VaporOS"))
-	if err := checkPrefix(game); !errors.Is(err, errMissing) {
-		t.Errorf("a symlink in the prefix: %v", err)
-	}
+	check("a symlink in the prefix", game, gameUUID, codeFilesMissing)
 
 	// On the system drive, whatever is wrong, the files are missing.
 	sys, _ := placeFor("/var")
-	if err := checkPrefix(sys); !errors.Is(err, errMissing) {
-		t.Errorf("system drive without files: %v", err)
-	}
+	check("system drive without files", sys, sysUUID, codeFilesMissing)
 	writeFile(t, filepath.Join(sys.Prefix(), markerName), gameUUID+"\n")
-	if err := checkPrefix(sys); !errors.Is(err, errMissing) {
-		t.Errorf("system drive with another drive's marker: %v", err)
-	}
+	check("system drive with another drive's marker", sys, sysUUID, codeFilesMissing)
+	check("system drive, another filesystem recorded", sys, gameUUID, codeFilesMissing)
 	writeFile(t, filepath.Join(sys.Prefix(), markerName), sysUUID+"\n")
-	if err := checkPrefix(sys); err != nil {
-		t.Errorf("system drive: %v", err)
+	check("system drive", sys, sysUUID, "")
+}
+
+// recorded is locate, as vapor, for the prefix state.json records only.
+func TestRecorded(t *testing.T) {
+	b := newBox(t)
+	prefix := b.installed()
+	if err := recorded(prefix); err != nil {
+		t.Errorf("the recorded prefix: %v", err)
+	}
+	sys, _ := placeFor("/var")
+	writeFile(t, filepath.Join(sys.Prefix(), markerName), sysUUID+"\n")
+	for name, p := range map[string]string{"another place": sys.Prefix(), "no place": "/tmp/VaporOS/star-citizen"} {
+		if err := recorded(p); codeOf(err) != codeFilesElsewhere {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	b.mounted = false
+	b.writeMounts()
+	if err := recorded(prefix); codeOf(err) != codeNotConnected {
+		t.Errorf("unplugged: %v", err)
+	}
+	must(t, os.Remove(statePath(dataDir())))
+	if err := recorded(prefix); codeOf(err) != codeFilesElsewhere {
+		t.Errorf("without a record: %v", err)
 	}
 }

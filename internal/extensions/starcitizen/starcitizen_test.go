@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -83,6 +87,8 @@ func TestInstallSystemDrive(t *testing.T) {
 	}
 }
 
+// Install refuses with a code the helper words: the card shows that
+// sentence (extensions.Refuse), and the rest goes to the journal.
 func TestInstallRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -90,14 +96,14 @@ func TestInstallRefuses(t *testing.T) {
 		disk  string
 		want  string
 	}{
-		{"no drive picked", func(*box) {}, "", "Pick a game drive for Star Citizen on its card, then select Try again."},
-		{"no setting at all", func(*box) {}, "none", "Pick a game drive for Star Citizen on its card, then select Try again."},
-		{"unplugged", func(b *box) { b.mounted = false; b.writeMounts() }, "SATA1TB", "Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again."},
-		{"NTFS", func(b *box) { b.gameFS = "ntfs3"; b.writeMounts() }, "SATA1TB", "SATA1TB is formatted as ntfs3, which Star Citizen can't run from. Pick a drive formatted as ext4, btrfs, xfs or f2fs."},
-		{"full", func(b *box) { b.free[b.mnt] = 120e9 }, "SATA1TB", "SATA1TB has 120 GB free, and Star Citizen needs 150 GB. Free up space or pick another drive."},
-		{"full system drive", func(b *box) { b.free[b.root] = 80e9 }, "/var", "The system drive has 80 GB free, and Star Citizen needs 150 GB. Free up space or pick another drive."},
-		{"not a game drive", func(*box) {}, "/var/lib/vos", "VaporOS doesn't know the drive picked for Star Citizen. Pick another one on its card, then select Try again."},
-		{"no UUID", func(b *box) { must(t, os.Remove(filepath.Join(byUUIDDir, gameUUID))) }, "SATA1TB", "VaporOS couldn't tell which drive SATA1TB is. Pick another drive."},
+		{"no drive picked", func(*box) {}, "", codeNoDrive},
+		{"no setting at all", func(*box) {}, "none", codeNoDrive},
+		{"unplugged", func(b *box) { b.mounted = false; b.writeMounts() }, "SATA1TB", codeNotConnected},
+		{"NTFS", func(b *box) { b.gameFS = "ntfs3"; b.writeMounts() }, "SATA1TB", codeWrongFS},
+		{"full", func(b *box) { b.free[b.mnt] = 120e9 }, "SATA1TB", codeNoSpace},
+		{"full system drive", func(b *box) { b.free[b.root] = 80e9 }, "/var", codeNoSpace},
+		{"not a game drive", func(*box) {}, "/var/lib/vos", codeUnknownDrive},
+		{"no UUID", func(b *box) { must(t, os.Remove(filepath.Join(byUUIDDir, gameUUID))) }, "SATA1TB", codeUnknownDrive},
 	} {
 		b := newBox(t)
 		newFeed(t, "2.17.0")
@@ -111,8 +117,8 @@ func TestInstallRefuses(t *testing.T) {
 			delete(x.Settings, "disk")
 		}
 		err := (helper{}).Install(context.Background(), x)
-		if err == nil || err.Error() != tc.want {
-			t.Errorf("%s: %v\nwant %s", tc.name, err, tc.want)
+		if codeOf(err) != tc.want || said(err) == "" {
+			t.Errorf("%s: %v, want %s", tc.name, err, tc.want)
 		}
 		if len(b.calls) != 0 {
 			t.Errorf("%s: downloaded anyway", tc.name)
@@ -176,7 +182,7 @@ func TestInstallDownloadFails(t *testing.T) {
 	f.served = bytes.ToUpper(f.installer)
 	x := b.ext(b.mnt)
 	err := (helper{}).Install(context.Background(), x)
-	if err == nil || err.Error() != "The RSI Launcher's installer didn't match the fingerprint its publisher lists, so VaporOS deleted it. Try again later." {
+	if codeOf(err) != codeMismatch {
 		t.Errorf("got %v", err)
 	}
 	// The prefix is recorded, so removing it finds it; Steam gets no shortcut yet.
@@ -187,16 +193,37 @@ func TestInstallDownloadFails(t *testing.T) {
 		t.Errorf("Steam parts %+v before the installer is there", parts)
 	}
 
-	// fetch-installer's words that are not for the person are not the card's.
+	// The download page doesn't answer.
+	feedURL = f.srv.URL + "/rel/2/gone.yml"
+	if err := (helper{}).Install(context.Background(), x); codeOf(err) != codeFeed {
+		t.Errorf("no feed: %v", err)
+	}
+
+	// Only a code fetch-installer prints, on its last line, is the card's;
+	// nothing else it says is.
+	for name, out := range map[string]string{
+		"runuser's words":    "runuser: user vapor does not exist",
+		"a sentence":         "Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again.",
+		"another code":       `{"refused":"no-drive"}`,
+		"an unknown code":    `{"refused":"pwned"}`,
+		"a code, then words": "{\"refused\":\"download-failed\"}\nruntime: out of memory",
+	} {
+		asGamer = func(context.Context, string, ...string) (string, error) { return out, os.ErrPermission }
+		if err := (helper{}).Install(context.Background(), x); err == nil || codeOf(err) != "" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	asGamer = func(context.Context, string, ...string) (string, error) {
-		return "runuser: user vapor does not exist", os.ErrPermission
+		return "fetch-installer: download-failed: EOF\n{\"refused\":\"download-failed\"}", os.ErrPermission
 	}
-	if err := (helper{}).Install(context.Background(), x); err == nil || err.Error() != "The RSI Launcher's installer didn't download. Check the internet connection, then try again." {
-		t.Errorf("got %v", err)
+	if err := (helper{}).Install(context.Background(), x); codeOf(err) != codeDownload {
+		t.Errorf("a failed download: %v", err)
 	}
-	asGamer = func(context.Context, string, ...string) (string, error) { return `{"installer":"../x.exe"}`, nil }
-	if err := (helper{}).Install(context.Background(), x); err == nil || err.Error() != "The RSI Launcher's installer didn't download. Check the internet connection, then try again." {
-		t.Errorf("got %v", err)
+	for name, out := range map[string]string{"a stray name": `{"installer":"../x.exe"}`, "a refusal, exit 0": `{"refused":"download-failed"}`} {
+		asGamer = func(context.Context, string, ...string) (string, error) { return out, nil }
+		if err := (helper{}).Install(context.Background(), x); err == nil || codeOf(err) != "" {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 
@@ -255,16 +282,17 @@ func TestStatus(t *testing.T) {
 	x.Settings["disk"] = "/mnt/SATA1TB"
 	check("the same drive, spelled otherwise", where, "The RSI Launcher is installed.")
 
+	const notConnected = "warning: Star Citizen's drive isn't connected. Connect it, then try again."
 	b.mounted = false
 	b.writeMounts()
-	check("unplugged", "warning: Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again.")
+	check("unplugged", "It's set up on SATA1TB.", notConnected)
 	b.mounted = true
 	b.swapDrive()
-	check("another drive with its name", "warning: Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again.")
+	check("another drive with its name", "It's set up on SATA1TB.", notConnected)
 	b.gameDev = "sdb1"
 	b.writeMounts()
 	must(t, os.Rename(filepath.Join(prefix, markerName), filepath.Join(prefix, "gone")))
-	check("its files deleted", "warning: Star Citizen's files on SATA1TB are missing. Remove Star Citizen and add it again.")
+	check("its files deleted", "It's set up on SATA1TB.", "warning: Star Citizen's files are missing from its drive. Remove Star Citizen and add it again.")
 	must(t, os.Rename(filepath.Join(prefix, "gone"), filepath.Join(prefix, markerName)))
 
 	b.memory(16, 4)
@@ -290,7 +318,7 @@ func TestStatusSystemDrive(t *testing.T) {
 	x.Settings["disk"] = "/state"
 	check("the system drive, spelled otherwise", "Its files are on the system drive, which has 400 GB free.", "Start Star Citizen in Steam: its first start installs the RSI Launcher.")
 	must(t, os.RemoveAll(systemPrefix()))
-	check("its files deleted", "warning: Star Citizen's files on the system drive are missing. Remove Star Citizen and add it again.")
+	check("its files deleted", "It's set up on the system drive.", "warning: Star Citizen's files are missing from its drive. Remove Star Citizen and add it again.")
 }
 
 func TestMemoryWarning(t *testing.T) {
@@ -335,15 +363,14 @@ func TestRemove(t *testing.T) {
 
 	// Unplugged, or another drive with its name: its files cannot go, and
 	// the card says so.
-	const stay = "Star Citizen's drive, SATA1TB, isn't connected, so its files stay on it."
 	b.mounted = false
 	b.writeMounts()
-	if err := (helper{}).Remove(context.Background(), x, true); err == nil || err.Error() != stay {
+	if err := (helper{}).Remove(context.Background(), x, true); codeOf(err) != codeFilesStay {
 		t.Errorf("unplugged: %v", err)
 	}
 	b.mounted = true
 	b.swapDrive()
-	if err := (helper{}).Remove(context.Background(), x, true); err == nil || err.Error() != stay {
+	if err := (helper{}).Remove(context.Background(), x, true); codeOf(err) != codeFilesStay {
 		t.Errorf("another drive: %v", err)
 	}
 	if len(b.calls) != 0 {
@@ -408,6 +435,7 @@ func TestRemoveLeavesTheRestToVosd(t *testing.T) {
 
 	x = b.ext(b.mnt)
 	b.installed()
+	must(t, os.Remove(statePath(x.DataDir)))
 	must(t, (helper{}).Remove(context.Background(), x, true))
 	if len(b.calls) != 0 {
 		t.Errorf("without a record, ran %q", b.calls)
@@ -433,26 +461,134 @@ func TestFetchInstallerCommand(t *testing.T) {
 			t.Errorf("%q: exit %d", args, code)
 		}
 	}
-	for _, p := range []string{"/tmp", b.mnt + "/VaporOS"} {
+	if code := cli([]string{"bogus"}); code != 2 {
+		t.Errorf("an unknown verb: exit %d", code)
+	}
+
+	// A refusal is one line on stdout with its code, the detail on stderr.
+	refused := func(name, prefix, want string) {
+		t.Helper()
+		out.Reset()
 		errOut.Reset()
-		if code := fetchInstallerCmd(context.Background(), []string{"--prefix", p}, &out, &errOut); code != 1 ||
-			lastLine(errOut.String()) != "Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again." {
-			t.Errorf("%s: exit %d, %s", p, code, errOut.String())
+		code := fetchInstallerCmd(context.Background(), []string{"--prefix", prefix}, &out, &errOut)
+		var res fetchResult
+		if err := json.Unmarshal(out.Bytes(), &res); err != nil || code != 1 || res != (fetchResult{Refused: want}) || !fetchCodes[want] {
+			t.Errorf("%s: exit %d, %q (%v), want %s", name, code, out.String(), err, want)
 		}
+		if !strings.HasPrefix(errOut.String(), "fetch-installer: "+want+": ") {
+			t.Errorf("%s: stderr %q", name, errOut.String())
+		}
+	}
+	refused("not a prefix", "/tmp", codeFilesElsewhere)
+	refused("above the prefix", b.mnt+"/VaporOS", codeFilesElsewhere)
+	refused("not the recorded prefix", systemPrefix(), codeFilesElsewhere)
+	feedURL = f.srv.URL + "/rel/2/gone.yml"
+	refused("no feed", prefix, codeFeed)
+	b.mounted = false
+	b.writeMounts()
+	refused("unplugged", prefix, codeNotConnected)
+}
+
+// The card's status, the launch hook and fetch-installer judge Star
+// Citizen's drive the same way (locate): another drive with its name,
+// without its files, isn't connected, and its own drive without them has
+// lost them. Neither says to set it up again on the wrong drive.
+func TestOneJudgement(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(b *box, prefix string)
+		want  string
+	}{
+		{"another drive with its name", func(b *box, prefix string) {
+			b.swapDrive()
+			must(t, os.Rename(b.mnt+"/VaporOS", b.root+"/elsewhere")) // not on the other drive
+		}, codeNotConnected},
+		{"its own drive without its files", func(b *box, prefix string) {
+			must(t, os.RemoveAll(prefix))
+		}, codeFilesMissing},
+		{"its own drive with another drive's files", func(b *box, prefix string) {
+			writeFile(t, filepath.Join(prefix, markerName), otherUUID+"\n")
+		}, codeFilesMissing},
+	} {
+		b := newBox(t)
+		newFeed(t, "2.17.0")
+		x := b.ext(b.mnt)
+		must(t, (helper{}).Install(context.Background(), x))
+		prefix := b.mnt + "/VaporOS/star-citizen"
+		setup := prefix + "/installer/RSI Launcher-Setup-2.17.0.exe"
+		tc.setup(b, prefix)
+		sentence, _ := messageText(tc.want)
+
+		lines := (helper{}).Status(context.Background(), x)
+		if len(lines) != 2 || lines[0].Text != "It's set up on SATA1TB." || lines[1] != (extensions.StatusLine{Text: sentence, Tone: "warning"}) {
+			t.Errorf("%s: status %q", tc.name, statusTexts(lines))
+		}
+		l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, true), Env: slices.Clone(steamEnv)}
+		if err := (helper{}).LaunchHook(context.Background(), l); codeOf(err) != tc.want || said(err) != sentence {
+			t.Errorf("%s: the launch hook: %v", tc.name, err)
+		}
+		var out bytes.Buffer
+		code := fetchInstallerCmd(context.Background(), []string{"--prefix", prefix}, &out, io.Discard)
+		if got := strings.TrimSpace(out.String()); code != 1 || got != `{"refused":"`+tc.want+`"}` {
+			t.Errorf("%s: fetch-installer: exit %d, %s", tc.name, code, got)
+		}
+	}
+}
+
+// A drive's label is shown as it is: never capitalized, and no sentence
+// starts with one.
+func TestLabelsStayAsTheyAre(t *testing.T) {
+	b := newBoxNamed(t, "games")
+	newFeed(t, "2.17.0")
+	b.free[b.mnt] = 900e9
+	x := b.ext(b.mnt)
+	must(t, (helper{}).Install(context.Background(), x))
+	want := []string{"Its files are on games, which has 900 GB free.", "Start Star Citizen in Steam: its first start installs the RSI Launcher."}
+	if got := statusTexts((helper{}).Status(context.Background(), x)); !slices.Equal(got, want) {
+		t.Errorf("status %q", got)
 	}
 	b.mounted = false
 	b.writeMounts()
-	errOut.Reset()
-	if code := fetchInstallerCmd(context.Background(), []string{"--prefix", prefix}, &out, &errOut); code != 1 ||
-		lastLine(errOut.String()) != "Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again." {
-		t.Errorf("unplugged: exit %d, %s", code, errOut.String())
+	if got := statusTexts((helper{}).Status(context.Background(), x)); len(got) == 0 || got[0] != "It's set up on games." {
+		t.Errorf("unplugged: %q", got)
 	}
-	errOut.Reset()
-	if code := fetchInstallerCmd(context.Background(), []string{"--prefix", systemPrefix()}, &out, &errOut); code != 1 ||
-		lastLine(errOut.String()) != "Star Citizen's files on the system drive are missing. Remove Star Citizen and add it again." {
-		t.Errorf("system drive without its files: exit %d, %s", code, errOut.String())
+	x.Settings["disk"] = "/var"
+	if got := statusTexts((helper{}).Status(context.Background(), x)); !slices.Contains(got, "warning: You picked another drive. Star Citizen stays on games until you remove it and add it again.") {
+		t.Errorf("another drive picked: %q", got)
 	}
-	if code := cli([]string{"bogus"}); code != 2 {
-		t.Errorf("an unknown verb: exit %d", code)
+}
+
+func TestMessageText(t *testing.T) {
+	words, ok := extensions.HelperFor(ID).(extensions.MessageWords)
+	if !ok {
+		t.Fatal("the helper words no codes")
+	}
+	codes := []string{codeNotConnected, codeFilesMissing, codeFilesElsewhere, codeInstallerMissing, codeNoDrive,
+		codeUnknownDrive, codeWrongFS, codeNoSpace, codeCantWrite, codeFeed, codeDownload, codeMismatch,
+		codeFilesStay, codeCantDelete}
+	for _, code := range codes {
+		text, ok := words.MessageText(code)
+		if !ok || text == "" || !strings.HasSuffix(text, ".") || strings.Count(text, ". ") > 1 || strings.Contains(text, "  ") {
+			t.Errorf("%s: %q", code, text)
+		}
+		if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`).MatchString(code) || code == "not-mounted" || code == "hook-failed" {
+			t.Errorf("%s is not a helper's code", code)
+		}
+	}
+	for code := range fetchCodes {
+		if !slices.Contains(codes, code) {
+			t.Errorf("fetch-installer's %s has no words", code)
+		}
+	}
+	if _, ok := words.MessageText("starting"); ok {
+		t.Error("an unknown code has words")
+	}
+	// The formats it names are the ones the shipped descriptor takes.
+	want := "Pick a drive formatted as " + orList(games(shipped(t)).FS) + ", then select Try again."
+	if text, _ := messageText(codeWrongFS); !strings.HasSuffix(text, want) {
+		t.Errorf("wrong-filesystem: %q", text)
+	}
+	if said(errors.New("plain")) != "" || said(nil) != "" {
+		t.Error("a plain error has words")
 	}
 }

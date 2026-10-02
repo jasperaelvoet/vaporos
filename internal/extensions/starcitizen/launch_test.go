@@ -47,12 +47,24 @@ func envOf(env []string, key string) []string {
 	return out
 }
 
-// installed makes the prefix as Install leaves it on the game drive.
+// installed makes the prefix as Install leaves it on the game drive, and
+// records it.
 func (b *box) installed() string {
 	prefix := b.mnt + "/VaporOS/star-citizen"
-	writeFile(b.t, filepath.Join(prefix, markerName), gameUUID+"\n")
-	writeFile(b.t, filepath.Join(prefix, "installer/RSI Launcher-Setup-2.17.0.exe"), "MZ")
+	b.made(prefix, gameUUID)
 	return prefix
+}
+
+// made writes the marker and an installer into prefix, on the filesystem
+// uuid names, and records them as Install does.
+func (b *box) made(prefix, uuid string) {
+	writeFile(b.t, filepath.Join(prefix, markerName), uuid+"\n")
+	writeFile(b.t, filepath.Join(prefix, "installer/RSI Launcher-Setup-2.17.0.exe"), "MZ")
+	p, ok := placeOf(prefix)
+	if !ok {
+		b.t.Fatalf("%s is no place", prefix)
+	}
+	must(b.t, saveState(dataDir(), state{Disk: p.Disk, Prefix: prefix, UUID: uuid, Installer: "RSI Launcher-Setup-2.17.0.exe", Version: "2.17.0"}))
 }
 
 func TestLaunchFirstStart(t *testing.T) {
@@ -147,10 +159,9 @@ func TestLaunchLaterStart(t *testing.T) {
 }
 
 func TestLaunchSystemDrive(t *testing.T) {
-	newBox(t)
+	b := newBox(t)
 	p, _ := placeFor("/var")
-	writeFile(t, filepath.Join(p.Prefix(), markerName), sysUUID+"\n")
-	writeFile(t, filepath.Join(p.Prefix(), "installer/RSI Launcher-Setup-2.17.0.exe"), "MZ")
+	b.made(p.Prefix(), sysUUID)
 	l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(p.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe", false)}
 	if err := (helper{}).LaunchHook(context.Background(), l); err != nil {
 		t.Fatal(err)
@@ -160,44 +171,66 @@ func TestLaunchSystemDrive(t *testing.T) {
 	}
 }
 
+// A refused launch changes nothing and refuses with a code the helper
+// words, which the dispatcher records so the person reads its sentence.
 func TestLaunchRefuses(t *testing.T) {
-	b := newBox(t)
-	prefix := b.installed()
-	setup := prefix + "/installer/RSI Launcher-Setup-2.17.0.exe"
-
 	refused := func(name string, l *extensions.Launch, want string) {
 		t.Helper()
 		before, env := slices.Clone(l.Argv), slices.Clone(l.Env)
 		err := (helper{}).LaunchHook(context.Background(), l)
-		if err == nil || err.Error() != want {
-			t.Errorf("%s: %v\nwant %s", name, err, want)
+		if codeOf(err) != want {
+			t.Errorf("%s: %v, want %s", name, err, want)
+		}
+		if _, ok := extensions.HelperFor(ID).(extensions.MessageWords).MessageText(want); !ok {
+			t.Errorf("%s: no words for %s", name, want)
 		}
 		if !slices.Equal(l.Argv, before) || !slices.Equal(l.Env, env) {
 			t.Errorf("%s: a refused launch was changed", name)
 		}
 	}
+	start := func(setup string) *extensions.Launch {
+		return &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, true), Env: slices.Clone(steamEnv)}
+	}
+
+	b := newBox(t)
+	prefix := b.installed()
+	setup := prefix + "/installer/RSI Launcher-Setup-2.17.0.exe"
 
 	// The drive is unplugged: nothing may start on the system drive.
 	b.mounted = false
 	b.writeMounts()
-	refused("unplugged", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, true), Env: slices.Clone(steamEnv)},
-		"Star Citizen's drive, SATA1TB, isn't connected. Connect it, then try again.")
+	refused("unplugged", start(setup), codeNotConnected)
 	b.mounted = true
 	b.writeMounts()
 
-	// Its files on the system drive are gone.
-	sys, _ := placeFor("/var")
-	refused("system drive", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(sys.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe", false)},
-		"Star Citizen's files on the system drive are missing. Remove Star Citizen and add it again.")
+	// Its files are gone from its drive.
+	must(t, os.Rename(filepath.Join(prefix, markerName), filepath.Join(prefix, "gone")))
+	refused("its files deleted", start(setup), codeFilesMissing)
+	must(t, os.Rename(filepath.Join(prefix, "gone"), filepath.Join(prefix, markerName)))
 
-	// An installer somewhere VaporOS never put one.
-	refused("a stray installer", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine("/var/home/vapor/Downloads/installer/RSI Launcher-Setup-2.17.0.exe", false)},
-		"Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again.")
+	// An installer somewhere VaporOS never put one, or not where Install
+	// recorded it.
+	refused("a stray installer", start("/var/home/vapor/Downloads/installer/RSI Launcher-Setup-2.17.0.exe"), codeFilesElsewhere)
+	sys, _ := placeFor("/var")
+	writeFile(t, filepath.Join(sys.Prefix(), markerName), sysUUID+"\n")
+	refused("another place", start(sys.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe"), codeFilesElsewhere)
+
+	// A first start that can't write its batch file.
+	mkdir(t, filepath.Join(prefix, "installer", firstStart))
+	writeFile(t, filepath.Join(prefix, "installer", firstStart, "x"), "")
+	refused("a first start that can't write", start(setup), codeCantWrite)
+	must(t, os.RemoveAll(filepath.Join(prefix, "installer", firstStart)))
 
 	// No installer at all for a first start.
 	must(t, os.Remove(setup))
-	refused("no installer", &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, false), Env: slices.Clone(steamEnv)},
-		"Star Citizen's installer is missing. Remove Star Citizen and add it again.")
+	refused("no installer", start(setup), codeInstallerMissing)
+
+	// The system drive's files are gone.
+	b = newBox(t)
+	sys, _ = placeFor("/var")
+	b.made(sys.Prefix(), sysUUID)
+	must(t, os.Remove(filepath.Join(sys.Prefix(), markerName)))
+	refused("system drive", start(sys.Prefix()+"/installer/RSI Launcher-Setup-2.17.0.exe"), codeFilesMissing)
 }
 
 // A newer installer replaced the one Steam's shortcut names: the first

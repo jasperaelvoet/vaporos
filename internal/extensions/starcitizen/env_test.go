@@ -30,8 +30,9 @@ const (
 )
 
 // box is a fake PC: a system drive (vos_data, mounted at root, holding
-// vapor's home) and a game drive SATA1TB at <mnt>/SATA1TB, with a mount
-// table, /dev/disk/by-uuid and free space for both.
+// vapor's home and /var/lib/vos) and a game drive, SATA1TB unless
+// newBoxNamed names it, at <mnt>, with a mount table, /dev/disk/by-uuid
+// and free space for both.
 type box struct {
 	t       *testing.T
 	root    string
@@ -45,24 +46,30 @@ type box struct {
 
 func newBox(t *testing.T) *box {
 	t.Helper()
+	return newBoxNamed(t, "SATA1TB")
+}
+
+func newBoxNamed(t *testing.T, label string) *box {
+	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := &box{t: t, root: root, mounted: true, gameFS: "ext4", gameDev: "sdb1", free: map[string]uint64{}}
 	save := struct {
-		mi, uuid, mnt, home, meminfo, vos string
-		asGamer                           func(context.Context, string, ...string) (string, error)
-		free                              func(string) (uint64, error)
-		root                              bool
-	}{mountInfoPath, byUUIDDir, mntBase, config.GamerHome, meminfoPath, vosBin, asGamer, freeBytes, runAsRootOK}
+		mi, uuid, mnt, home, state, meminfo, vos string
+		asGamer                                  func(context.Context, string, ...string) (string, error)
+		free                                     func(string) (uint64, error)
+		root                                     bool
+	}{mountInfoPath, byUUIDDir, mntBase, config.GamerHome, config.StateDir, meminfoPath, vosBin, asGamer, freeBytes, runAsRootOK}
 	t.Cleanup(func() {
-		mountInfoPath, byUUIDDir, mntBase, config.GamerHome, meminfoPath, vosBin = save.mi, save.uuid, save.mnt, save.home, save.meminfo, save.vos
+		mountInfoPath, byUUIDDir, mntBase, config.GamerHome, config.StateDir, meminfoPath, vosBin = save.mi, save.uuid, save.mnt, save.home, save.state, save.meminfo, save.vos
 		asGamer, freeBytes, runAsRootOK = save.asGamer, save.free, save.root
 	})
 	mntBase = filepath.Join(root, "var/mnt")
-	b.mnt = filepath.Join(mntBase, "SATA1TB")
+	b.mnt = filepath.Join(mntBase, label)
 	config.GamerHome = filepath.Join(root, "var/home/vapor")
+	config.StateDir = filepath.Join(root, "var/lib/vos")
 	mountInfoPath = filepath.Join(root, "mountinfo")
 	byUUIDDir = filepath.Join(root, "dev/disk/by-uuid")
 	meminfoPath = filepath.Join(root, "meminfo")
@@ -102,8 +109,9 @@ func (b *box) writeMounts() {
 	writeFile(b.t, mountInfoPath, strings.Join(lines, "\n")+"\n")
 }
 
-// swapDrive mounts another drive where SATA1TB was: the same name, another
-// filesystem (otherUUID), with Star Citizen's files copied onto it.
+// swapDrive mounts another drive where the game drive was: the same name,
+// another filesystem (otherUUID), with Star Citizen's files copied onto it
+// (the box keeps one folder for both).
 func (b *box) swapDrive() {
 	writeFile(b.t, filepath.Join(b.root, "dev/sdc1"), "")
 	if _, err := os.Lstat(filepath.Join(byUUIDDir, otherUUID)); err != nil {
@@ -118,8 +126,8 @@ func (b *box) memory(ramGB, swapGB uint64) {
 		ramGB<<20-300<<10, swapGB<<20))
 }
 
-// asGamer runs vapor's side in this process: fetch-installer, rm and
-// rmdir.
+// asGamer runs vapor's side in this process: fetch-installer (its stdout
+// and stderr in one stream, as sysd.AsGamer gives them), rm and rmdir.
 func (b *box) asGamer(ctx context.Context, name string, args ...string) (string, error) {
 	b.calls = append(b.calls, append([]string{name}, args...))
 	switch {
@@ -193,7 +201,7 @@ func shipped(t *testing.T) *descriptor.Descriptor {
 
 func (b *box) ext(disk string) *extensions.Ext {
 	return &extensions.Ext{ID: ID, Desc: shipped(b.t), Settings: map[string]any{"disk": disk},
-		DataDir: filepath.Join(b.root, "var/lib/vos/ext/data", ID),
+		DataDir: dataDir(),
 		HomeDir: filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, ID)}
 }
 
