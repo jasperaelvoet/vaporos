@@ -1,0 +1,150 @@
+package steamprep
+
+import (
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"unicode"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
+)
+
+// Desired is /var/lib/vos/ext/steam.json: what the extensions this boot
+// mounted ask of Steam. vosd writes it; prepare only reads it.
+type Desired struct {
+	Set               string       `json:"set"`
+	Dispatcher        bool         `json:"dispatcher"`
+	DefaultCompatTool string       `json:"default_compat_tool"`
+	Apps              []AppWant    `json:"apps"`
+	Shortcuts         []Shortcut   `json:"shortcuts"`
+	Release           []AppRelease `json:"release"`
+}
+
+// AppWant is what extensions ask for one Steam app.
+type AppWant struct {
+	App        uint32   `json:"app"`
+	CompatTool string   `json:"compat_tool"`
+	Hooks      []string `json:"hooks"`
+	Beta       *string  `json:"beta"`
+}
+
+// Shortcut is a non-Steam game an extension adds.
+type Shortcut struct {
+	Owner      string `json:"owner"`
+	Key        string `json:"key"`
+	Name       string `json:"name"`
+	Exe        string `json:"exe"`
+	StartDir   string `json:"start_dir"`
+	CompatTool string `json:"compat_tool"`
+	Art        string `json:"art"`
+}
+
+// Ref is the shortcut's "<owner>/<key>".
+func (s Shortcut) Ref() string { return s.Owner + "/" + s.Key }
+
+// AppRelease is an app whose compatibility tool a removed extension used
+// to force: its mapping stays, and it is the user's from now on.
+type AppRelease struct {
+	App uint32 `json:"app"`
+}
+
+const maxDesired = 1 << 20
+
+var (
+	nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)               // extension ids, shortcut keys
+	toolRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)    // compatibility tools
+	betaRe = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$`) // "" is the public branch
+)
+
+// parseDesired reads steam.json and drops, with a log line, any entry that
+// is not well formed: vosd writes it, but its values end up in paths and
+// in Steam's files.
+func parseDesired(data []byte, logf func(string, ...any)) (*Desired, error) {
+	if len(data) > maxDesired {
+		return nil, fmt.Errorf("steam.json: too large")
+	}
+	var d Desired
+	if err := json.Unmarshal(data, &d); err != nil {
+		return nil, fmt.Errorf("steam.json: %w", err)
+	}
+	if d.DefaultCompatTool != "" && !toolRe.MatchString(d.DefaultCompatTool) {
+		logf("steam.json: default compatibility tool %q is not a tool name; ignored", d.DefaultCompatTool)
+		d.DefaultCompatTool = ""
+	}
+	apps := d.Apps[:0]
+	seen := map[uint32]bool{}
+	for _, a := range d.Apps {
+		switch {
+		case a.App == 0 || seen[a.App]:
+			logf("steam.json: app %d listed twice or 0; ignored", a.App)
+			continue
+		case a.CompatTool != "" && !toolRe.MatchString(a.CompatTool):
+			logf("steam.json: app %d: %q is not a tool name; ignored", a.App, a.CompatTool)
+			continue
+		case a.Beta != nil && !betaRe.MatchString(*a.Beta):
+			logf("steam.json: app %d: %q is not a branch name; ignored", a.App, *a.Beta)
+			continue
+		}
+		hooks := a.Hooks[:0]
+		for _, h := range a.Hooks {
+			if nameRe.MatchString(h) {
+				hooks = append(hooks, h)
+			}
+		}
+		a.Hooks = hooks
+		seen[a.App] = true
+		apps = append(apps, a)
+	}
+	d.Apps = apps
+	shortcuts := d.Shortcuts[:0]
+	refs := map[string]bool{}
+	for _, s := range d.Shortcuts {
+		err := checkShortcut(s)
+		if err == nil && refs[s.Ref()] {
+			err = fmt.Errorf("listed twice")
+		}
+		if err != nil {
+			logf("steam.json: shortcut %q: %v; ignored", s.Ref(), err)
+			continue
+		}
+		refs[s.Ref()] = true
+		shortcuts = append(shortcuts, s)
+	}
+	d.Shortcuts = shortcuts
+	return &d, nil
+}
+
+func checkShortcut(s Shortcut) error {
+	switch {
+	case !nameRe.MatchString(s.Owner) || !nameRe.MatchString(s.Key):
+		return fmt.Errorf("not <extension>/<key>")
+	case s.Name == "" || len(s.Name) > 128 || strings.ContainsFunc(s.Name, unicode.IsControl):
+		return fmt.Errorf("bad name")
+	case !cleanAbs(s.Exe) || !cleanAbs(s.StartDir):
+		return fmt.Errorf("exe and start_dir must be absolute paths")
+	case s.CompatTool != "" && !toolRe.MatchString(s.CompatTool):
+		return fmt.Errorf("%q is not a tool name", s.CompatTool)
+	case s.Art != "" && (!cleanAbs(s.Art) || !strings.HasPrefix(s.Art, filepath.Join(config.ExtMountedLibDir, s.Owner)+"/")):
+		return fmt.Errorf("art must be in %s/%s/", config.ExtMountedLibDir, s.Owner)
+	}
+	return nil
+}
+
+// cleanAbs accepts an absolute, clean path that Steam can keep in quotes.
+func cleanAbs(p string) bool {
+	return filepath.IsAbs(p) && filepath.Clean(p) == p && len(p) <= 1024 &&
+		!strings.ContainsFunc(p, func(r rune) bool { return r == '"' || unicode.IsControl(r) })
+}
+
+// releases returns the apps steam.json hands to the user.
+func (d *Desired) releases() map[uint32]bool {
+	out := map[uint32]bool{}
+	for _, r := range d.Release {
+		if r.App != 0 {
+			out[r.App] = true
+		}
+	}
+	return out
+}
