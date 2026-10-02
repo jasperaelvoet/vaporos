@@ -1,0 +1,113 @@
+"UserLocalConfigStore"
+{
+	"streaming_v2"
+	{
+		"EnableStreaming"		"1"
+	}
+	"Broadcast"
+	{
+		"Permissions"		"1"
+		"FirstTimeComplete"		"1"
+	}
+	"friends"
+	{
+		"PersonaName"		"Jasper \"Vapor\" A."
+		"communitypreferences"		"0a050800100118012800"
+		"84732910"
+		{
+			"name"		"Truck \\ Driver"
+			"tag"		""
+			"avatar"		"fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb"
+			"NameHistory"
+			{
+				"0"		"Truck \\ Driver"
+				"1"		"old name"
+			}
+		}
+		"SignIntoFriends"		"1"
+		"VoiceReceiveVolume"		"1.000000"
+	}
+	"Offline"
+	{
+		"Ticket"		"1400000045a1c3f0e52b8d7a1d00000001000000020000005c2b9e4f0a6e8c010d000000"
+		"Timestamp"		"1790611500"
+	}
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"SteamDefaultDialog"		"#app_games"
+				"apps"
+				{
+					"227300"
+					{
+						"LastPlayed"		"1790450000"
+						"Playtime2wks"		"312"
+						"Playtime"		"5432"
+						"cloud"
+						{
+							"last_sync_state"		"synchronized"
+						}
+						"autocloud"
+						{
+							"lastlaunch"		"1790449000"
+							"lastexit"		"1790450000"
+						}
+						"LaunchOptions"		"-nointro -64bit"
+						"BadgeData"		""
+					}
+					"1091500"
+					{
+						"LastPlayed"		"1790300000"
+						"Playtime"		"8812"
+						"LaunchOptions"		"PROTON_LOG=1 WINEDLLOVERRIDES=\"dxgi=n,b\" %command% -skipStartScreen"
+					}
+					"949230"
+					{
+						"LastPlayed"		"1789000000"
+						"Playtime"		"61"
+						"cloud"
+						{
+							"quota_bytes"		"1000000000"
+							"quota_files"		"2000"
+							"used_bytes"		"91234"
+							"used_files"		"3"
+						}
+					}
+					"7"
+					{
+						"cloud"
+						{
+							"last_sync_state"		"synchronized"
+						}
+					}
+				}
+				"LastPlayedTimesSyncTime"		"1790611234"
+				"PlayerLevel"		"14"
+				"ShowFriendsListOnStartup"		"0" [$WIN32]
+				"ShowFriendsListOnStartup"		"1" [$LINUX]
+			}
+		}
+	}
+	"controller_config"
+	{
+		"227300"
+		{
+			"template"		"controller_xboxone_gamepad_fps.vdf"
+		}
+	}
+	"WebStorage"
+	{
+		"LibraryDisplaySize"		"1"
+		"FriendStoreLocalPrefs_84732910"		"{\"ePerFriendDisplay\":0,\"eEnableNotifications\":1}"
+		"RecentAppsFocusTime"		"[[227300,1790449000],[1091500,1790300000]]"
+	}
+	"system"
+	{
+		"EnableGameOverlay"		"1"
+		"InGameOverlayShortcutKey"		"Shift\tKEY_TAB" [$WIN32]
+		"InGameOverlayScreenshotSaveUncompressedPath"		"C:\\Screenshots"
+	}
+}

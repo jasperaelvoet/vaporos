@@ -1,0 +1,52 @@
+"AppState"
+{
+	"appid"		"227300"
+	"Universe"		"1"
+	"LauncherPath"		"/var/home/vapor/.local/share/Steam/ubuntu12_32/steam"
+	"name"		"Euro Truck Simulator 2"
+	"StateFlags"		"4"
+	"installdir"		"Euro Truck Simulator 2"
+	"LastUpdated"		"1790400212"
+	"LastPlayed"		"1790450000"
+	"SizeOnDisk"		"9235402914"
+	"StagingSize"		"0"
+	"buildid"		"20126473"
+	"LastOwner"		"76561198012345678"
+	"DownloadType"		"1"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"0"
+	"BytesDownloaded"		"0"
+	"BytesToStage"		"0"
+	"BytesStaged"		"0"
+	"TargetBuildID"		"0"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"227301"
+		{
+			"manifest"		"3409418214416925702"
+			"size"		"8879417063"
+		}
+		"227303"
+		{
+			"manifest"		"7238155367041219831"
+			"size"		"355985851"
+		}
+	}
+	"SharedDepots"
+	{
+		"228989"		"228980"
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+		"BetaKey"		"temporary_1_53"
+	}
+	"MountedConfig"
+	{
+		"language"		"english"
+		"BetaKey"		"temporary_1_53"
+	}
+}
