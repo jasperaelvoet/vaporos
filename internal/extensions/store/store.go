@@ -10,7 +10,7 @@
 // link, proven or failed, or runs GC expects the caller to hold Lock
 // (WriteWanted, AddProven, AddFailed, RemoveFailed, WriteSet, Propose,
 // WriteEnabled, ClearPending, Promote, FailPending, AfterHealthy,
-// AfterHealthyWant, GC, Collect). Put, Has and CleanTemp do not need it: an
+// PromoteTrial, GC, Collect). Put, Has and CleanTemp do not need it: an
 // image only ever gets its final name sealed, and GC leaves fresh images and
 // temp files alone. The slot files belong to the update lock (WriteSlot,
 // RemoveSlot).

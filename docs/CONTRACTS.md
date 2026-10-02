@@ -515,7 +515,9 @@ mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
 (rename, directory fsync) and `pending` removed. A set the user no longer
 wants is never promoted: reconcile removes or replaces such a `pending`, also
 on its own trial, and a promoter that knows the desired set's fingerprint
-promotes only when what booted has it. On trial boots (mode `pending`, or any
+promotes only when what booted has it, or the trial set's own while
+reconcile keeps that set because the desired set only adds to it (after
+rule 6). On trial boots (mode `pending`, or any
 boot systemd-boot counts, also with `vos.ext=0` or `skip-once`) the generator
 gives `vos-health.service` a drop-in with `JobTimeoutSec=10min` and
 `JobTimeoutAction=reboot-force` (see Units).
@@ -556,6 +558,13 @@ boot that mounted nothing on purpose (mode `off`, or no report) counts as
    extension needs attention; "Try again" removes the fingerprint).
 6. Otherwise a new set becomes `pending` with `tries` 2.
 
+Rules 5 and 6 wait while this boot is the trial of the `pending` set, that
+set booted whole (every id the booted catalog lists mounted, with the
+options its ids' settings render now) and the desired set only adds to it
+(it holds every id of the set the booted catalog lists): `pending` is kept,
+so `vos health` promotes it and the box has it to fall back on (an install's
+seeded core set among them), and the pass after the promotion acts.
+
 After a removal (1, 2, 3 or 5) reconcile runs again. A restart is needed (to
 try `pending`) only while `pending` has tries left, this boot is neither its
 trial nor one with reason `cmdline`, `skip-once`, `tries-write` or `no-report`
@@ -574,8 +583,11 @@ after 1 minute, doubling up to every 30 minutes. One reconcile:
    lock, unless the file already lists the same images for the booted version;
 2. under the lock, when this boot is the trial of the set `pending` still
    names and `/run/vos/ext-trial-ok` names it too (`vos health` passed it but
-   may not have recorded it), first records the boot as `vos health` does,
-   promoting only when what booted is the desired set; then applies what
+   may not have recorded it), first records the boot as `vos health` does
+   (the mounted images proven, best effort: a failure is logged and the
+   pass goes on), promoting only when what booted is the desired set, or
+   the trial set itself while rules 5 and 6 wait for it (a promotion that
+   fails and leaves `pending` naming the set ends the pass); then applies what
    rules 1 and 2 say (a `pending` left over or out of tries), and nothing
    else: a `pending` whose image is still to come is not removed for it;
 3. without the lock, fetches and seals the plan's missing images for the
@@ -617,7 +629,8 @@ mounted): the installer runs the new image's own
 the new system's store as the `pending` set (tries 2): the first boot is an
 extension trial that `vos health` proves and promotes, and a new install has
 no `enabled` before that. A repair tries core only; the rest of `wanted`
-(kept, its images fetched too) vosd proposes through a trial of its own. SRC
+(kept, its images fetched too) vosd proposes through a trial of its own
+once the core set's trial is promoted. SRC
 is the install's source (a directory, http(s) or a registry, which the
 command asks at the tag `<ver>`), or for the live medium (which carries no
 extension images) the new system's `config.update.source`. It is best effort

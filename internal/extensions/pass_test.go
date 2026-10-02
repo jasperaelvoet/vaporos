@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -181,6 +182,131 @@ func TestPassPromotesATrialHealthPassed(t *testing.T) {
 		if !proven[p] {
 			t.Errorf("%v not proven", p)
 		}
+	}
+}
+
+// A first boot's trial of core while wanted holds more: the trial stays
+// pending for `vos health` to promote, so the box has a set to fall back
+// on, and the pass after the promotion proposes the rest.
+func TestPassKeepsATrialTheDesiredSetAddsTo(t *testing.T) {
+	e := newEnv(t)
+	proton := newImage(t, "proton", "", 5000, true)
+	cc := newImage(t, "coolercontrol", "", 2000, false)
+	e.catalog(proton, cc)
+	e.seal(proton)
+	e.seal(cc)
+	var trial *store.Set
+	locked(t, func() (err error) {
+		if err = store.WriteWanted([]string{"coolercontrol"}); err != nil {
+			return err
+		}
+		trial, err = store.Propose([]string{"proton"}, nil)
+		return err
+	})
+	e.report(store.BootReport{Mode: store.ModePending, Set: trial.Name, TriesLeft: 1, Mounted: mountedAs(proton)})
+
+	s, b := e.service()
+	if retry := s.pass(t.Context(), b); !retry {
+		t.Fatal("no retry while health is still to come")
+	}
+	if p, _ := store.Pending(); p == nil || p.Name != trial.Name {
+		t.Fatalf("pending = %+v, want the trial %s", p, trial.Name)
+	}
+	if en, _ := store.Enabled(); en != nil {
+		t.Fatalf("enabled = %+v before health", en)
+	}
+
+	must(t, store.WriteTrialOK(trial.Name)) // health passed it but could not record it
+	if retry := s.pass(t.Context(), b); retry {
+		t.Fatal("retry after the promotion")
+	}
+	if en, _ := store.Enabled(); en == nil || en.Name != trial.Name {
+		t.Fatalf("enabled = %+v, want the trial %s", en, trial.Name)
+	}
+	p, err := store.Pending()
+	must(t, err)
+	if p == nil || p.Name == trial.Name || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) || p.Tries != store.ProposeTries {
+		t.Fatalf("pending = %+v, want a new set of proton and coolercontrol", p)
+	}
+	if x := e.state(s, "coolercontrol"); x.State != StateRestartNeeded {
+		t.Fatalf("coolercontrol = %+v", x)
+	}
+}
+
+// Recording a passed trial's images as proven is best effort: the pass
+// promotes it and goes on. A promotion that fails stops the pass.
+func TestPassPromotesWhateverProvenDoes(t *testing.T) {
+	setup := func(t *testing.T) (*env, *store.Set) {
+		e := newEnv(t)
+		proton := newImage(t, "proton", "", 5000, true)
+		cc := newImage(t, "coolercontrol", "", 2000, false)
+		e.catalog(proton, cc)
+		e.seal(proton)
+		e.seal(cc)
+		var trial *store.Set
+		locked(t, func() (err error) {
+			if err = store.WriteWanted([]string{"coolercontrol"}); err != nil {
+				return err
+			}
+			trial, err = store.Propose([]string{"proton"}, nil)
+			return err
+		})
+		e.report(store.BootReport{Mode: store.ModePending, Set: trial.Name, TriesLeft: 1, Mounted: mountedAs(proton)})
+		must(t, store.WriteTrialOK(trial.Name))
+		return e, trial
+	}
+
+	e, trial := setup(t)
+	must(t, os.MkdirAll(config.ExtProvenPath(), 0o755)) // cannot be written
+	s, b := e.service()
+	s.pass(t.Context(), b)
+	if en, _ := store.Enabled(); en == nil || en.Name != trial.Name {
+		t.Fatalf("enabled = %+v, want the trial %s", en, trial.Name)
+	}
+	if p, _ := store.Pending(); p == nil || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) {
+		t.Fatalf("pending = %+v: the pass stopped after the promotion", p)
+	}
+	if st := s.Status(); st.Error != "" {
+		t.Fatalf("status error %q", st.Error)
+	}
+
+	e, trial = setup(t)
+	writeFile(t, filepath.Join(config.ExtEnabledLink(), "x"), "") // enabled cannot be replaced
+	s, b = e.service()
+	if retry := s.pass(t.Context(), b); !retry {
+		t.Fatal("no retry after a promotion that failed")
+	}
+	if p, _ := store.Pending(); p == nil || p.Name != trial.Name {
+		t.Fatalf("pending = %+v, want the trial %s still", p, trial.Name)
+	}
+	if st := s.Status(); !strings.Contains(st.Error, "promoting set "+trial.Name) {
+		t.Fatalf("status error %q", st.Error)
+	}
+}
+
+// A damaged image's card says so until its image is sealed again, also
+// when that happens outside the booted version's downloads (fetched for
+// the other slot, or by `vos ext fetch`).
+func TestPruneErrsKeepsDamagedUntilSealed(t *testing.T) {
+	e := newEnv(t)
+	proton := newImage(t, "proton", "", 5000, true)
+	cat := e.catalog(proton)
+	s, _ := e.service()
+	s.errs["proton"] = damagedText
+	p := store.Plan{Want: []string{"proton"}}
+	s.pruneErrs(cat, p)
+	if s.errs["proton"] != damagedText {
+		t.Fatal("damaged text gone while the image is not sealed")
+	}
+	e.seal(proton)
+	s.pruneErrs(cat, p)
+	if text, ok := s.errs["proton"]; ok {
+		t.Fatalf("error %q once the image is sealed again", text)
+	}
+	s.errs["proton"] = damagedText
+	s.pruneErrs(cat, store.Plan{})
+	if text, ok := s.errs["proton"]; ok {
+		t.Fatalf("error %q once it is no longer wanted", text)
 	}
 }
 
