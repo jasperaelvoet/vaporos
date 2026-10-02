@@ -270,6 +270,7 @@ func (p *prep) writeShortcuts() {
 				p.fail(plan.name, err)
 				continue
 			}
+			p.wrote(plan.f.path)
 			p.o.Log.Printf("prepare: %s: VaporOS shortcuts updated", plan.name)
 		}
 		plan.written = true
@@ -356,6 +357,7 @@ func (p *prep) art() {
 					p.fail(relName(p.root, dst), err)
 					continue
 				}
+				p.wrote(dst)
 				if ss.Art == nil {
 					ss.Art = map[string]ArtFile{}
 				}
@@ -377,7 +379,10 @@ func (p *prep) removeArt(grid string, rec *ShortcutState) {
 			(ArtFile{Size: fi.Size(), MTime: fi.ModTime().UnixNano()}) != rec.Art[name] {
 			continue
 		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		switch err := os.Remove(path); {
+		case err == nil:
+			p.wrote(path)
+		case !errors.Is(err, fs.ErrNotExist):
 			p.fail(relName(p.root, path), err)
 		}
 	}

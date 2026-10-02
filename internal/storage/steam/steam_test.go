@@ -180,8 +180,44 @@ func TestLibrariesDedupesAndReadsBothFiles(t *testing.T) {
 
 func TestLibrariesWithoutVDF(t *testing.T) {
 	root := t.TempDir()
+	if got, err := ReadLibraries(root); err != nil || !reflect.DeepEqual(got, []string{root}) {
+		t.Errorf("ReadLibraries = %q, %v", got, err)
+	}
+}
+
+// A libraryfolders.vdf that is there but does not parse may list
+// libraries the result lacks, and ReadLibraries says so; the other file
+// still counts.
+func TestReadLibrariesSaysWhenIncomplete(t *testing.T) {
+	root, want := fixtureSteam(t)
+	vdf := filepath.Join(root, "steamapps", "libraryfolders.vdf")
+	data, err := os.ReadFile(vdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vdf, data[:len(data)/2], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadLibraries(root)
+	if err == nil || !strings.Contains(err.Error(), vdf) || !reflect.DeepEqual(got, []string{root}) {
+		t.Fatalf("truncated: %q, %v", got, err)
+	}
 	if got := Libraries(root); !reflect.DeepEqual(got, []string{root}) {
 		t.Errorf("Libraries = %q", got)
+	}
+
+	os.MkdirAll(filepath.Join(root, "config"), 0o755)
+	if err := os.WriteFile(filepath.Join(root, "config", "libraryfolders.vdf"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadLibraries(root); err == nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("with a good copy in config/: %q, %v", got, err)
+	}
+	if err := os.Remove(vdf); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadLibraries(root); err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("only config/: %q, %v", got, err)
 	}
 }
 

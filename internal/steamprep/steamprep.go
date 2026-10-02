@@ -61,7 +61,7 @@ func cli(args []string, stderr io.Writer) int {
 	}
 	var err error
 	if o.Home, err = os.UserHomeDir(); err != nil {
-		logger.Printf("prepare: %v", err)
+		logger.Printf("prepare: skipped: %v", err)
 		return 0
 	}
 	Run(context.Background(), o)
@@ -76,7 +76,7 @@ func Run(ctx context.Context, o Options) {
 	select {
 	case <-startRun(ctx, o):
 	case <-hard.C:
-		o.Log.Printf("prepare: out of time after %s; Steam starts with what is done", o.Budget)
+		o.Log.Printf("prepare: stopped, out of time after %s; Steam starts with what is done", o.Budget)
 	}
 }
 

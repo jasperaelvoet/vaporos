@@ -211,32 +211,37 @@ func TestParseFailureLeavesFilesUntouched(t *testing.T) {
 	}
 }
 
+// Each run that changes nothing records why (but those that cannot tell
+// whether another run writes the record), and its last line says why.
 func TestLeavesSteamAlone(t *testing.T) {
 	for name, c := range map[string]struct {
 		setup   func(b *box)
 		skipped string // "": no record at all
+		says    string // in the last line, after "prepare: skipped: "
 	}{
-		"no steam.json":  {func(b *box) { b.check(os.Remove(config.ExtSteamPath())) }, skipNoDesired},
-		"another set":    {func(b *box) { b.bootReport("5") }, skipOtherSet},
-		"no boot report": {func(b *box) { b.check(os.Remove(config.ExtBootPath())) }, skipOtherSet},
-		"bad steam.json": {func(b *box) { b.write(config.ExtSteamPath(), []byte("{")) }, skipBadDesired},
+		"no steam.json":  {func(b *box) { b.check(os.Remove(config.ExtSteamPath())) }, skipNoDesired, "no steam.json yet"},
+		"another set":    {func(b *box) { b.bootReport("5") }, skipOtherSet, `steam.json is for set "4", not this boot's`},
+		"no boot report": {func(b *box) { b.check(os.Remove(config.ExtBootPath())) }, skipOtherSet, "not this boot's"},
+		"bad steam.json": {func(b *box) { b.write(config.ExtSteamPath(), []byte("{")) }, skipBadDesired, "steam.json does not parse"},
 		"Steam running": {func(b *box) {
 			proc := filepath.Join(b.dir, "proc", "4242")
 			b.write(filepath.Join(proc, "comm"), []byte("steamwebhelper\n"))
-		}, skipSteamRunning},
+		}, skipSteamRunning, "Steam is running"},
 		"Steam elsewhere": {func(b *box) {
 			link := filepath.Join(b.home, ".steam", "root")
 			b.check(os.Remove(link))
 			other := filepath.Join(b.dir, "flatpak-steam")
 			b.mkdir(other)
 			b.check(os.Symlink(other, link))
-		}, ""},
+		}, "", "not ~/.local/share/Steam"},
 		// Another run may be writing the record.
 		"lock held": {func(b *box) {
 			unlock, err := steamlock.Lock(context.Background())
 			b.check(err)
 			b.t.Cleanup(unlock)
-		}, ""},
+		}, "", "the Steam lock stayed busy"},
+		// Before the gaming user's session, /run/user/1000 is not there.
+		"no runtime dir": {func(b *box) { b.check(os.RemoveAll(config.GamerRuntimeDir)) }, "", "no runtime directory "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := newBox(t)
@@ -246,6 +251,9 @@ func TestLeavesSteamAlone(t *testing.T) {
 			b.runWith(Options{Budget: 400 * time.Millisecond})
 			if !bytes.Equal(b.steamFile("config/config.vdf"), before) {
 				t.Errorf("config.vdf changed\n%s", b.logs.String())
+			}
+			if last := b.lastLine(); !strings.HasPrefix(last, "prepare: skipped: ") || !strings.Contains(last, c.says) {
+				t.Errorf("last line %q, want it to say %q", last, c.says)
 			}
 			if c.skipped == "" {
 				if _, err := os.Stat(StatePath(b.home)); !os.IsNotExist(err) {
@@ -260,6 +268,43 @@ func TestLeavesSteamAlone(t *testing.T) {
 				t.Errorf("record %+v", st)
 			}
 		})
+	}
+}
+
+// A run's last line says what it changed, with the dispatcher off too,
+// and when there was nothing to change or something failed.
+func TestLastLineSaysWhatChanged(t *testing.T) {
+	b := newBox(t)
+	b.desire(truckers(proton()))
+	b.run(false)
+	lc := relName(b.root, steam.LocalConfigPath(b.root, acctA))
+	if last := b.lastLine(); !strings.HasPrefix(last, "prepare: done; changed config/config.vdf, ") || !strings.Contains(last, lc) {
+		t.Errorf("first run: %q", last)
+	}
+	b.run(false)
+	if last := b.lastLine(); last != "prepare: done; nothing changed since the last run" {
+		t.Errorf("again: %q", last)
+	}
+
+	off := truckers(proton())
+	off.Dispatcher = false
+	b.desire(off)
+	b.run(false)
+	if last := b.lastLine(); !strings.HasPrefix(last, "prepare: done (dispatcher off); changed ") || !strings.Contains(last, lc) ||
+		strings.Contains(last, "config/config.vdf") {
+		t.Errorf("dispatcher off: %q", last)
+	}
+	cfg := filepath.Join(b.root, "config", "config.vdf")
+	old := time.Unix(1700000000, 0)
+	b.check(os.Chtimes(cfg, old, old))
+	b.run(false)
+	if last := b.lastLine(); last != "prepare: done (dispatcher off); nothing needed changing" {
+		t.Errorf("nothing to unwrap: %q", last)
+	}
+	b.write(cfg, []byte("\"InstallConfigStore\"\n{\n"))
+	b.run(false)
+	if last := b.lastLine(); last != "prepare: done (dispatcher off) with 1 error (above); nothing needed changing" {
+		t.Errorf("with a broken config.vdf: %q\n%s", last, b.logs.String())
 	}
 }
 

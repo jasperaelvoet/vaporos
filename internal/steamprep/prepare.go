@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,7 +34,8 @@ type prep struct {
 	toolApps  map[uint32]bool // isTool's answers
 	libs      []string        // Steam's libraries, once read
 	errs      []string
-	cut       bool // ran out of time
+	cut       bool     // ran out of time
+	changed   []string // Steam's files the run wrote or removed
 
 	// shortcutsUnread: which VaporOS shortcuts an account has is not
 	// known (its shortcuts.vdf or loginusers.vdf could not be read, or the
@@ -47,23 +49,29 @@ type prep struct {
 	// report), a boot without extensions that says nothing about which
 	// ones stay: no shortcut goes.
 	extOff bool
+	// libsPartial: a libraryfolders.vdf could not be read or parsed, so
+	// libs may lack the library an app is in.
+	libsPartial bool
 }
 
+// prepare's last line says what it did ("prepare: done…") or why it
+// changed nothing ("prepare: skipped: …"): vosd logs it when it runs
+// prepare itself, and the journal has it after every Steam start and stop.
 func prepare(ctx context.Context, o Options) {
 	if geteuid() == 0 {
-		o.Log.Print("prepare: runs as the gaming user, never as root; nothing done")
+		o.Log.Print("prepare: skipped: it runs as the gaming user, never as root; nothing done")
 		return
 	}
 	root, err := steamRoot(o.Home)
 	if err != nil {
-		o.Log.Printf("prepare: %v; Steam's files are left alone", err)
+		o.Log.Printf("prepare: skipped: %v; Steam's files are left alone", err)
 		return
 	}
 	// Without the lock another run may be writing the record, so this
 	// bail-out alone records nothing.
 	unlock, err := steamlock.Lock(ctx)
 	if err != nil {
-		o.Log.Printf("prepare: the Steam lock: %v; Steam's files are left alone", err)
+		o.Log.Printf("prepare: skipped: %s; Steam's files are left alone", lockTrouble(ctx, err))
 		return
 	}
 	defer unlock()
@@ -81,7 +89,7 @@ func prepare(ctx context.Context, o Options) {
 	switch {
 	case err != nil:
 		p.fail("prepare", fmt.Errorf("steam.json: %w", err))
-		p.skip(skipBadDesired, "Steam's files are left alone")
+		p.skip(skipBadDesired, "steam.json cannot be read; Steam's files are left alone")
 		return
 	case raw.missing && !o.Unwrap:
 		p.skip(skipNoDesired, "no steam.json yet; nothing to do")
@@ -89,7 +97,7 @@ func prepare(ctx context.Context, o Options) {
 	case !raw.missing:
 		if p.want, err = parseDesired(raw.data, o.Log.Printf); err != nil {
 			p.fail("prepare", err)
-			p.skip(skipBadDesired, "Steam's files are left alone")
+			p.skip(skipBadDesired, "steam.json does not parse; Steam's files are left alone")
 			return
 		}
 	default:
@@ -109,7 +117,7 @@ func prepare(ctx context.Context, o Options) {
 
 	fp := p.fingerprint(raw.data)
 	if fp == p.st.Fingerprint && p.st.Error == "" {
-		o.Log.Print("prepare: nothing changed since the last run")
+		o.Log.Print("prepare: done; nothing changed since the last run")
 		if p.st.Skipped != "" {
 			p.st.Skipped = ""
 			p.commit()
@@ -141,6 +149,49 @@ func prepare(ctx context.Context, o Options) {
 	}
 	p.st.Fingerprint = fp
 	p.finish(nil)
+	o.Log.Print(p.summary())
+}
+
+// lockTrouble says why the Steam lock could not be taken.
+func lockTrouble(ctx context.Context, err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "no runtime directory " + config.GamerRuntimeDir + " for the Steam lock (the gaming user has no session)"
+	case ctx.Err() != nil:
+		return "the Steam lock stayed busy (another prepare, or vosd adding a library)"
+	}
+	return "the Steam lock: " + err.Error()
+}
+
+// wrote notes one of Steam's files the run replaced or removed.
+func (p *prep) wrote(path string) { p.changed = append(p.changed, relName(p.root, path)) }
+
+// summary is a full run's last line.
+func (p *prep) summary() string {
+	what := "nothing needed changing"
+	if n := len(p.changed); n > 0 {
+		names := p.changed[:min(n, 4)]
+		what = "changed " + strings.Join(names, ", ")
+		if n > len(names) {
+			what += fmt.Sprintf(" and %d more", n-len(names))
+		}
+	}
+	mode := ""
+	switch {
+	case p.o.Unwrap:
+		mode = " (--unwrap)"
+	case !p.want.Dispatcher:
+		mode = " (dispatcher off)"
+	}
+	switch n := len(p.errs); {
+	case p.cut:
+		return "prepare: stopped, out of time" + mode + "; " + what + "; the next run goes on"
+	case n == 1:
+		return "prepare: done" + mode + " with 1 error (above); " + what
+	case n > 1:
+		return fmt.Sprintf("prepare: done%s with %d errors (above); %s", mode, n, what)
+	}
+	return "prepare: done" + mode + "; " + what
 }
 
 // step reports whether there is time for the next step.
@@ -206,7 +257,7 @@ func steamRoot(home string) (string, error) {
 // that signed in: vosd asks for a Steam restart when Steam has one the
 // record lacks, and a run that skips must not make it ask again.
 func (p *prep) skip(why, msg string) {
-	p.o.Log.Printf("prepare: %s", msg)
+	p.o.Log.Printf("prepare: skipped: %s", msg)
 	p.st.Skipped = why
 	if ids, err := p.readAccounts(); err == nil {
 		p.st.Accounts = acctKeys(ids)
@@ -318,6 +369,7 @@ func (p *prep) fingerprint(desired []byte) string {
 	}
 	statLine(h, steam.ConfigVDFPath(p.root))
 	statLine(h, filepath.Join(p.root, "steamapps", "libraryfolders.vdf"))
+	statLine(h, filepath.Join(p.root, "config", "libraryfolders.vdf"))
 	if apps := p.betaApps(); len(apps) > 0 {
 		libs := p.libraries()
 		for _, lib := range libs {
@@ -364,10 +416,15 @@ func (p *prep) isTool(app uint32) bool {
 	return is
 }
 
-// libraries returns Steam's libraries, read once a run.
+// libraries returns Steam's libraries, read once a run. A
+// libraryfolders.vdf that cannot be read or parsed is the run's error.
 func (p *prep) libraries() []string {
 	if p.libs == nil {
-		p.libs = steam.Libraries(p.root)
+		var err error
+		if p.libs, err = steam.ReadLibraries(p.root); err != nil {
+			p.libsPartial = true
+			p.fail("libraryfolders.vdf", err)
+		}
 	}
 	return p.libs
 }

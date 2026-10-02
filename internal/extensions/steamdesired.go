@@ -3,7 +3,6 @@ package extensions
 import (
 	"bytes"
 	"cmp"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +24,6 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
-	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
 // SteamDesired is /var/lib/vos/ext/steam.json: what VaporOS wants in Steam
@@ -162,10 +160,11 @@ func loadSteamEntries() (*steamEntries, error) {
 		d, err := Shipped(id)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				log.Printf("extensions: %s: %v", id, err)
+				shippedErr(id, err)
 			}
 			continue
 		}
+		shippedErr(id, nil)
 		e.descs[id] = d
 		if rep.IsMounted(id) && (e.desired == nil || e.desired[id]) {
 			e.ids = append(e.ids, id)
@@ -309,7 +308,11 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 // yet must not take the user's shortcut (with its art and collections)
 // away. wanted as it is, so an extension the booted catalog lacks counts.
 func (e *steamEntries) owners() []string {
-	ids := slices.Concat(e.wanted, slices.Collect(maps.Keys(e.desired)))
+	ids := []string{} // [] says none; null would say unknown
+	ids = append(ids, e.wanted...)
+	for id := range e.desired {
+		ids = append(ids, id)
+	}
 	for _, m := range e.report.Mounted {
 		if manifest.ValidExtensionID(m.ID) {
 			ids = append(ids, m.ID)
@@ -446,10 +449,11 @@ func (s *Service) restartSteam(reason string) {
 }
 
 // SyncSteam writes /var/lib/vos/ext/steam.json (0644, atomically) when its
-// content changed, and then asks for a Steam restart: Run calls it at
-// start and after every reconcile, WatchSteam when the slots change and
-// once a minute, the control center after an extension is added or
-// removed or its settings change. It reports whether it wrote the file.
+// content changed, and then asks for a Steam restart unless only owners
+// changed: Run calls it at start and after every reconcile, WatchSteam
+// when the slots change and once a minute, the control center after an
+// extension is added or removed or its settings change. It reports
+// whether it wrote the file.
 func (s *Service) SyncSteam() (bool, error) {
 	if config.IsLive() {
 		return false, nil
@@ -468,11 +472,14 @@ func (s *Service) SyncSteam() (bool, error) {
 		}
 	}
 	old, oldErr := os.ReadFile(config.ExtSteamPath())
-	var was struct{ Dispatcher bool }
-	if oldErr == nil && json.Unmarshal(old, &was) != nil {
-		was.Dispatcher = false
+	var was *SteamDesired
+	if oldErr == nil {
+		was = &SteamDesired{}
+		if json.Unmarshal(old, was) != nil {
+			was = nil
+		}
 	}
-	d := e.desiredSteam(s.dispatcherReady(e.catalog, was.Dispatcher))
+	d := e.desiredSteam(s.dispatcherReady(e.catalog, was != nil && was.Dispatcher))
 	b, err := marshalSteamDesired(d)
 	if err != nil {
 		return false, err
@@ -484,42 +491,26 @@ func (s *Service) SyncSteam() (bool, error) {
 		return false, err
 	}
 	log.Printf("extensions: wrote %s", config.ExtSteamPath())
-	s.restartSteam("what the extensions set in Steam changed")
-	if was.Dispatcher && !d.Dispatcher {
-		go unwrapNow(gamescopeState, prepareAsGamer)
+	if was == nil || !sameButOwners(*was, d) {
+		s.restartSteam("what the extensions set in Steam changed")
+	}
+	if was != nil && was.Dispatcher && !d.Dispatcher {
+		u := unwrap{gamescopeState, prepareAsGamer, settleEvery, settleFor}
+		go u.run()
 	}
 	return true, nil
 }
 
-// gamescopeUnit is the gaming user's unit that runs gamescope and Steam.
-const gamescopeUnit = "vos-gamescope.service"
-
-// What unwrapNow asks and runs; variables for tests.
-var (
-	gamescopeState = func(ctx context.Context) string { return sysd.ActiveState(ctx, gamescopeUnit, true) }
-	prepareAsGamer = func(ctx context.Context) error {
-		_, err := sysd.AsGamer(ctx, vosBinary, "steam", "prepare")
-		return err
-	}
-)
-
-// unwrapNow runs `vos steam prepare` as vapor once the dispatcher turned
-// off while gamescope is down (inactive or failed): a Steam restart has
-// nothing to restart then, and the box may next boot a VaporOS without
-// `vos ext launch`, whose games would not start with it in their launch
-// options. A running gamescope gets the same from its stop
-// (ExecStopPost) or the restart, and one starting from its own prepare.
-func unwrapNow(state func(context.Context) string, prepare func(context.Context) error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if st := state(ctx); st != "inactive" && st != "failed" {
-		return
-	}
-	if err := prepare(ctx); err != nil {
-		log.Printf("extensions: taking the dispatcher out of Steam's launch options: %v", err)
-		return
-	}
-	log.Print("extensions: took the dispatcher out of Steam's launch options")
+// sameButOwners reports whether a and b differ in owners at most. Owners
+// only decide which shortcuts prepare takes away, which the next Steam
+// start does anyway, so adding an extension that sets nothing in Steam
+// (CoolerControl) does not restart it. One removed with shortcuts also
+// drops its entries, which still does.
+func sameButOwners(a, b SteamDesired) bool {
+	a.Owners, b.Owners = nil, nil
+	x, errA := marshalSteamDesired(a)
+	y, errB := marshalSteamDesired(b)
+	return errA == nil && errB == nil && bytes.Equal(x, y)
 }
 
 // marshalSteamDesired is steam.json's bytes as vosd writes them, which

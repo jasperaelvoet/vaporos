@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -67,11 +68,11 @@ func exposedPorts() ([]exposed, error) {
 		d, err := Shipped(m.ID)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				shippedErrs.log(m.ID, err)
+				shippedErr(m.ID, err)
 			}
 			continue
 		}
-		shippedErrs.log(m.ID, nil)
+		shippedErr(m.ID, nil)
 		if d.Network == nil {
 			continue
 		}
@@ -100,25 +101,39 @@ func (e exposed) upstreamPort() int {
 	return n
 }
 
-// shippedErrs logs an error reading a shipped descriptor once per id and
-// error: vosd lists the ports every 5 s.
+// shippedErrs logs an error reading a shipped descriptor once per id,
+// state of the file and error: vosd reads them every few seconds (the
+// ports, the control center's document, steam.json).
 var shippedErrs = &onceLog{last: map[string]string{}}
+
+// shippedErr logs err, from reading id's shipped descriptor, unless it
+// was logged for the file as it is (path, size and mtime); nil forgets
+// id's.
+func shippedErr(id string, err error) {
+	state := ""
+	if err != nil {
+		path := filepath.Join(config.ExtDescriptorsDir, id+".json")
+		state = path + " " + statKey(path)
+	}
+	shippedErrs.log(id, state, err)
+}
 
 type onceLog struct {
 	mu   sync.Mutex
 	last map[string]string
 }
 
-// log logs err for id unless it was the last one logged; nil forgets id's.
-func (o *onceLog) log(id string, err error) {
+// log logs err for id unless it was the last one logged for id in the
+// same state; nil forgets id's.
+func (o *onceLog) log(id, state string, err error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if err == nil {
 		delete(o.last, id)
 		return
 	}
-	if msg := err.Error(); o.last[id] != msg {
-		o.last[id] = msg
+	if key := state + "\x00" + err.Error(); o.last[id] != key {
+		o.last[id] = key
 		log.Printf("extensions: %s: %v", id, err)
 	}
 }

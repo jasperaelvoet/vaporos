@@ -76,11 +76,13 @@ func decideBeta(cur string, b *BetaState, want *BetaWant) (string, *BetaState) {
 // uninstalled drops the branch record of an app no library has the
 // manifest of: a reinstall comes with a new manifest, which then gets
 // the request that still stands. A library whose steamapps is
-// missing (its drive is not mounted) may still hold it, so the record
-// waits for it.
+// missing (its drive is not mounted), or one a libraryfolders.vdf that
+// does not parse may list, may still hold it, so the record waits for
+// it: dropped, the next good run would apply the request again over the
+// branch the user picked.
 func (p *prep) uninstalled(app uint32) {
 	a := p.st.peekApp(app)
-	if a == nil || a.Beta == nil {
+	if a == nil || a.Beta == nil || p.libsPartial {
 		return
 	}
 	for _, lib := range p.libraries() {
@@ -149,6 +151,7 @@ func (p *prep) branches() {
 				p.fail(name, err)
 				continue
 			}
+			p.wrote(f.path)
 			p.o.Log.Printf("prepare: %s: branch %q", name, branch)
 		}
 		if next != nil {

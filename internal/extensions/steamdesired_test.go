@@ -84,13 +84,14 @@ func steamBox(t *testing.T) (*env, *[]string) {
 func fakeGamescope(t *testing.T, state string) <-chan struct{} {
 	t.Helper()
 	ran := make(chan struct{}, 10)
-	st, prep := gamescopeState, prepareAsGamer
-	t.Cleanup(func() { gamescopeState, prepareAsGamer = st, prep })
+	st, prep, every, limit := gamescopeState, prepareAsGamer, settleEvery, settleFor
+	t.Cleanup(func() { gamescopeState, prepareAsGamer, settleEvery, settleFor = st, prep, every, limit })
 	gamescopeState = func(context.Context) string { return state }
-	prepareAsGamer = func(context.Context) error {
+	prepareAsGamer = func(context.Context) (string, error) {
 		ran <- struct{}{}
-		return nil
+		return "vos steam: prepare: done (dispatcher off); nothing needed changing", nil
 	}
+	settleEvery, settleFor = 5*time.Millisecond, 50*time.Millisecond
 	return ran
 }
 
@@ -294,6 +295,58 @@ func TestSteamOwners(t *testing.T) {
 	must(t, err)
 	if !strings.Contains(string(b), `"owners": null`) {
 		t.Errorf("steam.json:\n%s", b)
+	}
+}
+
+// Owners known to be none are [], which prepare reads as "none stays";
+// only an unknown wanted gives null.
+func TestSteamOwnersNone(t *testing.T) {
+	e := newEnv(t)
+	e.catalog(newImage(t, "coolercontrol", "", 100, false))
+	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonSkipOnce})
+	writeFile(t, config.ExtWantedPath(), "")
+	d := loadDesired(t)
+	if d.Owners == nil || len(d.Owners) != 0 {
+		t.Fatalf("owners %#v", d.Owners)
+	}
+	b, err := marshalSteamDesired(d)
+	must(t, err)
+	if !strings.Contains(string(b), `"owners": []`) {
+		t.Errorf("steam.json:\n%s", b)
+	}
+}
+
+// Owners alone only matter to prepare's cleanup, which the next Steam
+// start does anyway: adding an extension that sets nothing in Steam
+// writes them and restarts nothing, while removing one with entries in
+// Steam still restarts it.
+func TestOwnersAloneRestartNothing(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	var restarts []string
+	s.SetSteamRestarter(func(reason string) { restarts = append(restarts, reason) })
+	if _, err := s.SyncSteam(); err != nil || len(restarts) != 1 {
+		t.Fatalf("first sync: %v, restarts %q", err, restarts)
+	}
+	for _, wanted := range []string{"truckersmp\nstar-citizen\ncoolercontrol\n", "truckersmp\nstar-citizen\n"} {
+		writeFile(t, config.ExtWantedPath(), wanted)
+		changed, err := s.SyncSteam()
+		d, rerr := readSteamDesired()
+		if err != nil || rerr != nil || !changed || slices.Contains(d.Owners, "coolercontrol") != strings.Contains(wanted, "coolercontrol") {
+			t.Fatalf("wanted %q: changed %v, %v, %v, owners %q", wanted, changed, err, rerr, d.Owners)
+		}
+		if len(restarts) != 1 {
+			t.Fatalf("wanted %q: restarts %q", wanted, restarts)
+		}
+	}
+	writeFile(t, config.ExtWantedPath(), "star-citizen\n")
+	if changed, err := s.SyncSteam(); err != nil || !changed || len(restarts) != 2 {
+		t.Fatalf("removing TruckersMP: %v %v, restarts %q", changed, err, restarts)
+	}
+	// A file that is not one restarts Steam as before.
+	writeFile(t, config.ExtSteamPath(), "{")
+	if changed, err := s.SyncSteam(); err != nil || !changed || len(restarts) != 3 {
+		t.Fatalf("over a damaged steam.json: %v %v, restarts %q", changed, err, restarts)
 	}
 }
 
@@ -599,7 +652,8 @@ func TestSlotsChangedFollowsTheDispatcher(t *testing.T) {
 
 // The dispatcher turning off while gamescope is down: vosd runs prepare
 // as vapor at once, since no Steam start or restart is coming that would.
-// While gamescope runs (or starts, or stops) it leaves that to the unit,
+// While gamescope runs it leaves that to the unit, a unit that never
+// settles runs nothing (TestUnwrapWaitsForGamescope has those that do),
 // and a dispatcher that stays off runs nothing more.
 func TestDispatcherOffRunsPrepare(t *testing.T) {
 	for state, runs := range map[string]bool{"inactive": true, "failed": true, "active": false, "activating": false, "deactivating": false, "": false} {
@@ -718,5 +772,38 @@ func TestActionSyncsSteam(t *testing.T) {
 	must(t, err)
 	if d.Apps[0].App != 227300 || d.Apps[0].Beta == nil || d.Apps[0].Beta.Branch != "temporary_1_61" || len(restarts) != 2 {
 		t.Errorf("after the action: %+v, restarts %q", d.Apps, restarts)
+	}
+}
+
+// A damaged shipped descriptor is logged once for the file as it is, not
+// at every build of the control center's document or of steam.json.
+func TestDamagedDescriptorLoggedOnce(t *testing.T) {
+	r := newRig(t)
+	p := filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json")
+	damage := func(data string) {
+		writeFile(t, p, data)
+		r.s.cc.descMu.Lock()
+		r.s.cc.descs = nil // as at vosd's start
+		r.s.cc.descMu.Unlock()
+	}
+	damage("{")
+	l := captureLogs(t)
+	for range 3 {
+		if c := r.card("coolercontrol"); c.Name != "coolercontrol" {
+			t.Fatalf("card %+v", c)
+		}
+	}
+	for range 2 {
+		r.s.syncSteam()
+	}
+	if n := l.count("extensions: coolercontrol: "); n != 1 {
+		t.Fatalf("%d log lines for one damaged descriptor:\n%s", n, l.buf.String())
+	}
+	// Written again, still damaged: once more.
+	damage("{ ")
+	r.doc()
+	r.s.syncSteam()
+	if n := l.count("extensions: coolercontrol: "); n != 2 {
+		t.Fatalf("%d log lines after it changed, want 2:\n%s", n, l.buf.String())
 	}
 }

@@ -142,6 +142,7 @@ func (p *prep) launchOptionsOf(acct uint32, hooked map[uint32]bool) {
 			p.fail(name, err)
 			return
 		}
+		p.wrote(f.path)
 	}
 	for app, nl := range next {
 		if nl != nil {
