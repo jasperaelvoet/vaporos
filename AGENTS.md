@@ -41,8 +41,9 @@ contract there first, then in code, and keep the two in sync.
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |
 | `internal/power` | Idle shutdown policy, keep-awake, Wake-on-LAN status. |
 | `internal/session` | Sunshine prep-cmd protocol: `vos session begin` / `end` to `/run/vos/session.sock`. Always exits 0. |
+| `internal/steamprep` | `vos steam prepare [--unwrap]`, as vapor before every Steam start (never in vosd): applies `/var/lib/vos/ext/steam.json` to Steam's files (compat tools, launch-option wrapping, shortcuts and art, branches) under the Steam lock within 5 s, recording what VaporOS owns in `~/.local/state/vaporos/steam.json`. |
 | `internal/storage` | Disk and Steam library discovery, library adoption, the systemd generator (mount units, SSH). |
-| `internal/storage/steam` | Reads `libraryfolders.vdf`, `appmanifest_*.acf` and library markers. Never talks to Steam. |
+| `internal/storage/steam` | Reads `libraryfolders.vdf`, `appmanifest_*.acf` and library markers. Edits Steam's files without touching other bytes (`vdfedit.go` splices text KeyValues; `config.vdf` compat tools, `localconfig.vdf` launch options, an ACF's `BetaKey`), reads and writes binary `shortcuts.vdf`, wraps launch options for `vos ext launch` and derives shortcut ids. Never talks to Steam. |
 | `internal/sunshine` | Renders `sunshine.conf`/`apps.json`, local API credentials, pairing/clients/logs proxy, KMS plane-loss watchdog. |
 | `internal/sysd` | Thin wrappers around `systemctl` and processes (no D-Bus). |
 | `internal/system` | `/system/*` and `/ssh`: machine info, hostname, reboot/poweroff, SSH toggle and keys. |

@@ -13,6 +13,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/install"
 	"github.com/jasperaelvoet/vaporos/internal/session"
+	"github.com/jasperaelvoet/vaporos/internal/steamprep"
 	"github.com/jasperaelvoet/vaporos/internal/storage"
 	"github.com/jasperaelvoet/vaporos/internal/update"
 )
@@ -51,6 +52,8 @@ func main() {
 		os.Exit(storage.CLIGenerator(args))
 	case "ext":
 		os.Exit(extensions.CLI(args))
+	case "steam":
+		os.Exit(steamprep.CLI(args))
 	case "version", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -77,6 +80,7 @@ func usage() {
   sign | keygen              update signing
   index IMAGE                write IMAGE.idx, the block index updates download by
   ext <command>              extensions: fetch, launch, and the build's checks
+  steam prepare [--unwrap]   set up Steam for the mounted extensions (before Steam starts)
   version
 `)
 }

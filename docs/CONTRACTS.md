@@ -44,6 +44,7 @@ multi-call:
 | `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher (see Extensions). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. Until the dispatcher hooks anything it execs CMD (looked up in `PATH` unless absolute; `argv[0]` as given) with ARGS and the environment unchanged; `--shortcut` refuses instead (exit 1, reason on stderr) unless `/run/vos/extensions.json`, which it reads as `vapor`, lists ID as mounted; `--app` always runs CMD. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
+| `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam (`vos-gamescope.service`): brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
 | `vos version` | prints the version |
 
@@ -681,6 +682,208 @@ and keeps `wanted`: a repair that cannot run the command (offline) boots
 without extensions rather than with the old set, and vosd proposes the wanted
 ones through a trial once it can.
 
+**Steam** (`internal/steamprep`). Extensions change Steam's own files only
+through `vos steam prepare`, which runs as `vapor` before every start of
+Steam, while it is down. vosd says what is wanted and reads what was done;
+it never edits those files for an extension.
+
+*Desired state,* `/var/lib/vos/ext/steam.json` (root's, 0644), written
+atomically by vosd whenever the mounted set or a helper's `SteamParts`
+change:
+```json
+{"set":"<n>","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
+ "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":"temporary_1_61"}],
+ "shortcuts":[{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/<label>/VaporOS/star-citizen/<file>","start_dir":"/var/mnt/<label>/VaporOS/star-citizen","compat_tool":"proton-cachyos-slr","art":"/usr/lib/vos/ext/star-citizen/art"}],
+ "release":[{"app":227300}]}
+```
+- `set`: the boot report's `set` (`""` when it has none). prepare applies
+  the file only while it names this boot's set, and otherwise changes
+  nothing (vosd writes it anew and restarts Steam).
+- Only extensions this boot mounted contribute. A tool
+  (`default_compat_tool`, `compat_tool`) is named only when
+  `/usr/share/steam/compatibilitytools.d/<tool>/compatibilitytool.vdf`
+  exists, and is `""` otherwise.
+- `default_compat_tool`: the mounted core extension's
+  `steam.default_compat_tool`.
+- `apps`: one entry per app id. `compat_tool` is `steam.compat_tool` of the
+  extension whose `steam.force_compat_tool` lists the app; `hooks` are the
+  extensions whose `steam.hooks` name it, in catalog order; `beta` is the
+  branch a helper's `SteamParts.Beta` asks for (`""` the public branch),
+  `null` when none does.
+- `shortcuts`: each descriptor `steam.shortcuts` entry whose helper's
+  `SteamParts.Shortcuts` gives it a target (`exe`, `start_dir`: canonical
+  absolute paths; one without a target yet is left out), with `compat_tool`
+  the extension's `steam.compat_tool` when the shortcut sets `compat_tool`,
+  and `art` its `art` directory in the mounted image
+  (`/usr/lib/vos/ext/<owner>/<art>`) or `""`.
+- `release`: apps a removed extension used to force. prepare hands their
+  mapping to the user: it stays, and VaporOS no longer owns it.
+- `dispatcher`: true only when every VaporOS the box can boot has
+  `vos ext launch`: the booted catalog has `dispatcher` 1 or more, and the
+  other slot either has no boot entry or has `slots/<other>.json` (only
+  updaters that know extensions write slot files, and every image they
+  install has the dispatcher). While it is false no launch options are
+  wrapped, and those that were are unwrapped.
+- prepare ignores, with a log line, entries that are not well formed: ids
+  and keys `^[a-z][a-z0-9-]{0,31}$`, tools and branches
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, app ids above 0 and listed once,
+  paths absolute and clean without `"`, `art` under
+  `/usr/lib/vos/ext/<owner>/`.
+
+*prepare's record,* `/var/home/vapor/.local/state/vaporos/steam.json`
+(vapor's, 0644), written only by `vos steam prepare`, atomically, right
+after each of Steam's files it replaces. vosd reads it through gamerfs and
+trusts it for display only:
+```json
+{"fingerprint":"<hex>","vos":"<version>","accounts":["<accountid>"],
+ "default":{"wrote":"proton-cachyos-slr","before":null,"suspended":false},
+ "apps":{"227300":{"mapping":{"wrote":"proton-cachyos-slr","before":{"name":"proton_9","config":"","priority":"250"},"suspended":false},
+                   "launch":{"<accountid>":{"wrote":"<launch options VaporOS wrote>","before":"<the user's>"}},
+                   "beta":{"wrote":"temporary_1_61","before":"temporary_1_53"}}},
+ "shortcuts":{"<accountid>":{"star-citizen/launcher":{"appid":3799105208,"gameid":"16317032622456832000","deleted":false}}},
+ "error":""}
+```
+- A mapping's `wrote` is the tool VaporOS wrote (`""`: it owns no entry),
+  `before` the entry before it (`null`: none), and `suspended` that VaporOS
+  put `before` back for now and still owns the entry (below). `apps` also
+  holds the mappings of shortcut app ids.
+- `launch.<accountid>` may instead be
+  `{"wrote":"","before":"<the user's>","conflict":true}`: the user's
+  options have several `%command%` and were left alone; the card says the
+  extension needs attention.
+- `shortcuts.<accountid>.<owner>/<key>.deleted`: the user removed a
+  shortcut VaporOS added. It is not added again, and the card says so.
+- `accounts`: the accounts in loginusers.vdf at the last run. vosd restarts
+  Steam when loginusers.vdf lists one that is missing here.
+- `error`: what failed, `; `-separated (a file that does not parse or could
+  not be written, `out of time`), and `""` after a clean run.
+
+*`vos steam prepare [--unwrap]`* (`ExecStartPre=-` of
+`vos-gamescope.service`):
+1. As root it does nothing: it never writes vapor's files as root. It
+   always exits 0 (2 on bad arguments) and logs to stderr (the journal).
+2. It has a 5 s budget on its own timer. The work stops between files at
+   4.5 s and records where it stopped; the command returns at 5 s whatever
+   a step is doing.
+3. It changes nothing when `~/.steam/root` exists and does not resolve to
+   `~/.local/share/Steam` (where vosd reads); when a `steam`, `steam.sh` or
+   `steamwebhelper` process runs as vapor; when it cannot take the Steam
+   lock in time; without `steam.json` (unless `--unwrap`); or when
+   `steam.json`'s `set` is not the boot report's. The Steam lock is
+   flock(`LOCK_EX`) on `$XDG_RUNTIME_DIR/vos-steam.lock`
+   (`/run/user/1000/vos-steam.lock`), held for the whole run; vosd's library
+   registration holds it too while it edits Steam's files.
+4. The fingerprint is the sha256 of `steam.json`'s bytes, the vos version,
+   `--unwrap`, whether each tool `steam.json` names or VaporOS owns an entry
+   for is installed, loginusers.vdf's bytes, and the size, mtime and mode of
+   config.vdf, `steamapps/libraryfolders.vdf`, each account's localconfig.vdf
+   and shortcuts.vdf and the appmanifests a branch is asked for in. When it
+   equals the record's and the record has no error, there is nothing to do.
+   A run that ends without an error records the fingerprint as it is after
+   its writes; any other records `""`.
+5. Then, in this order, it edits Steam's files without changing any other
+   byte in them. Each file is replaced only when its bytes change,
+   atomically (a temp file in its directory, fsync, rename, directory
+   fsync) and with its mode kept. A file that does not parse, or is larger
+   than Steam's ever are (4 MiB; localconfig.vdf 64 MiB), is not touched and
+   goes into `error`.
+   1. **config.vdf**, `InstallConfigStore/Software/Valve/Steam/CompatToolMapping`.
+      prepare never creates config.vdf, but Steam does on its first start,
+      so `"0"` is set before anyone signs in. A missing `CompatToolMapping`
+      block is added. Entries VaporOS writes are
+      `{"name":<tool>,"config":"","priority":<p>}`.
+      - `"0"`, every Windows game's default: `default_compat_tool` at 75,
+        written only where `"0"` is missing or still holds the tool VaporOS
+        last wrote. Any other value is the user's choice, and VaporOS stops
+        owning it.
+      - Each app's `compat_tool` at 250, forced: written whatever the entry
+        holds, its first value kept as `before`.
+      - Each VaporOS shortcut's `compat_tool` at 250, under the app id it has
+        in shortcuts.vdf (step 3).
+      - Never Steam's tool apps (`steam.App.IsTool`: Proton, the Steam Linux
+        Runtimes 1070560, 1391110, 1628350 and 4183110, the EAC and BattlEye
+        runtimes 1826330 and 1161040, the redistributables 228980).
+      - No dangling mappings: while the tool of an entry VaporOS owns is not
+        installed (its compatibilitytool.vdf is missing), the entry holds
+        `before` (deleted when `null`) and is `suspended`. VaporOS keeps
+        owning it, and whatever the entry becomes meanwhile counts as
+        Steam's, not the user's. Once the tool is back and `steam.json` asks
+        for it, VaporOS writes its value again, with what the entry held
+        then as the new `before`.
+      - An owned entry `steam.json` no longer asks for is kept as it is (and
+        owned) while its tool is installed. A shortcut's entry goes with its
+        shortcut (not while an account's shortcuts.vdf cannot be read). A
+        `release` app's entry stays and is no longer owned, unless `apps`
+        still forces a tool on it.
+      - An entry that already holds the tool `steam.json` asks for is taken
+        as VaporOS's (`before` is `null` for `"0"` and shortcuts, the entry
+        itself otherwise).
+   2. **localconfig.vdf** of each account in loginusers.vdf (individual
+      accounts; the account id is the SteamID64's low 32 bits),
+      `userdata/<accountid>/config/localconfig.vdf`, skipped while it is
+      missing: `UserLocalConfigStore/Software/Valve/Steam/apps/<app>/LaunchOptions`.
+      With `dispatcher` true, each app with `hooks` is wrapped as below.
+      Every other app that carries a dispatcher token, and every app while
+      `dispatcher` is false, is unwrapped. The user's options stay around
+      the token; when they change them in Steam, the new ones, less the
+      token, become `before`. Unwrapping options nobody changed since
+      VaporOS wrote them gives back `before` exactly (with none, the key
+      goes, and the app's block too when that leaves it empty); changed ones
+      lose only the token.
+
+      | User's launch options | Written as |
+      | --- | --- |
+      | none, or no `%command%` | `/usr/bin/vos ext launch --app N %command% <whole string>` |
+      | one `%command%` | `<prefix>/usr/bin/vos ext launch --app N %command%<suffix>` |
+      | already wrapped (`/usr/bin/vos ext launch --app M ` tokens right before `%command%`) | those tokens replaced by this one, so wrapping is idempotent |
+      | several `%command%` | left alone, recorded as `conflict` |
+   3. **shortcuts.vdf** (binary) of each account that has a
+      `userdata/<accountid>/config/` directory, made when missing and there
+      is a shortcut to add. A VaporOS shortcut is the entry whose
+      `LaunchOptions` carry
+      `/usr/bin/vos ext launch --shortcut <owner>/<key> %command%` (after
+      `--unwrap` took that off, the entry with the app id the record holds),
+      never one matched by name. For each shortcut in `steam.json`:
+      - an existing one gets its `AppName`, `Exe` and `StartDir` (in double
+        quotes, as Steam keeps them), those `LaunchOptions` and the tag
+        `VaporOS`; its other keys, tags and app id stay;
+      - a missing one is added with the app id
+        `crc32(IEEE, "<owner>/<key>") | 0x80000000` (stored as an int32),
+        the overlay and desktop controller configuration allowed, and the
+        tags `["VaporOS"]`,
+      - unless the record has it and the file existed: the user deleted it,
+        so it is recorded as `deleted` and not added again. A missing
+        shortcuts.vdf (Steam's data was reset) gets every shortcut again.
+
+      VaporOS shortcuts `steam.json` does not list are removed. The app id
+      Steam keeps for each shortcut is read back into the record, with its
+      game id `(appid << 32) | 0x02000000`, the one
+      `steam://rungameid/<gameid>` takes.
+   4. **Grid art:** for each VaporOS shortcut with `art`, the files
+      `capsule.png`, `hero.png`, `logo.png` and `icon.png` that exist there
+      are copied to `userdata/<accountid>/config/grid/<appid>p.png`,
+      `<appid>_hero.png`, `<appid>_logo.png` and `<appid>_icon.png` where
+      the account has none yet, so art the user picked stays. A removed
+      shortcut's four files go.
+   5. **appmanifest_\<app>.acf**, `AppState/UserConfig/BetaKey`, in the
+      first library that has the manifest (an app that is not installed
+      waits). Each `beta` is applied, the manifest's first value kept as
+      `before` (`""` removes the key: the public branch). A branch no longer
+      asked for goes back to `before` if the manifest still asks for the
+      one VaporOS wrote.
+6. `--unwrap`, run before booting a VaporOS without the dispatcher, takes
+   every dispatcher token out of every app's launch options (as above) and
+   out of the VaporOS shortcuts' `LaunchOptions` (the shortcuts stay, with
+   `%command%`). Every CompatToolMapping entry VaporOS owns gets `before`
+   back and is `suspended`; one the user changed is theirs for `"0"` and
+   stays as it is otherwise. Branches and art are left alone. The next run
+   without `--unwrap` applies everything again.
+
+*Dispatcher messages:* `vos ext launch` (as vapor) writes each refusal
+meant for the user to `$XDG_RUNTIME_DIR/vos/ext-messages/<unix-nanos>.json`
+(`{"level":"warning","text":"..."}`). vosd reads and deletes them through
+gamerfs (under `/run/user/1000`) and publishes each as a `system.message`.
+
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
 **Middleware, in order:**
@@ -824,7 +1027,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 No keypress, local or from a Moonlight client, reboots or suspends the box: `ctrl-alt-del.target` is masked, `system.conf.d/vos.conf` sets `CtrlAltDelBurstAction=none`, `sysctl.d/99-vos.conf` sets `kernel.sysrq = 0`, and logind ignores the reboot, suspend and hibernate keys (and their long presses).
 
 **User** (`vapor`), in `/usr/lib/systemd/user`, controlled by vosd via `systemctl --user -M vapor@`:
-- `vos-gamescope.service`: env from `%t/vos/gamescope.env` (`VOS_OUTPUT`, `VOS_GS_EXTRA`); `GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg`
+- `vos-gamescope.service`: env from `%t/vos/gamescope.env` (`VOS_OUTPUT`, `VOS_GS_EXTRA`); `GAMESCOPE_MODE_SAVE_FILE=%h/.config/gamescope/modes.cfg`; `ExecStartPre=-/usr/bin/vos steam prepare` first, so every start of Steam follows the mounted extensions (see Extensions, Steam)
 - `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU. After each start or restart vosd reads that run's log until Sunshine's web UI is up: a run that logged `Platform failed to initialize` (its KMS capture found no lit plane, e.g. it came up before gamescope's first modeset) never recovers by itself and fails every stream with error 503, so vosd restarts it while idle, 5 s after the failure and then backing off to 2 min.
 
 Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.

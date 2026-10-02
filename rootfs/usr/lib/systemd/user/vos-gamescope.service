@@ -22,6 +22,11 @@ Environment=GAMESCOPE_PATCHED_EDID_FILE=%h/.config/gamescope/edid.bin
 # are empty and gamescope picks the first connected output.
 Environment=VOS_OUTPUT= VOS_GS_EXTRA=
 EnvironmentFile=-%t/vos/gamescope.env
+# Steam is down here and starts right after: the only safe moment to bring
+# its files in line with the mounted extensions (compatibility tools,
+# launch options, shortcuts). Bounded to 5 s, and it never stops Steam
+# from starting.
+ExecStartPre=-/usr/bin/vos steam prepare
 ExecStartPre=/usr/bin/mkdir -p %h/.config/gamescope
 # No -W/-H/-r: the output mode comes from the mode save file and the EDID.
 ExecStart=/usr/bin/gamescope --backend drm --prefer-output ${VOS_OUTPUT} --xwayland-count 2 --force-grab-cursor -e $VOS_GS_EXTRA -- /usr/bin/steam -gamepadui -steamos3
