@@ -146,7 +146,7 @@ func TestProbeLAN(t *testing.T) {
 		t.Fatalf("detail %q", p.detail)
 	}
 	n.addrs["enp5s0"] = append(n.addrs["enp5s0"], "fd12:3456::2/64")
-	if p := probe("", lanUp, "a ULA address"); p.mac != n.mac("enp5s0") || p.detail != "" || len(p.macs) != 6 {
+	if p := probe("", lanUp, "a ULA address"); p.mac != n.mac("enp5s0") || p.detail != "" || len(p.macs) != 7 {
 		t.Fatalf("up: %+v", p)
 	}
 	n.addrs["enp5s0"] = []string{"10.0.0.7/8"}
@@ -165,7 +165,7 @@ func TestProbeLAN(t *testing.T) {
 	// Another device down does not matter once one has the LAN, and every
 	// device present is still listed.
 	n.nic("enp6s0", true, "0x1002", "")
-	if p := probe("", lanUp, "one up, one down"); len(p.macs) != 7 {
+	if p := probe("", lanUp, "one up, one down"); len(p.macs) != 8 {
 		t.Fatalf("devices %v", p.macs)
 	}
 }
