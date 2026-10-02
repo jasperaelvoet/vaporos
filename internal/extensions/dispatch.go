@@ -113,10 +113,7 @@ var stripPreload = func() { os.Unsetenv("LD_PRELOAD") }
 
 // dispatch runs l: the hooks of what it starts, then the command.
 func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int {
-	d, err := readSteamDesired()
-	if err != nil {
-		d = nil
-	}
+	d, _ := readSteamDesired() // nil without one: no app is hooked
 	var st *prepareState
 	if l.app == 0 && l.shortcut == "" {
 		st = readPrepareState()

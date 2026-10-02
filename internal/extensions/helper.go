@@ -74,7 +74,11 @@ type ShortcutTarget struct {
 }
 
 // Launch is one Steam launch passing through `vos ext launch`: the app or
-// shortcut it is for and the command line Steam built (%command%).
+// shortcut it is for and the command line Steam built (%command%). Env is
+// Steam's, for the game alone: programs a hook starts itself inherit vos's
+// own environment, which has no LD_PRELOAD (Steam's overlay). A hook's
+// error is shown to the person at the control center, after "<name> did
+// not start: ".
 type Launch struct {
 	App      uint32   // a Steam app id, or 0
 	Shortcut string   // "<id>/<key>", or ""
