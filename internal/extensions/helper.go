@@ -30,7 +30,8 @@ type Helper interface {
 	// its settings, for the set's modprobe.conf.
 	ModuleOptions(x *Ext) []string
 	// Steam returns what the extension adds to Steam beyond its descriptor,
-	// such as a shortcut's executable chosen at install.
+	// such as a shortcut's executable chosen at install. It must be cheap
+	// too: vosd asks after every change and about once a minute.
 	Steam(x *Ext) SteamParts
 	// LaunchHook may rewrite a Steam launch of one of its hooked apps or
 	// shortcuts. It runs as vapor inside `vos ext launch`, never in vosd.
