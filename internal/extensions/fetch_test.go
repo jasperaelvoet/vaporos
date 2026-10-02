@@ -32,6 +32,7 @@ type fakeSource struct {
 	manifestErr error
 	byName      map[string]served // by file name
 	blobs       map[string]served // by sha256; nil: no blobs (not a registry)
+	local       bool              // a directory, not reached over the network
 	calls       []string
 }
 
@@ -93,6 +94,7 @@ func (f *fakeSource) FetchBlob(_ context.Context, sha string, _ int64, w io.Writ
 	return serveTo(s, sha, w, onChunk)
 }
 
+func (f *fakeSource) Remote() bool   { return !f.local }
 func (f *fakeSource) String() string { return "fake" }
 
 // serveTo writes s as Source.Fetch does: in chunks, then the checksum.
@@ -120,6 +122,9 @@ func serveTo(s served, want string, w io.Writer, onChunk func(int64) error) erro
 
 var errRefused = &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 
+// gaveUp is a download that failed with err until update gave up.
+func gaveUp(err error) error { return fmt.Errorf("%w after 10 attempts: %w", update.ErrGaveUp, err) }
+
 // Which download is tried after which failure, which error is returned,
 // and whether the service then holds the source's bytes for bad.
 func TestFetchImageFallback(t *testing.T) {
@@ -133,6 +138,7 @@ func TestFetchImageFallback(t *testing.T) {
 		byName    map[string]served
 		blobs     map[string]served
 		writeErr  error
+		local     bool // a directory source
 		wantCalls []string
 		ok        bool
 		bad       bool
@@ -154,11 +160,13 @@ func TestFetchImageFallback(t *testing.T) {
 		{name: "gone everywhere", blobs: gone,
 			wantCalls: []string{"name " + name, "blob " + proton.entry.SHA256[:8]}},
 		{name: "other bytes, then the network", byName: map[string]served{name: wrong},
-			blobs:     map[string]served{proton.entry.SHA256: {err: fmt.Errorf("giving up after 10 attempts: %w", errRefused)}},
+			blobs:     map[string]served{proton.entry.SHA256: {err: gaveUp(errRefused)}},
 			wantCalls: []string{"name " + name, "blob " + proton.entry.SHA256[:8]}, down: true},
 		{name: "network: no blob", byName: map[string]served{name: {data: proton.data[:100], err: io.ErrUnexpectedEOF}},
 			blobs: map[string]served{proton.entry.SHA256: good}, wantCalls: []string{"name " + name}, down: true},
-		{name: "server trouble: no blob", byName: map[string]served{name: {err: errors.New("ext-proton.raw: giving up after 10 attempts: HTTP 503")}},
+		{name: "short file in a directory: not the network", byName: map[string]served{name: {data: proton.data[:100], err: io.ErrUnexpectedEOF}},
+			local: true, wantCalls: []string{"name " + name, "blob " + proton.entry.SHA256[:8]}},
+		{name: "server trouble: no blob", byName: map[string]served{name: {err: gaveUp(errors.New("HTTP 503"))}},
 			blobs: map[string]served{proton.entry.SHA256: good}, wantCalls: []string{"name " + name}, down: true},
 		{name: "full disk: no blob", byName: map[string]served{name: good}, blobs: map[string]served{proton.entry.SHA256: good},
 			writeErr: syscall.ENOSPC, wantCalls: []string{"name " + name}, full: true},
@@ -169,7 +177,7 @@ func TestFetchImageFallback(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
 			e.sealer.writeErr = tt.writeErr
-			src := &fakeSource{byName: tt.byName, blobs: tt.blobs}
+			src := &fakeSource{byName: tt.byName, blobs: tt.blobs, local: tt.local}
 			err := fetchImage(t.Context(), src, proton.entry, nil)
 			if got := src.asked(); !slices.Equal(got, tt.wantCalls) {
 				t.Errorf("asked %q, want %q", got, tt.wantCalls)
@@ -182,8 +190,8 @@ func TestFetchImageFallback(t *testing.T) {
 			}
 			s, _ := e.service()
 			s.note(proton.entry, true, err)
-			if s.bad[proton.entry.SHA256] != tt.bad || unreachable(err) != tt.down || noSpace(err) != tt.full {
-				t.Errorf("%v: bad %v, unreachable %v, no space %v", err, s.bad[proton.entry.SHA256], unreachable(err), noSpace(err))
+			if s.bad[proton.entry.SHA256] != tt.bad || unreachable(src, err) != tt.down || noSpace(err) != tt.full {
+				t.Errorf("%v: bad %v, unreachable %v, no space %v", err, s.bad[proton.entry.SHA256], unreachable(src, err), noSpace(err))
 			}
 			if _, full := s.full[proton.entry.SHA256]; full != tt.full {
 				t.Errorf("full = %v", full)
@@ -250,24 +258,28 @@ func TestPassFetchesByDigestWhenTheTagMoved(t *testing.T) {
 }
 
 func TestUnreachable(t *testing.T) {
+	eof := fmt.Errorf("after 5 of 10 bytes: %w", io.ErrUnexpectedEOF)
 	for _, c := range []struct {
-		err  error
-		want bool
+		err   error
+		local bool
+		want  bool
 	}{
-		{errRefused, true},
-		{fmt.Errorf("x: %w", &net.DNSError{Err: "no such host", Name: "ghcr.io"}), true},
-		{fmt.Errorf("after 5 of 10 bytes: %w", io.ErrUnexpectedEOF), true},
-		{&url.Error{Op: "Get", URL: "https://ghcr.io/token", Err: context.DeadlineExceeded}, true},
-		{errors.New("ext-proton.raw: giving up after 10 attempts: HTTP 502 Bad Gateway"), true},
-		{errors.New("https://ghcr.io/v2/x/blobs/sha256:00: HTTP 404 Not Found"), false},
-		{fmt.Errorf("x: %w", update.ErrChecksum), false},
-		{update.ErrNoBlobs, false},
-		{&fs.PathError{Op: "open", Path: "/src/manifest.json", Err: syscall.ENOENT}, false},
-		{&writeError{syscall.EIO}, false},
-		{nil, false},
+		{errRefused, false, true},
+		{fmt.Errorf("x: %w", &net.DNSError{Err: "no such host", Name: "ghcr.io"}), false, true},
+		{eof, false, true},
+		{eof, true, false},
+		{gaveUp(eof), false, true},
+		{&url.Error{Op: "Get", URL: "https://ghcr.io/token", Err: context.DeadlineExceeded}, false, true},
+		{fmt.Errorf("ext-proton.raw: %w", gaveUp(errors.New("HTTP 502 Bad Gateway"))), false, true},
+		{errors.New("https://ghcr.io/v2/x/blobs/sha256:00: HTTP 404 Not Found"), false, false},
+		{fmt.Errorf("x: %w", update.ErrChecksum), false, false},
+		{update.ErrNoBlobs, false, false},
+		{&fs.PathError{Op: "open", Path: "/src/manifest.json", Err: syscall.ENOENT}, true, false},
+		{&writeError{syscall.EIO}, false, false},
+		{nil, false, false},
 	} {
-		if got := unreachable(c.err); got != c.want {
-			t.Errorf("unreachable(%v) = %v", c.err, got)
+		if got := unreachable(&fakeSource{local: c.local}, c.err); got != c.want {
+			t.Errorf("unreachable(%v), local %v = %v", c.err, c.local, got)
 		}
 	}
 }

@@ -606,7 +606,9 @@ directory source by name. A network failure (one the download gave up on), a
 failed write to the disk or a failed seal is never followed by the blob.
 Before its first download, a reconcile asks the source for its manifest: a
 source it cannot reach, or that stops answering during a download, is asked
-for nothing else in that reconcile. A source that served other bytes for an
+for nothing else in that reconcile (only a registry or an HTTP(S) source
+stops answering: a file of a directory source that ends early fails that
+image alone). A source that served other bytes for an
 image is not asked for it again until a reconcile is asked for; an image that
 does not fit (2 GiB to spare, also a disk that filled up during its download)
 is not fetched again until more space is free or a reconcile is asked for, and

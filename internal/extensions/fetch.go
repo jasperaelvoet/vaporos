@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/url"
-	"strings"
 	"syscall"
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
@@ -29,6 +26,7 @@ type source interface {
 	Manifest(ctx context.Context) (*manifest.Manifest, error)
 	Fetch(ctx context.Context, a manifest.Artifact, w io.Writer, onChunk func(done int64) error) error
 	FetchBlob(ctx context.Context, sha256 string, size int64, w io.Writer, onChunk func(done int64) error) error
+	Remote() bool // reached over the network, not a local directory
 	String() string
 }
 
@@ -54,7 +52,7 @@ func fetchImage(ctx context.Context, src source, e catalog.Entry, progress func(
 	nameErr, err := putFrom(ctx, e, progress, func(w io.Writer, onChunk func(int64) error) error {
 		return src.Fetch(ctx, a, w, onChunk)
 	})
-	if err == nil || nameErr == nil || ctx.Err() != nil || unreachable(nameErr) {
+	if err == nil || nameErr == nil || ctx.Err() != nil || unreachable(src, nameErr) {
 		return err
 	}
 	blobErr, berr := putFrom(ctx, e, progress, func(w io.Writer, onChunk func(int64) error) error {
@@ -65,7 +63,7 @@ func fetchImage(ctx context.Context, src source, e catalog.Entry, progress func(
 		return nil
 	case errors.Is(blobErr, update.ErrNoBlobs):
 		return err
-	case blobErr == nil || unreachable(blobErr):
+	case blobErr == nil || unreachable(src, blobErr):
 		// The disk, the seal or the network failed the second time: that is
 		// what counts now, not what the source answered by name.
 		return fmt.Errorf("%v; by digest: %w", err, berr)
@@ -117,21 +115,13 @@ func noSpace(err error) bool {
 	return errors.Is(err, store.ErrNoSpace) || (errors.As(err, &we) && errors.Is(we, syscall.ENOSPC))
 }
 
-// unreachable reports whether err says the source could not be reached, or
-// failed the way a network does until the download gave up (update retries
-// those and then says it is "giving up"), rather than answering: the same
-// would happen to every other file. (Not net.Error: a syscall.Errno is one,
-// such as a missing file's.)
-func unreachable(err error) bool {
-	var (
-		oe *net.OpError
-		de *net.DNSError
-		ue *url.Error
-	)
-	if errors.As(err, &oe) || errors.As(err, &de) || errors.As(err, &ue) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-	return err != nil && strings.Contains(err.Error(), "giving up after")
+// unreachable reports whether err says src could not be reached, or failed
+// the way a network does until the download gave up, rather than
+// answering: the same would happen to every other file. A file that ended
+// early counts only from a remote source: in a directory it is that
+// image's problem, not the source's.
+func unreachable(src source, err error) bool {
+	return update.IsNetworkError(err) || (src.Remote() && errors.Is(err, io.ErrUnexpectedEOF))
 }
 
 func chunks(progress func(int64), onChunk func(int64) error) func(int64) error {

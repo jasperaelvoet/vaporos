@@ -168,7 +168,7 @@ func fetchEntries(ctx context.Context, src source, cat *catalog.Catalog, ids []s
 				stop = "the disk cannot seal extension images (no fs-verity)"
 			case ctx.Err() != nil:
 				stop = "stopped"
-			case unreachable(err):
+			case unreachable(src, err):
 				stop = fmt.Sprintf("%s cannot be reached", src)
 			}
 		}

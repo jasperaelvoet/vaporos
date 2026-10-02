@@ -405,7 +405,7 @@ func (s *Service) fetchAll(ctx context.Context, version string, entries []catalo
 		s.noteAll(todo, forBooted, version, fmt.Errorf("%q: %w", spec, err))
 		return false
 	}
-	if _, err := src.Manifest(ctx); err != nil && ctx.Err() == nil && unreachable(err) {
+	if _, err := src.Manifest(ctx); err != nil && ctx.Err() == nil && unreachable(src, err) {
 		s.down = fmt.Errorf("%s cannot be reached: %w", src, err)
 		s.noteAll(todo, forBooted, version, s.down)
 		return false
@@ -426,7 +426,7 @@ func (s *Service) fetchAll(ctx context.Context, version string, entries []catalo
 			done = false
 		}
 		s.note(e, forBooted, err)
-		if err != nil && ctx.Err() == nil && unreachable(err) {
+		if err != nil && ctx.Err() == nil && unreachable(src, err) {
 			s.down = fmt.Errorf("%s stopped answering: %w", src, err)
 			s.noteAll(todo[i+1:], forBooted, version, s.down)
 			return false

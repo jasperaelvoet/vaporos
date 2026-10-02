@@ -401,7 +401,7 @@ func (r *resumeReader) retry(err error) error {
 	}
 	r.fails++
 	if r.fails >= maxAttempts {
-		return fmt.Errorf("%s: giving up after %d attempts: %w", r.name, r.fails, err)
+		return fmt.Errorf("%s: %w after %d attempts: %w", r.name, ErrGaveUp, r.fails, err)
 	}
 	t := time.NewTimer(backoff(r.fails))
 	defer t.Stop()

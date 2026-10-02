@@ -352,7 +352,7 @@ func TestPassProbesTheSourceOnce(t *testing.T) {
 		Name: "ext-proton.raw", Size: oldProton.entry.Size, SHA256: oldProton.entry.SHA256,
 		FSVerity: oldProton.entry.FSVerity, Core: true}}))
 	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonNoSet})
-	src := &fakeSource{manifestErr: fmt.Errorf("manifest.json: giving up after 10 attempts: %w", errRefused)}
+	src := &fakeSource{manifestErr: fmt.Errorf("manifest.json: %w", gaveUp(errRefused))}
 	useSource(t, src)
 
 	s, b := e.service()
@@ -377,6 +377,31 @@ func TestPassProbesTheSourceOnce(t *testing.T) {
 	}
 	if x := e.state(s, "coolercontrol"); !strings.Contains(x.Error, "stopped answering") {
 		t.Fatalf("coolercontrol = %+v", x)
+	}
+}
+
+// A short file in a directory source is that image's problem: the source
+// still serves the others.
+func TestPassShortFileInADirectory(t *testing.T) {
+	e := newEnv(t)
+	proton := newImage(t, "proton", "", 5000, true)
+	cc := newImage(t, "coolercontrol", "", 2000, false)
+	e.catalog(proton, cc)
+	locked(t, func() error { return store.WriteWanted([]string{"coolercontrol"}) })
+	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonNoSet})
+	writeFile(t, filepath.Join(e.src, "ext-proton.raw"), string(proton.data[:1000]))
+	e.serve(cc)
+
+	s, b := e.service()
+	s.pass(t.Context(), b)
+	if sealed(proton.entry) || !sealed(cc.entry) {
+		t.Fatalf("proton sealed %v, coolercontrol sealed %v", sealed(proton.entry), sealed(cc.entry))
+	}
+	if s.down != nil {
+		t.Fatalf("source marked down: %v", s.down)
+	}
+	if x := e.state(s, "proton"); x.State != StateNeedsAttention || strings.Contains(x.Error, "answering") {
+		t.Fatalf("proton = %+v", x)
 	}
 }
 
