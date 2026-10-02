@@ -727,7 +727,12 @@ ends; a rollback; an activation, before its restart), and about once a
 minute (which also catches `vos update` and `vos rollback` run from a
 shell). The minute's check, the launch messages and the account check run
 on their own in vosd, apart from the reconciles. When the file changes
-vosd asks for a Steam restart (see Units, Display policy).
+in more than `owners`, vosd asks for a Steam restart (see Units, Display
+policy). A change of `owners` alone (adding or removing an extension that
+sets nothing in Steam, such as CoolerControl, or a boot that no longer
+mounts one) is written and restarts nothing: `owners` only decide which
+shortcuts prepare removes, and prepare runs at the next Steam start
+anyway. A file that cannot be read or parsed counts as changed.
 ```json
 {"set":"<n>","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
  "apps":[{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp"],"beta":{"branch":"temporary_1_61","request":"<id>"}}],
@@ -781,8 +786,9 @@ vosd asks for a Steam restart (see Units, Display policy).
   none of theirs, sorted: `wanted` as it is (ids the booted catalog lacks
   included), `wanted` ∪ core with their requirements in the booted
   catalog, and every id this boot mounted (one removed stays until the
-  boot that no longer mounts it). `null` while `wanted` cannot be read,
-  and then prepare removes no shortcut (step 5.3).
+  boot that no longer mounts it). `[]` when that is none; `null` only
+  while `wanted` cannot be read, and then prepare removes no shortcut
+  (step 5.3).
 - `dispatcher`: true only when every VaporOS the box can boot has
   `vos ext launch`: the booted catalog has `dispatcher` 1 or more, and the
   other slot has no boot entry, or its `slots/<other>.json` is for its

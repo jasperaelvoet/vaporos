@@ -297,6 +297,58 @@ func TestSteamOwners(t *testing.T) {
 	}
 }
 
+// Owners known to be none are [], which prepare reads as "none stays";
+// only an unknown wanted gives null.
+func TestSteamOwnersNone(t *testing.T) {
+	e := newEnv(t)
+	e.catalog(newImage(t, "coolercontrol", "", 100, false))
+	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonSkipOnce})
+	writeFile(t, config.ExtWantedPath(), "")
+	d := loadDesired(t)
+	if d.Owners == nil || len(d.Owners) != 0 {
+		t.Fatalf("owners %#v", d.Owners)
+	}
+	b, err := marshalSteamDesired(d)
+	must(t, err)
+	if !strings.Contains(string(b), `"owners": []`) {
+		t.Errorf("steam.json:\n%s", b)
+	}
+}
+
+// Owners alone only matter to prepare's cleanup, which the next Steam
+// start does anyway: adding an extension that sets nothing in Steam
+// writes them and restarts nothing, while removing one with entries in
+// Steam still restarts it.
+func TestOwnersAloneRestartNothing(t *testing.T) {
+	e, _ := steamBox(t)
+	s, _ := e.service()
+	var restarts []string
+	s.SetSteamRestarter(func(reason string) { restarts = append(restarts, reason) })
+	if _, err := s.SyncSteam(); err != nil || len(restarts) != 1 {
+		t.Fatalf("first sync: %v, restarts %q", err, restarts)
+	}
+	for _, wanted := range []string{"truckersmp\nstar-citizen\ncoolercontrol\n", "truckersmp\nstar-citizen\n"} {
+		writeFile(t, config.ExtWantedPath(), wanted)
+		changed, err := s.SyncSteam()
+		d, rerr := readSteamDesired()
+		if err != nil || rerr != nil || !changed || slices.Contains(d.Owners, "coolercontrol") != strings.Contains(wanted, "coolercontrol") {
+			t.Fatalf("wanted %q: changed %v, %v, %v, owners %q", wanted, changed, err, rerr, d.Owners)
+		}
+		if len(restarts) != 1 {
+			t.Fatalf("wanted %q: restarts %q", wanted, restarts)
+		}
+	}
+	writeFile(t, config.ExtWantedPath(), "star-citizen\n")
+	if changed, err := s.SyncSteam(); err != nil || !changed || len(restarts) != 2 {
+		t.Fatalf("removing TruckersMP: %v %v, restarts %q", changed, err, restarts)
+	}
+	// A file that is not one restarts Steam as before.
+	writeFile(t, config.ExtSteamPath(), "{")
+	if changed, err := s.SyncSteam(); err != nil || !changed || len(restarts) != 3 {
+		t.Fatalf("over a damaged steam.json: %v %v, restarts %q", changed, err, restarts)
+	}
+}
+
 func TestShortcutTargetsAreChecked(t *testing.T) {
 	steamBox(t)
 	for _, bad := range []ShortcutTarget{

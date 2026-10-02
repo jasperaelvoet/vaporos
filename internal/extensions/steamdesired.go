@@ -309,7 +309,11 @@ func (e *steamEntries) desiredSteam(dispatcher bool) SteamDesired {
 // yet must not take the user's shortcut (with its art and collections)
 // away. wanted as it is, so an extension the booted catalog lacks counts.
 func (e *steamEntries) owners() []string {
-	ids := slices.Concat(e.wanted, slices.Collect(maps.Keys(e.desired)))
+	ids := []string{} // [] says none; null would say unknown
+	ids = append(ids, e.wanted...)
+	for id := range e.desired {
+		ids = append(ids, id)
+	}
 	for _, m := range e.report.Mounted {
 		if manifest.ValidExtensionID(m.ID) {
 			ids = append(ids, m.ID)
@@ -446,10 +450,11 @@ func (s *Service) restartSteam(reason string) {
 }
 
 // SyncSteam writes /var/lib/vos/ext/steam.json (0644, atomically) when its
-// content changed, and then asks for a Steam restart: Run calls it at
-// start and after every reconcile, WatchSteam when the slots change and
-// once a minute, the control center after an extension is added or
-// removed or its settings change. It reports whether it wrote the file.
+// content changed, and then asks for a Steam restart unless only owners
+// changed: Run calls it at start and after every reconcile, WatchSteam
+// when the slots change and once a minute, the control center after an
+// extension is added or removed or its settings change. It reports
+// whether it wrote the file.
 func (s *Service) SyncSteam() (bool, error) {
 	if config.IsLive() {
 		return false, nil
@@ -468,11 +473,14 @@ func (s *Service) SyncSteam() (bool, error) {
 		}
 	}
 	old, oldErr := os.ReadFile(config.ExtSteamPath())
-	var was struct{ Dispatcher bool }
-	if oldErr == nil && json.Unmarshal(old, &was) != nil {
-		was.Dispatcher = false
+	var was *SteamDesired
+	if oldErr == nil {
+		was = &SteamDesired{}
+		if json.Unmarshal(old, was) != nil {
+			was = nil
+		}
 	}
-	d := e.desiredSteam(s.dispatcherReady(e.catalog, was.Dispatcher))
+	d := e.desiredSteam(s.dispatcherReady(e.catalog, was != nil && was.Dispatcher))
 	b, err := marshalSteamDesired(d)
 	if err != nil {
 		return false, err
@@ -484,11 +492,25 @@ func (s *Service) SyncSteam() (bool, error) {
 		return false, err
 	}
 	log.Printf("extensions: wrote %s", config.ExtSteamPath())
-	s.restartSteam("what the extensions set in Steam changed")
-	if was.Dispatcher && !d.Dispatcher {
+	if was == nil || !sameButOwners(*was, d) {
+		s.restartSteam("what the extensions set in Steam changed")
+	}
+	if was != nil && was.Dispatcher && !d.Dispatcher {
 		go unwrapNow(gamescopeState, prepareAsGamer)
 	}
 	return true, nil
+}
+
+// sameButOwners reports whether a and b differ in owners at most. Owners
+// only decide which shortcuts prepare takes away, which the next Steam
+// start does anyway, so adding an extension that sets nothing in Steam
+// (CoolerControl) does not restart it. One removed with shortcuts also
+// drops its entries, which still does.
+func sameButOwners(a, b SteamDesired) bool {
+	a.Owners, b.Owners = nil, nil
+	x, errA := marshalSteamDesired(a)
+	y, errB := marshalSteamDesired(b)
+	return errA == nil && errB == nil && bytes.Equal(x, y)
 }
 
 // gamescopeUnit is the gaming user's unit that runs gamescope and Steam.
