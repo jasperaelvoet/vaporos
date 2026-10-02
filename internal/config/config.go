@@ -85,6 +85,10 @@ func ExtPortsPath() string       { return filepath.Join(ExtDir(), "ports") }
 func ExtBootPath() string        { return filepath.Join(RunDir, "extensions.json") }
 func ExtLockPath() string        { return filepath.Join(RunDir, "ext.lock") }
 
+// ExtTrialOKPath holds the name of the set whose trial passed vos health on
+// this boot, so vosd can still promote it when health could not.
+func ExtTrialOKPath() string { return filepath.Join(RunDir, "ext-trial-ok") }
+
 type Config struct {
 	Schema  int           `json:"schema"`
 	Update  UpdateConfig  `json:"update"`
