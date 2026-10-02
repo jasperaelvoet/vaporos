@@ -14,7 +14,7 @@ const read = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const base = read(join(FIXTURES, 'base', 'extensions.json'));
 const preset = (name) => mergePatch(structuredClone(base), read(join(FIXTURES, 'presets', `${name}.json`)).patch.extensions);
 const ext = (doc, id) => doc.extensions.find((x) => x.id === id);
-const ctx = (doc) => ({ names: X.names(doc), enabled: new Set(doc.extensions.filter((x) => x.wanted || x.mounted || x.core).map((x) => x.id)) });
+const ctx = X.context;
 
 test('a chip only for a state of design/tokens.json, with its label', () => {
   const tokens = read(join(here, '..', '..', '..', 'design', 'tokens.json')).state;
@@ -52,14 +52,13 @@ test('size, upstream and licence', () => {
 });
 
 test('what it can do, in sentences', () => {
-  assert.deepEqual(X.can(ext(base, 'coolercontrol')), [
+  assert.deepEqual(X.can(ext(base, 'coolercontrol')).slice(0, 3), [
     'Runs a system service as root.',
     'Adds device rules.',
     'Loads kernel modules.',
-    'Has settings that take effect after a restart.',
-    'Has its own web page, reachable from your network.',
   ]);
-  assert.deepEqual(X.can(ext(base, 'proton')), ['Loads kernel modules.', 'Adds a Steam compatibility tool.']);
+  assert.equal(X.can(ext(base, 'coolercontrol')).at(-1), 'Has its own web page, reachable from your network.');
+  assert.deepEqual(X.can(ext(base, 'proton')).slice(0, 2), ['Loads kernel modules.', 'Adds a Steam compatibility tool.']);
   assert.deepEqual(X.can({ permissions: ['service', 'user-service', 'sysctl', 'polkit', 'dbus', 'udev', 'made-up'] }), [
     'Runs a system service.',
     'Runs a background service next to Steam.',
@@ -68,8 +67,56 @@ test('what it can do, in sentences', () => {
     'Adds services to the system bus.',
     'Adds device rules.',
   ]);
-  assert.deepEqual(X.can({ permissions: ['modules'], needs_password: true }), ['Loads kernel modules.', 'Sets kernel module options.']);
-  assert.deepEqual(X.can({}), ['Adds files only: nothing runs on its own.']);
+  // Only what the document carries: no sentence of its own for the rest.
+  assert.deepEqual(X.can({}), []);
+  assert.deepEqual(X.can({ needs_password: true, runs_as_root: false, settings: [{ key: 'k', restart: true }] }), []);
+  assert.deepEqual(X.can({ permissions: ['modules'], module_options: true }), ['Loads kernel modules.', 'Sets kernel module options (takes effect after a restart).']);
+});
+
+test('what it can do in Steam, by the names of the games', () => {
+  const truckers = {
+    id: 'truckersmp',
+    name: 'TruckersMP',
+    steam: {
+      compat_tool: 'proton-cachyos-slr',
+      forces: [{ app: 227300, name: 'Euro Truck Simulator 2' }, { app: 270880, name: 'American Truck Simulator' }],
+      hooks: [{ app: 227300, name: 'Euro Truck Simulator 2' }, { app: 270880, name: 'American Truck Simulator' }],
+      shortcuts: [{ name: 'TruckersMP (ETS2)' }, { name: 'TruckersMP (ATS)' }],
+    },
+  };
+  assert.deepEqual(X.can(truckers), [
+    'Makes Steam run Euro Truck Simulator 2 and American Truck Simulator with Proton.',
+    'Starts Euro Truck Simulator 2 and American Truck Simulator through VaporOS so TruckersMP can join in.',
+    'Adds TruckersMP (ETS2) and TruckersMP (ATS) to your Steam library.',
+  ]);
+  // A game Steam has not installed yet has no name in the document.
+  const unnamed = { name: 'TruckersMP', steam: { forces: [{ app: 227300, name: '' }, { app: 270880, name: '' }], hooks: [{ app: 227300, name: '' }], shortcuts: [{ name: '' }] } };
+  assert.deepEqual(X.can(unnamed), [
+    'Makes Steam run some games with Proton.',
+    'Starts a game through VaporOS so TruckersMP can join in.',
+    'Adds a shortcut to your Steam library.',
+  ]);
+  const mixed = { name: 'X', steam: { forces: [{ app: 1, name: 'Alpha' }, { app: 2, name: '' }, { app: 3, name: '' }], hooks: [{ app: 1, name: 'Alpha' }, { app: 2, name: '' }], shortcuts: [] } };
+  assert.deepEqual(X.can(mixed), [
+    'Makes Steam run Alpha and 2 other games with Proton.',
+    'Starts Alpha and one other game through VaporOS so X can join in.',
+  ]);
+  // Star Citizen: a shortcut, and a web page and module options beside it.
+  assert.deepEqual(X.can({ name: 'Star Citizen', permissions: [], module_options: true, steam: { compat_tool: 'proton-cachyos-slr', forces: [], hooks: [], shortcuts: [{ name: 'Star Citizen' }] }, web: { port: 1, label: 'x' } }), [
+    'Sets kernel module options (takes effect after a restart).',
+    'Adds Star Citizen to your Steam library.',
+    'Has its own web page, reachable from your network.',
+  ]);
+  // The core Proton only names a tool: nothing to add to its permissions.
+  assert.deepEqual(X.can({ permissions: ['compat-tool'], steam: { compat_tool: 'proton-cachyos-slr', forces: [], hooks: [], shortcuts: [] } }), ['Adds a Steam compatibility tool.']);
+  assert.deepEqual(X.can({ steam: null }), []);
+});
+
+test('the fold is named by what it holds', () => {
+  assert.equal(X.moreLabel(2, 1), 'What it can do and downloads');
+  assert.equal(X.moreLabel(1, 0), 'What it can do');
+  assert.equal(X.moreLabel(0, 1), 'What it downloads');
+  assert.equal(X.moreLabel(0, 0), 'Good to know');
 });
 
 test('what it downloads, and when VaporOS cannot check it', () => {
@@ -100,11 +147,26 @@ test('the lines under a card', () => {
   assert.deepEqual(X.lines({ state: 'restart-needed', wanted: false, mounted: true }), [{ text: 'It is removed at the next restart.', tone: '' }]);
   assert.deepEqual(X.lines({ state: 'restart-needed', wanted: true, mounted: true }), [{ text: 'Its changes take effect at the next restart.', tone: '' }]);
   assert.match(X.lines({ state: 'not-in-this-version' })[0].text, /^This version of VaporOS doesn't have it\./);
+  // The box's own reason, when it gives one, in at most two sentences.
+  assert.deepEqual(X.lines({ state: 'not-in-this-version', reason: 'VaporOS 20261003.0915 dropped it. Remove it, or roll back. Then restart.' }), [
+    { text: 'VaporOS 20261003.0915 dropped it. Remove it, or roll back.', tone: '' },
+  ]);
   // What installing it pulls in, unless that is there already (Proton is).
   assert.deepEqual(X.lines(ext(base, 'truckersmp'), ctx(base)), []);
   const lone = structuredClone(base);
   Object.assign(ext(lone, 'proton'), { core: false, wanted: false, mounted: false });
   assert.deepEqual(X.lines(ext(lone, 'truckersmp'), ctx(lone)), [{ text: 'Installing it also installs CachyOS Proton.', tone: '' }]);
+  // What it requires, directly or not, and only what a restart would not
+  // keep anyway: one removed until the restart comes back with it.
+  const chain = { extensions: [
+    { id: 'a', name: 'A', requires: ['b'] },
+    { id: 'b', name: 'B', requires: ['c', 'd'] },
+    { id: 'c', name: 'C', requires: ['a'], mounted: true },
+    { id: 'd', name: 'D', wanted: true },
+  ] };
+  assert.deepEqual(X.adds(ext(chain, 'a'), ctx(chain)), ['c', 'b']);
+  assert.deepEqual(X.lines(ext(chain, 'a'), ctx(chain)), [{ text: 'Installing it also installs C and B.', tone: '' }]);
+  assert.deepEqual(X.lines(ext(chain, 'd'), ctx(chain)), [], 'wanted: nothing to install');
   const att = preset('extensions-attention');
   assert.deepEqual(X.lines(ext(att, 'coolercontrol')), [
     { text: 'Fans and pumps: 4 found.', tone: '' },
@@ -119,17 +181,59 @@ test('install and remove', () => {
   assert.equal(X.canInstall(ext(base, 'proton')), false, 'core is always on');
   assert.equal(X.canInstall({ state: 'not-in-this-version' }), false);
   assert.equal(X.canInstall({ state: 'not-installed', wanted: true }), false);
+  assert.equal(X.canInstall({ state: 'installing', wanted: false }), false, 'on its way already');
+  assert.equal(X.canInstall({ state: 'needs-attention', wanted: false, mounted: true }), true);
+  // Removed until the restart: it can come back before, and is not removed twice.
+  const gone = { id: 'cc', state: 'restart-needed', wanted: false, mounted: true };
+  assert.equal(X.canInstall(gone), true);
+  assert.deepEqual(X.removal(gone, { names: {}, enabled: new Set() }), { show: false, why: '' });
   assert.deepEqual(X.removal(ext(base, 'proton'), ctx(base)), { show: false, why: '' });
   assert.deepEqual(X.removal(ext(base, 'coolercontrol'), ctx(base)), { show: false, why: '' });
   const att = preset('extensions-attention');
   assert.deepEqual(X.removal(ext(att, 'coolercontrol'), ctx(att)), { show: true, why: '' });
   assert.deepEqual(X.removal(ext(att, 'truckersmp'), ctx(att)), { show: true, why: '' });
-  // Only an installed extension that needs it holds a removal back.
+  // Only one a restart keeps (wanted or core) holds a removal back.
   const lib = { id: 'lib', wanted: true, required_by: ['a', 'b', 'c'] };
   const names = { a: 'Alpha', b: 'Beta', c: 'Gamma' };
   assert.deepEqual(X.removal(lib, { names, enabled: new Set(['a']) }), { show: true, why: 'Alpha needs it. Remove that first.' });
   assert.deepEqual(X.removal(lib, { names, enabled: new Set(['a', 'c']) }), { show: true, why: 'Alpha and Gamma need it. Remove those first.' });
+  const doc = { extensions: [lib, { id: 'a', name: 'Alpha', mounted: true }, { id: 'b', name: 'Beta', core: true }, { id: 'c', name: 'Gamma', wanted: true }] };
+  assert.deepEqual([...ctx(doc).enabled].sort(), ['b', 'c', 'lib'], 'mounted alone is not kept');
+  assert.deepEqual(X.removal(lib, ctx(doc)), { show: true, why: 'Beta and Gamma need it. Remove those first.' });
   assert.equal(X.and(['a', 'b', 'c']), 'a, b and c');
+});
+
+test('why adding asks for the password', () => {
+  assert.equal(X.passwordHint(ext(base, 'coolercontrol'), ctx(base)), 'CoolerControl runs as root, so VaporOS asks for its password.');
+  assert.equal(X.passwordHint({ id: 'k', name: 'Kernel thing', module_options: true }, ctx(base)), 'Kernel thing changes kernel settings, so VaporOS asks for its password.');
+  // needs_password covers what it also installs: the hint names that one.
+  const doc = { extensions: [{ id: 'app', name: 'App', requires: ['fans'] }, { id: 'fans', name: 'Fans', runs_as_root: true }] };
+  assert.equal(X.passwordHint(ext(doc, 'app'), ctx(doc)), 'Fans runs as root, so VaporOS asks for its password.');
+  ext(doc, 'fans').wanted = true;
+  assert.equal(X.passwordHint(ext(doc, 'app'), ctx(doc)), '', 'already in: the default hint');
+  assert.equal(X.wantsPassword({ status: 403, message: 'Adding CoolerControl needs the admin password' }), true);
+  assert.equal(X.wantsPassword({ status: 403, message: 'the password is wrong' }), true);
+  assert.equal(X.wantsPassword({ status: 403, message: 'csrf token mismatch' }), false);
+  assert.equal(X.wantsPassword({ status: 409, message: 'needs the admin password' }), false);
+  assert.equal(X.wantsPassword(null), false);
+});
+
+test('the drives a drive setting offers', () => {
+  const storage = read(join(FIXTURES, 'base', 'storage.json'));
+  assert.deepEqual(X.drives(storage.disks), [
+    { path: '/var/mnt/Games', text: 'Games · 420 GB free', system: false },
+    { path: '/state', text: 'System drive · 612 GB free', system: true },
+  ]);
+  const disks = [
+    { label: 'Old', adopted: true, missing: true, mounted_at: '/var/mnt/Old' },
+    { label: 'Bare', adopted: false, mounted_at: '/run/media/Bare' },
+    { label: 'VOS_ESP', is_system: true, mounted_at: '/efi' },
+    { label: 'vos_data', is_system: true },
+    { model: 'WD Blue', adopted: true, mounted_at: '/var/mnt/wd' },
+    { label: 'Twice', adopted: true, mounted_at: '/var/mnt/wd' },
+  ];
+  assert.deepEqual(X.drives(disks), [{ path: '/var/mnt/wd', text: 'WD Blue', system: false }]);
+  assert.deepEqual(X.drives(null), []);
 });
 
 test('the restart card names what the next restart changes', () => {

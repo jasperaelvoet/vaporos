@@ -91,10 +91,16 @@ export async function refresh(passive = true) {
   }
 }
 
+// soon refreshes /status 600 ms after the first event that asks for it.
+// Later ones within that time ride along, so a steady stream of events
+// (a download's) cannot push the refresh back for ever.
 let timer = 0;
 function soon() {
-  clearTimeout(timer);
-  timer = setTimeout(() => refresh(true), 600);
+  if (timer) return;
+  timer = setTimeout(() => {
+    timer = 0;
+    refresh(true);
+  }, 600);
 }
 
 function apply(next) {
@@ -175,10 +181,14 @@ function listen() {
     if (live && ['done', 'error', 'idle', 'cancelled'].includes(p && p.phase)) soon();
   });
   // Only when the extensions start or stop asking for a restart does the
-  // restart row need a new /status.
+  // restart row need a new /status: the first event against /status, then
+  // each against the one before.
+  let extNeed = null;
   on('extensions.state', (d) => {
     const want = !!(d && d.restart && d.restart.needed);
-    if (snap.restart && want !== pending(snap).some((r) => r.kind === 'extensions')) soon();
+    const was = extNeed ?? (snap.restart ? pending(snap).some((r) => r.kind === 'extensions') : want);
+    extNeed = want;
+    if (want !== was) soon();
   });
   on('power.idle', (p) => {
     if (p && p.shutdown_in != null && p.shutdown_in <= 30) idleWarnedAt = Date.now();

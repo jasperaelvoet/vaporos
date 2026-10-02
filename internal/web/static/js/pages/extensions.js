@@ -23,8 +23,10 @@ const asker = () => import('./extensions-ask.js');
 const confirm = (c) => import('../ui/dialog.js').then((m) => m.confirmDialog(c));
 
 let doc = null;
-let disks = null; // GET /storage's game drives, once a drive setting shows
+let ctx = X.context(null);
+let disks = null; // X.drives of GET /storage, once a drive setting shows
 let disksAsked = false;
+let skipOnce = false; // the next start leaves extensions out
 const cards = new Map(); // id → its <li>
 const sigs = new WeakMap(); // <li> → {part: what it was built from}
 const controls = new Map(); // "id/key" → a setting's <input> or <select>
@@ -52,22 +54,26 @@ function changed(li, key, v) {
 function take(d) {
   if (!d || !Array.isArray(d.extensions)) return;
   doc = d;
+  if (typeof d.skip_once === 'boolean') skipOnce = d.skip_once;
   render();
 }
 
 function render() {
-  const ctx = { names: X.names(doc), enabled: new Set(doc.extensions.filter((x) => x.wanted || x.mounted || x.core).map((x) => x.id)) };
+  ctx = X.context(doc);
   const list = byId('ext-list');
-  const want = doc.extensions.map((x) => card(x, ctx));
+  const want = doc.extensions.map((x) => card(x));
   for (const id of [...cards.keys()]) if (!find(id)) cards.delete(id);
   if (!want.length) want.push(h('li', { class: 'region-empty', text: "This version of VaporOS has no extensions." }));
   if (list.children.length !== want.length || want.some((li, i) => list.children[i] !== li)) list.replaceChildren(...want);
   renderRestart();
+  renderSkip();
+  // A document can come after a failed first read (the event, a reconnect).
   byId('ext-error').hidden = true;
+  list.hidden = false;
   if (list.hasAttribute('aria-busy')) region(list).ready();
 }
 
-function card(x, ctx) {
+function card(x) {
   let li = cards.get(x.id);
   if (!li) {
     li = cloneTpl('tpl-ext');
@@ -99,7 +105,7 @@ function card(x, ctx) {
   }
   part(li, 'lines').hidden = !lines.length;
   settings(li, x);
-  actions(li, x, ctx);
+  actions(li, x);
   more(li, x);
   say(x, name, c ? c.label : plain);
   return li;
@@ -131,7 +137,7 @@ function progress(li, x, name) {
 
 // ---------------------------------------------------------------- actions
 
-function actions(li, x, ctx) {
+function actions(li, x) {
   const name = x.name || x.id;
   const rm = X.removal(x, ctx);
   const web = x.mounted ? X.webURL(x, location.hostname) : '';
@@ -169,27 +175,27 @@ function after(id, btn) {
 async function install(id, btn) {
   const x = find(id);
   if (!x) return;
-  const names = X.names(doc);
-  const deps = (x.requires || []).map(find).filter((y) => y && !y.wanted && !y.mounted && !y.core);
-  const also = deps.map((y) => names[y.id]);
-  // The server asks for the password when anything it adds needs it.
-  const pw = [x, ...deps].find((y) => y.needs_password);
+  const also = X.adds(x, ctx).filter((y) => ctx.names[y]).map((y) => ctx.names[y]);
+  // One this boot runs, removed until the restart, simply stays.
+  const back = !!x.mounted;
   // restart.auto speaks of a restart already needed; a new one may happen
   // by itself.
   const auto = doc.restart && doc.restart.needed ? !!doc.restart.auto : true;
-  const when = auto ? 'It downloads now and is added at the next restart, which VaporOS does by itself when nobody is playing.' : 'It downloads now and is added at the next restart.';
+  const when = back ? 'It stays installed.' : auto ? 'It downloads now and is added at the next restart, which VaporOS does by itself when nobody is playing.' : 'It downloads now and is added at the next restart.';
+  // needs_password covers what it also installs; the dialog asks anyway
+  // when the box wants the password after all.
   const ok = await (await asker()).ask({
     title: `Install ${x.name}?`,
     body: (x.copy && x.copy.install) || x.summary || '',
     can: X.can(x),
     note: [also.length ? `It also installs ${X.and(also)}.` : '', when].filter(Boolean).join(' '),
-    password: !!pw,
-    passwordHint: pw && (pw.runs_as_root ? `${pw.name} runs as root, so VaporOS asks for its password.` : `${pw.name} changes kernel settings, so VaporOS asks for its password.`),
+    password: !!x.needs_password,
+    passwordHint: X.passwordHint(x, ctx),
     confirm: 'Install',
     run: async ({ password }) => take(await api('POST', `/extensions/${enc(id)}`, password ? { password } : {})),
   });
   if (!ok) return;
-  notify(`${x.name} is downloading. It's added at the next restart.`, { kind: 'ok' });
+  notify(back ? `${x.name} stays installed.` : `${x.name} is downloading. It's added at the next restart.`, { kind: 'ok' });
   after(id, btn);
 }
 
@@ -264,7 +270,7 @@ function control(x, s) {
   const sel = h('select', { class: 'input', id, 'aria-describedby': hintID }, options(s));
   sel.addEventListener('change', () => save(sel.value, () => (sel.value = String(saved() ?? ''))));
   controls.set(`${x.id}/${s.key}`, sel);
-  const none = s.type === 'disk' && Array.isArray(disks) && !disks.length;
+  const none = s.type === 'disk' && Array.isArray(disks) && !disks.some((d) => !d.system);
   return h('div', { class: 'field' },
     h('label', { class: 'field-label', for: id, text: s.label || s.key }),
     h('div', { class: 'ext-select' }, sel),
@@ -277,8 +283,8 @@ function options(s) {
   if (!Array.isArray(disks)) return [h('option', { value: String(s.value || ''), text: disksAsked && disks === false ? "Couldn't list the drives" : 'Looking at your drives…' })];
   const out = [h('option', { value: '', text: 'Choose a game drive' })];
   // A disk setting holds the drive's folder (CONTRACTS: an absolute path).
-  for (const d of disks) out.push(h('option', { value: d.mounted_at, text: [d.label || d.model || 'Drive', d.mounted_at].filter(Boolean).join(' · ') }));
-  if (s.value && !disks.some((d) => d.mounted_at === s.value)) out.push(h('option', { value: String(s.value), text: 'A drive that isn\'t connected' }));
+  for (const d of disks) out.push(h('option', { value: d.path, text: d.text }));
+  if (s.value && !disks.some((d) => d.path === s.value)) out.push(h('option', { value: String(s.value), text: 'A drive that isn\'t connected' }));
   return out;
 }
 
@@ -293,7 +299,7 @@ function value(x, s) {
 function loadDisks() {
   disksAsked = true;
   api('GET', '/storage').then((r) => {
-    disks = (Array.isArray(r.disks) ? r.disks : []).filter((d) => d.adopted && d.mounted_at && !d.missing);
+    disks = X.drives(r && r.disks);
   }, () => {
     disks = false;
   }).then(() => doc && render());
@@ -311,24 +317,31 @@ async function saveSetting(id, key, v, revert) {
   }
   el.setAttribute('aria-disabled', 'true');
   const send = async (password) => take(await api('PUT', `/extensions/${enc(id)}/settings`, { settings: { [key]: v }, ...(password ? { password } : {}) }));
+  // A setting that feeds kernel module options takes the password with it.
+  const withPassword = async () => (await asker()).ask({
+    title: `Change ${s.label}?`,
+    body: `${x.name} applies it as VaporOS starts.`,
+    password: true,
+    passwordHint: 'It changes how the system starts, so VaporOS asks for its password.',
+    confirm: 'Save',
+    run: ({ password }) => send(password),
+  });
   try {
-    // A setting that needs a restart may feed kernel module options: ask
-    // for the password with it (the server checks it only then).
-    if (x.needs_password && s.restart) {
-      const ok = await (await asker()).ask({
-        title: `Change ${s.label}?`,
-        body: `${x.name} applies it as VaporOS starts.`,
-        password: true,
-        passwordHint: 'It changes how the system starts, so VaporOS asks for its password.',
-        confirm: 'Save',
-        run: ({ password }) => send(password),
-      });
-      if (!ok) {
-        revert();
-        return;
-      }
+    let ok = true;
+    if (s.needs_password) {
+      ok = await withPassword();
     } else {
-      await send('');
+      try {
+        await send('');
+      } catch (err) {
+        // The box wants the password after all: ask for it, no dead end.
+        if (!X.wantsPassword(err)) throw err;
+        ok = await withPassword();
+      }
+    }
+    if (!ok) {
+      revert();
+      return;
     }
     notify(s.restart ? `Saved. ${X.AFTER_RESTART}` : 'Saved.', { kind: 'ok' });
   } catch (err) {
@@ -350,8 +363,10 @@ function more(li, x) {
   const dl = X.downloads(x);
   const cav = (x.caveats || []).filter(Boolean);
   if (!changed(li, 'more', [can, dl, cav])) return;
-  put(part(li, 'more-label'), dl.length ? 'What it can do and downloads' : 'What it can do');
+  part(li, 'more').hidden = !can.length && !dl.length && !cav.length;
+  put(part(li, 'more-label'), X.moreLabel(can.length, dl.length));
   part(li, 'can').replaceChildren(...can.map((t) => h('li', { class: 'ext-fact', text: t })));
+  part(li, 'can-box').hidden = !can.length;
   part(li, 'downloads').replaceChildren(...dl.map((d) => h('li', { class: 'ext-fact', text: d.text, dataset: d.warn ? { tone: 'warning' } : null })));
   part(li, 'downloads-box').hidden = !dl.length;
   part(li, 'caveats').replaceChildren(...cav.map((t) => h('li', { class: 'ext-fact', text: t })));
@@ -376,11 +391,54 @@ function renderRestart() {
   restartShown = true;
 }
 
+// ------------------------------------------------- start without extensions
+
+function renderSkip() {
+  byId('ext-skip-on').hidden = !skipOnce;
+  byId('ext-skip-cancel').hidden = !skipOnce;
+  byId('ext-skip').hidden = skipOnce;
+}
+
+// skipped takes what POST or DELETE /extensions/skip-once answered: the
+// document when the box sends one, else what was asked happened.
+function skipped(ans, on) {
+  if (ans && Array.isArray(ans.extensions)) take(ans);
+  if (!(ans && typeof ans.skip_once === 'boolean')) skipOnce = on;
+  renderSkip();
+}
+
+function bindSkip() {
+  const skip = byId('ext-skip');
+  const cancel = byId('ext-skip-cancel');
+  skip.disabled = false;
+  skip.addEventListener('click', async () => {
+    const ok = await confirm({
+      title: 'Start once without extensions?',
+      body: "The next start leaves every extension out, so Windows games use Valve's Proton. The start after that adds them again.",
+      confirm: 'Leave them out',
+    });
+    if (!ok) return;
+    await busy(skip, async () => {
+      skipped(await api('POST', '/extensions/skip-once', {}), true);
+      notify('The next start leaves extensions out.', { kind: 'ok' });
+      if (skip.hidden) cancel.focus();
+    }, fail);
+  });
+  cancel.addEventListener('click', () => busy(cancel, async () => {
+    skipped(await api('DELETE', '/extensions/skip-once'), false);
+    notify('The next start adds extensions again.', { kind: 'ok' });
+    if (cancel.hidden) skip.focus();
+  }, fail));
+}
+
 // ------------------------------------------------------------------ start
 
 async function failed(err) {
   if (doc) return;
-  byId('ext-error-text').textContent = `Couldn't load the extensions. ${await errorText(err)}`;
+  const text = `Couldn't load the extensions. ${await errorText(err)}`;
+  // The event may have brought a document while the words loaded.
+  if (doc) return;
+  byId('ext-error-text').textContent = text;
   byId('ext-error').hidden = false;
   const list = byId('ext-list');
   list.hidden = true;
@@ -404,19 +462,7 @@ async function start() {
     read().then(take, failed);
   });
   byId('ext-restart-go').addEventListener('click', () => scene().then((m) => m.powerAction('reboot', { snap: current() })));
-  const skip = byId('ext-skip');
-  skip.disabled = false;
-  skip.addEventListener('click', async () => {
-    const ok = await confirm({
-      title: 'Start once without extensions?',
-      body: "The next start leaves every extension out, so Windows games use Valve's Proton. The start after that adds them again.",
-      confirm: 'Leave them out',
-    });
-    if (ok) await busy(skip, async () => {
-      await api('POST', '/extensions/skip-once', {});
-      notify('The next start leaves extensions out.', { kind: 'ok' });
-    }, fail);
-  });
+  bindSkip();
   (early || read()).then(take, failed);
   // This page says itself what a restart adds; the row keeps the rest.
   onStatus((snap) => {

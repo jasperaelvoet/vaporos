@@ -112,10 +112,39 @@ export function from(x) {
   return [u.name ? `From ${u.name}` : '', u.license || '', size(x.size)].filter(Boolean).join(' · ');
 }
 
+// context is what a card needs to know of the others: their names, the
+// ids a restart keeps (wanted or core) and each card by id.
+export function context(doc) {
+  const xs = list(doc && doc.extensions);
+  return {
+    names: names(doc),
+    enabled: new Set(xs.filter((x) => x.wanted || x.core).map((x) => x.id)),
+    byId: new Map(xs.map((x) => [x.id, x])),
+  };
+}
+
+// adds is what installing x also installs, by id, as the box adds it:
+// what x requires, directly or not, that is neither wanted nor core.
+export function adds(x, { enabled = new Set(), byId = new Map() } = {}) {
+  const out = [];
+  const seen = new Set([x.id]);
+  const walk = (y) => {
+    for (const id of list(y.requires)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (byId.has(id)) walk(byId.get(id));
+      if (!enabled.has(id)) out.push(id);
+    }
+  };
+  walk(x);
+  return out;
+}
+
 // lines are what a card says under its summary, each {text, tone}: what
 // a restart changes, its own notes, what installing it pulls in, and its
-// helper's status lines. ctx is {names, enabled}, as for removal.
-export function lines(x, { names = {}, enabled = new Set() } = {}) {
+// helper's status lines. ctx is context(doc).
+export function lines(x, ctx = {}) {
+  const names = ctx.names || {};
   const out = [];
   const note = NOTES[x.id];
   if (note) {
@@ -128,10 +157,11 @@ export function lines(x, { names = {}, enabled = new Set() } = {}) {
     else out.push({ text: 'Its changes take effect at the next restart.', tone: '' });
   }
   if (x.state === 'not-in-this-version') {
-    out.push({ text: "This version of VaporOS doesn't have it. It comes back with a version that does.", tone: '' });
+    const why = String(x.reason || '').trim();
+    out.push({ text: why ? reason(why) : "This version of VaporOS doesn't have it. It comes back with a version that does.", tone: '' });
   }
-  const req = list(x.requires).filter((id) => names[id] && !enabled.has(id)).map((id) => names[id]);
-  if (req.length && !x.mounted && !x.wanted) out.push({ text: `Installing it also installs ${and(req)}.`, tone: '' });
+  const req = adds(x, ctx).filter((id) => names[id]).map((id) => names[id]);
+  if (req.length && !x.wanted && !x.core) out.push({ text: `Installing it also installs ${and(req)}.`, tone: '' });
   for (const s of list(x.status)) {
     const text = s && s.text ? dot(s.text) : '';
     // A helper may say what a note already says: once is enough.
@@ -140,18 +170,35 @@ export function lines(x, { names = {}, enabled = new Set() } = {}) {
   return out;
 }
 
-// can is "What it can do": the verified permissions and the rest of what
-// the extension may change, in plain sentences.
+// some names what a list of {name} holds: the names, and the ones without
+// a name as "a game", "some games" or "one other game" (noun "game").
+function some(items, noun) {
+  const named = items.map((i) => String((i && i.name) || '').trim());
+  const rest = named.filter((n) => !n).length;
+  const out = [...new Set(named.filter(Boolean))];
+  if (!out.length) return rest === 1 ? `a ${noun}` : `some ${noun}s`;
+  if (rest) out.push(rest === 1 ? `one other ${noun}` : `${rest} other ${noun}s`);
+  return and(out);
+}
+
+// can is "What it can do": what the build verified (its permissions and
+// kernel module options) and what it sets up in Steam, in plain
+// sentences. Nothing is said that the document does not carry.
 export function can(x) {
   const out = [];
   for (const p of list(x.permissions)) {
     if (!PERMS[p]) continue;
     out.push(p === 'service' && x.runs_as_root ? `${PERMS[p]} as root` : PERMS[p]);
   }
-  if (x.needs_password && !x.runs_as_root) out.push('Sets kernel module options');
-  if (list(x.settings).some((s) => s && s.restart)) out.push('Has settings that take effect after a restart');
+  if (x.module_options) out.push('Sets kernel module options (takes effect after a restart)');
+  const st = x.steam || {};
+  const forces = list(st.forces);
+  const hooks = list(st.hooks);
+  const shortcuts = list(st.shortcuts);
+  if (forces.length) out.push(`Makes Steam run ${some(forces, 'game')} with Proton`);
+  if (hooks.length) out.push(`Starts ${some(hooks, 'game')} through VaporOS so ${x.name || x.id} can join in`);
+  if (shortcuts.length) out.push(`Adds ${some(shortcuts, 'shortcut')} to your Steam library`);
   if (x.web) out.push('Has its own web page, reachable from your network');
-  if (!out.length) out.push('Adds files only: nothing runs on its own');
   return out.map(dot);
 }
 
@@ -166,6 +213,34 @@ export function downloads(x) {
     else if (CHECKED[d.checked]) text.push(CHECKED[d.checked]);
     return { text: text.join(' '), warn: !!(d.runs_code && unchecked) };
   });
+}
+
+// moreLabel names a card's fold by what it holds: what it can do, what it
+// downloads, or only what is good to know.
+export function moreLabel(can, downloads) {
+  if (can && downloads) return 'What it can do and downloads';
+  if (can) return 'What it can do';
+  return downloads ? 'What it downloads' : 'Good to know';
+}
+
+// drives are what a drive setting offers, from GET /storage's disks: each
+// adopted game drive that is there, then the system drive (vos_data), as
+// {path, text, system}. path is the drive's folder (its mounted_at), the
+// value the setting holds.
+export function drives(disks) {
+  const out = [];
+  const seen = new Set();
+  const add = (d, system) => {
+    const path = String(d.mounted_at || '');
+    if (!path.startsWith('/') || seen.has(path)) return;
+    seen.add(path);
+    const name = system ? 'System drive' : String(d.label || d.model || 'Drive');
+    out.push({ path, text: [name, Number(d.free) > 0 ? `${bytes(d.free)} free` : ''].filter(Boolean).join(' · '), system });
+  };
+  const xs = list(disks).filter(Boolean);
+  for (const d of xs) if (d.adopted && !d.missing && !d.is_system) add(d, false);
+  for (const d of xs) if (d.is_system && (d.label === 'vos_data' || d.partlabel === 'vos_data')) add(d, true);
+  return out;
 }
 
 // settingHint is a setting's hint: its help and, when it needs one, the
@@ -191,18 +266,34 @@ export function webURL(x, hostname) {
   return `http://${hostname}:${port}/`;
 }
 
-// removal says whether a card offers Remove: never for a core extension,
-// only for one that is wanted or mounted, and with why (Remove disabled)
-// while an installed extension needs it. ctx is {names, enabled}: the
-// ids of the extensions that are wanted, mounted or core.
+// removal says whether a card offers Remove: only for one the user added
+// (wanted, never core), with why (Remove disabled) while one a restart
+// keeps (wanted or core) needs it. ctx is context(doc).
 export function removal(x, { names = {}, enabled = new Set() } = {}) {
-  if (x.core || (!x.wanted && !x.mounted)) return { show: false, why: '' };
+  if (x.core || !x.wanted) return { show: false, why: '' };
   const by = list(x.required_by).filter((id) => enabled.has(id)).map((id) => names[id] || id);
   return { show: true, why: by.length ? `${and(by)} ${by.length === 1 ? 'needs' : 'need'} it. Remove ${by.length === 1 ? 'that' : 'those'} first.` : '' };
 }
 
-// canInstall: neither core nor wanted, and in this version.
-export const canInstall = (x) => !x.core && !x.wanted && x.state === 'not-installed';
+// canInstall: neither core nor wanted, in this version and not on its way
+// already. One removed until the restart can come back before it.
+export const canInstall = (x) => !x.core && !x.wanted && !['not-in-this-version', 'installing'].includes(x.state);
+
+// passwordHint says why adding x asks for the VaporOS password: the first
+// of x and what it also installs that runs as root or sets kernel module
+// options, or '' when no card says. ctx is context(doc).
+export function passwordHint(x, ctx = {}) {
+  const byId = ctx.byId || new Map();
+  const all = [x, ...adds(x, ctx).map((id) => byId.get(id)).filter(Boolean)];
+  const root = all.find((y) => y.runs_as_root);
+  if (root) return `${root.name || root.id} runs as root, so VaporOS asks for its password.`;
+  const mod = all.find((y) => y.module_options);
+  return mod ? `${mod.name || mod.id} changes kernel settings, so VaporOS asks for its password.` : '';
+}
+
+// wantsPassword: the box refused a change for the VaporOS password it
+// needs (403 naming the password), not for anything else.
+export const wantsPassword = (err) => !!err && err.status === 403 && /password/i.test(String(err.message || ''));
 
 // restartText is the page's restart card: what the next restart adds and
 // removes, by name, else the server's reason, else in general.
