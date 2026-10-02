@@ -3,13 +3,17 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
 const mountinfo = `22 1 0:21 / / ro,relatime shared:1 - erofs /dev/sda2 ro,user_xattr
@@ -52,7 +56,16 @@ func TestParseMountInfo(t *testing.T) {
 // fakeHealth is a healthy machine; tests break parts of it.
 type fakeHealth struct {
 	mountsOK, pingOK, userOK, gpu, stream, counting, forced bool
-	noFallback                                              bool // nothing else would boot
+	noFallback                                              bool       // nothing else would boot
+	lan                                                     []lanState // what each probe sees; the last one repeats
+
+	ext        *store.BootReport // nil: no report (mode off)
+	extErr     error
+	healthyErr error
+
+	mu      sync.Mutex
+	probes  int
+	healthy []*store.BootReport // AfterHealthy calls
 }
 
 func (f *fakeHealth) env() healthEnv {
@@ -79,16 +92,37 @@ func (f *fakeHealth) env() healthEnv {
 		counting: func() bool { return f.counting },
 		fallback: func() bool { return !f.noFallback },
 		forced:   func() bool { return f.forced },
+		lan: func() lanState {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.probes++
+			if len(f.lan) == 0 {
+				return lanNoCarrier
+			}
+			return f.lan[min(f.probes, len(f.lan))-1]
+		},
+		extensions: func() (*store.BootReport, error) {
+			if f.ext == nil && f.extErr == nil {
+				return &store.BootReport{Mode: store.ModeOff, Reason: store.ReasonNoReport}, nil
+			}
+			return f.ext, f.extErr
+		},
+		healthy: func(rep *store.BootReport) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.healthy = append(f.healthy, rep)
+			return f.healthyErr
+		},
 	}
 }
 
 func healthy() *fakeHealth {
-	return &fakeHealth{mountsOK: true, pingOK: true, userOK: true, gpu: true, stream: true}
+	return &fakeHealth{mountsOK: true, pingOK: true, userOK: true, gpu: true, stream: true, lan: []lanState{lanUp}}
 }
 
 func runFake(t *testing.T, f *fakeHealth) (int, string) {
 	t.Helper()
-	healthPoll, pingTimeout = 5*time.Millisecond, 50*time.Millisecond
+	healthPoll, pingTimeout, lanTimeout = 5*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	var log strings.Builder
@@ -115,7 +149,7 @@ func TestHealthOK(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, log)
 	}
-	if h := healthOK(t); !h.GPU || !h.Stream {
+	if h := healthOK(t); !h.GPU || !h.Stream || !h.LAN {
 		t.Fatalf("health-ok %+v", h)
 	}
 	// Running and healthy: no longer failed, no longer merely staged.
@@ -132,11 +166,12 @@ func TestHealthFailsOnTrial(t *testing.T) {
 		"user unit":   func(f *fakeHealth) { f.userOK = false },
 		"gpu":         func(f *fakeHealth) { f.gpu = false },
 		"stream":      func(f *fakeHealth) { f.stream = false },
+		"lan":         func(f *fakeHealth) { f.lan = []lanState{lanNoAddress} },
 	}
 	for name, breakIt := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := setup(t)
-			e.write(config.HealthOKPath(), `{"gpu":true,"stream":true}`)
+			e.write(config.HealthOKPath(), `{"gpu":true,"stream":true,"lan":true}`)
 			f := healthy()
 			f.counting = true
 			breakIt(f)
@@ -144,7 +179,7 @@ func TestHealthFailsOnTrial(t *testing.T) {
 				t.Fatalf("exit %d\n%s", code, log)
 			}
 			// The baseline is untouched while on trial.
-			if h := healthOK(t); !h.GPU || !h.Stream {
+			if h := healthOK(t); !h.GPU || !h.Stream || !h.LAN {
 				t.Fatalf("health-ok %+v", h)
 			}
 		})
@@ -287,5 +322,184 @@ func TestBootCounting(t *testing.T) {
 	e.must(os.Rename(a.Path, strings.TrimSuffix(a.Path, ".conf")+"+2-1.conf"))
 	if !bootCounting() {
 		t.Fatal("counting entry ignored")
+	}
+}
+
+// trialReport is the boot report of an extension trial.
+func trialReport() *store.BootReport {
+	return &store.BootReport{Mode: store.ModePending, Set: "3", TriesLeft: 1,
+		Mounted: []store.Mounted{{ID: "proton", SHA256: strings.Repeat("a", 64), FSVerity: strings.Repeat("b", 64)}}}
+}
+
+// An extension trial fails like a counted boot with a fallback: the
+// initramfs boots the enabled set once the trial's tries are used up.
+func TestHealthExtensionTrialFails(t *testing.T) {
+	e := setup(t)
+	e.write(config.HealthOKPath(), `{"gpu":true,"stream":true}`)
+	f := healthy()
+	f.stream = false
+	f.ext = trialReport()
+	code, log := runFake(t, f)
+	if code != 1 || !strings.Contains(log, "tries new extensions") {
+		t.Fatalf("exit %d\n%s", code, log)
+	}
+	if h := healthOK(t); !h.Stream || h.LAN {
+		t.Fatalf("health-ok rewritten on a failed trial: %+v", h)
+	}
+	if len(f.healthy) != 0 {
+		t.Fatalf("a failed trial was recorded as good: %v", f.healthy)
+	}
+}
+
+func TestHealthExtensionTrialForced(t *testing.T) {
+	setup(t)
+	f := healthy()
+	f.forced = true
+	f.ext = trialReport()
+	if code, log := runFake(t, f); code != 1 {
+		t.Fatalf("exit %d\n%s", code, log)
+	}
+	if _, err := os.Stat(config.HealthOKPath()); !os.IsNotExist(err) {
+		t.Fatal("health-ok written on a forced failure")
+	}
+	if len(f.healthy) != 0 {
+		t.Fatal("a forced failure was recorded as good")
+	}
+}
+
+// A good boot hands its report to the store (proven, promotion), and a
+// store problem never fails the boot.
+func TestHealthExtensionsRecorded(t *testing.T) {
+	for _, mode := range []string{store.ModePending, store.ModeEnabled, store.ModeOSTrial} {
+		t.Run(mode, func(t *testing.T) {
+			setup(t)
+			f := healthy()
+			f.ext = trialReport()
+			f.ext.Mode = mode
+			f.healthyErr = errors.New("disk full")
+			code, log := runFake(t, f)
+			if code != 0 || !strings.Contains(log, "recording this good boot") {
+				t.Fatalf("exit %d\n%s", code, log)
+			}
+			if len(f.healthy) != 1 || f.healthy[0] != f.ext {
+				t.Fatalf("AfterHealthy calls: %v", f.healthy)
+			}
+			if h := healthOK(t); !h.GPU {
+				t.Fatalf("health-ok %+v", h)
+			}
+		})
+	}
+
+	// Nothing mounted on purpose (or no report): nothing to record.
+	setup(t)
+	f := healthy()
+	if code, _ := runFake(t, f); code != 0 || len(f.healthy) != 0 {
+		t.Fatalf("exit %d, AfterHealthy calls %v", code, f.healthy)
+	}
+}
+
+// An unreadable report is not a trial: the forced failure of a blessed
+// boot stays degraded.
+func TestHealthExtensionReportUnreadable(t *testing.T) {
+	setup(t)
+	f := healthy()
+	f.forced = true
+	f.extErr = errors.New("unexpected EOF")
+	code, log := runFake(t, f)
+	if code != 0 || !strings.Contains(log, "not treated as a trial") || !strings.Contains(log, "degraded") {
+		t.Fatalf("exit %d\n%s", code, log)
+	}
+}
+
+func TestHealthLAN(t *testing.T) {
+	cases := []struct {
+		name     string
+		prevLAN  bool
+		lan      []lanState
+		code     int
+		seenLAN  bool
+		minProbe int // at least this many probes
+	}{
+		{name: "up", prevLAN: true, lan: []lanState{lanUp}, seenLAN: true},
+		{name: "comes up", prevLAN: true, lan: []lanState{lanNoCarrier, lanNoAddress, lanNoAddress, lanUp}, seenLAN: true, minProbe: 4},
+		{name: "no address", prevLAN: true, lan: []lanState{lanNoAddress}, code: 1},
+		// Nothing plugged in: inconclusive, so it passes and keeps the baseline.
+		{name: "no carrier", prevLAN: true, lan: []lanState{lanNoCarrier}, seenLAN: true},
+		{name: "first seen", lan: []lanState{lanUp}, seenLAN: true},
+		{name: "not required", lan: []lanState{lanNoAddress}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := setup(t)
+			e.write(config.HealthOKPath(), fmt.Sprintf(`{"gpu":true,"stream":true,"lan":%v}`, c.prevLAN))
+			f := healthy()
+			f.counting = true
+			f.lan = c.lan
+			code, log := runFake(t, f)
+			if code != c.code {
+				t.Fatalf("exit %d, want %d\n%s", code, c.code, log)
+			}
+			if f.probes < c.minProbe {
+				t.Fatalf("%d probes", f.probes)
+			}
+			if c.code == 0 {
+				if h := healthOK(t); h.LAN != c.seenLAN {
+					t.Fatalf("health-ok %+v", h)
+				}
+			}
+		})
+	}
+}
+
+func TestProbeLAN(t *testing.T) {
+	setup(t)
+	oldDir, oldAddrs := NetClassDir, interfaceAddrs
+	t.Cleanup(func() { NetClassDir, interfaceAddrs = oldDir, oldAddrs })
+	NetClassDir = t.TempDir()
+	addrs := map[string][]string{}
+	interfaceAddrs = func(name string) ([]net.Addr, error) {
+		var out []net.Addr
+		for _, a := range addrs[name] {
+			ip, n, err := net.ParseCIDR(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.IP = ip
+			out = append(out, n)
+		}
+		return out, nil
+	}
+	nic := func(name string, device bool, carrier string, a ...string) {
+		dir := filepath.Join(NetClassDir, name)
+		os.MkdirAll(dir, 0o755)
+		if device {
+			os.MkdirAll(filepath.Join(dir, "device"), 0o755)
+		}
+		if carrier != "" {
+			os.WriteFile(filepath.Join(dir, "carrier"), []byte(carrier+"\n"), 0o644)
+		}
+		addrs[name] = a
+	}
+
+	if got := probeLAN(); got != lanNoCarrier {
+		t.Fatalf("no interfaces: %v", got)
+	}
+	nic("lo", true, "1", "127.0.0.1/8", "::1/128")
+	nic("docker0", false, "1", "172.17.0.1/16") // virtual: no device
+	nic("eno1", true, "0", "192.168.1.5/24")    // no link
+	if got := probeLAN(); got != lanNoCarrier {
+		t.Fatalf("only lo, a bridge and an unplugged NIC: %v", got)
+	}
+	nic("enp5s0", true, "1", "169.254.10.2/16", "fe80::1/64")
+	if got := probeLAN(); got != lanNoAddress {
+		t.Fatalf("link-local only: %v", got)
+	}
+	addrs["enp5s0"] = append(addrs["enp5s0"], "fd12:3456::2/64")
+	if got := probeLAN(); got != lanUp {
+		t.Fatalf("a ULA address: %v", got)
+	}
+	addrs["enp5s0"] = []string{"10.0.0.7/8"}
+	if got := probeLAN(); got != lanUp {
+		t.Fatalf("a private IPv4 address: %v", got)
 	}
 }

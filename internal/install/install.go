@@ -12,7 +12,8 @@
 //	verify      read slot a back from the disk and check it again
 //	bootloader  systemd-boot, loader.conf and the slot a entry
 //	configure   first-boot state on vos_data: hostname, timezone, admin
-//	            password, machine kernel args, config.json
+//	            password, machine kernel args, config.json; the image's
+//	            core extensions, best effort (extensions.go)
 //	done
 //
 // The image comes through the update package's Source, the same verified
@@ -370,7 +371,9 @@ func (in *installer) partition(ctx context.Context) error {
 	if err := in.run(ctx, "mkfs.vfat", "-F", "32", "-n", "VOS_ESP", devPath(parts.esp)); err != nil {
 		return err
 	}
-	if err := in.run(ctx, "mkfs.ext4", "-q", "-F", "-L", "vos_data", devPath(parts.data)); err != nil {
+	// verity: extension images are sealed with fs-verity, which needs the
+	// filesystem's block size to be the page size.
+	if err := in.run(ctx, "mkfs.ext4", "-q", "-F", "-O", "verity", "-b", "4096", "-L", "vos_data", devPath(parts.data)); err != nil {
 		return err
 	}
 	in.report(StepPartition, 10, "Disk prepared")
@@ -428,6 +431,11 @@ func (in *installer) prepareRepair(ctx context.Context) error {
 				}
 			}
 		}
+	}
+	// An install from before extensions lacks ext4's verity feature; the
+	// initramfs would set it at boot, but seeding needs it now.
+	if err := in.run(ctx, "tune2fs", "-O", "verity", data); err != nil {
+		in.env.logf("install: %v; extensions are added once it boots", err)
 	}
 	in.report(StepPartition, 6, "Formatting the boot partition")
 	for _, p := range []string{in.parts.esp, in.parts.b} {

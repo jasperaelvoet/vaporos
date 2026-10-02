@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	mrand "math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,13 +57,13 @@ func setup(t *testing.T) *testEnv {
 		saved[i] = *p
 	}
 	oldBackoff, oldStall, oldSync, oldClient := backoff, stallTimeout, syncEvery, httpClient
-	oldPoll, oldPing := healthPoll, pingTimeout
+	oldPoll, oldPing, oldLAN := healthPoll, pingTimeout, lanTimeout
 	t.Cleanup(func() {
 		for i, p := range strs {
 			*p = saved[i]
 		}
 		backoff, stallTimeout, syncEvery, httpClient = oldBackoff, oldStall, oldSync, oldClient
-		healthPoll, pingTimeout = oldPoll, oldPing
+		healthPoll, pingTimeout, lanTimeout = oldPoll, oldPing, oldLAN
 	})
 	backoff = func(int) time.Duration { return time.Millisecond }
 	syncEvery = 64 << 10
@@ -246,7 +248,13 @@ func newFakeRegistry(t *testing.T, img *image) *fakeRegistry {
 	t.Helper()
 	f := &fakeRegistry{t: t, repo: "jasperaelvoet/vaporos", tag: "main", blobs: map[string][]byte{}}
 	var layers []map[string]any
-	for _, name := range []string{"manifest.json", "manifest.json.sig", "root.erofs", "vmlinuz", "initramfs.img"} {
+	names := []string{"manifest.json", "manifest.json.sig", "root.erofs", "vmlinuz", "initramfs.img"}
+	for _, name := range slices.Sorted(maps.Keys(img.files)) {
+		if !slices.Contains(names, name) {
+			names = append(names, name) // extension images
+		}
+	}
+	for _, name := range names {
 		b := img.files[name]
 		d := sha(b)
 		f.blobs[d] = b

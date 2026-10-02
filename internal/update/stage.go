@@ -14,6 +14,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
@@ -34,8 +35,10 @@ func SlotDevice(slot string) (string, error) { return boot.Partition("vos_" + sl
 
 // Progress is the update.progress event (docs/CONTRACTS.md). During Stage,
 // Percent covers the whole update while Bytes and Total count the current
-// phase: check, download (kernel and initrd), write (root into the slot),
-// verify (read-back), install (ESP), done; or error, with Error set.
+// phase: check, download (kernel, initrd and the extension images the new
+// image needs), write (root into the slot), verify (read-back), install
+// (ESP), done; or error, with Error set. Download and write share the first
+// 80% by their bytes.
 type Progress struct {
 	Phase   string `json:"phase"`
 	Percent int    `json:"percent"`
@@ -170,7 +173,12 @@ func Check(ctx context.Context, cfg *config.Config, opts Options) (*CheckResult,
 	now := time.Now().UTC().Format(time.RFC3339)
 	res := &CheckResult{Manifest: m, Reason: accept(m, bootedImage(), st, opts)}
 	if res.Reason == nil {
-		res.Available = &Available{Version: m.Version, Size: m.Artifact(manifest.Root).Size, Checked: now}
+		// Run unprivileged, images the store does not let us see count
+		// as missing.
+		wanted, _ := store.Wanted()
+		_, missing := imagesFor(m, wanted)
+		size := m.Artifact(manifest.Root).Size + entriesSize(missing)
+		res.Available = &Available{Version: m.Version, Size: size, Checked: now}
 	}
 	// Best effort: `vos update --check` also runs unprivileged.
 	modifyState(func(st *State) error {
@@ -191,9 +199,11 @@ type Result struct {
 
 // Stage fetches, verifies and writes an image into the idle slot and makes
 // it the next boot, in the order docs/CONTRACTS.md "Write order" requires:
-// the idle slot's entries are removed first; root is streamed into the
-// slot while hashing, then read back; kernel and initrd go to the ESP; the
-// entry, with 3 boot tries, comes last; then update-state records it.
+// the extension images the new image needs are sealed into the store
+// first; then the idle slot's entries are removed and its extension catalog
+// recorded; root is streamed into the slot while hashing, then read back;
+// kernel and initrd go to the ESP; the entry, with 3 boot tries, comes
+// last; then update-state records it.
 func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, err error) {
 	if config.IsLive() {
 		return nil, ErrLive
@@ -210,7 +220,8 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 	}
 	defer lock.Unlock()
 
-	progress := overall(opts.Progress)
+	ov := &overall{fn: opts.Progress, spans: stageSpans(0, 0)}
+	progress := ov.progress()
 	rep := &reporter{fn: progress}
 	rep.report("check", 0, 0)
 	defer func() {
@@ -260,12 +271,20 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 	if size := m.Artifact(manifest.Root).Size; size > capacity {
 		return res, tooBig(size, dev, capacity)
 	}
+	wanted, err := store.Wanted()
+	if err != nil {
+		return res, fmt.Errorf("extension store: %w", err)
+	}
+	have, missing := imagesFor(m, wanted)
+	if err := checkStoreSpace(entriesSize(missing)); err != nil {
+		return res, err
+	}
 	if opts.Accepted != nil {
 		opts.Accepted(m, idle)
 	}
 
-	// Kernel and initrd first: small, and a network problem shows up
-	// before the idle slot is touched.
+	// 0. Kernel, initrd and extension images first: a network problem
+	// shows up before the idle slot is touched.
 	if err := os.MkdirAll(WorkDir, 0o755); err != nil {
 		return res, err
 	}
@@ -274,13 +293,29 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 		return res, err
 	}
 	defer os.RemoveAll(work)
-	if err := FetchBootFiles(ctx, src, m, work, progress); err != nil {
+	bootSize := bootFilesSize(m)
+	dlTotal := bootSize + entriesSize(missing)
+	ov.spans = stageSpans(dlTotal, m.Artifact(manifest.Root).Size)
+	dl := &reporter{fn: progress, version: m.Version}
+	dl.report("download", 0, dlTotal)
+	if err := fetchBootFiles(ctx, src, m, work, func(done int64) { dl.report("download", done, dlTotal) }); err != nil {
+		return res, err
+	}
+	fetched, err := fetchImages(ctx, src, m, missing, func(done int64) { dl.report("download", bootSize+done, dlTotal) })
+	if err != nil {
 		return res, err
 	}
 
-	// 1. Unhook the idle slot, so a half-written slot can never boot.
-	if err := boot.RemoveSlotEntries(esp, idle); err != nil {
+	// 1. Unhook the idle slot, so a half-written slot can never boot, and
+	// record the new image's extension catalog.
+	lost, err := unhookIdleSlot(ctx, esp, idle, m, append(have, fetched...))
+	if err != nil {
 		return res, err
+	}
+	if len(lost) > 0 {
+		if _, err := fetchImages(ctx, src, m, lost, nil); err != nil {
+			return res, err
+		}
 	}
 	if _, err := modifyState(func(st *State) error {
 		if st.Staged != nil && st.Staged.Slot == idle {
@@ -445,6 +480,17 @@ func ImageCmdline(m *manifest.Manifest) string {
 // boot.InstallEntry expects (vmlinuz, initramfs.img), verified.
 func FetchBootFiles(ctx context.Context, src *Source, m *manifest.Manifest, dir string, progress func(Progress)) error {
 	rep := &reporter{fn: progress, version: m.Version}
+	total := bootFilesSize(m)
+	rep.report("download", 0, total)
+	return fetchBootFiles(ctx, src, m, dir, func(done int64) { rep.report("download", done, total) })
+}
+
+func bootFilesSize(m *manifest.Manifest) int64 {
+	return m.Artifact(manifest.Kernel).Size + m.Artifact(manifest.Initrd).Size
+}
+
+// fetchBootFiles is FetchBootFiles, calling progress with the bytes done.
+func fetchBootFiles(ctx context.Context, src *Source, m *manifest.Manifest, dir string, progress func(done int64)) error {
 	files := []struct {
 		a    manifest.Artifact
 		name string
@@ -452,16 +498,14 @@ func FetchBootFiles(ctx context.Context, src *Source, m *manifest.Manifest, dir 
 		{m.Artifact(manifest.Kernel), boot.BootFiles[0]},
 		{m.Artifact(manifest.Initrd), boot.BootFiles[1]},
 	}
-	total := files[0].a.Size + files[1].a.Size
 	var base int64
-	rep.report("download", 0, total)
 	for _, f := range files {
 		out, err := os.Create(filepath.Join(dir, f.name))
 		if err != nil {
 			return err
 		}
 		err = src.Fetch(ctx, f.a, out, func(done int64) error {
-			rep.report("download", base+done, total)
+			progress(base + done)
 			return ctx.Err()
 		})
 		if cerr := out.Close(); err == nil {
@@ -650,20 +694,35 @@ func Rollback(force bool) (string, error) {
 }
 
 // stageSpans maps each phase's own 0-100% onto Stage's overall percent.
-var stageSpans = map[string][2]int{
-	"check": {0, 0}, "download": {0, 2}, "write": {2, 80},
-	"verify": {80, 98}, "install": {98, 100}, "done": {100, 100},
+// Download (kernel, initrd and extension images) and write (root) share
+// the first 80% by their bytes.
+func stageSpans(download, root int64) map[string][2]int {
+	split := 0
+	if total := download + root; total > 0 {
+		split = int(80 * download / total)
+	}
+	return map[string][2]int{
+		"check": {0, 0}, "download": {0, split}, "write": {split, 80},
+		"verify": {80, 98}, "install": {98, 100}, "done": {100, 100},
+	}
 }
 
-func overall(fn func(Progress)) func(Progress) {
-	if fn == nil {
+// overall turns a phase's percent into Stage's; spans change once the
+// sizes are known.
+type overall struct {
+	fn    func(Progress)
+	spans map[string][2]int
+}
+
+func (o *overall) progress() func(Progress) {
+	if o.fn == nil {
 		return nil
 	}
 	return func(p Progress) {
-		if s, ok := stageSpans[p.Phase]; ok {
+		if s, ok := o.spans[p.Phase]; ok {
 			p.Percent = s[0] + (s[1]-s[0])*p.Percent/100
 		}
-		fn(p)
+		o.fn(p)
 	}
 }
 
@@ -673,6 +732,7 @@ type reporter struct {
 	fn      func(Progress)
 	version string
 	phase   string
+	done    int64
 	pct     int
 	at      time.Time
 }
@@ -686,9 +746,9 @@ func (r *reporter) report(phase string, done, total int64) {
 		pct = int(done * 100 / total)
 	}
 	now := time.Now()
-	if phase == r.phase && done != total && (pct == r.pct || now.Sub(r.at) < 250*time.Millisecond) {
+	if phase == r.phase && (done == r.done || done != total && (pct == r.pct || now.Sub(r.at) < 250*time.Millisecond)) {
 		return
 	}
-	r.phase, r.pct, r.at = phase, pct, now
+	r.phase, r.done, r.pct, r.at = phase, done, pct, now
 	r.fn(Progress{Phase: phase, Percent: pct, Bytes: done, Total: total, Version: r.version})
 }

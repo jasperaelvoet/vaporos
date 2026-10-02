@@ -99,6 +99,9 @@ func (in *installer) configure(ctx context.Context) error {
 			return fmt.Errorf("update state: %w", err)
 		}
 	}
+	if err := in.seedExtensions(ctx); err != nil {
+		return err
+	}
 	in.report(StepConfigure, 99, "Finishing")
 	return nil
 }
