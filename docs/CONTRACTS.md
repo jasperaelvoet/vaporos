@@ -37,7 +37,7 @@ multi-call:
 | `vos health` | boot health check (vos-health.service, see "Health") |
 | `vos edid generate --out FILE [--modes-from FILE]` / `vos edid decode FILE` | EDID generator |
 | `vos sign --key FILE\|env:VAR MANIFEST` / `vos keygen --out PREFIX` | ed25519 manifest signing |
-| `vos ext validate DESCRIPTOR...` | build: load and check each source descriptor (`extension.json`: schema, every field, no `build` section); one problem per line on stderr as `<file>: <problem>`, exit 1 on any |
+| `vos ext validate DESCRIPTOR...` | build: load and check each source descriptor (`extension.json`: schema, every field, no `build` section); one problem per line on stderr as `<file>: <problem>`. Exit 0 when every one passes, 1 on any problem, 2 without a descriptor |
 | `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr (`<id>: <problem>`, warnings as `<id>: warning: <text>`), exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
 | `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
@@ -72,6 +72,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/` | vosd, initramfs, `vos health`, `vos ext fetch` | the extension store, sets and trial state (see Extensions) |
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/run/modprobe.d/vos-ext.conf` | initramfs | kernel module options of the mounted extensions |
+| `/run/vos-ext/<id>/` | the extension's `tmpfiles.d` | its runtime directory, the only place in `/run` its `tmpfiles.d` lines may use (see Extensions) |
 | `/run/systemd/system.conf.d/50-vos-trial.conf` | initramfs | `[Manager]` `RuntimeWatchdogSec=60s`, on trial boots only (see Extensions, Trial and promotion) |
 | `/run/vos/session.sock` | vosd | session protocol, mode 0660 root:vapor |
 | `/run/vos/welcome.json` | vosd | what the welcome screen shows (below), mode 0600 (it holds the setup code) |
@@ -294,8 +295,13 @@ ships anything outside `usr/`, or whose packages own a file there; ships a
 path the base ships, or one another extension ships unless both are the same
 file (bytes and mode, or symlink target); has a directory (even an empty one,
 wherever it is) where either has a file or symlink, or one that merges with a
-directory of theirs but has another mode or owner (the merged directory takes
-the image's); writes under
+directory of theirs but has another mode, or with a directory of the base
+that is not root's (the merged directory takes the image's mode and owner,
+and every directory of an image is root's, `--all-root`; root is the owner of
+the base's `/`): such base directories cannot be extended, so polkit rules,
+for one, need a root-owned `usr/share/polkit-1/rules.d` in the base, which
+Arch's polkit package makes `root:polkitd` 0750 (no v1 extension ships any);
+writes under
 `usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
 `usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory (one
 not reviewed as harmless) or `usr/lib/vos/**` except
@@ -314,25 +320,45 @@ silently not load), network configuration (NetworkManager, networkd,
 nftables, `net.*` sysctls), setuid/setgid files or file capabilities,
 whiteouts or `trusted.overlay.*` xattrs; sets a sysctl key the base or another
 extension sets; has a `tmpfiles.d` line (read as systemd-tmpfiles reads it,
-with only the `%S %C %L %t %T %V %%` specifiers) whose path is outside the
-extension's own areas (`/var/lib/vos/ext/data/<id>`,
-`/var/home/vapor/.local/share/vaporos/ext/<id>`, `/run/<id>`,
-`/var/cache/<id>`, `/var/log/<id>`), whose `L` target or `C` source is in
-neither those nor `/usr`, whose mode sets setuid or setgid, or whose type is
-`c` or `b` (device nodes) or `t` or `T` (extended attributes); has a unit,
-alias or drop-in directory whose name ends in `-` before `@` or its type (a
-systemd prefix drop-in applies to every unit with that prefix), a unit or alias
-the base has (in `usr/lib/systemd/<scope>` or `etc/systemd/<scope>`) by name or
-template, a template the base has an instance of, a drop-in that is a symlink,
-or two drop-ins of the same name for one unit in directories whose order
-systemd leaves open (an instance's hides its template's); ships a system unit
-that runs commands (a service, a socket with `Exec*=` commands, a mount or a
-swap) whose last `TimeoutStartSec=` or `TimeoutSec=` (only `TimeoutSec=` in
-`[Socket]`, `[Mount]` and `[Swap]`) is not a finite one set by a drop-in of
-its own, any unit or drop-in with `Before=` on a unit of the base, or drop-ins
-and `.wants`/`.requires` for a unit it does not ship (a unit's drop-ins are
-those of `<unit>.d/*.conf`, its template's and its aliases', merged by file
-name before these checks); or has an ELF (outside
+with only the `%S %C %L %t %T %V %%` specifiers, and refused, not unescaped,
+when a backslash is in its first six fields or in the argument of an `f`,
+`w`, `L` or `C` line, which systemd-tmpfiles unescapes) whose path is outside
+the extension's own areas (`/var/lib/vos/ext/data/<id>/`,
+`/var/home/vapor/.local/share/vaporos/ext/<id>/` and `/run/vos-ext/<id>/`,
+nothing else); whose path, `L` target (relative to the link's directory; by
+default `/usr/share/factory/<path>`) or `C` source (absolute; by default the
+same) ends, as the box resolves it, outside those areas and `/usr` (every
+symlink on the way is followed and `..` goes up from where one led: in `/usr`
+those of the image, the extensions built before it and the base, topmost
+first, and in the areas those the extension's own `L` lines make), whose
+glob (`w e x X r R z Z a A h H`) reaches anywhere else through such a
+symlink, or, for an `L` line, whose link would be made through one; whose
+mode sets setuid or setgid; whose type is `c` or `b` (device nodes) or `t` or
+`T` (extended attributes); or that is an `L` or `C` line with the `~` or `^`
+modifier; has a unit, alias, drop-in or dependency directory whose name ends
+in `-` before `@` or its type (a systemd prefix drop-in applies to every unit
+with that prefix), or that is, or is for, a `.mount`, `.automount`, `.swap`,
+`.slice`, `.scope` or `.device` unit (systemd and generators name these at
+runtime: `efi.mount`, `var-lib-vos.mount`, `var-log-journal.mount`,
+`user-1000.slice`, ...); a unit or alias the base has (in
+`usr/lib/systemd/<scope>` or `etc/systemd/<scope>`) by name or template, a
+template the base has an instance of, a drop-in that is a symlink, or two
+drop-ins of the same name for one unit in directories whose order systemd
+leaves open (an instance's hides its template's); ships a system unit that
+runs commands (a service, or a socket with `Exec*=` commands) whose last
+`TimeoutStartSec=` or `TimeoutSec=` (only `TimeoutSec=` in `[Socket]`) is not
+a finite one set by a drop-in of its own; has a unit or drop-in whose
+`[Unit]` `Before=`, `Conflicts=` (except `shutdown.target`, which default
+dependencies add anyway), `OnFailure=`, `OnSuccess=`, `PropagatesStopTo=`,
+`StopPropagatedFrom=`, `PropagatesReloadTo=`, `PartOf=`, `Upholds=`,
+`BindsTo=` or `JoinsNamespaceOf=` names a unit of the base (of its scope, by
+name or template), one of those runtime types, or a name with a specifier
+outside its instance; a `.upholds` entry for such a unit; a timer, path or
+socket that starts one (`Unit=`, `Service=`, else the service of its own
+name, a template's with `Accept=yes`); or drop-ins and
+`.wants`/`.requires`/`.upholds` for a unit it does not ship (a unit's drop-ins
+are those of `<unit>.d/*.conf`, its template's and its aliases', merged by
+file name before these checks); or has an ELF (outside
 `elf_exempt`) with a `DT_NEEDED` that resolves nowhere: not through its
 `DT_RUNPATH` (else `DT_RPATH`, with `$ORIGIN`) in the image or the base, not
 in the loader's default directories (`usr/lib` and `usr/lib/x86_64-linux-gnu`,
@@ -342,8 +368,8 @@ base's `ld.so.cache`, which never lists the image's libraries). `vos ext
 check-tree` also checks that `strip` paths are gone, that the `services` units
 exist, and that `usr/lib/vos/ext/<id>/` holds the source descriptor, the
 descriptor's exact `module_options` pairs and every `fetch` file. Its
-`runs_as_root` is true when a system unit runs a command as root: any mount or
-swap; a service, or a socket with commands, without a `User=` other than root
+`runs_as_root` is true when a system unit runs a command as root: a service,
+or a socket with commands, without a `User=` other than root
 and without `DynamicUser=yes`; a command prefixed `+`, `!` or `!!`; or
 `PermissionsStartOnly=yes` with commands besides `ExecStart=`. It warns,
 without failing, on `TAG+="uaccess"` (VaporOS has no seat), Python `.pth`

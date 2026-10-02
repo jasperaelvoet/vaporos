@@ -61,6 +61,9 @@ type checker struct {
 	root     bool              // a system service runs as root
 	roots    []string          // the base, then the other trees
 	dirIn    []map[string]bool // per root: directories of the tree it has as directories
+	// rootOwner is who root is in the base: the owner of its "/", which
+	// is root's on any real root (and the test user's in fake ones).
+	rootOwner string
 }
 
 // CheckTree runs every rule of the contract's Image paragraph.
@@ -84,9 +87,13 @@ func CheckTree(o Options) *Report {
 		c.bad("the descriptor's id is %q, not %q", o.Descriptor.ID, o.ID)
 	}
 	for _, d := range append([]string{o.Tree}, c.roots...) {
-		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+		fi, err := os.Stat(d)
+		if err != nil || !fi.IsDir() {
 			c.bad("%s: not a directory", d)
 			return c.report()
+		}
+		if d == o.Base {
+			c.rootOwner = ownerOf(d, fi)
 		}
 	}
 	if w := xattrBlindness(); w != "" {
@@ -247,11 +254,16 @@ func holdsFiles(host string) bool {
 	return err != nil
 }
 
+// ownerOf returns the "uid:gid" of the file at host, "" when unknown.
+var ownerOf = func(_ string, fi fs.FileInfo) string { return owner(fi) }
+
 // collide checks rel against the base and the other trees. Directories
-// merge, taking the mode and owner of the topmost one, so those must
-// match; anything else replaces what is below it on the merged /usr, which
-// is only allowed for a file identical to another extension's (both
-// carrying the same package's file).
+// merge, taking the mode and owner of the topmost one, so the modes must
+// match and a base directory must be root's, as every directory of an
+// image is (the build runs mkfs.erofs --all-root, whoever owns the tree);
+// anything else replaces what is below it on the merged /usr, which is
+// only allowed for a file identical to another extension's (both carrying
+// the same package's file).
 func (c *checker) collide(rel, host string, info fs.FileInfo) {
 	parent := path.Dir(rel)
 	for i, root := range c.roots {
@@ -277,8 +289,8 @@ func (c *checker) collide(rel, host string, info fs.FileInfo) {
 			if a, b := info.Mode()&dirBits, ofi.Mode()&dirBits; a != b {
 				c.bad("%s: a directory of mode %s where %s has %s; the merged directory takes the image's mode", rel, octal(a), who, octal(b))
 			}
-			if a, b := owner(info), owner(ofi); a != b {
-				c.bad("%s: a directory owned by %s where %s has one owned by %s; the merged directory takes the image's owner", rel, a, who, b)
+			if o := ownerOf(other, ofi); i == 0 && o != c.rootOwner {
+				c.bad("%s: the base's directory is owned by %s, not root (%s); an image's directories are all root's (mkfs.erofs --all-root) and the merged directory takes the image's owner, so a base directory owned by anyone else cannot be extended%s", rel, o, c.rootOwner, blocked(rel))
 			}
 		case i == 0 && info.IsDir():
 			c.bad("%s: a directory where the base has a %s", rel, kind(ofi.Mode()))
@@ -288,6 +300,39 @@ func (c *checker) collide(rel, host string, info fs.FileInfo) {
 			c.bad("%s: the extension in %s ships it too, with other content", rel, root)
 		}
 	}
+}
+
+// blocked names the permissions a base directory that cannot be extended
+// rules out: those whose files go in it or below it (not counting usr,
+// usr/lib and usr/share, which hold everything).
+func blocked(rel string) string {
+	if strings.Count(rel, "/") < 2 {
+		return ""
+	}
+	dirs := map[string]string{
+		"usr/lib/systemd/system":               descriptor.PermService,
+		"usr/lib/systemd/user":                 descriptor.PermUserService,
+		"usr/share/steam/compatibilitytools.d": descriptor.PermCompatTool,
+	}
+	for d, p := range hookDirs {
+		dirs[d] = p
+	}
+	var perms []string
+	for _, p := range descriptor.Permissions {
+		for d, dp := range dirs {
+			if dp == p && under(d, rel) {
+				perms = append(perms, fmt.Sprintf("%q", p))
+				break
+			}
+		}
+	}
+	switch len(perms) {
+	case 0:
+		return ""
+	case 1:
+		return " (it rules out the " + perms[0] + " permission)"
+	}
+	return " (it rules out the " + strings.Join(perms, ", ") + " permissions)"
 }
 
 // dirBits are the mode bits a merged directory takes from the image.
