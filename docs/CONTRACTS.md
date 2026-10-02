@@ -1296,8 +1296,11 @@ act on); provides `fan-control.hwmon` and `fan-control.amdgpu`; permissions
 (`modules-load.d/vos-coolercontrol.conf`: `drivetemp`). Its web UI is port
 11987, proxied to `127.0.0.1:11985` (HTTP API, Extension web UIs). Its
 system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
-`.passwd`), `data/` (`CC_DATA_DIR`) and `vaporos.json`
-(`{"passwd_sha256","daemon"}`, `prepare`'s record).
+`.passwd`), `data/` (`CC_DATA_DIR`), `vaporos.json`
+(`{"passwd_sha256","daemon"}`, `prepare`'s record) and `vaporos.lock`, an
+flock that `prepare` and `PasswordChanged` each hold while they read and
+write `.passwd` and `vaporos.json` (waiting for it until their time runs
+out), never during the backup.
 - The drop-in `coolercontrold.service.d/vos.conf` sets `CC_CONFIG_DIR`,
   `CC_DATA_DIR`, `CC_PLUGINS_DIR=/usr/lib/vos/ext/coolercontrol/plugins`
   (empty and in the image: no plugin runs), `CC_HOST_IP4=127.0.0.1`,
@@ -1341,9 +1344,10 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
   2. when `usr/lib/vos/ext/coolercontrol/packages.txt` names a
      `coolercontrold` version other than `daemon`, runs `coolercontrold
      backup` (in the data area, at most 2 minutes) if `config.toml` exists,
-     and records the version; a failed backup is logged and tried again at
-     the next start, and without `config.toml` the version is only
-     recorded;
+     and records the version (in `vaporos.json` as it is then, so a
+     password `PasswordChanged` copied during the backup stays recorded); a
+     failed backup is logged and tried again at the next start, and without
+     `config.toml` the version is only recorded;
   3. writes `config.toml` (the file made when missing, everything else in
      it kept): an empty `[devices]`, `[legacy690]` and `[device-settings]`
      table where the file lacks one (coolercontrold stops on a file without
@@ -1396,8 +1400,9 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
   `PasswordChanged`, when the VaporOS password changes, copies the new
   hash to `.passwd` on `prepare`'s terms (only while it is still the copy
   `passwd_sha256` names, updating that; one changed in CoolerControl
-  stays), and does nothing while there is no `.passwd` (the next start
-  writes it); coolercontrold reads `.passwd` again when its mtime changes.
+  stays), under `vaporos.lock`, and does nothing while there is no data
+  area or no `.passwd` (the next start writes it); coolercontrold reads
+  `.passwd` again when its mtime changes.
 
 **TruckersMP** (`extensions/truckersmp`, `internal/extensions/truckersmp`;
 requires `proton`). Its image holds the injector alone,

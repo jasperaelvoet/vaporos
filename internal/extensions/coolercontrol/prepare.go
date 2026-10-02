@@ -107,29 +107,53 @@ func prepare(ctx context.Context, d dirs, backup func(context.Context, dirs) err
 			return err
 		}
 	}
+	unlock, err := lockArea(ctx, d)
+	if err != nil {
+		return err
+	}
 	st := loadState(d)
-	if err := copyPassword(d, &st); err != nil {
+	err = copyPassword(d, &st)
+	unlock()
+	if err != nil {
 		return err
 	}
 	cfg := filepath.Join(d.config, "config.toml")
-	_, err := os.Lstat(cfg)
+	_, err = os.Lstat(cfg)
 	existed := err == nil
 	if v := daemonVersion(); v == "" {
 		log.Printf("coolercontrol: no %s version in %s; no backup", daemonPackage, packagesPath())
 	} else if v != st.Daemon {
-		if !existed {
-			st.Daemon = v // nothing to back up yet
-		} else if err := backup(ctx, d); err != nil {
-			log.Printf("coolercontrol: backup before the first start of %s: %v (trying again next start)", v, err)
-		} else {
-			log.Printf("coolercontrol: backed up its settings before the first start of %s", v)
-			st.Daemon = v
+		done := !existed // nothing to back up yet
+		if existed {
+			// Outside the lock: a password change must not wait minutes
+			// for the backup.
+			if err := backup(ctx, d); err != nil {
+				log.Printf("coolercontrol: backup before the first start of %s: %v (trying again next start)", v, err)
+			} else {
+				log.Printf("coolercontrol: backed up its settings before the first start of %s", v)
+				done = true
+			}
 		}
-		if err := saveState(d, st); err != nil {
-			return err
+		if done {
+			if err := recordDaemon(ctx, d, v); err != nil {
+				return err
+			}
 		}
 	}
 	return patchConfig(cfg)
+}
+
+// recordDaemon records the version prepare backed up for and nothing else:
+// PasswordChanged may have changed the state since prepare read it.
+func recordDaemon(ctx context.Context, d dirs, v string) error {
+	unlock, err := lockArea(ctx, d)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	st := loadState(d)
+	st.Daemon = v
+	return saveState(d, st)
 }
 
 // copyPassword gives CoolerControl the VaporOS admin password: auth.json's

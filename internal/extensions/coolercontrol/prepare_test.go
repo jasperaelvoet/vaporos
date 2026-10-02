@@ -258,3 +258,74 @@ func TestPrepareMovesTheOldPort(t *testing.T) {
 		t.Fatalf("config.toml:\n%s\nwant\n%s", got, want)
 	}
 }
+
+// A password change while a start's prepare runs the backup (minutes at
+// most) is kept: prepare records the version without putting back the
+// state it read before, so the next change is still copied.
+func TestPasswordChangedDuringBackup(t *testing.T) {
+	r := newPrepRig(t)
+	h := newHelper()
+	x := &extensions.Ext{ID: id, DataDir: r.d.area}
+	must(t, r.prepare())
+	r.version("5.0.2-1")
+	err := prepare(context.Background(), r.d, func(ctx context.Context, d dirs) error {
+		r.admin(adminHash2)
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return h.PasswordChanged(ctx, x) // waits for no lock held over the backup
+	})
+	must(t, err)
+	if st := loadState(r.d); st.Passwd != sum([]byte(adminHash2)) || st.Daemon != "5.0.2-1" {
+		t.Fatalf("state %+v", st)
+	}
+	r.admin(adminHash)
+	must(t, h.PasswordChanged(context.Background(), x))
+	if got := r.passwd(); got != adminHash {
+		t.Fatalf("the second password change was not copied: %q", got)
+	}
+}
+
+// prepare and PasswordChanged take turns with .passwd and vaporos.json.
+func TestPasswordChangedWaitsForTheLock(t *testing.T) {
+	r := newPrepRig(t)
+	h := newHelper()
+	x := &extensions.Ext{ID: id, DataDir: r.d.area}
+	must(t, r.prepare())
+	unlock, err := lockArea(context.Background(), r.d)
+	must(t, err)
+	r.admin(adminHash2)
+	done := make(chan error, 1)
+	go func() { done <- h.PasswordChanged(context.Background(), x) }()
+	select {
+	case err := <-done:
+		t.Fatalf("PasswordChanged did not wait for the lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := r.passwd(); got != adminHash {
+		t.Fatalf("wrote .passwd under another's lock: %q", got)
+	}
+	unlock()
+	must(t, <-done)
+	if got := r.passwd(); got != adminHash2 {
+		t.Fatalf("after the lock: %q", got)
+	}
+
+	unlock, err = lockArea(context.Background(), r.d)
+	must(t, err)
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := prepare(ctx, r.d, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("prepare under another's lock: %v", err)
+	}
+}
+
+// Before CoolerControl's first start there is no data area to lock.
+func TestPasswordChangedWithoutADataArea(t *testing.T) {
+	r := newPrepRig(t)
+	x := &extensions.Ext{ID: id, DataDir: r.d.area}
+	must(t, newHelper().PasswordChanged(context.Background(), x))
+	if _, err := os.Lstat(r.d.area); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("made the data area: %v", err)
+	}
+}
