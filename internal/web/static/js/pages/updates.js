@@ -50,7 +50,7 @@ export function view(u, s = S) {
   } else if (staged) {
     st = { key: 'staged', state: 'ready', title: `Version ${staged} is ready`, detail: "Restart to switch over. If it doesn't start, VaporOS goes back by itself.", meta: u.staged.at ? `Prepared ${ago(u.staged.at, serverNow())}` : '' };
   } else if (avail) {
-    st = { key: 'available', state: 'ready', title: `Version ${avail.version} is available`, detail: `${avail.size ? `${bytes(avail.size)} download. ` : ''}${checked}` };
+    st = { key: 'available', state: 'ready', title: `Version ${avail.version} is available`, detail: `${avail.size ? `Up to ${bytes(avail.size)} download. ` : ''}${checked}` };
   } else if (u.checked) {
     st = { key: 'current', state: 'ready', title: 'VaporOS is up to date', detail: `Version ${booted}. ${checked}` };
   } else {

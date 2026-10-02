@@ -60,7 +60,7 @@ ADMIN_PASS=${ADMIN_PASS:-vapor-dev}
 ISO_NAME=vaporos-dev.iso
 # What `vos update --from http://…/` fetches, in upload order: the manifest
 # goes last, so the VM never sees a new manifest beside an old root.erofs.
-UPDATE_FILES=(root.erofs vmlinuz initramfs.img manifest.json.sig manifest.json)
+UPDATE_FILES=(root.erofs root.erofs.idx vmlinuz initramfs.img manifest.json.sig manifest.json)
 
 # Set by `test`: stricter install checks, and screendumps into out/screens/.
 TESTING=0
@@ -184,11 +184,15 @@ upload_iso() {
 }
 
 # Serve SERVE_DIR over HTTP from the Proxmox host, so the VM can always reach
-# it no matter which network or firewall this machine is on.
+# it no matter which network or firewall this machine is on. scripts/serve.py
+# answers byte ranges, so updates download only the blocks they need, as
+# from ghcr.io. (vos-dev-http was the older server, without ranges.)
 ensure_http() {
-    pve "mkdir -p $SERVE_DIR && { systemctl is-active --quiet vos-dev-http ||
-         systemd-run --quiet --collect --unit vos-dev-http -p WorkingDirectory=$SERVE_DIR \
-             python3 -m http.server --bind $PVE_HOST $SERVE_PORT; }"
+    pve "systemctl is-active --quiet vos-dev-serve" && return
+    scp -q scripts/serve.py "$PVE_USER@$PVE_HOST:$SERVE_DIR-serve.py"
+    pve "mkdir -p $SERVE_DIR && systemctl stop vos-dev-http 2>/dev/null;
+         systemd-run --quiet --collect --unit vos-dev-serve \
+             python3 $SERVE_DIR-serve.py $SERVE_DIR $PVE_HOST $SERVE_PORT"
 }
 
 # Put the update payload next to the VM, for `vos update --from http://…/`.

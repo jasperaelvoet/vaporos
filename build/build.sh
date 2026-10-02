@@ -549,6 +549,13 @@ info "all checks passed"
 elapsed
 
 # --------------------------------------------------------------- manifest ---
+# The block index lets an installed system download only the blocks of
+# root.erofs it does not have (docs/CONTRACTS.md "Block index").
+step "Indexing root.erofs"
+msg=$("$VOS" index "$STAGE/vos/root.erofs" 2>&1) || die "vos index failed: $msg"
+[[ -s $STAGE/vos/root.erofs.idx ]] || die "vos index did not write root.erofs.idx"
+info "root.erofs.idx: $(mib "$(stat -c %s "$STAGE/vos/root.erofs.idx")") MiB"
+
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 artifact() { # artifact NAME -> {"name","size","sha256"}
     jq -n --arg name "$1" --argjson size "$(stat -c %s "$STAGE/vos/$1")" --arg sha "$(sha "$STAGE/vos/$1")" \
@@ -560,10 +567,11 @@ jq -n --arg version "$VERSION" --argjson rollback_index "$ROLLBACK_INDEX" \
       --argjson root "$(artifact root.erofs)" \
       --argjson kernel_file "$(artifact vmlinuz)" \
       --argjson initrd "$(artifact initramfs.img)" \
+      --argjson index "$(artifact root.erofs.idx)" \
       '{schema: 1, product: "vaporos", version: $version, rollback_index: $rollback_index,
         channel: $channel, git: $git, created: $created, kernel: $kernel, cmdline: $cmdline,
         min_updater: 1,
-        artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd}}' >"$STAGE/vos/manifest.json"
+        artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd, index: $index}}' >"$STAGE/vos/manifest.json"
 
 step "Writing manifest.json"
 info "version $VERSION, rollback_index $ROLLBACK_INDEX, channel $CHANNEL"
@@ -605,8 +613,8 @@ fi
 
 # ------------------------------------------------------------------ out -----
 step "Publishing to out/"
-rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig"
-for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
+rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig" "$OUT/root.erofs.idx"
+for f in root.erofs root.erofs.idx vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
     if [[ -f $STAGE/vos/$f ]]; then cp "$STAGE/vos/$f" "$OUT/"; fi
 done
 # Published files, all public: mkinitcpio makes the initramfs 0600, which

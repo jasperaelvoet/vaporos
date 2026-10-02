@@ -154,7 +154,7 @@ export function contextCards(snap, { dismissedFailed = '', liveError = null } = 
     }
     const avail = u.available && u.available.version;
     if (avail && compareVersions(avail, u.booted) > 0 && !staged && !u.busy && !prog) {
-      const size = u.available.size ? `${Math.round(u.available.size / 1e8) / 10} GB download. ` : '';
+      const size = u.available.size ? `Up to ${Math.round(u.available.size / 1e8) / 10} GB download. ` : '';
       out.push(card('update-available', avail, '', `Version ${avail} is available`, `${size}Switches over on the next restart.`, [{ id: 'stage', label: 'Download update' }]));
     }
     const failed = (u.failed || []).slice().sort(compareVersions).pop();

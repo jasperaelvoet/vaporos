@@ -37,6 +37,7 @@ multi-call:
 | `vos health` | boot health check (vos-health.service, see "Health") |
 | `vos edid generate --out FILE [--modes-from FILE]` / `vos edid decode FILE` | EDID generator |
 | `vos sign --key FILE\|env:VAR MANIFEST` / `vos keygen --out PREFIX` | ed25519 manifest signing |
+| `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json |
 | `vos version` | prints the version |
 
@@ -162,9 +163,11 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
  "cmdline":"quiet …","min_updater":1,
  "artifacts":{"root":{"name":"root.erofs","size":123,"sha256":"…"},
               "kernel":{"name":"vmlinuz","size":123,"sha256":"…"},
-              "initrd":{"name":"initramfs.img","size":123,"sha256":"…"}}}
+              "initrd":{"name":"initramfs.img","size":123,"sha256":"…"},
+              "index":{"name":"root.erofs.idx","size":123,"sha256":"…"}}}
 ```
 - `version` is the UTC build or commit time, `YYYYMMDD.HHMMSS`.
+- `index` is optional (older updaters ignore it; `min_updater` stays 1): the block index of `root.erofs`, see "Block index". The build always writes it.
 - `rollback_index` is the same instant as unix seconds (monotonic across dev and CI).
 - The signature is `manifest.json.sig`: base64 of the ed25519 signature over the exact bytes of `manifest.json`.
 - Private keys are base64 of the 64-byte ed25519 private key.
@@ -176,8 +179,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `oci://ghcr.io/jasperaelvoet/vaporos` with a tag, which is the channel (branch name, `main` by default). Pulled anonymously:
   1. `GET https://ghcr.io/token?scope=repository:jasperaelvoet/vaporos:pull&service=ghcr.io`
   2. manifest with `Accept: application/vnd.oci.image.manifest.v1+json`
-  3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`. Follow the 307 redirect; resume with `Range`.
-- `http(s)://host/dir/` or a local dir: the same five files by name.
+  3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`, and `root.erofs.idx` when the manifest names it. Follow the 307 redirect; resume with `Range`. Block downloads (see "Block index") send `Range: bytes=A-B` and need a 206; they may reuse a storage URL for up to 2 minutes, and ask the registry again when it answers anything else.
+- `http(s)://host/dir/` or a local dir: the same files by name.
 
 **Acceptance:**
 - The signature verifies against any key in `/usr/lib/vos/keys`.
@@ -186,16 +189,44 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `rollback_index` > booted image's, unless `--force` or `--allow-downgrade`.
 - Without a picked version or `--force`: `rollback_index` > `held.rollback_index`.
 - The version is not in `failed`, unless `--force`.
-- Every artifact's size and sha256 match.
+- Every artifact's size and sha256 match (for OCI, also its layer's digest and size).
 - Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
+0. Fetch kernel and initrd into `/var/tmp`, verified. A file the ESP already holds for an installed version (same size and sha256) is copied from there instead of downloaded.
 1. Remove the idle slot's entries.
-2. Stream root into the idle slot partition while hashing.
+2. Fill the idle slot partition with root: from the block index when the manifest has one (see "Block index"), else by streaming the whole file while hashing.
 3. Re-read and verify.
 4. Kernel and initrd to `/efi/vos/<ver>/` (tmp + rename).
 5. Write entry `vos-<ver>+3.conf` last. The running entry stays a fallback: `+0-1` for a downgrade or the same version, re-blessed if it was at `+0` and the new version is newer. systemd-boot's NVRAM overrides (`LoaderConfigTimeout`, `LoaderEntryDefault`, `LoaderEntryPreferred`) are cleared; the installer clears them after `bootctl install` too.
 6. Record `staged` in update-state (and `held` for a downgrade).
+
+**Block index** (`root.erofs.idx`, made by `vos index root.erofs`): a 32-byte
+header, then one hash per 4096-byte block of `root.erofs`, in order (the last
+block may be shorter). Header: `VOSBIDX1`, the block size (u32 LE, 4096), the
+hash size (u32 LE, 16), the image size (u64 LE, = `artifacts.root.size`),
+8 zero bytes. A hash is the first 16 bytes of the block's SHA-256. erofs puts
+every file's data on block boundaries, so files that did not change between
+two images are the same blocks, only at other offsets. With the index, step 2 is:
+1. Download the index (verified against the manifest) and read the slots: the
+   idle slot's blocks where the new image puts them, and the booted slot's
+   blocks up to the size its erofs superblock gives (`blocks << blkszbits` at
+   byte 1024; the new image's size when it has none).
+2. Every block of the new image the idle slot already holds stays (so a stage
+   that stopped part way resumes there); one the booted slot holds anywhere is
+   copied from it; the rest is downloaded. Runs of missing blocks are joined
+   across gaps of up to 64 KiB, cut at 8 MiB, and fetched 8 at a time as
+   `Range` requests of root.
+3. Every block is checked against the index before it is written, and step 3
+   still checks the whole image.
+
+The updater streams the whole root instead when the manifest has no index, the
+index is malformed, more than 3/4 of the image would be downloaded, the source
+answers a range with the whole file, or a downloaded block or the read-back
+does not match. A download that fails (network, cancel) fails the stage; the
+next stage keeps the blocks already in the idle slot. While blocks are
+fetched, `update.progress` `write` counts the bytes to download in `bytes` and
+`total`; while the slots are read and blocks copied, `total` is 0.
 
 **Update state** (`/var/lib/vos/update-state.json`):
 ```json
@@ -249,7 +280,7 @@ systemd-boot counting does the rest.
 
 | Topic | Data |
 | --- | --- |
-| `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped) |
+| `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped; `bytes` and `total` count the current phase, and in `write` only the download, see "Block index") |
 | `update.state` | the update-state |
 | `install.progress` | `{step,percent,message,state}` |
 | `session.begin` | `{client,app?,mode,hdr,since}` (`app`: Sunshine's app, `Steam` or a game's name, omitted when Sunshine names none; `since`: when it was launched, RFC 3339 UTC; a resume keeps both) |

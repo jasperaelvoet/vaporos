@@ -52,7 +52,7 @@ export default [
       await step('available: its size and Download update', async () => {
         await open(t, 'update-available');
         assert.equal(await text(page, '#upd-title'), 'Version 20260929.143000 is available');
-        assert.equal(await text(page, '#upd-detail'), '1.4 GB download. Checked 40 min ago.');
+        assert.equal(await text(page, '#upd-detail'), 'Up to 1.4 GB download. Checked 40 min ago.');
         assert.equal(await page.isVisible('#upd-stage'), true);
       });
       await step('staged: "Version <v> is ready" with Restart to update, and the restart row stays quiet', async () => {

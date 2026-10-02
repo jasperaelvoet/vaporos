@@ -156,7 +156,7 @@ iso=vaporos-$VERSION.iso
 old=$(ls out/vaporos-*.iso 2>/dev/null | head -1) || true
 [[ -z $old || $old == "out/$iso" ]] || mv "$old" "out/$iso"
 rm -f out/manifest.env out/manifest.json.sig
-for f in root.erofs vmlinuz initramfs.img manifest.json "$iso"; do
+for f in root.erofs root.erofs.idx vmlinuz initramfs.img manifest.json "$iso"; do
     rsync -t --inplace --partial "$PVE_USER@$PVE_HOST:$BUILD_DIR/out/$f" "out/$f"
 done
 if pve "test -f $BUILD_DIR/out/manifest.json.sig"; then

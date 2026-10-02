@@ -294,8 +294,9 @@ func Stage(ctx context.Context, cfg *config.Config, opts Options) (res *Result, 
 		return res, err
 	}
 
-	// 2 and 3. Stream root into the slot while hashing; read it back.
-	if err := writeRoot(ctx, src, m, slot, dev, progress); err != nil {
+	// 2 and 3. Fill the slot from the block index, or stream root whole;
+	// read it back.
+	if err := fillRoot(ctx, src, m, slot, dev, booted, progress); err != nil {
 		return res, err
 	}
 
@@ -442,7 +443,8 @@ func ImageCmdline(m *manifest.Manifest) string {
 }
 
 // FetchBootFiles downloads m's kernel and initrd into dir under the names
-// boot.InstallEntry expects (vmlinuz, initramfs.img), verified.
+// boot.InstallEntry expects (vmlinuz, initramfs.img), verified. A file the
+// ESP already holds for an installed version is copied from there instead.
 func FetchBootFiles(ctx context.Context, src *Source, m *manifest.Manifest, dir string, progress func(Progress)) error {
 	rep := &reporter{fn: progress, version: m.Version}
 	files := []struct {
@@ -456,23 +458,82 @@ func FetchBootFiles(ctx context.Context, src *Source, m *manifest.Manifest, dir 
 	var base int64
 	rep.report("download", 0, total)
 	for _, f := range files {
-		out, err := os.Create(filepath.Join(dir, f.name))
-		if err != nil {
-			return err
-		}
-		err = src.Fetch(ctx, f.a, out, func(done int64) error {
+		path := filepath.Join(dir, f.name)
+		onChunk := func(done int64) error {
 			rep.report("download", base+done, total)
 			return ctx.Err()
-		})
-		if cerr := out.Close(); err == nil {
-			err = cerr
 		}
-		if err != nil {
-			return err
+		if !copyLocalBootFile(f.name, f.a, path, onChunk) {
+			err := createFile(path, func(w io.Writer) error { return src.Fetch(ctx, f.a, w, onChunk) })
+			if err != nil {
+				return err
+			}
 		}
 		base += f.a.Size
 	}
 	return nil
+}
+
+// fillRoot is Write order 2 and 3: with the block index when the manifest
+// has one and it can finish, else by streaming the whole root into f. The
+// booted slot is where blocks are copied from. It closes f.
+func fillRoot(ctx context.Context, src *Source, m *manifest.Manifest, f *os.File, dev, booted string, progress func(Progress)) error {
+	if m.Has(manifest.Index) {
+		seed, err := SlotDevice(booted)
+		if err != nil {
+			log.Printf("update: the running slot: %v", err)
+		}
+		err = writeRootBlocks(ctx, src, m, f, dev, seed, progress)
+		var fe *fallbackError
+		if !errors.As(err, &fe) {
+			f.Close()
+			return err
+		}
+		log.Printf("update: %v; downloading the whole image instead", err)
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	return writeRoot(ctx, src, m, f, dev, progress)
+}
+
+// copyLocalBootFile writes a's file to path from an installed version's
+// directory on the ESP that holds one of its size and sha256, and reports
+// whether it did.
+func copyLocalBootFile(name string, a manifest.Artifact, path string, onChunk func(int64) error) bool {
+	if config.IsLive() {
+		return false
+	}
+	candidates, _ := filepath.Glob(filepath.Join(config.ESP, "vos", "*", name))
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err != nil || fi.Size() != a.Size {
+			continue
+		}
+		in, err := os.Open(c)
+		if err != nil {
+			continue
+		}
+		err = createFile(path, func(w io.Writer) error { return copyVerified(in, w, a.Size, a.SHA256, onChunk) })
+		in.Close()
+		if err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// createFile creates (or truncates) path and fills it with fill.
+func createFile(path string, fill func(io.Writer) error) error {
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	err = fill(out)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // WriteRoot streams m's root artifact into dev (a slot partition) in
@@ -519,14 +580,15 @@ func writeRoot(ctx context.Context, src *Source, m *manifest.Manifest, f *os.Fil
 	return verifySlot(ctx, dev, root, rep)
 }
 
-// openSlot opens a slot partition for writing and returns its size. A
-// block device is opened exclusively, which fails while it is mounted.
+// openSlot opens a slot partition for reading and writing (a stage keeps
+// the blocks it already holds) and returns its size. A block device is
+// opened exclusively, which fails while it is mounted.
 func openSlot(dev string) (*os.File, int64, error) {
 	fi, err := os.Stat(dev)
 	if err != nil {
 		return nil, 0, fmt.Errorf("slot partition: %w", err)
 	}
-	flags := os.O_WRONLY
+	flags := os.O_RDWR
 	if fi.Mode()&os.ModeDevice != 0 {
 		flags |= exclusiveFlag
 	}
@@ -678,15 +740,21 @@ type reporter struct {
 }
 
 func (r *reporter) report(phase string, done, total int64) {
-	if r == nil || r.fn == nil {
-		return
-	}
 	pct := 100
 	if total > 0 {
 		pct = int(done * 100 / total)
 	}
+	r.reportAt(phase, pct, done, total, done == total)
+}
+
+// reportAt reports the phase at pct with the given byte counts, throttled
+// like report unless final.
+func (r *reporter) reportAt(phase string, pct int, done, total int64, final bool) {
+	if r == nil || r.fn == nil {
+		return
+	}
 	now := time.Now()
-	if phase == r.phase && done != total && (pct == r.pct || now.Sub(r.at) < 250*time.Millisecond) {
+	if phase == r.phase && !final && (pct == r.pct || now.Sub(r.at) < 250*time.Millisecond) {
 		return
 	}
 	r.phase, r.pct, r.at = phase, pct, now
