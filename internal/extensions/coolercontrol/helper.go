@@ -2,22 +2,26 @@
 // (docs/CONTRACTS.md "Extensions", CoolerControl): the steps of
 // coolercontrold.service's start and stop (`vos ext coolercontrol
 // prepare`, `fans snapshot`, `fans restore`), its card's status line, the
-// kernel module options its settings set, and putting the fans back when
-// it is removed. vosd serves its web UI (internal/extensions, proxy.go).
+// kernel module options its settings set, a new admin password, and
+// putting the fans back when it is removed. vosd serves its web UI
+// (internal/extensions, proxy.go).
 package coolercontrol
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
@@ -43,13 +47,20 @@ const (
 // it every few seconds.
 const statusTTL = 5 * time.Second
 
-// amdgpuFeatureMask is the feature mask the loaded amdgpu runs with. A
-// variable for tests.
-var amdgpuFeatureMask = "/sys/module/amdgpu/parameters/ppfeaturemask"
+// What ModuleOptions reads: the feature mask the loaded amdgpu runs with,
+// and the PCI devices. Variables for tests.
+var (
+	amdgpuFeatureMask = "/sys/module/amdgpu/parameters/ppfeaturemask"
+	pciDevicesDir     = "/sys/bus/pci/devices"
+)
 
-// ppOverdrive is amdgpu's PP_OVERDRIVE_MASK: the card's OverDrive
-// interface, which its fan curve goes through.
-const ppOverdrive = 0x4000
+const (
+	// ppOverdrive is amdgpu's PP_OVERDRIVE_MASK: the card's OverDrive
+	// interface, which its fan curve goes through.
+	ppOverdrive = 0x4000
+	// amdgpuDefaultMask is the kernel's own ppfeaturemask (amdgpu_drv.c).
+	amdgpuDefaultMask = 0xfff7bfff
+)
 
 type helper struct {
 	extensions.NopHelper
@@ -65,6 +76,7 @@ type helper struct {
 	state     func(ctx context.Context, unit string) string
 	handshake func(ctx context.Context, upstream string) bool
 	systemctl func(ctx context.Context, args ...string) error
+	booted    func() []string // the module option lines this boot started with
 }
 
 func newHelper() *helper {
@@ -75,6 +87,7 @@ func newHelper() *helper {
 		state:     func(ctx context.Context, u string) string { return sysd.ActiveState(ctx, u, false) },
 		handshake: handshake,
 		systemctl: sysd.Systemctl,
+		booted:    bootedOptions,
 	}
 }
 
@@ -147,7 +160,7 @@ func (h *helper) check(ctx context.Context, x *extensions.Ext) []extensions.Stat
 func (h *helper) ModuleOptions(x *extensions.Ext) []string {
 	var out []string
 	if on, _ := x.Settings["gpu_fan_curves"].(bool); on {
-		if mask, ok := featureMask(); ok {
+		if mask, ok := h.featureMask(); ok {
 			out = append(out, fmt.Sprintf("options amdgpu ppfeaturemask=0x%x", mask))
 		}
 	}
@@ -157,24 +170,68 @@ func (h *helper) ModuleOptions(x *extensions.Ext) []string {
 	return out
 }
 
-// featureMask is amdgpu's running feature mask with OverDrive added. It
-// starts from what runs, so this boot's own option renders the same line
-// again; never 0xffffffff, which turns on features that are off for a
-// reason. No amdgpu, no option.
-func featureMask() (uint32, bool) {
-	b, err := os.ReadFile(amdgpuFeatureMask)
-	if err != nil {
-		return 0, false
+// featureMask is the mask amdgpu is to boot with: the running one with
+// OverDrive added, so this boot's own option renders the same line again.
+// Before amdgpu has loaded (vosd may ask first) it is the booted set's,
+// else the kernel's default with OverDrive when the PC has an AMD
+// graphics card: a line that came and went with the driver would make a
+// new set, and a restart, each time. Never 0xffffffff, which turns on
+// features that are off for a reason.
+func (h *helper) featureMask() (uint32, bool) {
+	if b, err := os.ReadFile(amdgpuFeatureMask); err == nil {
+		return withOverdrive(strings.TrimSpace(string(b)))
 	}
-	cur, err := strconv.ParseUint(strings.TrimSpace(string(b)), 0, 32)
+	for _, l := range h.booted() {
+		f := strings.Fields(l)
+		if len(f) == 3 && f[0] == "options" && f[1] == "amdgpu" && strings.HasPrefix(f[2], "ppfeaturemask=") {
+			return withOverdrive(strings.TrimPrefix(f[2], "ppfeaturemask="))
+		}
+	}
+	if amdDisplay() {
+		return withOverdrive(strconv.Itoa(amdgpuDefaultMask))
+	}
+	return 0, false
+}
+
+func withOverdrive(s string) (uint32, bool) {
+	cur, err := strconv.ParseUint(s, 0, 32)
 	if err != nil {
 		return 0, false
 	}
 	mask := uint32(cur) | ppOverdrive
-	if mask == 0xffffffff {
-		return 0, false
+	return mask, mask != 0xffffffff
+}
+
+// bootedOptions are the module options this boot started with: the
+// initramfs's /run/modprobe.d/vos-ext.conf, then the booted set's own
+// modprobe.conf, which has them also when the extension did not mount.
+func bootedOptions() []string {
+	var out []string
+	if b, err := os.ReadFile(filepath.Join(config.ModprobeRunDir, "vos-ext.conf")); err == nil {
+		out = strings.Split(string(b), "\n")
 	}
-	return mask, true
+	if rep, err := store.LoadBootReport(); err == nil && rep.Set != "" {
+		if set, err := store.ReadSet(rep.Set); err == nil {
+			out = append(out, set.Options...)
+		}
+	}
+	return out
+}
+
+// amdDisplay reports whether the PC has an AMD display controller: PCI
+// vendor 0x1002, class 0x03xxxx.
+func amdDisplay() bool {
+	devs, _ := filepath.Glob(filepath.Join(pciDevicesDir, "*"))
+	for _, d := range devs {
+		vendor, err := os.ReadFile(filepath.Join(d, "vendor"))
+		if err != nil || strings.TrimSpace(string(vendor)) != "0x1002" {
+			continue
+		}
+		if class, err := os.ReadFile(filepath.Join(d, "class")); err == nil && strings.HasPrefix(strings.TrimSpace(string(class)), "0x03") {
+			return true
+		}
+	}
+	return false
 }
 
 // Remove stops CoolerControl now (its ExecStopPost puts the fans back) and
@@ -199,4 +256,20 @@ func (h *helper) Remove(ctx context.Context, x *extensions.Ext, purge bool) erro
 	h.checked = time.Time{}
 	h.mu.Unlock()
 	return errors.Join(errs...)
+}
+
+// PasswordChanged gives CoolerControl a new VaporOS admin password at once
+// (coolercontrold reads .passwd again when its mtime changes), on the
+// terms of each start's prepare: only while .passwd is still the copy
+// VaporOS made. Without a .passwd, the next start writes one.
+func (h *helper) PasswordChanged(_ context.Context, x *extensions.Ext) error {
+	d := areaDirs(x.DataDir)
+	if _, err := os.Lstat(filepath.Join(d.config, ".passwd")); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	st := loadState(d)
+	return copyPassword(d, &st)
 }

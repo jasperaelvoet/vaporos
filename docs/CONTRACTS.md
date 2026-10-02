@@ -79,7 +79,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
 | `/var/lib/vos/ext/ports` | vosd | the network ports of the running extensions, which `vos-firewall` opens to the local network (see Firewall) |
-| `/run/vos/coolercontrol-fans.json` | `vos ext coolercontrol fans snapshot` | each fan's control mode before CoolerControl took it, this boot (see Extensions, CoolerControl) |
+| `/run/vos/coolercontrol-fans.json` | `vos ext coolercontrol fans snapshot` | each fan's control mode (and a manual one's duty) and each amdgpu fan curve before CoolerControl took them, this boot (see Extensions, CoolerControl) |
 | `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only (see Extensions, Steam) |
 | `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
 | `/run/user/1000/vos/ext-messages/` | `vos ext launch`, `vos ext truckersmp mp\|handoff` | the dispatcher's and helper commands' refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
@@ -1210,10 +1210,15 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
   `CAP_SYS_ADMIN`; no `ProtectKernel*` or `PrivateDevices`: it writes
   `/sys`, reads `/dev/port` and hidraw, loads drivers) and
   `TimeoutStartSec=300s`; then `ExecStartPre=` `/usr/bin/vos ext
-  coolercontrol prepare`, `/usr/bin/coolercontrold detect --load` and
+  coolercontrol prepare`, `-/usr/bin/coolercontrold detect --load` (`-`:
+  a board with no driver to load still starts the daemon) and
   `+/usr/bin/vos ext coolercontrol fans snapshot`, in that order, and
   `ExecStopPost=+/usr/bin/vos ext coolercontrol fans restore`, which runs
-  after any stop (`+`: outside the sandbox, for `/run/vos`).
+  after any stop (`+`: outside the sandbox, for `/run/vos`). Its `[Unit]`
+  has `StartLimitIntervalSec=30min` and `StartLimitBurst=5`: upstream's
+  `Restart=always` stops after five starts in 30 minutes (which holds five
+  that each run out `TimeoutStartSec`), and the daemon stays down, its fans
+  put back, until the next restart.
 - `prepare` (in the sandbox, `CC_CONFIG_DIR` and `CC_DATA_DIR` from the
   environment when absolute) makes `config/` and `data/` (0700), then:
   1. copies auth.json's argon2id PHC string, as it is (no newline;
@@ -1222,8 +1227,8 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
      (their sha256 is `passwd_sha256`); one changed in CoolerControl stays.
      Without auth.json, or with a hash that is not argon2id, it fails, so
      the daemon never starts with its default password. A new VaporOS
-     password thus reaches CoolerControl at the daemon's next start (the
-     next restart);
+     password reaches CoolerControl at once through its helper's
+     `PasswordChanged` (below), else at the daemon's next start;
   2. when `usr/lib/vos/ext/coolercontrol/packages.txt` names a
      `coolercontrold` version other than `daemon`, runs `coolercontrold
      backup` (in the data area, at most 2 minutes) if `config.toml` exists,
@@ -1238,14 +1243,24 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
      made in CoolerControl stays. A `config.toml` it cannot change (settings
      as dotted keys or an inline table, a table or key twice, a value never
      closed) fails the start.
-- `fans snapshot` records the value of every
-  `/sys/class/hwmon/hwmon*/pwm<N>_enable` under the key
-  `<realpath of hwmon*/device, else of hwmon* itself>/pwm<N>_enable` in
-  `/run/vos/coolercontrol-fans.json` (`{"fans":{"<key>":"<value>"}}`, 0600,
-  atomically), never replacing a key it has: a restart of the daemon, or a
-  chip whose driver loads later, keeps what the firmware set. `fans
-  restore` writes back every recorded value (1 to 3 digits) that differs,
-  wherever the chip is numbered now.
+- `fans snapshot` records, in `/run/vos/coolercontrol-fans.json`
+  (`{"fans":{"<key>":"<mode>"},"duty":{"<key>":"<duty>"},"curves":{"<path>":"<sha256>"}}`,
+  0600, atomically): the value of every
+  `/sys/class/hwmon/hwmon*/pwm<N>_enable` under the key `<device>/pwm<N>_enable`
+  (`<device>`: the realpath of `hwmon*/device`, else of `hwmon*` itself);
+  for one that is 0 (full speed) or 1 (manual), `pwm<N>`'s duty (0-255)
+  under `<device>/pwm<N>`; and the sha256 of every amdgpu OverDrive fan
+  curve, `<realpath of hwmon*/device>/gpu_od/fan_ctrl/fan_curve`, under its
+  path. It never replaces a key it has: a restart of the daemon, or a chip
+  whose driver loads later, keeps what the firmware set. `fans restore`
+  first writes `r` (reset), then `c` (commit), to every recorded fan curve
+  whose sha256 differs now, which gives the fan back to the card's
+  firmware; then, wherever the chip is numbered now, it writes back every
+  recorded mode (1 to 3 digits) that differs, and a recorded duty that
+  differs only while the fan is in manual mode, the one mode every driver
+  takes a duty in: after the mode when that is 1, before it when it is 0
+  and the fan is in 1. USB devices (liquidctl's) are not put back: they
+  keep their last setting until the PC turns off, as the card says.
 - Its helper's status: nothing while it is not mounted or no longer
   wanted; "CoolerControl is starting." (no tone) while the unit activates;
   nothing while the unit is active and `GET
@@ -1255,12 +1270,23 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
   `gpu_fan_curves` gives `options amdgpu ppfeaturemask=0x<hex>`, the running
   `/sys/module/amdgpu/parameters/ppfeaturemask` (hex or decimal) with
   `0x4000` (OverDrive) added, so this boot's own option renders the same
-  line again, and nothing without amdgpu or when that would be
-  `0xffffffff`; `it87_conflicts` gives `options it87
-  ignore_resource_conflict=1`. Its `Remove` stops `coolercontrold.service`
-  while it is mounted (whose `ExecStopPost` puts the fans back), runs `fans
-  restore` itself in case that could not, and with `purge` deletes the
-  data area.
+  line again. Before amdgpu has loaded (that file missing) it is the value
+  of the first such line of `/run/modprobe.d/vos-ext.conf`, else of the
+  booted set's `modprobe.conf`, with `0x4000` added; without one, the
+  kernel's default `0xfff7bfff` with `0x4000` added when a PCI device under
+  `/sys/bus/pci/devices` has `vendor` `0x1002` and a `class` of
+  `0x03xxxx` (an AMD display controller), and nothing without; never a
+  line when the mask would be `0xffffffff`. So the set's options, and with
+  them its fingerprint, do not change with when the driver loads.
+  `it87_conflicts` gives `options it87 ignore_resource_conflict=1`. Its
+  `Remove` stops `coolercontrold.service` while it is mounted (whose
+  `ExecStopPost` puts the fans back), runs `fans restore` itself in case
+  that could not, and with `purge` deletes the data area. Its optional
+  `PasswordChanged`, when the VaporOS password changes, copies the new
+  hash to `.passwd` on `prepare`'s terms (only while it is still the copy
+  `passwd_sha256` names, updating that; one changed in CoolerControl
+  stays), and does nothing while there is no `.passwd` (the next start
+  writes it); coolercontrold reads `.passwd` again when its mtime changes.
 
 **TruckersMP** (`extensions/truckersmp`, `internal/extensions/truckersmp`;
 requires `proton`). Its image holds the injector alone,

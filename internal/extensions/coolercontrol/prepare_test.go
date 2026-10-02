@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 )
 
 // Argon2id PHC strings as auth.json holds them (cheap parameters).
@@ -162,6 +164,41 @@ func TestPreparePasswordFollowsOnlyItsOwnCopy(t *testing.T) {
 	must(t, r.prepare())
 	if got := r.passwd(); got != adminHash {
 		t.Fatalf("after a purge: %q", got)
+	}
+}
+
+// A password changed in VaporOS reaches a running CoolerControl at once,
+// on the same terms: only while .passwd is VaporOS's copy.
+func TestPasswordChanged(t *testing.T) {
+	r := newPrepRig(t)
+	h := newHelper()
+	x := &extensions.Ext{ID: id, DataDir: r.d.area}
+	must(t, h.PasswordChanged(context.Background(), x))
+	if r.passwd() != "<missing>" {
+		t.Fatal("wrote .passwd before CoolerControl's first start")
+	}
+
+	must(t, r.prepare())
+	p := filepath.Join(r.d.config, ".passwd")
+	old := time.Now().Add(-time.Hour)
+	must(t, os.Chtimes(p, old, old))
+	r.admin(adminHash2)
+	must(t, h.PasswordChanged(context.Background(), x))
+	if got := r.passwd(); got != adminHash2 {
+		t.Fatalf("after a password change: %q", got)
+	}
+	if fi, err := os.Stat(p); err != nil || !fi.ModTime().After(old) || fi.Mode().Perm() != 0o600 {
+		t.Fatalf(".passwd %v %v: coolercontrold sees a change by its mtime", fi, err)
+	}
+	if st := loadState(r.d); st.Passwd != sum([]byte(adminHash2)) {
+		t.Fatalf("state %+v", st)
+	}
+
+	must(t, os.WriteFile(p, []byte(theirHash), 0o600))
+	r.admin(adminHash)
+	must(t, h.PasswordChanged(context.Background(), x))
+	if got := r.passwd(); got != theirHash {
+		t.Fatalf("replaced the password set in CoolerControl: %q", got)
 	}
 }
 

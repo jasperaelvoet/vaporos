@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/extensions/buildcheck"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
@@ -107,7 +109,9 @@ func TestImageTreePassesCheckTree(t *testing.T) {
 }
 
 // The drop-in and the code agree: where prepare looks, where vosd
-// proxies to, the order of the start steps.
+// proxies to, the order of the start steps. A start that fails, slowly or
+// not, stops being tried, and detection that loads nothing does not stop
+// the daemon.
 func TestDropInMatches(t *testing.T) {
 	d := loadSource(t)
 	f, err := os.Open(filepath.Join(source, "files/usr/lib/systemd/system/coolercontrold.service.d/vos.conf"))
@@ -115,11 +119,17 @@ func TestDropInMatches(t *testing.T) {
 	defer f.Close()
 	env := map[string]string{}
 	var pre, post []string
-	settings := map[string]string{}
+	settings, sections := map[string]string{}, map[string]string{}
+	section := ""
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), "=")
+		if ok && !strings.HasPrefix(k, "#") {
+			sections[k] = section
+		}
 		switch {
+		case strings.HasPrefix(k, "[") && !ok:
+			section = strings.Trim(k, "[]")
 		case !ok || strings.HasPrefix(k, "#"):
 		case k == "Environment":
 			ek, ev, _ := strings.Cut(v, "=")
@@ -160,9 +170,22 @@ func TestDropInMatches(t *testing.T) {
 	if strings.Contains(settings["CapabilityBoundingSet"], "CAP_SYS_ADMIN") {
 		t.Error("CAP_SYS_ADMIN in the bounding set")
 	}
-	wantPre := []string{"/usr/bin/vos ext coolercontrol prepare", "/usr/bin/coolercontrold detect --load",
+	wantPre := []string{"/usr/bin/vos ext coolercontrol prepare", "-/usr/bin/coolercontrold detect --load",
 		"+/usr/bin/vos ext coolercontrol fans snapshot"}
 	if !slices.Equal(pre, wantPre) || !slices.Equal(post, []string{"+/usr/bin/vos ext coolercontrol fans restore"}) {
 		t.Errorf("ExecStartPre %q, ExecStopPost %q", pre, post)
+	}
+
+	if sections["StartLimitIntervalSec"] != "Unit" || sections["StartLimitBurst"] != "Unit" || sections["TimeoutStartSec"] != "Service" {
+		t.Fatalf("sections %v", sections)
+	}
+	interval, err := time.ParseDuration(strings.TrimSuffix(settings["StartLimitIntervalSec"], "in"))
+	must(t, err)
+	timeout, err := time.ParseDuration(settings["TimeoutStartSec"])
+	must(t, err)
+	burst, err := strconv.Atoi(settings["StartLimitBurst"])
+	must(t, err)
+	if settings["StartLimitIntervalSec"] != "30min" || burst != 5 || interval < time.Duration(burst)*timeout {
+		t.Errorf("StartLimitIntervalSec=%s StartLimitBurst=%d: %d starts of %v each never fill it", settings["StartLimitIntervalSec"], burst, burst, timeout)
 	}
 }
