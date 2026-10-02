@@ -181,9 +181,9 @@ function listen() {
     if (live && ['done', 'error', 'idle', 'cancelled'].includes(p && p.phase)) soon();
   });
   // Only when the extensions start or stop asking for a restart does the
-  // restart row need a new /status.
+  // restart row need a new /status (not while skip-once is set).
   on('extensions.state', (d) => {
-    const want = !!(d && d.restart && d.restart.needed);
+    const want = !!(d && d.restart && d.restart.needed && !d.skip_once);
     if (snap.restart && want !== pending(snap).some((r) => r.kind === 'extensions')) soon();
   });
   on('power.idle', (p) => {

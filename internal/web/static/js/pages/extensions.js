@@ -133,7 +133,7 @@ function progress(li, x, name) {
   }
 }
 
-// ---------------------------------------------------------------- actions
+// --- actions
 
 function actions(li, x) {
   const name = x.name || x.id;
@@ -211,6 +211,7 @@ function pick(s) {
       h('button', { class: 'btn small ghost', type: 'button', onclick: (e) => {
         e.currentTarget.disabled = true;
         loadDisks(true).then(() => {
+          if (!sel.isConnected) return;
           show();
           sel.dispatchEvent(new Event('change'));
           sel.focus();
@@ -259,7 +260,7 @@ async function act(id, name, btn) {
   }, fail);
 }
 
-// --------------------------------------------------------------- settings
+// --- settings
 
 function settings(li, x) {
   const box = part(li, 'settings');
@@ -394,7 +395,7 @@ async function saveSetting(id, key, v, revert) {
   }
 }
 
-// ------------------------------------------------------ what it can do
+// --- what it can do
 
 function more(li, x) {
   const can = X.can(x);
@@ -411,7 +412,7 @@ function more(li, x) {
   part(li, 'caveats-box').hidden = !cav.length;
 }
 
-// ---------------------------------------------------------------- restart
+// --- restart
 
 let restartShown = false;
 
@@ -429,7 +430,7 @@ function renderRestart() {
   restartShown = true;
 }
 
-// ------------------------------------------------- start without extensions
+// --- start without extensions
 
 function renderSkip() {
   byId('ext-skip-on').hidden = !skipOnce;
@@ -470,7 +471,7 @@ function bindSkip() {
   }, fail));
 }
 
-// ------------------------------------------------------------------ start
+// --- start
 
 async function failed(err) {
   if (doc) return;

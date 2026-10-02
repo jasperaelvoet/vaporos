@@ -229,9 +229,14 @@ export default [
         for (const x of waiting) assert.deepEqual(await texts(card(page, x.name).locator('.ext-line')), X.lines(x, X.context(skip)).map((l) => l.text));
         assert.match(await text(page.locator('#ext-restart-text')), /Restart again after it to finish adding /);
         assert.equal(await page.isVisible('#ext-restart-auto'), false, 'VaporOS does not restart by itself for it');
+        const sysBadge = '.tab[data-tab="system"] [data-part="badge"]';
+        await until(page, (sel) => document.querySelector(sel).hidden, sysBadge)
+          .catch(() => assert.fail('the System badge clears live: /status has no extensions restart while skip-once is set'));
         await page.click('#ext-skip-cancel');
         await until(page, (want) => document.getElementById('ext-restart-text').textContent === want, X.restartText(d));
         assert.equal(await page.isVisible('#ext-restart-auto'), !!d.restart.auto);
+        await until(page, (sel) => !document.querySelector(sel).hidden, sysBadge)
+          .catch(() => assert.fail('the System badge comes back live once skip-once is cancelled'));
       });
       await step('Restart now asks first (C-reboot); Cancel changes nothing', async () => {
         await page.click('#ext-restart-go');

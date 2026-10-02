@@ -630,6 +630,7 @@ vm_api() {
     login=$(printf '{"password":"%s"}' "$ADMIN_PASS")
     pve "set -e; jar=\$(mktemp); out=\$(mktemp); trap 'rm -f \$jar \$out' EXIT
          call() {
+             : >\$out
              curl -sS --fail-with-body -o \$out \"\$@\" && return 0
              [ ! -s \$out ] || echo \"vosd answered: \$(head -c 2000 \$out)\" >&2
              return 1
