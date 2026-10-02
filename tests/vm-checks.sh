@@ -151,9 +151,10 @@ check_cachyos() {
     fi
 }
 
-# Steam's first-run setup lists networks through NetworkManager, as vapor.
+# Steam's first-run setup lists networks through NetworkManager and calls
+# SteamOS's helpers, as vapor.
 check_network() {
-    local svc state perms rc
+    local svc state perms rc tz try got wrong want helper arg
     svc=$(systemctl is-active NetworkManager.service systemd-networkd.service | tr '\n' ,)
     if [[ $svc == active,inactive, ]]; then ok nm "NetworkManager runs, networkd does not"; else bad nm "NetworkManager,networkd: $svc"; fi
     state=$(nmcli -t -f STATE general 2>/dev/null)
@@ -169,6 +170,34 @@ check_network() {
     runuser -u vapor -- /usr/bin/steamos-polkit-helpers/steamos-update check >/dev/null 2>&1
     rc=$?
     if (( rc == 7 )); then ok steamos-update "reports no update"; else bad steamos-update "exited $rc, expected 7"; fi
+    # Steam sets the timezone through timedated (50-vos-timedate.rules); put
+    # the installed one back afterwards.
+    tz=$(timedatectl show -p Timezone --value)
+    try=Europe/Brussels
+    [[ $tz == "$try" ]] && try=UTC
+    runuser -u vapor -- /usr/bin/steamos-polkit-helpers/steamos-set-timezone "$try" </dev/null >/dev/null 2>&1
+    rc=$?
+    got=$(timedatectl show -p Timezone --value)
+    timedatectl set-timezone "${tz:-UTC}"
+    if (( rc == 0 )) && [[ $got == "$try" ]]; then
+        ok steamos-timezone "vapor may set the timezone"
+    else
+        bad steamos-timezone "setting $try exited $rc and left ${got:-no timezone}"
+    fi
+    # The Steam Deck firmware and devkit helpers, with Steam's argument and
+    # each one's "nothing to do".
+    wrong=""
+    while read -r want helper arg; do
+        runuser -u vapor -- "$helper" "$arg" </dev/null >/dev/null 2>&1
+        rc=$?
+        (( rc == want )) || wrong+=" ${helper##*/} exited $rc, expected $want;"
+    done <<'HELPERS'
+0 /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check
+7 /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check
+0 /usr/bin/jupiter-initial-firmware-update check
+0 /usr/bin/steamos-polkit-helpers/steamos-devkit-mode --disable
+HELPERS
+    if [[ -z $wrong ]]; then ok steamos-helpers "firmware and devkit helpers have nothing to do"; else bad steamos-helpers "$wrong"; fi
 }
 
 # The monitor must never show a console: no getty or shell may own tty1.

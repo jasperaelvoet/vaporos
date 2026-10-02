@@ -1,0 +1,5 @@
+#!/bin/sh
+# Steam (-steamos3) runs "jupiter-initial-firmware-update check" to ask whether
+# a Steam Deck OLED needs its day-one firmware update. Valve's script exits 0
+# on any other hardware (7 means it is needed).
+exit 0

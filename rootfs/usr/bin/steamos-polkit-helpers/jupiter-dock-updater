@@ -1,0 +1,5 @@
+#!/bin/sh
+# Steam (-steamos3) runs "jupiter-dock-updater --check" for Steam Deck Dock
+# firmware on every update check. Valve's updater exits 7 when the dock is up
+# to date and 0 when it has an update; there is no dock here.
+exit 7

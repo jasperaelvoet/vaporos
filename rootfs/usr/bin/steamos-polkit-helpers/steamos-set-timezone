@@ -1,0 +1,5 @@
+#!/bin/sh
+# Steam (-steamos3) sets the timezone through this in first-run setup and its
+# settings. As on SteamOS, timedated sets it; 50-vos-timedate.rules lets vapor
+# do that without pkexec, and the /etc overlay keeps it.
+exec /usr/bin/timedatectl --no-ask-password set-timezone "$1"

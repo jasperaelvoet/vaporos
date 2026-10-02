@@ -209,9 +209,10 @@ info "kernel $KVER"
 # Our files. Ownership (and any extended attributes) come from the macOS
 # checkout, so drop them: everything is root's.
 cp -a --no-preserve=ownership,xattr "$SRC/rootfs/." "$ROOT/"
-chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" \
-    "$ROOT/usr/bin/steamos-update" "$ROOT/usr/bin/steamos-select-branch" \
-    "$ROOT/usr/bin/steamos-polkit-helpers/steamos-update"
+# The SteamOS helpers Steam calls (docs/CONTRACTS.md "SteamOS helpers").
+steamos_helpers=(usr/bin/steamos-update usr/bin/steamos-select-branch usr/bin/jupiter-initial-firmware-update
+    usr/bin/steamos-polkit-helpers/{steamos-update,steamos-set-timezone,steamos-devkit-mode,jupiter-biosupdate,jupiter-dock-updater})
+chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" "${steamos_helpers[@]/#/$ROOT/}"
 sed -i "s/@VERSION@/$VERSION/g" "$ROOT/usr/lib/os-release"
 ln -sf ../usr/lib/os-release "$ROOT/etc/os-release"
 
@@ -524,10 +525,11 @@ check_image() {
     [[ ! -e $m/etc/systemd/system/multi-user.target.wants/systemd-networkd.service ]] ||
         problem "systemd-networkd is enabled next to NetworkManager"
     for f in usr/bin/NetworkManager usr/lib/iwd/iwd usr/lib/polkit-1/polkitd \
-        usr/lib/NetworkManager/conf.d/50-vos.conf usr/share/polkit-1/rules.d/50-vos-networkmanager.rules; do
+        usr/lib/NetworkManager/conf.d/50-vos.conf usr/share/polkit-1/rules.d/50-vos-networkmanager.rules \
+        usr/share/polkit-1/rules.d/50-vos-timedate.rules usr/bin/timedatectl; do
         [[ -e $m/$f ]] || problem "/$f is missing"
     done
-    for f in usr/bin/steamos-update usr/bin/steamos-select-branch usr/bin/steamos-polkit-helpers/steamos-update; do
+    for f in "${steamos_helpers[@]}"; do
         [[ -x $m/$f ]] || problem "/$f is not executable"
     done
 
