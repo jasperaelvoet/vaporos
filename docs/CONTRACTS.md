@@ -876,7 +876,8 @@ of `vos-gamescope.service`, and vosd's run when `dispatcher` turns false):
    read), the rest as it was. Without the lock another run may be writing
    the record, so that one writes nothing.
 4. The fingerprint is the sha256 of `steam.json`'s bytes, the vos version,
-   `--unwrap`, whether each tool `steam.json` names or VaporOS owns an entry
+   `--unwrap`, whether the boot report's mode is `off` (step 5.3),
+   whether each tool `steam.json` names or VaporOS owns an entry
    for is installed, loginusers.vdf's bytes, and the size, mtime and mode of
    config.vdf, `steamapps/libraryfolders.vdf`, each account's localconfig.vdf
    and shortcuts.vdf and, in every library, the appmanifests of the apps a

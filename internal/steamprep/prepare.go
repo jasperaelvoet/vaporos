@@ -280,7 +280,7 @@ func (p *prep) toolOK(name string) bool {
 // of Steam's a run reads.
 func (p *prep) fingerprint(desired []byte) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "vos %q unwrap %v\nsteam.json %d\n", config.BinaryVersion, p.o.Unwrap, len(desired))
+	fmt.Fprintf(h, "vos %q unwrap %v off %v\nsteam.json %d\n", config.BinaryVersion, p.o.Unwrap, p.extOff, len(desired))
 	h.Write(desired)
 
 	tools := []string{p.st.Default.Wrote}
