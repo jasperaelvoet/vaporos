@@ -551,7 +551,7 @@ export function normalizeKeys(input) {
 
 // ---------- request bodies (api.ReadJSON) ----------
 
-const GO_TYPES = { string: 'string', bool: 'bool', int: 'int', strings: '[]string' };
+const GO_TYPES = { string: 'string', bool: 'bool', int: 'int', strings: '[]string', object: 'map[string]interface {}' };
 
 function jsonKind(v) {
   if (Array.isArray(v)) return 'array';
@@ -560,7 +560,7 @@ function jsonKind(v) {
 }
 
 // readJSON decodes body into the fields of spec ({name: 'string' | 'bool' |
-// 'int' | 'strings'}) the way encoding/json fills a struct: names match
+// 'int' | 'strings' | 'object'}) the way encoding/json fills a struct: names match
 // case-insensitively, null leaves a field alone, and a value of the wrong
 // type fails. Absent fields are undefined. {v} or {error, eof}.
 function readJSON(body, spec) {
@@ -585,7 +585,8 @@ function readJSON(body, spec) {
       (t === 'string' && typeof val === 'string') ||
       (t === 'bool' && typeof val === 'boolean') ||
       (t === 'int' && Number.isInteger(val)) ||
-      (t === 'strings' && Array.isArray(val) && val.every((x) => x === null || typeof x === 'string'));
+      (t === 'strings' && Array.isArray(val) && val.every((x) => x === null || typeof x === 'string')) ||
+      (t === 'object' && isObj(val));
     if (!ok) {
       bad ||= `bad request body: json: cannot unmarshal ${jsonKind(val)} into Go struct field .${key} of type ${GO_TYPES[t]}`;
       continue;
@@ -879,6 +880,7 @@ export class Engine {
       // vosd publishes pairing.state once its first poll of Sunshine is done.
       this.schedule('first-pairing', 1000);
       this.schedule('power-tick', POWER_INTERVAL);
+      resumeExtInstalls(this);
       const st = asObj(p.sim).stage;
       if (st) this.startStage('', st);
     }
@@ -957,7 +959,10 @@ export class Engine {
     disp.reboot_needed = false;
     sun.pairings = [];
     sun.pending_pairing = false;
-    if (!w.installer) bootNext(docs);
+    if (!w.installer) {
+      bootNext(docs);
+      bootExtensions(docs);
+    }
     if (change) change(docs);
     return { docs, errs: clone(w.errs), installer: w.installer, preset: '', password: '' };
   }
@@ -1759,6 +1764,7 @@ const TASKS = {
   restart: (e, d) => e.goDown(d.ms, d.boot ? clone(d.boot) : e.bootState(null)),
   wake: (e) => e.wake(),
   'install-step': (e, d) => e.installStep(d),
+  'ext-tick': (e, d) => extTick(e, d.id),
   script: (e, d) => {
     const s = e.fx.scripts[d.name];
     const st = s.steps[d.i];
@@ -2337,7 +2343,7 @@ const STATUS = [
     delete pw.wol;
     const up = this.updateAnswer();
     const disp = this.doc('display');
-    return { system: this.systemAnswer(), sunshine: sun, stream, display: disp, update: up, power: pw, restart: restartReasons(up, disp) };
+    return { system: this.systemAnswer(), sunshine: sun, stream, display: disp, update: up, power: pw, restart: extensionsRestart(restartReasons(up, disp), this.doc('extensions')) };
   }],
 ];
 
@@ -2377,6 +2383,195 @@ const INSTALL = [
   }],
 ];
 
+// ---------- the extensions (devserver_extensions_test.go) ----------
+
+// EXT_TICK is how often an install moves on; it takes eight steps.
+const EXT_TICK = 400;
+const UUID_RE = /^[0-9A-Za-z][0-9A-Za-z-]{0,63}$/;
+
+const extList = (doc) => asList(asObj(doc).extensions).map(asObj);
+const findExt = (doc, id) => extList(doc).find((x) => asStr(x.id) === id) || null;
+
+// extLookup is extension id, or the 404.
+function extLookup(e, id) {
+  return findExt(e.doc('extensions'), id) || fail(404, `unknown extension ${id}`);
+}
+
+// checkExtSettings is the 400 unless every key is one of x's settings with
+// a value of its type, else null.
+function checkExtSettings(x, set) {
+  for (const [k, v] of Object.entries(asObj(set))) {
+    const s = asList(x.settings).map(asObj).find((y) => asStr(y.key) === k);
+    if (!s) return fail(400, `unknown setting ${JSON.stringify(k)}`);
+    const ok =
+      (s.type === 'bool' && typeof v === 'boolean') ||
+      (s.type === 'choice' && typeof v === 'string' && asList(s.choices).includes(v)) ||
+      (s.type === 'disk' && typeof v === 'string' && (v === '' || UUID_RE.test(v)));
+    if (!ok) return fail(400, `bad value for ${k}`);
+  }
+  return null;
+}
+
+function applyExtSettings(x, set) {
+  for (const s of asList(x.settings).map(asObj)) {
+    if (has(asObj(set), asStr(s.key))) s.value = clone(set[s.key]);
+  }
+}
+
+// checkExtPassword is the admin password check, less the login limit.
+function checkExtPassword(e, pw) {
+  if (!pw) return fail(403, 'the VaporOS password is needed');
+  if (!e.s.auth.admin) return fail(409, 'no admin password is set yet; finish setup first');
+  if (pw !== e.s.auth.password) return fail(403, 'wrong password');
+  return null;
+}
+
+// wantExt adds x to the wanted set: it downloads, then waits for a
+// restart (one already mounted waits for nothing).
+function wantExt(e, x) {
+  x.wanted = true;
+  x.reason = '';
+  if (x.mounted === true) {
+    x.state = 'installed';
+    return;
+  }
+  x.state = 'installing';
+  x.progress = { bytes: 0, total: Math.max(asNum(x.size), 1) };
+  e.schedule('ext-tick', EXT_TICK, { id: asStr(x.id) });
+}
+
+function extTick(e, id) {
+  const x = findExt(e.doc('extensions'), id);
+  if (!x || x.state !== 'installing') return;
+  const p = asObj(x.progress);
+  const total = asNum(p.total);
+  const done = Math.min(total, asNum(p.bytes) + Math.ceil(total / 8));
+  x.progress = { bytes: done, total };
+  if (done >= total) {
+    x.state = 'restart-needed';
+    x.progress = null;
+  }
+  extChanged(e);
+  if (done < total) e.schedule('ext-tick', EXT_TICK, { id });
+}
+
+function resumeExtInstalls(e) {
+  for (const x of extList(e.doc('extensions'))) if (x.state === 'installing') e.schedule('ext-tick', EXT_TICK, { id: asStr(x.id) });
+}
+
+// extChanged brings restart.needed up to date, publishes the document and
+// returns it.
+function extChanged(e) {
+  const doc = e.doc('extensions');
+  const rs = asObj(doc.restart);
+  rs.needed = extList(doc).some((x) => x.state === 'restart-needed');
+  doc.restart = rs;
+  e.emit('extensions.state', doc);
+  return doc;
+}
+
+// extensionsRestart adds the extensions to GET /status's restart reasons.
+function extensionsRestart(restart, ext) {
+  if (asObj(asObj(ext).restart).needed !== true) return restart;
+  restart.reasons.push({ kind: 'extensions' });
+  restart.needed = true;
+  return restart;
+}
+
+// bootExtensions is a restart of the extensions: what is wanted and ready
+// is mounted, what is not wanted any more is gone, a download starts over.
+function bootExtensions(docs) {
+  const doc = asObj(docs.extensions);
+  for (const x of extList(doc)) {
+    if (x.state === 'installing') {
+      x.progress = { bytes: 0, total: Math.max(asNum(x.size), 1) };
+    } else if (x.state === 'restart-needed') {
+      const wanted = x.wanted === true || x.core === true;
+      x.mounted = wanted;
+      x.progress = null;
+      x.state = wanted ? 'installed' : 'not-installed';
+    }
+  }
+  if (isObj(doc.restart)) doc.restart.needed = false;
+}
+
+const EXTENSIONS = [
+  ['GET', '/extensions', AUTHED, function () {
+    return this.doc('extensions');
+  }],
+  ['POST', '/extensions/skip-once', AUTHED, function () {
+    return {};
+  }],
+  ['POST', '/extensions/{id}', AUTHED, function (r) {
+    const b = readJSON(r.body, { options: 'object', password: 'string' });
+    if (b.error) return fail(400, b.error);
+    const x = extLookup(this, r.params.id);
+    if (isAnswer(x)) return x;
+    if (x.state === 'not-in-this-version') return fail(409, `${asStr(x.name)} is not in this version of VaporOS`);
+    if (x.core === true) return fail(409, `${asStr(x.name)} is part of VaporOS and always on`);
+    const bad = checkExtSettings(x, b.v.options) || (x.needs_password === true ? checkExtPassword(this, b.v.password) : null);
+    if (bad) return bad;
+    applyExtSettings(x, b.v.options);
+    for (const id of [...asList(x.requires).map(asStr), asStr(x.id)]) {
+      const y = findExt(this.doc('extensions'), id);
+      if (y && y.wanted !== true && y.core !== true) wantExt(this, y);
+    }
+    return extChanged(this);
+  }],
+  ['DELETE', '/extensions/{id}', AUTHED, function (r) {
+    const x = extLookup(this, r.params.id);
+    if (isAnswer(x)) return x;
+    if (x.core === true) return fail(409, `${asStr(x.name)} is part of VaporOS and always on`);
+    const by = extList(this.doc('extensions'))
+      .filter((y) => (y.wanted === true || y.mounted === true) && asList(y.requires).includes(asStr(x.id)))
+      .map((y) => asStr(y.name));
+    if (by.length) return fail(409, `${asStr(x.name)} is needed by ${by.join(', ')}`);
+    x.wanted = false;
+    x.progress = null;
+    x.reason = '';
+    x.state = x.mounted === true ? 'restart-needed' : 'not-installed';
+    if (r.query.get('purge') === '1') for (const s of asList(x.settings).map(asObj)) if (s.type === 'bool') s.value = false;
+    return extChanged(this);
+  }],
+  ['PUT', '/extensions/{id}/settings', AUTHED, function (r) {
+    const b = readJSON(r.body, { settings: 'object', password: 'string' });
+    if (b.error) return fail(400, b.error);
+    const x = extLookup(this, r.params.id);
+    if (isAnswer(x)) return x;
+    const set = asObj(b.v.settings);
+    const bad = checkExtSettings(x, set);
+    if (bad) return bad;
+    const restart = asList(x.settings).map(asObj).some((s) => s.restart === true && has(set, asStr(s.key)) && set[s.key] !== s.value);
+    // Only a setting that feeds module_options asks for the password; the
+    // fake takes every restart setting of such an extension for one.
+    if (restart && x.needs_password === true && x.runs_as_root !== true) {
+      const no = checkExtPassword(this, b.v.password);
+      if (no) return no;
+    }
+    applyExtSettings(x, set);
+    if (restart && x.mounted === true && x.wanted === true) x.state = 'restart-needed';
+    return extChanged(this);
+  }],
+  ['POST', '/extensions/{id}/actions/{name}', AUTHED, function (r) {
+    if (goTrim(r.body == null ? '' : String(r.body))) {
+      const b = readJSON(r.body, { args: 'object' });
+      if (b.error) return fail(400, b.error);
+    }
+    const x = extLookup(this, r.params.id);
+    if (isAnswer(x)) return x;
+    const name = r.params.name;
+    if (!asList(x.actions).some((a) => asStr(asObj(a).name) === name)) return fail(404, `${asStr(x.name)} has no action ${JSON.stringify(name)}`);
+    if (x.mounted !== true) return fail(409, `${asStr(x.name)} is not installed yet`);
+    return this.doc('extensions');
+  }],
+  ['POST', '/extensions/{id}/retry', AUTHED, function (r) {
+    const x = extLookup(this, r.params.id);
+    if (isAnswer(x)) return x;
+    if (x.state === 'needs-attention' && (x.wanted === true || x.core === true)) wantExt(this, x);
+    return extChanged(this);
+  }],
+];
+
 const route = (fake) => ([method, path, access, h]) => ({ method, path, access, h, fake });
 
 // The routes vosd serves, in the order it registers them: the core, then
@@ -2384,7 +2579,7 @@ const route = (fake) => ([method, path, access, h]) => ({ method, path, access, 
 // rest installed (internal/daemon/daemon.go).
 const ROUTES_OS = [
   ...CORE.map(route(false)),
-  ...[...SYSTEM, ...DISPLAY, ...UPDATE, ...SUNSHINE, ...STORAGE, ...POWER, ...STATUS].map(route(true)),
+  ...[...SYSTEM, ...DISPLAY, ...UPDATE, ...SUNSHINE, ...STORAGE, ...POWER, ...STATUS, ...EXTENSIONS].map(route(true)),
 ];
 const ROUTES_INSTALLER = [...CORE.map(route(false)), ...[...SYSTEM, ...DISPLAY, ...INSTALL].map(route(true))];
 

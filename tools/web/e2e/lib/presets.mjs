@@ -17,6 +17,7 @@ export const ROUTES = {
     screen: '/display',
     system: '/advanced',
     storage: '/storage',
+    extensions: '/advanced',
     updates: '/updates',
     power: '/power',
     settings: '/advanced',
@@ -32,6 +33,7 @@ export const ROUTES = {
     screen: '/screen',
     system: '/system',
     storage: '/system/storage',
+    extensions: '/system/extensions',
     updates: '/system/updates',
     power: '/system/power',
     settings: '/system/settings',
@@ -45,7 +47,7 @@ export const ROUTES = {
 // Every signed-in page of a UI, in navigation order.
 export const APP_TOPICS = {
   legacy: ['home', 'devices', 'stream', 'screen', 'storage', 'updates', 'power', 'system'],
-  next: ['home', 'devices', 'screen', 'system', 'updates', 'power', 'storage', 'settings', 'logs', 'about'],
+  next: ['home', 'devices', 'screen', 'system', 'updates', 'power', 'storage', 'extensions', 'settings', 'logs', 'about'],
 };
 
 const ALL = '*';
@@ -107,6 +109,10 @@ export const PRESETS = [
   // /sunshine/logs answers 502 when neither Sunshine, its log file nor the
   // journal has a log.
   { name: 'logs-error', group: 'storage', pages: [{ topic: 'logs', allow: LOGS_UNREADABLE }] },
+  // An install downloading, two waiting for a restart, one that failed.
+  { name: 'extensions-installing', group: 'extensions', topics: ['system', 'extensions'] },
+  { name: 'extensions-restart', group: 'extensions', topics: ['home', 'system', 'extensions'] },
+  { name: 'extensions-attention', group: 'extensions', topics: ['system', 'extensions'] },
   {
     name: 'installer-code',
     group: 'installer',

@@ -475,7 +475,7 @@ func TestFakeRoutesInContract(t *testing.T) {
 			key := r.Method + " " + r.Path + " " + accessNames[r.Access]
 			cr, ok := c.route(r.Method, r.Path)
 			switch {
-			case !ok && !slices.Contains(notInContractYetRoutes, key):
+			case !ok && !slices.Contains(notInContractYetRoutes, key) && !aheadOfContract(c, r.Method+" "+r.Path):
 				t.Errorf("the fake serves %s, which docs/CONTRACTS.md lacks (add it to notInContractYetRoutes only if the real API serves it)", key)
 			case ok && cr.Access != accessNames[r.Access]:
 				t.Errorf("the fake serves %s %s as %s; docs/CONTRACTS.md says %s", r.Method, r.Path, accessNames[r.Access], cr.Access)
@@ -711,7 +711,9 @@ func TestFixturesCoverContract(t *testing.T) {
 		} else {
 			cr, ok := c.route("GET", fakeResources[where])
 			if !ok {
-				t.Errorf("docs/CONTRACTS.md has no GET %s (document %s)", fakeResources[where], where)
+				if !aheadOfContract(c, "GET "+fakeResources[where]) {
+					t.Errorf("docs/CONTRACTS.md has no GET %s (document %s)", fakeResources[where], where)
+				}
 				continue
 			}
 			promised, optional = c.responseFields(cr)
@@ -764,7 +766,7 @@ type realRoute struct {
 func realRoutes(t *testing.T) []realRoute {
 	t.Helper()
 	var out []realRoute
-	for _, pkg := range []string{"system", "display", "update", "sunshine", "storage", "power", "install", "daemon"} {
+	for _, pkg := range []string{"system", "display", "update", "sunshine", "storage", "power", "install", "daemon", "extensions"} {
 		dir := filepath.Join("..", pkg)
 		files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
 		fset := token.NewFileSet()
@@ -836,7 +838,7 @@ func TestFakeRoutesComplete(t *testing.T) {
 		switch r.Pkg {
 		case "install":
 			modes = []bool{true}
-		case "update", "sunshine", "storage", "power", "daemon": // daemon: GET /status
+		case "update", "sunshine", "storage", "power", "daemon", "extensions": // daemon: GET /status
 			modes = []bool{false}
 		}
 		for _, m := range modes {
@@ -854,7 +856,7 @@ func TestFakeRoutesComplete(t *testing.T) {
 	}
 	for _, m := range []bool{false, true} {
 		for key := range fakes[m] {
-			if !real[key] {
+			if !real[key] && !aheadOfContract(c, key) {
 				t.Errorf("the fake serves %s, which no service registers", key)
 			}
 		}

@@ -40,7 +40,7 @@ export const current = () => snap;
 // §1.3), inline so every page's first paint does not load state.js.
 function pending(s) {
   const staged = s.update && s.update.staged && s.update.staged.version;
-  return ((s.restart && s.restart.reasons) || []).filter((r) => !(r.kind === 'update' && staged && r.version === staged));
+  return ((s.restart && s.restart.reasons) || []).filter((r) => r && r.kind && !(r.kind === 'update' && staged && r.version === staged));
 }
 
 export function onStatus(fn) {
@@ -173,6 +173,12 @@ function listen() {
   on('update.state', soon);
   on('update.progress', (p, live) => {
     if (live && ['done', 'error', 'idle', 'cancelled'].includes(p && p.phase)) soon();
+  });
+  // Only when the extensions start or stop asking for a restart does the
+  // restart row need a new /status.
+  on('extensions.state', (d) => {
+    const want = !!(d && d.restart && d.restart.needed);
+    if (snap.restart && want !== pending(snap).some((r) => r.kind === 'extensions')) soon();
   });
   on('power.idle', (p) => {
     if (p && p.shutdown_in != null && p.shutdown_in <= 30) idleWarnedAt = Date.now();

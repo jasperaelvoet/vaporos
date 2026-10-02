@@ -29,7 +29,7 @@ ESP=${VOS_ESP:-/efi}
 # tells which one a build serves from the markup of GET /.
 WEB_CSP="default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
 WEB_PAGES_LEGACY="/ /pair /streaming /display /storage /updates /power /advanced /login /setup"
-WEB_PAGES_NEXT="/ /devices /screen /system /system/updates /system/power /system/storage /system/settings /system/logs /system/about /login /setup"
+WEB_PAGES_NEXT="/ /devices /screen /system /system/updates /system/power /system/storage /system/extensions /system/settings /system/logs /system/about /login /setup"
 # The legacy URLs the next UI still answers, as FROM=TO: 303 to TO, with the
 # query kept (before TO's #fragment).
 WEB_OLD_URLS="/pair=/devices#pair /streaming=/screen#stream /display=/screen /storage=/system/storage /updates=/system/updates /power=/system/power /advanced=/system/settings"

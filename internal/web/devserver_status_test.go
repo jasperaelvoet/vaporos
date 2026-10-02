@@ -25,7 +25,7 @@ func (f *devFake) statusRoutes(add fakeAdder) {
 		up, disp := f.updateAnswerLocked(), f.doc("display")
 		return map[string]any{
 			"system": f.systemAnswerLocked(), "sunshine": sun, "stream": stream, "display": disp,
-			"update": up, "power": pw, "restart": restartReasons(up, disp),
+			"update": up, "power": pw, "restart": extensionsRestart(restartReasons(up, disp), f.doc("extensions")),
 		}
 	})
 }

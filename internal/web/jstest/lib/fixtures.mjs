@@ -43,6 +43,19 @@ export function baseDocs() {
   return docs;
 }
 
+// restartOf is GET /status's restart when the extensions ask for one
+// (devserver_status_test.go); without it state.js works the reasons out
+// from the update and the display, as it always has.
+function restartOf(docs) {
+  if (!docs.extensions?.restart?.needed) return undefined;
+  const reasons = [];
+  const next = docs.update?.next_boot;
+  if (next?.version) reasons.push({ kind: next.version > docs.update.booted ? 'update' : 'rollback', version: next.version });
+  if (docs.display?.reboot_needed) reasons.push({ kind: 'display' });
+  reasons.push({ kind: 'extensions' });
+  return { needed: true, reasons };
+}
+
 // presets lists every preset with the snapshot a page would build from its
 // GET answers: {name, preset, snap}.
 export function presets(now = Date.now()) {
@@ -69,6 +82,7 @@ export function presets(now = Date.now()) {
         display: docs.display,
         update: docs.update,
         power: docs.power,
+        ...(restartOf(docs) ? { restart: restartOf(docs) } : {}),
       },
     });
   }

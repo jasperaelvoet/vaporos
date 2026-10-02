@@ -98,6 +98,7 @@ func (f *devFake) routeTable(add fakeAdder) {
 	f.storageRoutes(add)
 	f.powerRoutes(add)
 	f.statusRoutes(add)
+	f.extensionRoutes(add)
 }
 
 // register puts the routes on srv behind injected latency and errors.
@@ -176,6 +177,9 @@ func (f *devFake) start(ctx context.Context) {
 		return
 	}
 	go f.powerLoop(ctx)
+	f.mu.Lock()
+	f.resumeExtInstallsLocked()
+	f.mu.Unlock()
 	if s := f.preset.Sim.Stage; s != nil {
 		f.mu.Lock()
 		f.startStageLocked("", *s)
@@ -320,6 +324,7 @@ func (f *devFake) bootState(change func(docs map[string]any)) *devBoot {
 	}
 	if !f.installer {
 		bootNext(docs)
+		bootExtensions(docs)
 	}
 	if change != nil {
 		change(docs)

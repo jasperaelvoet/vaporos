@@ -41,7 +41,9 @@ export function updateProgress(snap) {
 // version or a held running version stands in (spec-cc-screens §2.10).
 export function restartReasons(snap) {
   if (snap.restart && Array.isArray(snap.restart.reasons)) {
-    return snap.restart.reasons.map((r) => ({ kind: r.kind, version: r.version || '' }));
+    // A reason without a kind says nothing; a kind this page does not know
+    // (a newer VaporOS) still asks for the restart, in general words.
+    return snap.restart.reasons.filter((r) => r && r.kind).map((r) => ({ kind: String(r.kind), version: r.version || '' }));
   }
   const out = [];
   const u = snap.update;

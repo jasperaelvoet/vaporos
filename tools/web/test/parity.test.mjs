@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { build, ID_RE, owner, PARITY_FILE, parseAdditions, parseScreens, passing, specFlowIDs } from '../e2e/parity.mjs';
+import { BEYOND_PARITY, build, ID_RE, owner, PARITY_FILE, parseAdditions, parseScreens, passing, specFlowIDs } from '../e2e/parity.mjs';
 
 const parity = JSON.parse(readFileSync(PARITY_FILE, 'utf8'));
 
@@ -46,6 +46,10 @@ test('every spec flow of the new UI names a parity ID', async () => {
   const known = new Set(parity.flows.map((f) => f.id));
   for (const [id, file] of await specFlowIDs()) {
     if (id.startsWith('LEGACY-')) continue;
+    if (BEYOND_PARITY.test(id)) {
+      assert.ok(!known.has(id), `${id} has a parity row: drop it from BEYOND_PARITY`);
+      continue;
+    }
     assert.ok(known.has(id), `${file} defines flow ${id}, which parity.json does not list`);
   }
 });

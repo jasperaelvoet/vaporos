@@ -71,6 +71,23 @@ test('a forward rollback (a newer next_boot with nothing staged) is a plain rest
   assert.deepEqual(contextCards(snap).map((c) => c.id), []);
 });
 
+test('extensions waiting for a restart, and a kind from a newer VaporOS', () => {
+  const base = { update: { booted: '1', next_boot: null }, display: { state: 'welcome' }, sunshine: { running: true } };
+  const ext = { ...base, restart: { needed: true, reasons: [{ kind: 'extensions' }] } };
+  assert.deepEqual(pendingReasons(ext), [{ kind: 'extensions', version: '' }]);
+  assert.deepEqual(restartRow(ext), { show: true, text: 'Restart to apply extension changes.', action: 'reboot', version: '' });
+  let h = heroModel(ext);
+  assert.deepEqual([h.key, h.title, h.detail, h.reason, h.actions.map((a) => a.id)], ['restart-needed', 'Restart to finish', 'Extension changes are waiting.', 'extensions', ['reboot']]);
+  // Never a blank row or a broken hero for a kind this page does not know.
+  const odd = { ...base, restart: { needed: true, reasons: [{ kind: 'firmware' }, { kind: 'bios' }, { version: '9' }] } };
+  assert.deepEqual(pendingReasons(odd).map((r) => r.kind), ['firmware', 'bios']);
+  assert.equal(restartRow(odd).text, 'Restart to finish: other changes are waiting.');
+  h = heroModel(odd);
+  assert.deepEqual([h.key, h.title, h.detail, h.reason], ['restart-needed', 'Restart to finish', 'Changes are waiting.', 'restart']);
+  const one = heroModel({ ...base, restart: { needed: true, reasons: [{ kind: 'firmware' }] } });
+  assert.deepEqual([one.title, one.detail], ['Restart to finish', 'Changes are waiting.']);
+});
+
 test('pairing is the hero: its words, its key, and no second card', () => {
   const snap = { update: { booted: '1' }, display: { state: 'welcome' }, sunshine: { running: true, pairings: [{ name: 'Steam Deck' }] } };
   const h = heroModel(snap);

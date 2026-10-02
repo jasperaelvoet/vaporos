@@ -134,7 +134,7 @@ var nextSet = uiSet{
 }
 
 // nextPages is every route of the four-tab UI, in order: Home is 0, the
-// tabs 1-3 and the System sub-pages 4-9, so moving to a lower number is
+// tabs 1-3 and the System sub-pages 4-10, so moving to a lower number is
 // going back (head.js). Wave agents fill the pages; this list is the one
 // place routes are added (spec-cc-screens §1.1).
 var nextPages = []page{
@@ -150,6 +150,7 @@ var nextPages = []page{
 		Lead: "Sleep when nobody plays, wake from Moonlight."},
 	{Name: "storage", Path: "/system/storage", Title: "Storage", Script: "storage", Icon: "drive", Tab: "system", Styles: []string{"system", "storage"},
 		Lead: "Drives in this PC, and the game libraries VaporOS mounts for Steam."},
+	{Name: "extensions", Path: "/system/extensions", Title: "Extensions", Script: "extensions", Icon: "library", Tab: "system", Styles: []string{"system", "extensions"}},
 	{Name: "settings", Path: "/system/settings", Title: "Settings", Script: "settings", Icon: "sliders", Tab: "system", Styles: []string{"system", "settings"},
 		Lead: "Name, password and remote access."},
 	{Name: "logs", Path: "/system/logs", Title: "Logs", Script: "logs", Icon: "file", Tab: "system", Styles: []string{"system", "logs"},
