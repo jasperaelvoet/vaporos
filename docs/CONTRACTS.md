@@ -516,8 +516,8 @@ mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
 wants is never promoted: reconcile removes or replaces such a `pending`, also
 on its own trial, and a promoter that knows the desired set's fingerprint
 promotes only when what booted has it, or the trial set's own while
-reconcile keeps that set because the desired set only adds to it (after
-rule 6). On trial boots (mode `pending`, or any
+reconcile keeps that set because the desired set only adds to it (see
+Reconcile, below rule 6). On trial boots (mode `pending`, or any
 boot systemd-boot counts, also with `vos.ext=0` or `skip-once`) the generator
 gives `vos-health.service` a drop-in with `JobTimeoutSec=10min` and
 `JobTimeoutAction=reboot-force` (see Units).
