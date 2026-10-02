@@ -24,8 +24,8 @@ const confirm = (c) => import('../ui/dialog.js').then((m) => m.confirmDialog(c))
 
 let doc = null;
 let ctx = X.context(null);
-let disks = null; // X.drives of GET /storage, once a drive setting shows
-let disksAsked = false;
+let disks = null; // X.drives of GET /storage, false when that failed
+let disksAsked = null; // its promise
 let skipOnce = false; // the next start leaves extensions out
 const cards = new Map(); // id → its <li>
 const sigs = new WeakMap(); // <li> → {part: what it was built from}
@@ -140,7 +140,7 @@ function progress(li, x, name) {
 function actions(li, x) {
   const name = x.name || x.id;
   const rm = X.removal(x, ctx);
-  const web = x.mounted ? X.webURL(x, location.hostname) : '';
+  const web = X.webLink(x, location.hostname);
   const acts = x.mounted ? (x.actions || []).filter((a) => a && a.name) : [];
   const retry = x.state === 'needs-attention' && (x.wanted || x.core);
   const sig = [X.canInstall(x), retry, web, x.web && x.web.label, acts.map((a) => [a.name, a.label]), rm];
@@ -175,27 +175,29 @@ function after(id, btn) {
 async function install(id, btn) {
   const x = find(id);
   if (!x) return;
-  const also = X.adds(x, ctx).filter((y) => ctx.names[y]).map((y) => ctx.names[y]);
-  // One this boot runs, removed until the restart, simply stays.
-  const back = !!x.mounted;
-  // restart.auto speaks of a restart already needed; a new one may happen
-  // by itself.
-  const auto = doc.restart && doc.restart.needed ? !!doc.restart.auto : true;
-  const when = back ? 'It stays installed.' : auto ? 'It downloads now and is added at the next restart, which VaporOS does by itself when nobody is playing.' : 'It downloads now and is added at the next restart.';
+  // The box refuses it without the drive it needs: that is picked here.
+  const need = X.required(x);
+  if (need.length) await loadDisks(true);
+  const choose = need.map((s) => {
+    const sel = h('select', { class: 'input', id: `ext-dialog-set-${s.key}` }, X.driveChoices(s, Array.isArray(disks) ? disks : X.drives([])).map(option));
+    sel.value = s.value || '';
+    return { key: s.key, sel, field: field(sel.id, s.label || s.key, X.settingHint(s), sel) };
+  });
   // needs_password covers what it also installs; the dialog asks anyway
   // when the box wants the password after all.
   const ok = await (await asker()).ask({
     title: `Install ${x.name}?`,
     body: (x.copy && x.copy.install) || x.summary || '',
     can: X.can(x),
-    note: [also.length ? `It also installs ${X.and(also)}.` : '', when].filter(Boolean).join(' '),
+    note: X.installNote(x, doc, ctx),
+    choose,
     password: !!x.needs_password,
     passwordHint: X.passwordHint(x, ctx),
     confirm: 'Install',
-    run: async ({ password }) => take(await api('POST', `/extensions/${enc(id)}`, password ? { password } : {})),
+    run: async ({ password, chosen }) => take(await api('POST', `/extensions/${enc(id)}`, { ...(need.length ? { options: chosen } : {}), ...(password ? { password } : {}) })),
   });
   if (!ok) return;
-  notify(back ? `${x.name} stays installed.` : `${x.name} is downloading. It's added at the next restart.`, { kind: 'ok' });
+  notify(X.installedText(x), { kind: 'ok' });
   after(id, btn);
 }
 
@@ -267,42 +269,55 @@ function control(x, s) {
       h('div', { class: 'sys-switch-text' }, h('label', { class: 'sys-switch-label', for: id, text: s.label || s.key }), hint && h('p', { class: 'field-hint', id: hintID, text: hint })),
       input, h('span', { class: 'sys-switch', 'aria-hidden': 'true' }));
   }
-  const sel = h('select', { class: 'input', id, 'aria-describedby': hintID }, options(s));
+  const sel = h('select', { class: 'input', id }, s.type === 'disk' ? [] : options(s));
   sel.addEventListener('change', () => save(sel.value, () => (sel.value = String(saved() ?? ''))));
   controls.set(`${x.id}/${s.key}`, sel);
   const none = s.type === 'disk' && Array.isArray(disks) && !disks.some((d) => !d.system);
-  return h('div', { class: 'field' },
-    h('label', { class: 'field-label', for: id, text: s.label || s.key }),
-    h('div', { class: 'ext-select' }, sel),
-    hint && h('p', { class: 'field-hint', id: hintID, text: hint }),
+  return field(id, s.label || s.key, hint, sel,
     none && h('p', { class: 'field-hint' }, 'No game drives yet. ', h('a', { href: `${document.documentElement.dataset.base || ''}/system/storage`, text: 'Add one in Storage' }), '.'));
 }
 
-function options(s) {
-  if (s.type !== 'disk') return (s.choices || []).map((c) => h('option', { value: c, text: X.choiceLabel(c) }));
-  if (!Array.isArray(disks)) return [h('option', { value: String(s.value || ''), text: disksAsked && disks === false ? "Couldn't list the drives" : 'Looking at your drives…' })];
-  const out = [h('option', { value: '', text: 'Choose a game drive' })];
-  // A disk setting holds the drive's folder (CONTRACTS: an absolute path).
-  for (const d of disks) out.push(h('option', { value: d.path, text: d.text }));
-  if (s.value && !disks.some((d) => d.path === s.value)) out.push(h('option', { value: String(s.value), text: 'A drive that isn\'t connected' }));
-  return out;
+// field is a select under its label, with its hint and what else it says.
+function field(id, label, hint, sel, more) {
+  if (hint) sel.setAttribute('aria-describedby', `${id}-hint`);
+  return h('div', { class: 'field' }, h('label', { class: 'field-label', for: id, text: label }), h('div', { class: 'ext-select' }, sel),
+    hint && h('p', { class: 'field-hint', id: `${id}-hint`, text: hint }), more);
 }
 
-// value shows a setting's saved value, unless a change is being saved.
+const option = (o) => h('option', { value: o.value, text: o.text, disabled: o.disabled });
+
+function options(s) {
+  if (s.type !== 'disk') return (s.choices || []).map((c) => option({ value: c, text: X.choiceLabel(c) }));
+  if (!Array.isArray(disks)) return [option({ value: s.value || '', text: disks === false ? "Couldn't list the drives" : 'Looking at your drives…' })];
+  return X.driveChoices(s, disks).map(option);
+}
+
+// value shows a setting's saved value, unless a change is being saved; a
+// drive's options follow it in place, keeping the focus.
 function value(x, s) {
   const el = controls.get(`${x.id}/${s.key}`);
   if (!el || el.getAttribute('aria-disabled') === 'true') return;
-  if (s.type === 'bool') el.checked = s.value === true;
-  else el.value = String(s.value ?? '');
+  if (s.type === 'bool') {
+    el.checked = s.value === true;
+    return;
+  }
+  const sig = s.type === 'disk' ? JSON.stringify([disks, s.value, s.required]) : '';
+  if (sig && el.dataset.options !== sig) {
+    el.dataset.options = sig;
+    el.replaceChildren(...options(s));
+  }
+  el.value = String(s.value ?? '');
 }
 
-function loadDisks() {
-  disksAsked = true;
-  api('GET', '/storage').then((r) => {
+// loadDisks asks once; again, once more after a failure.
+function loadDisks(again) {
+  if (disksAsked && !(again && disks === false)) return disksAsked;
+  disksAsked = api('GET', '/storage').then((r) => {
     disks = X.drives(r && r.disks);
   }, () => {
     disks = false;
   }).then(() => doc && render());
+  return disksAsked;
 }
 
 async function saveSetting(id, key, v, revert) {
@@ -320,9 +335,9 @@ async function saveSetting(id, key, v, revert) {
   // A setting that feeds kernel module options takes the password with it.
   const withPassword = async () => (await asker()).ask({
     title: `Change ${s.label}?`,
-    body: `${x.name} applies it as VaporOS starts.`,
+    body: s.needs_password ? `${x.name} applies it as VaporOS starts.` : '',
     password: true,
-    passwordHint: 'It changes how the system starts, so VaporOS asks for its password.',
+    passwordHint: s.needs_password ? X.moduleHint(x) : '',
     confirm: 'Save',
     run: ({ password }) => send(password),
   });

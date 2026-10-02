@@ -144,31 +144,34 @@ export function adds(x, { enabled = new Set(), byId = new Map() } = {}) {
 // a restart changes, its own notes, what installing it pulls in, and its
 // helper's status lines. ctx is context(doc).
 export function lines(x, ctx = {}) {
-  const names = ctx.names || {};
   const out = [];
+  const say = (text, tone = '') => out.push({ text, tone });
   const note = NOTES[x.id];
   if (note) {
-    out.push({ text: note.always, tone: '' });
-    if (!x.mounted && note.missing) out.push({ text: note.missing, tone: '' });
+    say(note.always);
+    if (!x.mounted && note.missing) say(note.missing);
   }
   if (x.state === 'restart-needed') {
-    if (x.wanted && !x.mounted) out.push({ text: 'It is added at the next restart.', tone: '' });
-    else if (!x.wanted && x.mounted && !x.core) out.push({ text: 'It is removed at the next restart.', tone: '' });
-    else out.push({ text: 'Its changes take effect at the next restart.', tone: '' });
+    if (x.wanted && !x.mounted) say('It is added at the next restart.');
+    else if (!x.wanted && x.mounted && !x.core) say('It is removed at the next restart.');
+    else say('Its changes take effect at the next restart.');
   }
   if (x.state === 'not-in-this-version') {
     const why = String(x.reason || '').trim();
-    out.push({ text: why ? reason(why) : "This version of VaporOS doesn't have it. It comes back with a version that does.", tone: '' });
+    say(why ? reason(why) : "This version of VaporOS doesn't have it. It comes back with a version that does.");
   }
-  const req = adds(x, ctx).filter((id) => names[id]).map((id) => names[id]);
-  if (req.length && !x.wanted && !x.core) out.push({ text: `Installing it also installs ${and(req)}.`, tone: '' });
+  const req = also(x, ctx);
+  if (req.length && !x.wanted && !x.core) say(`Installing it also installs ${and(req)}.`);
   for (const s of list(x.status)) {
     const text = s && s.text ? dot(s.text) : '';
     // A helper may say what a note already says: once is enough.
-    if (text && !out.some((l) => l.text.includes(text))) out.push({ text, tone: s.tone === 'error' || s.tone === 'warning' ? s.tone : '' });
+    if (text && !out.some((l) => l.text.includes(text))) say(text, s.tone === 'error' || s.tone === 'warning' ? s.tone : '');
   }
   return out;
 }
+
+// also names what installing x also installs, by the names of their cards.
+const also = (x, ctx) => adds(x, ctx).map((id) => (ctx.names || {})[id]).filter(Boolean);
 
 // some names what a list of {name} holds: the names, and the ones without
 // a name as "a game", "some games" or "one other game" (noun "game").
@@ -223,23 +226,34 @@ export function moreLabel(can, downloads) {
   return downloads ? 'What it downloads' : 'Good to know';
 }
 
-// drives are what a drive setting offers, from GET /storage's disks: each
-// adopted game drive that is there, then the system drive (vos_data), as
-// {path, text, system}. path is the drive's folder (its mounted_at), the
-// value the setting holds.
+// drives are what a drive setting offers, from GET /storage's disks, as
+// {path, text, system}: each adopted game drive that is there by its
+// folder (mounted_at), then the system drive, always, as /var.
 export function drives(disks) {
-  const out = [];
-  const seen = new Set();
-  const add = (d, system) => {
-    const path = String(d.mounted_at || '');
-    if (!path.startsWith('/') || seen.has(path)) return;
-    seen.add(path);
-    const name = system ? 'System drive' : String(d.label || d.model || 'Drive');
-    out.push({ path, text: [name, Number(d.free) > 0 ? `${bytes(d.free)} free` : ''].filter(Boolean).join(' · '), system });
-  };
   const xs = list(disks).filter(Boolean);
-  for (const d of xs) if (d.adopted && !d.missing && !d.is_system) add(d, false);
-  for (const d of xs) if (d.is_system && (d.label === 'vos_data' || d.partlabel === 'vos_data')) add(d, true);
+  const text = (name, d) => [name, d && Number(d.free) > 0 ? `${bytes(d.free)} free` : ''].filter(Boolean).join(' · ');
+  const out = [];
+  for (const d of xs) {
+    const path = String(d.mounted_at || '');
+    if (d.adopted && !d.missing && !d.is_system && path.startsWith('/') && path !== '/var' && !out.some((o) => o.path === path)) {
+      out.push({ path, text: text(String(d.label || d.model || 'Drive'), d), system: false });
+    }
+  }
+  out.push({ path: '/var', text: text('System drive', xs.find((d) => d.is_system && (d.label === 'vos_data' || d.partlabel === 'vos_data'))), system: true });
+  return out;
+}
+
+// required are the settings to pick before adding x: only a drive can be.
+export const required = (x) => list(x && x.settings).filter((s) => s && s.key && s.required && s.type === 'disk');
+
+// driveChoices are a drive setting's options, {value, text, disabled}:
+// "" (none), which a required one shows only until a drive is picked and
+// never takes, the drives, and a saved one that isn't there.
+export function driveChoices(s, ds) {
+  const v = String(s.value || '');
+  const out = v && s.required ? [] : [{ value: '', text: 'Choose a drive', disabled: !!s.required }];
+  for (const d of list(ds)) out.push({ value: d.path, text: d.text });
+  if (v && !out.some((o) => o.value === v)) out.push({ value: v, text: "A drive that isn't connected" });
   return out;
 }
 
@@ -266,6 +280,9 @@ export function webURL(x, hostname) {
   return `http://${hostname}:${port}/`;
 }
 
+// webLink is webURL while it runs: mounted, wanted or core, web_running.
+export const webLink = (x, hostname) => (x && x.mounted && (x.wanted || x.core) && x.web_running ? webURL(x, hostname) : '');
+
 // removal says whether a card offers Remove: only for one the user added
 // (wanted, never core), with why (Remove disabled) while one a restart
 // keeps (wanted or core) needs it. ctx is context(doc).
@@ -279,6 +296,9 @@ export function removal(x, { names = {}, enabled = new Set() } = {}) {
 // already. One removed until the restart can come back before it.
 export const canInstall = (x) => !x.core && !x.wanted && !['not-in-this-version', 'installing'].includes(x.state);
 
+// moduleHint is why x's module options take the password, in can()'s words.
+export const moduleHint = (x) => `${x.name || x.id} sets kernel module options, so VaporOS asks for your password.`;
+
 // passwordHint says why adding x asks for the VaporOS password: the first
 // of x and what it also installs that runs as root or sets kernel module
 // options, or '' when no card says. ctx is context(doc).
@@ -286,10 +306,25 @@ export function passwordHint(x, ctx = {}) {
   const byId = ctx.byId || new Map();
   const all = [x, ...adds(x, ctx).map((id) => byId.get(id)).filter(Boolean)];
   const root = all.find((y) => y.runs_as_root);
-  if (root) return `${root.name || root.id} runs as root, so VaporOS asks for its password.`;
+  if (root) return `${root.name || root.id} runs as root, so VaporOS asks for your password.`;
   const mod = all.find((y) => y.module_options);
-  return mod ? `${mod.name || mod.id} changes kernel settings, so VaporOS asks for its password.` : '';
+  return mod ? moduleHint(mod) : '';
 }
+
+const STAYS = 'stays, and VaporOS sets it up again.';
+
+// installNote is the install dialog's note: what it also installs, and
+// when it comes (one removed until the restart stays). ctx is context(doc).
+export function installNote(x, doc, ctx = {}) {
+  const a = also(x, ctx);
+  // restart.auto speaks of a restart already needed; a new one may happen by itself.
+  const r = (doc && doc.restart) || {};
+  const when = x.mounted ? `It ${STAYS}` : `It downloads now and is added at the next restart${!r.needed || r.auto ? ', which VaporOS does by itself when nobody is playing' : ''}.`;
+  return a.length ? `It also installs ${and(a)}. ${when}` : when;
+}
+
+// installedText is the notice once the box took an install.
+export const installedText = (x) => `${x.name || x.id} ${x.mounted ? STAYS : "is downloading. It's added at the next restart."}`;
 
 // wantsPassword: the box refused a change for the VaporOS password it
 // needs (403 naming the password), not for anything else.

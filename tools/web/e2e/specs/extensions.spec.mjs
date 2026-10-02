@@ -1,14 +1,15 @@
 // Flows over System › Extensions (docs/CONTRACTS.md "Extensions"): the
 // cards and their chips, Install with the VaporOS password, a download the
 // event stream alone moves on, Restart now, Needs attention and Try again,
-// Remove with its data and Install again before the restart, settings and
-// a drive setting, actions, a start without extensions, a first read that
-// fails and the row on System. The words a card should show come from the
-// fixtures through ext.js, the page's own pure module, so the flows hold
-// for any catalogue the fixtures carry; each flow first checks that they
-// carry what it needs. The IDs have no parity row (BEYOND_PARITY in
-// e2e/parity.mjs): the eight-page UI never had extensions. See
-// legacy.spec.mjs for the flow format.
+// an extension's own page while it runs, Remove with its data and Install
+// again before the restart, settings, the drive an extension needs (asked
+// for as it installs), actions, a start without extensions, a first read
+// that fails and the row on System. The words a card should show come
+// from the fixtures through ext.js, the page's own pure module, so the
+// flows hold for any catalogue the fixtures carry; each flow first checks
+// (need) that they carry what it needs. The IDs have no parity row
+// (BEYOND_PARITY in e2e/parity.mjs): the eight-page UI never had
+// extensions. See legacy.spec.mjs for the flow format.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -47,6 +48,12 @@ const chipOf = (page, n, words, timeout) =>
     const chip = li.querySelector('.ext-chip');
     return li.querySelector('.ext-name').textContent === name && (w ? !chip.hidden && chip.textContent === w : chip.hidden);
   }), [n, words], timeout);
+// live waits until the page takes events as news: once the stream is open
+// and past its first 400 ms (core/live.js), which count as its replay.
+async function live(page) {
+  await page.locator('#link[data-link="live"]').waitFor({ state: 'attached' });
+  await page.waitForTimeout(500);
+}
 const badge = (page, on) => until(page, (b) => {
   const el = document.querySelector('.tab[data-tab="system"] [data-part="badge"]');
   return !!el && el.hidden === !b;
@@ -120,6 +127,7 @@ export default [
         assert.match((await texts(card(page, unchecked.name).locator('[data-part="downloads"] .ext-fact[data-tone="warning"]')))[0], /VaporOS can't check these files\.$/);
       });
       await step('every extension that is not in yet offers Install, named for it', async () => {
+        need(d.extensions.some(X.canInstall), 'an extension that is not installed yet');
         for (const x of d.extensions.filter(X.canInstall)) {
           assert.equal(await card(page, x.name).getByRole('button', { name: `Install ${x.name}` }).isVisible(), true, x.id);
         }
@@ -133,7 +141,8 @@ export default [
     async run(t) {
       const { page, step } = t;
       const d = doc();
-      const x = need(d.extensions.find((y) => X.canInstall(y) && y.needs_password), 'an extension to install that asks for the password (needs_password)');
+      const x = need(d.extensions.find((y) => X.canInstall(y) && y.needs_password && !X.required(y).length),
+        'an extension to install that asks for the password (needs_password) and no drive (no settings[].required)');
       const c = card(page, x.name);
       let asked;
       await step('Install asks first: what it can do, when it comes, and the VaporOS password', async () => {
@@ -144,7 +153,9 @@ export default [
         assert.equal(await text(page.locator('#ext-dialog-title')), `Install ${x.name}?`);
         assert.equal(await text(page.locator('#ext-dialog-body')), (x.copy && x.copy.install) || x.summary);
         assert.deepEqual(await texts(page.locator('#ext-dialog-can .ext-fact')), X.can(x));
+        assert.equal(await text(page.locator('#ext-dialog-note')), X.installNote(x, d, X.context(d)));
         assert.match(await text(page.locator('#ext-dialog-note')), /added at the next restart/);
+        assert.equal(await page.isVisible('#ext-dialog-choose'), false, 'nothing to pick first');
         assert.equal(await page.isVisible('#ext-dialog-pw'), true);
         assert.equal(await text(page.locator('#ext-dialog-pw-hint')), X.passwordHint(x, X.context(d)) || 'The one you sign in with.');
         assert.equal(await page.isVisible('#ext-dialog-purge-row'), false);
@@ -167,7 +178,7 @@ export default [
         await page.click('#ext-dialog-ok');
         assert.deepEqual(await body, { password: 'vaporvapor' });
         await closed(page, 'ext-dialog');
-        await notice(page, `${x.name} is downloading. It's added at the next restart.`);
+        await notice(page, X.installedText(x));
         assert.match(await text(c.locator('.ext-chip')), /^(Installing( · \d+%)?|Restart needed)$/);
         await chipOf(page, x.name, 'Restart needed', 15000);
         assert.equal(await c.getAttribute('data-state'), 'restart-needed');
@@ -237,10 +248,12 @@ export default [
     ui: ['next'],
     preset: 'extensions-attention',
     async run(t) {
-      const { page, step } = t;
+      const { page, server, step } = t;
       const d = doc('extensions-attention');
       const bad = d.extensions.filter((x) => x.state === 'needs-attention');
       need(bad.length, 'extensions-attention: a card that needs attention');
+      const site = need(d.extensions.find((y) => y.mounted && (y.wanted || y.core) && y.web && y.web.port),
+        'extensions-attention: a running extension with its own web page (web.port)');
       await step('Needs attention is the fault: its cold chip, hazard edge and the reason in words', async () => {
         await open(t);
         for (const x of bad) {
@@ -252,18 +265,34 @@ export default [
         }
         await assertAxe(page, 'a card that needs attention');
       });
-      await step('an installed extension shows its status lines and opens its own page in a new tab', async () => {
-        const webs = d.extensions.filter((y) => y.mounted && y.web);
-        need(webs.length, 'extensions-attention: a running extension with its own web page');
-        for (const x of webs) {
-          const c = card(page, x.name);
-          assert.deepEqual(await texts(c.locator('.ext-line')), X.lines(x, X.context(d)).map((l) => l.text));
-          const link = c.getByRole('link', { name: new RegExp(`^${esc(X.webLabel(x))}`) });
-          assert.equal(await link.getAttribute('href'), `http://vapor.local:${x.web.port}/`);
-          assert.equal(await link.getAttribute('target'), '_blank');
-          assert.equal(await link.getAttribute('rel'), 'noopener noreferrer');
-          assert.equal(await page.locator('iframe').count(), 0);
-        }
+      await step('an installed extension shows its status lines, and Open only while its own page runs (web_running)', async () => {
+        const c = card(page, site.name);
+        assert.deepEqual(await texts(c.locator('.ext-line')), X.lines(site, X.context(d)).map((l) => l.text));
+        const link = c.getByRole('link', { name: new RegExp(`^${esc(X.webLabel(site))}`) });
+        assert.equal(await link.count(), X.webLink(site, 'vapor.local') ? 1 : 0, 'as the document says');
+        // The event stream says when its page starts and stops.
+        await live(page);
+        const says = async (patch) => {
+          const next = structuredClone(d);
+          Object.assign(next.extensions.find((y) => y.id === site.id), patch);
+          await dev(server, 'event', { topic: 'extensions.state', data: next });
+          const on = !!X.webLink(next.extensions.find((y) => y.id === site.id), 'vapor.local');
+          const install = X.canInstall(next.extensions.find((y) => y.id === site.id));
+          await until(page, ([n, a, i]) => [...document.querySelectorAll('.ext-card')].some((li) => li.querySelector('.ext-name').textContent === n &&
+            !!li.querySelector('.ext-actions a[href]') === a && [...li.querySelectorAll('.ext-actions button')].some((b) => b.textContent.startsWith('Install')) === i), [site.name, on, install]);
+          return on;
+        };
+        assert.equal(await says({ web_running: true }), true);
+        assert.equal(await link.getAttribute('href'), `http://vapor.local:${site.web.port}/`);
+        assert.equal(await link.getAttribute('target'), '_blank');
+        assert.equal(await link.getAttribute('rel'), 'noopener noreferrer');
+        assert.equal(await page.locator('iframe').count(), 0);
+        assert.equal(await says({ web_running: false }), false, 'its page is down: no link to it');
+        await says({ web_running: true });
+        // Removed until the restart (Install again on offer), its page is not offered either.
+        assert.equal(await says({ web_running: true, wanted: false, state: 'restart-needed' }), false);
+        assert.equal(await link.count(), 0);
+        await says({});
       });
       await step('Try again asks the box once more, and the card downloads again', async () => {
         const x = bad[0];
@@ -283,7 +312,8 @@ export default [
       const { page, step } = t;
       const d = doc('extensions-attention');
       const ctx = X.context(d);
-      const x = need(d.extensions.find((y) => y.mounted && !y.core && X.removal(y, ctx).show && !X.removal(y, ctx).why), 'extensions-attention: a running extension the user added that nothing needs');
+      const x = need(d.extensions.find((y) => y.mounted && !y.core && X.removal(y, ctx).show && !X.removal(y, ctx).why && !X.required(y).length),
+        'extensions-attention: a running extension the user added that nothing needs, and that needs no drive');
       const c = card(page, x.name);
       await step('Remove asks with the danger confirm, and offers to delete its data', async () => {
         await open(t);
@@ -318,17 +348,17 @@ export default [
         assert.equal(await c.getByRole('button', { name: `Remove ${x.name}` }).count(), 0, 'removed already: no second Remove');
         await badge(page, true);
       });
-      await step('before the restart it can be installed again: Installed, and nothing waits for a restart', async () => {
+      await step('before the restart it can be installed again: it stays and is set up again, and nothing waits for a restart', async () => {
         await c.getByRole('button', { name: `Install ${x.name}` }).click();
         await page.locator('#ext-dialog[open]').waitFor();
-        assert.equal(await text(page.locator('#ext-dialog-note')), 'It stays installed.');
+        assert.equal(await text(page.locator('#ext-dialog-note')), 'It stays, and VaporOS sets it up again.');
         assert.equal(await page.isVisible('#ext-dialog-pw'), !!x.needs_password);
         if (x.needs_password) await page.fill('#ext-dialog-pw', 'vaporvapor');
         const post = request(page, 'POST', `/extensions/${x.id}`);
         await page.click('#ext-dialog-ok');
         await post;
         await closed(page, 'ext-dialog');
-        await notice(page, `${x.name} stays installed.`);
+        await notice(page, `${x.name} stays, and VaporOS sets it up again.`);
         await chipOf(page, x.name, '');
         assert.equal(await text(c.locator('.ext-plain')), 'Installed');
         assert.equal(await page.isVisible('#ext-restart'), false);
@@ -359,6 +389,7 @@ export default [
       const plain = y.settings.find(free);
       const values = plain.type === 'disk' ? X.drives(json('base/storage.json').disks).map((v) => v.path) : plain.choices;
       const was = String(plain.value ?? '');
+      need(!plain.required || was, `${y.name}'s ${plain.label}: a drive picked already (a required one never goes back to "")`);
       const pick = need(values.find((v) => v !== was), `another value for ${y.name}'s ${plain.label}`);
       const sel = () => card(page, y.name).getByLabel(plain.label, { exact: true });
       const sw = () => card(page, x.name).getByRole('switch', { name: flag.label, exact: true });
@@ -425,44 +456,58 @@ export default [
     async run(t) {
       const { page, step } = t;
       const d = doc();
-      const x = need(d.extensions.find((y) => X.canInstall(y) && !y.needs_password && (y.settings || []).some((s) => s.type === 'disk')),
-        'an extension to install without the password that has a drive setting (star-citizen)');
-      const s = x.settings.find((z) => z.type === 'disk');
+      const x = need(d.extensions.find((y) => X.canInstall(y) && !y.needs_password && X.required(y).length === 1),
+        'an extension to install without the password that needs a drive (one disk setting with "required": true, star-citizen)');
+      const [s] = X.required(x);
+      need(!s.value, `${x.name}'s ${s.label}: no drive picked yet (value "")`);
       const drives = X.drives(json('base/storage.json').disks);
-      const sys = need(drives.find((v) => v.system), 'GET /storage: the system drive (vos_data) with mounted_at');
+      const sys = need(drives.find((v) => v.system && v.path === '/var' && / free$/.test(v.text)), 'GET /storage: the system drive (vos_data) with its free space');
       const game = need(drives.find((v) => !v.system), 'GET /storage: an adopted game drive that is mounted');
       const c = card(page, x.name);
+      const pick = page.locator('#ext-dialog-choose').getByLabel(s.label, { exact: true });
       const sel = c.getByLabel(s.label, { exact: true });
-      await step(`a drive setting shows once ${x.name} is added; a password the box wants after all is asked for`, async () => {
+      const options = (loc) => loc.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.textContent, o.disabled]));
+      await step(`Install asks for the drive first: each game drive and the system drive, and Install waits for one`, async () => {
         await open(t);
         assert.equal(await c.locator('.ext-settings').isVisible(), false, 'not added: no settings');
         await c.getByRole('button', { name: `Install ${x.name}` }).click();
         await page.locator('#ext-dialog[open]').waitFor();
         assert.equal(await page.isVisible('#ext-dialog-pw'), false);
+        assert.deepEqual(await options(pick), [['', 'Choose a drive', true], ...drives.map((v) => [v.path, v.text, false])]);
+        assert.equal(await pick.inputValue(), '');
+        assert.equal(await page.evaluate(() => document.activeElement.id), await pick.getAttribute('id'), 'the drive comes first');
+        assert.equal(await text(page.locator(`#${await pick.getAttribute('aria-describedby')}`)), X.settingHint(s));
+        assert.equal(await page.isDisabled('#ext-dialog-ok'), true, 'no drive yet: Install waits');
+        await assertAxe(page, 'the install dialog asking for a drive');
+      });
+      await step('the drive goes with the install; a password the box wants after all is asked for', async () => {
+        await pick.selectOption(game.path);
+        assert.equal(await page.isDisabled('#ext-dialog-ok'), false);
         // The box may want the password where the card did not say so.
         await page.route(`**/api/v1/extensions/${x.id}`, (r) => r.fulfill({ status: 403, json: { error: `Adding ${x.name} needs the admin password` } }), { times: 1 });
+        const first = write(page, 'POST', `/extensions/${x.id}`);
         await page.click('#ext-dialog-ok');
+        assert.deepEqual(await first, { options: { [s.key]: game.path } });
         await page.locator('#ext-dialog-pw').waitFor();
         assert.equal(await text(page.locator('#ext-dialog-pw-error')), 'Enter the VaporOS password.');
         assert.equal(await page.evaluate(() => document.activeElement.id), 'ext-dialog-pw');
         const body = write(page, 'POST', `/extensions/${x.id}`);
         await page.fill('#ext-dialog-pw', 'vaporvapor');
         await page.click('#ext-dialog-ok');
-        assert.deepEqual(await body, { password: 'vaporvapor' });
+        assert.deepEqual(await body, { options: { [s.key]: game.path }, password: 'vaporvapor' });
         await closed(page, 'ext-dialog');
+        await notice(page, X.installedText(x));
         await sel.waitFor();
       });
-      await step('it offers each game drive and the system drive, by name and free space', async () => {
-        await until(page, (id) => document.getElementById(id).options.length > 1, `ext-${x.id}-${s.key}`);
-        const opts = await sel.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.textContent]));
-        assert.deepEqual(opts, [['', 'Choose a game drive'], ...drives.map((v) => [v.path, v.text])]);
-        assert.equal(await sel.inputValue(), String(s.value || ''));
+      await step('its card holds that drive, and no longer offers none', async () => {
+        await until(page, ([id, v]) => document.getElementById(id).value === v, [`ext-${x.id}-${s.key}`, game.path]);
+        assert.deepEqual(await options(sel), drives.map((v) => [v.path, v.text, false]));
         // The closed dialog slides away first.
         await page.locator('#ext-dialog').waitFor({ state: 'hidden' });
         await assertAxe(page, 'a drive setting');
       });
-      await step("a drive saves as its folder: the game drive's, then the system drive's", async () => {
-        for (const v of [game, sys]) {
+      await step("a drive saves as its folder: the system drive's (/var), then the game drive's", async () => {
+        for (const v of [sys, game]) {
           const put = request(page, 'PUT', `/extensions/${x.id}/settings`);
           await sel.selectOption(v.path);
           const r = await put;
@@ -481,6 +526,7 @@ export default [
     async run(t) {
       const { page, server, step } = t;
       const d = doc();
+      need(d.extensions.length, 'GET /extensions lists no extension');
       await step('a first read that fails says so, in place of the list', async () => {
         await page.route('**/api/v1/extensions', (r) => (r.request().method() === 'GET' ? r.fulfill({ status: 500, json: { error: 'the extension store could not be read' } }) : r.fallback()), { times: 1 });
         await open(t);
@@ -530,6 +576,7 @@ export default [
     ui: ['next'],
     async run(t) {
       const { page, step } = t;
+      need(doc().skip_once === false, 'GET /extensions: skip_once false to begin with');
       const cancel = () => page.getByRole('button', { name: 'Cancel the start without extensions' });
       await step('the next start can leave every extension out, after a question', async () => {
         await open(t);
@@ -572,17 +619,21 @@ export default [
     preset: 'extensions-installing',
     async run(t) {
       const { page, server, step } = t;
+      const d = doc('extensions-installing');
+      const busy = need(d.extensions.find((x) => x.state === 'installing'), 'extensions-installing: a card that is installing');
+      need(d.extensions.filter((x) => x.state === 'installing').length === 1, 'extensions-installing: only one card installing');
+      const head = X.rowLine({ extensions: d.extensions.filter((x) => x.state !== 'installing') })[0];
+      need(X.rowLine(doc('extensions-attention'))[1] === 'cold', 'extensions-attention: a card that needs attention');
       await step('the Extensions row on System says what is installed and what is under way', async () => {
         await open(t, '/system');
         await until(page, () => /^\d+ installed|^None installed/.test(document.getElementById('sum-extensions').textContent));
-        const busy = need(doc('extensions-installing').extensions.find((x) => x.state === 'installing'), 'extensions-installing: a card that is installing');
-        assert.match(await text(page.locator('#sum-extensions')), new RegExp(`^1 installed · (installing ${esc(busy.name)}( · \\d+%)?|restart needed)$`));
+        assert.match(await text(page.locator('#sum-extensions')), new RegExp(`^${esc(head)} · (installing ${esc(busy.name)}( · \\d+%)?|restart needed)$`));
         assert.equal(await page.getAttribute('#row-extensions', 'href'), '/system/extensions');
         assert.equal(await page.getAttribute('#row-extensions', 'data-tone'), 'hot');
       });
       await step('the event stream moves it on, without asking again', async () => {
         const asked = gets(page);
-        await until(page, () => document.getElementById('sum-extensions').textContent === '1 installed · restart needed', null, 15000);
+        await until(page, (w) => document.getElementById('sum-extensions').textContent === w, `${head} · restart needed`, 15000);
         assert.deepEqual(asked, []);
       });
       await step('a fault shows on the row in words and cold', async () => {
