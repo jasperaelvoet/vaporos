@@ -218,6 +218,19 @@ export default [
         assert.equal(await page.isVisible('#restart-row'), false, 'the page says it itself');
         assert.equal(await page.locator('.tab[data-tab="system"] [data-part="badge"]').isVisible(), true);
       });
+      await step('with the next start left without extensions, the cards and the restart card say the change waits for the restart after it', async () => {
+        await live(page);
+        await page.click('#ext-skip');
+        await page.click('#confirm-ok');
+        await until(page, () => /^The next start is without extensions\./.test(document.getElementById('ext-restart-text').textContent));
+        const skip = { ...d, skip_once: true };
+        for (const x of waiting) assert.deepEqual(await texts(card(page, x.name).locator('.ext-line')), X.lines(x, X.context(skip)).map((l) => l.text));
+        assert.match(await text(page.locator('#ext-restart-text')), /Restart again after it to finish adding /);
+        assert.equal(await page.isVisible('#ext-restart-auto'), false, 'VaporOS does not restart by itself for it');
+        await page.click('#ext-skip-cancel');
+        await until(page, (want) => document.getElementById('ext-restart-text').textContent === want, X.restartText(d));
+        assert.equal(await page.isVisible('#ext-restart-auto'), !!d.restart.auto);
+      });
       await step('Restart now asks first (C-reboot); Cancel changes nothing', async () => {
         await page.click('#ext-restart-go');
         await page.locator('#confirm[open]').waitFor();

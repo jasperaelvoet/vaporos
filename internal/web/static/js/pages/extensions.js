@@ -197,7 +197,7 @@ async function install(id, btn) {
     run: async ({ password, chosen }) => take(await api('POST', `/extensions/${enc(id)}`, { ...(need.length ? { options: chosen } : {}), ...(password ? { password } : {}) })),
   });
   if (!ok) return;
-  notify(X.installedText(x), { kind: 'ok' });
+  notify(X.installedText(x, ctx), { kind: 'ok' });
   after(id, btn);
 }
 
@@ -414,11 +414,10 @@ function renderSkip() {
   byId('ext-skip').hidden = skipOnce;
 }
 
-// skipped takes what POST or DELETE /extensions/skip-once answered: the
-// document when the box sends one, else what was asked happened.
-function skipped(ans, on) {
-  if (ans && Array.isArray(ans.extensions)) take(ans);
-  if (!(ans && typeof ans.skip_once === 'boolean')) skipOnce = on;
+// skipped shows what POST or DELETE /extensions/skip-once did ({}); the
+// event brings what the cards say about it.
+function skipped(on) {
+  skipOnce = on;
   renderSkip();
 }
 
@@ -434,13 +433,15 @@ function bindSkip() {
     });
     if (!ok) return;
     await busy(skip, async () => {
-      skipped(await api('POST', '/extensions/skip-once', {}), true);
+      await api('POST', '/extensions/skip-once', {});
+      skipped(true);
       notify('The next start leaves extensions out.', { kind: 'ok' });
       if (skip.hidden) cancel.focus();
     }, fail);
   });
   cancel.addEventListener('click', () => busy(cancel, async () => {
-    skipped(await api('DELETE', '/extensions/skip-once'), false);
+    await api('DELETE', '/extensions/skip-once');
+    skipped(false);
     notify('The next start adds extensions again.', { kind: 'ok' });
     if (cancel.hidden) skip.focus();
   }, fail));

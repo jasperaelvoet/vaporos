@@ -6,9 +6,8 @@
 import { capitalize } from './copy.js';
 import { bytes, percent } from './fmt.js';
 
-// CHIPS: the extension states that are states (tokens.json state.*.label),
-// by the state token they take. Every other state is a fact, said in
-// neutral words (PLAIN).
+// CHIPS: the states that are tokens.json states (state.*.label), by token;
+// the others are facts in neutral words (PLAIN).
 export const CHIPS = {
   installing: { state: 'installing', label: 'Installing' },
   'restart-needed': { state: 'restart-needed', label: 'Restart needed' },
@@ -23,6 +22,8 @@ export const PLAIN = {
 
 export const ALWAYS_ON = 'Always on';
 export const AFTER_RESTART = 'Takes effect after a restart.';
+// SKIP is when a change applies while the next start leaves extensions out.
+export const SKIP = 'The next start is without extensions. This change applies at the restart after that.';
 
 // NOTES are lines a card adds for one extension: always, and while it is
 // not mounted.
@@ -113,13 +114,15 @@ export function from(x) {
 }
 
 // context is what a card needs to know of the others: their names, the
-// ids a restart keeps (wanted or core) and each card by id.
+// ids a restart keeps (wanted or core), each card by id, and whether the
+// next start leaves extensions out (skip).
 export function context(doc) {
   const xs = list(doc && doc.extensions);
   return {
     names: names(doc),
     enabled: new Set(xs.filter((x) => x.wanted || x.core).map((x) => x.id)),
     byId: new Map(xs.map((x) => [x.id, x])),
+    skip: !!(doc && doc.skip_once),
   };
 }
 
@@ -152,7 +155,8 @@ export function lines(x, ctx = {}) {
     if (!x.mounted && note.missing) say(note.missing);
   }
   if (x.state === 'restart-needed') {
-    if (x.wanted && !x.mounted) say('It is added at the next restart.');
+    if (ctx.skip) say(SKIP);
+    else if (x.wanted && !x.mounted) say('It is added at the next restart.');
     else if (!x.wanted && x.mounted && !x.core) say('It is removed at the next restart.');
     else say('Its changes take effect at the next restart.');
   }
@@ -184,9 +188,8 @@ function some(items, noun) {
   return and(out);
 }
 
-// can is "What it can do": what the build verified (its permissions and
-// kernel module options) and what it sets up in Steam, in plain
-// sentences. Nothing is said that the document does not carry.
+// can is "What it can do" in plain sentences: what the build verified and
+// what it sets up in Steam, nothing the document does not carry.
 export function can(x) {
   const out = [];
   for (const p of list(x.permissions)) {
@@ -299,9 +302,8 @@ export const canInstall = (x) => !x.core && !x.wanted && !['not-in-this-version'
 // moduleHint is why x's module options take the password, in can()'s words.
 export const moduleHint = (x) => `${x.name || x.id} sets kernel module options, so VaporOS asks for your password.`;
 
-// passwordHint says why adding x asks for the VaporOS password: the first
-// of x and what it also installs that runs as root or sets kernel module
-// options, or '' when no card says. ctx is context(doc).
+// passwordHint says why adding x asks for the VaporOS password (the first
+// of it and what it adds that runs as root or sets module options), or ''.
 export function passwordHint(x, ctx = {}) {
   const byId = ctx.byId || new Map();
   const all = [x, ...adds(x, ctx).map((id) => byId.get(id)).filter(Boolean)];
@@ -319,21 +321,22 @@ export function installNote(x, doc, ctx = {}) {
   const a = also(x, ctx);
   // restart.auto speaks of a restart already needed; a new one may happen by itself.
   const r = (doc && doc.restart) || {};
-  const when = x.mounted ? `It ${STAYS}` : `It downloads now and is added at the next restart${!r.needed || r.auto ? ', which VaporOS does by itself when nobody is playing' : ''}.`;
+  const when = x.mounted ? `It ${STAYS}` : ctx.skip ? `It downloads now. ${SKIP}` : `It downloads now and is added at the next restart${!r.needed || r.auto ? ', which VaporOS does by itself when nobody is playing' : ''}.`;
   return a.length ? `It also installs ${and(a)}. ${when}` : when;
 }
 
 // installedText is the notice once the box took an install.
-export const installedText = (x) => `${x.name || x.id} ${x.mounted ? STAYS : "is downloading. It's added at the next restart."}`;
+export const installedText = (x, ctx = {}) => `${x.name || x.id} ${x.mounted ? STAYS : `is downloading. ${ctx.skip ? SKIP : "It's added at the next restart."}`}`;
 
 // wantsPassword: the box refused a change for the VaporOS password it
 // needs (403 naming the password), not for anything else.
 export const wantsPassword = (err) => !!err && err.status === 403 && /password/i.test(String(err.message || ''));
 
 // restartText is the page's restart card: what the next restart adds and
-// removes, by name, else the server's reason, else in general.
+// removes, by name, else the server's reason (always while the next start
+// leaves extensions out), else in general.
 export function restartText(doc) {
-  const xs = list(doc && doc.extensions).filter((x) => x.state === 'restart-needed');
+  const xs = doc && doc.skip_once ? [] : list(doc && doc.extensions).filter((x) => x.state === 'restart-needed');
   const add = xs.filter((x) => x.wanted && !x.mounted).map((x) => x.name || x.id);
   const drop = xs.filter((x) => !x.wanted && x.mounted && !x.core).map((x) => x.name || x.id);
   const is = (n) => (n.length === 1 ? 'is' : 'are');
