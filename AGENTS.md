@@ -45,7 +45,7 @@ contract there first, then in code, and keep the two in sync.
 | `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, NetworkManager config and its polkit rule, the `steamos-*` stubs Steam calls. |
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
-| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, manifest and ISO. |
+| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `lib.sh` holds the helpers `selftest.sh` tests. |
 | `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`. |
 | `tests/` | `qemu-smoke.sh` (the CI install-and-boot test), `vm-checks.sh` (in-VM checks for `make test`), QMP helpers. |
 | `keys/` | `release.pub` only. See `keys/README.md`. |

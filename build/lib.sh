@@ -57,6 +57,17 @@ verify_ed25519() {
     return "$rc"
 }
 
+# The builder runs in an LXC whose /dev has no loop devices, though the kernel
+# has plenty. Make the nodes; mount's own loop setup then asks the kernel for
+# a free one (and releases it on umount).
+loop_nodes() {
+    [[ -e /dev/loop-control ]] || mknod -m 0660 /dev/loop-control c 10 237
+    local i
+    for i in $(seq 0 63); do
+        [[ -e /dev/loop$i ]] || mknod -m 0660 "/dev/loop$i" b 7 "$i"
+    done
+}
+
 # The value systemd-sysctl gives KEY in the image at ROOT: a file in
 # /etc/sysctl.d replaces the same-named one in /usr/lib/sysctl.d (a link to
 # /dev/null masks it), all files are read in file name order, and the last
@@ -117,4 +128,238 @@ check_firewall() {
     fi
     rm -rf "$tmp"
     return "$rc"
+}
+
+# ------------------------------------------------------------- extensions --
+# For build/extensions.sh (docs/CONTRACTS.md "Extensions").
+
+# The filesystem UUID of extension ID's image, the same in every build: the
+# name-based SHA-1 UUID (version 5) of "vaporos-ext-ID" in the URL namespace.
+# Usage: ext_uuid ID
+ext_uuid() {
+    uuidgen --sha1 --namespace @url --name "vaporos-ext-$1"
+}
+
+# Whether PATH is a clean relative path, as a descriptor's paths must be: not
+# empty, not absolute, and no empty, "." or ".." component.
+# Usage: ext_rel_ok PATH
+ext_rel_ok() {
+    local p=$1 c
+    local -a parts=()
+    [[ -n $p && $p != /* && $p != */ && $p != *$'\n'* ]] || return 1
+    IFS=/ read -ra parts <<<"$p"
+    for c in "${parts[@]}"; do
+        [[ -n $c && $c != . && $c != .. ]] || return 1
+    done
+}
+
+# The extensions in DIR (DIR/<id>/extension.json), requirements first and
+# otherwise by id, as the catalog lists them: the order they are built in.
+# Fails, saying why, on a directory without extension.json, an id that is not
+# its directory's name, a requirement DIR does not have, or a requires cycle.
+# Usage: ext_order DIR
+ext_order() {
+    local dir=$1 d id
+    local -A state=()
+    local -a ids=() out=()
+    [[ -d $dir ]] || return 0
+    for d in "$dir"/*/; do
+        [[ -d $d ]] || continue
+        id=${d%/}
+        id=${id##*/}
+        if [[ ! -f $d/extension.json ]]; then
+            echo "extensions/$id has no extension.json" >&2
+            return 1
+        fi
+        if [[ ! $id =~ ^[a-z][a-z0-9-]{0,31}$ || $(jq -r '.id' "$d/extension.json" 2>/dev/null) != "$id" ]]; then
+            echo "extensions/$id/extension.json: its id must be \"$id\", the name of its directory" >&2
+            return 1
+        fi
+        ids+=("$id")
+    done
+    (( ${#ids[@]} )) || return 0
+    mapfile -t ids < <(printf '%s\n' "${ids[@]}" | LC_ALL=C sort)
+    for id in "${ids[@]}"; do
+        _ext_visit "$id" "" || return 1
+    done
+    printf '%s\n' "${out[@]}"
+}
+
+# ext_order's depth-first walk, on ext_order's own dir, state and out.
+_ext_visit() {
+    local id=$1 by=$2 r list
+    local -a reqs=()
+    case ${state[$id]:-} in
+        ok) return 0 ;;
+        busy) echo "extensions: $id is part of a requires cycle" >&2; return 1 ;;
+    esac
+    if [[ ! $id =~ ^[a-z][a-z0-9-]{0,31}$ || ! -f $dir/$id/extension.json ]]; then
+        echo "extensions/$by requires \"$id\", which extensions/ does not have" >&2
+        return 1
+    fi
+    state[$id]=busy
+    list=$(jq -r '.requires // [] | sort | .[]' "$dir/$id/extension.json") || {
+        echo "extensions/$id/extension.json: cannot read its requires" >&2
+        return 1
+    }
+    [[ -z $list ]] || mapfile -t reqs <<<"$list"
+    for r in "${reqs[@]}"; do
+        _ext_visit "$r" "$id" || return 1
+    done
+    state[$id]=ok
+    out+=("$id")
+}
+
+# What extension ID in DIR requires, directly or not, in ext_order's order
+# (ID itself left out).
+# Usage: ext_closure DIR ID
+ext_closure() {
+    local dir=$1 x r list
+    local -A want=()
+    local -a todo=("$2") reqs=() order=()
+    while (( ${#todo[@]} )); do
+        x=${todo[0]}
+        todo=("${todo[@]:1}")
+        list=$(jq -r '.requires // [] | .[]' "$dir/$x/extension.json") || return 1
+        reqs=()
+        [[ -z $list ]] || mapfile -t reqs <<<"$list"
+        for r in "${reqs[@]}"; do
+            if [[ -z ${want[$r]:-} ]]; then
+                want[$r]=1
+                todo+=("$r")
+            fi
+        done
+    done
+    list=$(ext_order "$dir") || return 1
+    [[ -z $list ]] || mapfile -t order <<<"$list"
+    for x in "${order[@]}"; do
+        if [[ -n ${want[$x]:-} ]]; then echo "$x"; fi
+    done
+}
+
+# A hash of the tree under DIR: every entry's path and type, a directory's
+# or file's mode, a file's content and a symlink's target. A missing DIR
+# hashes like an empty one.
+# Usage: ext_tree_hash DIR
+ext_tree_hash() {
+    local list="" p
+    if [[ -d $1 ]]; then
+        list=$(cd "$1" && find . -mindepth 1 -printf '%P\0' | LC_ALL=C sort -z |
+            while IFS= read -r -d '' p; do
+                if [[ -L $p ]]; then
+                    printf 'l %s %s\n' "$p" "$(readlink "$p")"
+                elif [[ -d $p ]]; then
+                    printf 'd %s %s\n' "$p" "$(stat -c %a "$p")"
+                elif [[ -f $p ]]; then
+                    printf 'f %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(sha256sum <"$p" | cut -d' ' -f1)"
+                else
+                    printf 'o %s\n' "$p"
+                fi
+            done) || return 1
+    fi
+    printf '%s' "$list" | sha256sum | cut -d' ' -f1
+}
+
+# The input key of an extension image: an image is made again only when it
+# changes (docs/CONTRACTS.md, the manifest's "key"). It is the sha256 of the
+# descriptor, the tree of its files/ directory (ext_tree_hash), PACKAGES (the
+# resolved package list: repo, name, version, file and sha256 of each), the
+# fetch[] sha256s, FLAGS (how mkfs.erofs runs) and each further FILE (the
+# scripts that make the image, the requirements' keys). 64 hex digits.
+# Usage: ext_input_key DESCRIPTOR FILESDIR PACKAGES FLAGS [FILE...]
+ext_input_key() {
+    local desc=$1 files=$2 pkgs=$3 flags=$4 f fetch tree
+    shift 4
+    [[ -f $desc && -f $pkgs ]] || return 1
+    for f in "$@"; do
+        [[ -f $f ]] || return 1
+    done
+    fetch=$(jq -r '[.fetch // [] | .[].sha256] | join(" ")' "$desc") || return 1
+    tree=$(ext_tree_hash "$files") || return 1
+    {
+        echo "vaporos-ext-key 1"
+        echo "descriptor $(sha256sum <"$desc" | cut -d' ' -f1)"
+        echo "files $tree"
+        echo "packages $(sha256sum <"$pkgs" | cut -d' ' -f1)"
+        echo "fetch $fetch"
+        echo "mkfs $flags"
+        for f in "$@"; do
+            echo "file ${f##*/} $(sha256sum <"$f" | cut -d' ' -f1)"
+        done
+    } | sha256sum | cut -d' ' -f1
+}
+
+# The fs-verity digest of FILE as docs/CONTRACTS.md defines an image's
+# identity (SHA-256, 4096-byte blocks, no salt), by fsverity-utils: 64 hex
+# digits.
+# Usage: fsverity_hex FILE
+fsverity_hex() {
+    local out d
+    out=$(fsverity digest --hash-alg=sha256 --block-size=4096 "$1") || return 1
+    d=${out%% *}
+    d=${d#sha256:}
+    [[ $d =~ ^[0-9a-f]{64}$ ]] || return 1
+    echo "$d"
+}
+
+# Readies TREE, a copy of the overlay upper layer an extension's packages
+# were installed into, for an image that holds usr/ alone:
+#  - a file the packages own (OWNED, as `pacman -Qlq` lists them) outside
+#    usr/ is payload no extension may have: it fails, naming each, and
+#    changes nothing;
+#  - anything else outside usr/ is what their scriptlets and hooks left
+#    behind (ld.so.cache, users, logs, caches under var/): removed;
+#  - in usr/, overlay whiteouts, and files a LOWER layer (the base, a
+#    requirement) has that the packages do not own: removed, so the lower
+#    layer's copy shows. Those are hooks redoing a cache the base has (icon
+#    caches, gschemas.compiled, ...). So are directories that end up empty
+#    and that a lower layer has as well.
+# Prints "removed PATH" (relative to TREE) for every file it removes.
+# Usage: ext_prune_tree TREE OWNED LOWER...
+ext_prune_tree() {
+    local tree=$1 owned_list=$2 p l top
+    local -A owned=()
+    local -a payload=()
+    shift 2
+    while IFS= read -r p; do
+        p=${p#/}
+        [[ -n $p && $p != */ ]] || continue
+        owned[$p]=1
+        [[ $p == usr/* ]] || payload+=("$p")
+    done <"$owned_list"
+    if (( ${#payload[@]} )); then
+        printf 'payload outside usr/: /%s\n' "${payload[@]}" >&2
+        return 1
+    fi
+    for top in "$tree"/* "$tree"/.[!.]* "$tree"/..?*; do
+        [[ -e $top || -L $top ]] || continue
+        [[ ${top##*/} != usr ]] || continue
+        (cd "$tree" && find "${top##*/}" ! -type d -printf 'removed %p\n') || return 1
+        rm -rf "$top"
+    done
+    [[ -d $tree/usr ]] || return 0
+    while IFS= read -r -d '' p; do
+        if [[ -c $tree/$p ]]; then
+            rm -f "$tree/$p"
+            echo "removed $p"
+            continue
+        fi
+        [[ -z ${owned[$p]:-} ]] || continue
+        for l in "$@"; do
+            if [[ -e $l/$p || -L $l/$p ]]; then
+                rm -f "$tree/$p"
+                echo "removed $p"
+                break
+            fi
+        done
+    done < <(cd "$tree" && find usr ! -type d -print0)
+    while IFS= read -r p; do
+        [[ $p != usr && -n $(find "$tree/$p" -maxdepth 0 -empty) ]] || continue
+        for l in "$@"; do
+            if [[ -d $l/$p && ! -L $l/$p ]]; then
+                rmdir "$tree/$p"
+                break
+            fi
+        done
+    done < <(cd "$tree" && find usr -type d | LC_ALL=C sort -r)
 }

@@ -257,15 +257,21 @@ AUR or DKMS, no `.ko`, no `sysusers.d`, no confext, no plugin stores that run
 code as root.
 
 **Image** (`ext-<id>.raw`): an erofs whose only top-level directory is `usr/`,
-made with `mkfs.erofs -T0 --all-root -U <uuid5(id)>` (zstd). It holds the
-extension's packages (resolved from the base's own sync snapshot), its
+made with `mkfs.erofs -T0 --all-root -U <uuid>`, compressed as the root is
+(zstd in release builds); `<uuid>` is the name-based SHA-1 UUID (version 5) of
+`vaporos-ext-<id>` in the URL namespace. It holds the extension's packages
+(resolved from the base's own sync snapshot), less what their scriptlets and
+hooks leave behind (anything outside `usr/`, and files of the base or a
+requirement they redo, such as caches), its `fetch[]` files (in
+`usr/lib/vos/ext/<id>/`, noted in `usr/share/licenses/<id>/fetched.txt`), its
 `files/`, and `usr/lib/vos/ext/<id>/{extension.json,packages.txt,module-options}`.
 `module-options` lists the `module param` pairs the extension may set (one per
 line). Its identity is its fs-verity digest: `fsverity digest --hash-alg=sha256
 --block-size=4096`, no salt, as 64 hex digits. The build fails an image that:
-ships anything outside `usr/`; ships a path the base ships, or one another
-extension ships unless both are the same file (bytes and mode, or symlink
-target); has a directory where either has a file or symlink; writes under
+ships anything outside `usr/`, or whose packages own a file there; ships a
+path the base ships, or one another extension ships unless both are the same
+file (bytes and mode, or symlink target); has a directory where either has a
+file or symlink; writes under
 `usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
 `usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory (one
 not reviewed as harmless) or `usr/lib/vos/**` except
@@ -309,7 +315,9 @@ bytes).
 **Manifest:** `manifest.json` gains `"extensions": {"<id>": {"name":
 "ext-<id>.raw", "size", "sha256", "fsverity", "core"?, "requires"?, "key"?}}`
 (optional; `schema` and `min_updater` stay 1, older updaters ignore it). `key`
-is the build's input key: an image is rebuilt only when it changes. Ids match
+is the build's input key: an image is rebuilt only when it changes. It is the
+sha256 of the descriptor, `files/`, the resolved package files, the `fetch[]`
+sha256s, the build scripts, the mkfs flags and the requirements' keys. Ids match
 `^[a-z][a-z0-9-]{0,31}$`; `requires` must name extensions of the same manifest,
 without cycles. The OCI artifact carries each image as a layer titled
 `ext-<id>.raw` (media type `application/vnd.vaporos.extension.v1.erofs`); http

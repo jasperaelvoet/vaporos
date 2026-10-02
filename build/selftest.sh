@@ -147,6 +147,171 @@ printf 'kernel.sysrq = 1' >"$root/usr/lib/sysctl.d/80-no-newline.conf"
 printf 'kernel.sysrq = 0' >"$root/usr/lib/sysctl.d/99-vos.conf"
 sysrq; sysrq_is "sysctl: files without a final newline" 0
 
+# --------------------------------------------------------------- extensions --
+ext=$tmp/ext
+# is NAME WANT CMD...: CMD succeeds and prints exactly WANT (lines joined by
+# spaces).
+is() {
+    local name=$1 want=$2 got
+    shift 2
+    if got=$("$@" 2>"$tmp/err"); then got=$(tr '\n' ' ' <<<"$got" | sed 's/ $//'); else got="failed: $(<"$tmp/err")"; fi
+    printf '%s\n' "$got" >"$tmp/out"
+    result "$([[ $got == "$want" ]] && echo 1 || echo 0)" "$name"
+}
+# there|gone NAME PATH: PATH exists / does not.
+there() { result "$([[ -e $2 || -L $2 ]] && echo 1 || echo 0)" "$1"; }
+gone()  { result "$([[ -e $2 || -L $2 ]] && echo 0 || echo 1)" "$1"; }
+# desc DIR ID [REQUIRES...]: a descriptor with just an id and its requires.
+desc() {
+    local dir=$1 id=$2
+    shift 2
+    mkdir -p "$dir/$id"
+    jq -n --arg id "$id" '{schema: 1, id: $id, requires: $ARGS.positional}' --args "$@" >"$dir/$id/extension.json"
+}
+
+is "ext uuid: version 5 of vaporos-ext-<id> in the URL namespace" \
+    0a3cfb5e-021f-52ad-a66b-847fbcf11f82 ext_uuid proton
+is "ext uuid: ... another for another id" 80963052-b85a-57d8-bf38-f84dfcaab930 ext_uuid coolercontrol
+
+for p in usr/lib/vos/ext/x/file usr a/.b/c; do
+    expect pass "ext path: '$p' is clean" ext_rel_ok "$p"
+done
+for p in "" /usr/x ../x usr/../x usr//x usr/./x usr/ . ..; do
+    expect fail "ext path: '$p' is not" ext_rel_ok "$p"
+done
+
+desc "$ext/a" zeta
+desc "$ext/a" alpha zeta
+desc "$ext/a" mid
+desc "$ext/a" top mid alpha
+is "ext order: requirements first, otherwise by id" "zeta alpha mid top" ext_order "$ext/a"
+is "ext closure: everything required, in that order" "zeta alpha mid" ext_closure "$ext/a" top
+is "ext closure: ... one level" "zeta" ext_closure "$ext/a" alpha
+is "ext closure: ... none" "" ext_closure "$ext/a" zeta
+desc "$ext/dash" ab
+desc "$ext/dash" a-b
+is "ext order: ids in byte order, as the catalog sorts them" "a-b ab" ext_order "$ext/dash"
+is "ext order: no extensions/ at all" "" ext_order "$ext/none"
+desc "$ext/cycle" a b
+desc "$ext/cycle" b c
+desc "$ext/cycle" c a
+expect fail "ext order: a requires cycle fails" ext_order "$ext/cycle"
+has "ext order: ... and says so" "requires cycle"
+desc "$ext/missing" a nope
+expect fail "ext order: a missing requirement fails" ext_order "$ext/missing"
+has "ext order: ... and names it" '"nope"'
+desc "$ext/misnamed" a
+jq '.id = "b"' "$ext/misnamed/a/extension.json" >"$tmp/x.json" && mv "$tmp/x.json" "$ext/misnamed/a/extension.json"
+expect fail "ext order: an id that is not its directory's name fails" ext_order "$ext/misnamed"
+mkdir -p "$ext/empty/a"
+expect fail "ext order: a directory without extension.json fails" ext_order "$ext/empty"
+
+files=$ext/files
+mkdir -p "$files/usr/share/x"
+echo one >"$files/usr/share/x/f"
+h=$(ext_tree_hash "$files")
+treehash() { # treehash NAME same|differs
+    local now
+    now=$(ext_tree_hash "$files")
+    result "$([[ ($2 == same && $now == "$h") || ($2 == differs && $now != "$h") ]] && echo 1 || echo 0)" "$1"
+    h=$now
+}
+treehash "ext tree hash: stable" same
+echo two >"$files/usr/share/x/f"
+treehash "ext tree hash: content" differs
+chmod 0755 "$files/usr/share/x/f"
+treehash "ext tree hash: mode" differs
+mv "$files/usr/share/x/f" "$files/usr/share/x/g"
+treehash "ext tree hash: name" differs
+ln -s g "$files/usr/share/x/link"
+treehash "ext tree hash: a new symlink" differs
+ln -sfn f "$files/usr/share/x/link"
+treehash "ext tree hash: its target" differs
+mkdir -p "$ext/emptydir"
+result "$([[ $(ext_tree_hash "$ext/emptydir") == "$(ext_tree_hash "$ext/nonexistent")" ]] && echo 1 || echo 0)" \
+    "ext tree hash: no files/ is an empty files/"
+
+d=$ext/a/zeta/extension.json
+printf 'cachyos foo 1-1 foo-1-1-x86_64.pkg.tar.zst %064d\n' 0 >"$ext/pkgs"
+echo 'script v1' >"$ext/script"
+k=$(ext_input_key "$d" "$files" "$ext/pkgs" "-zzstd -T0" "$ext/script")
+result "$([[ $k =~ ^[0-9a-f]{64}$ ]] && echo 1 || echo 0)" "ext key: 64 hex digits ($k)"
+key() { # key NAME same|differs [ARGS to ext_input_key, else the defaults]
+    local name=$1 want=$2 now
+    shift 2
+    (( $# )) || set -- "$d" "$files" "$ext/pkgs" "-zzstd -T0" "$ext/script"
+    now=$(ext_input_key "$@") || now=failed
+    result "$([[ ($want == same && $now == "$k") || ($want == differs && $now != "$k" && $now != failed) ]] && echo 1 || echo 0)" "$name"
+}
+key "ext key: the same inputs, the same key" same
+key "ext key: the mkfs flags" differs "$d" "$files" "$ext/pkgs" "-zzstd,level=9 -T0" "$ext/script"
+key "ext key: another script" differs "$d" "$files" "$ext/pkgs" "-zzstd -T0" "$ext/pkgs"
+cp "$d" "$tmp/desc.bak"
+jq '.name = "Zeta"' "$tmp/desc.bak" >"$d"
+key "ext key: the descriptor" differs
+cp "$tmp/desc.bak" "$d"
+printf 'cachyos foo 1-2 foo-1-2-x86_64.pkg.tar.zst %064d\n' 0 >"$ext/pkgs"
+key "ext key: the resolved packages" differs
+printf 'cachyos foo 1-1 foo-1-1-x86_64.pkg.tar.zst %064d\n' 0 >"$ext/pkgs"
+echo three >"$files/usr/share/x/g"
+key "ext key: files/" differs
+echo two >"$files/usr/share/x/g"
+echo 'script v2' >"$ext/script"
+key "ext key: a script's content" differs
+echo 'script v1' >"$ext/script"
+key "ext key: ... and back" same
+expect fail "ext key: a missing script fails" ext_input_key "$d" "$files" "$ext/pkgs" "" "$ext/nonexistent"
+
+# The vectors of internal/extensions/fsverity, from fsverity-utils itself.
+if command -v fsverity >/dev/null; then
+    printf a >"$ext/a.bin"
+    (set +o pipefail; yes abcdefg | head -c 4097) >"$ext/4097.bin"
+    is "fsverity: one byte" bce75948b9e7510293f8f2720412af9697c1479281323f3f220623fb8e94b557 fsverity_hex "$ext/a.bin"
+    is "fsverity: a block and a byte" a590eea2232d95d6603f3ec229eb650ead55860e31c05cb3e19251e8a30fe156 \
+        fsverity_hex "$ext/4097.bin"
+else
+    echo "fsverity-utils is not installed; build/Dockerfile installs it" >"$tmp/out"
+    result 0 "fsverity: the digest of fsverity-utils"
+fi
+
+# An extension's package layer: what its packages own, and what their
+# scriptlets and hooks left behind, in and outside usr/.
+pr=$ext/prune
+mkdir -p "$pr/lower/usr/share/icons/hicolor" "$pr/lower/usr/lib/copied" "$pr/lower/etc" \
+    "$pr/tree/usr/bin" "$pr/tree/usr/share/icons/hicolor/48x48/apps" "$pr/tree/usr/lib/copied" \
+    "$pr/tree/usr/share/tool/empty" "$pr/tree/etc" "$pr/tree/var/log"
+echo base >"$pr/lower/usr/share/icons/hicolor/icon-theme.cache"
+echo tool >"$pr/tree/usr/bin/tool"
+echo icon >"$pr/tree/usr/share/icons/hicolor/48x48/apps/tool.png"
+echo redone >"$pr/tree/usr/share/icons/hicolor/icon-theme.cache"
+echo cache >"$pr/tree/usr/lib/newcache"
+echo ld >"$pr/tree/etc/ld.so.cache"
+echo log >"$pr/tree/var/log/pacman.log"
+echo dot >"$pr/tree/.hidden"
+whiteout=0
+if mknod "$pr/tree/usr/lib/gone" c 0 0 2>/dev/null; then whiteout=1; fi
+printf '%s\n' /usr/ /usr/bin/ /usr/bin/tool /usr/share/icons/hicolor/48x48/apps/tool.png \
+    /usr/share/tool/ /usr/share/tool/empty/ /etc/ >"$pr/owned"
+printf '/etc/tool.conf\n/usr/bin/tool\n' >"$pr/payload"
+expect fail "ext prune: a packaged file outside usr/ fails" ext_prune_tree "$pr/tree" "$pr/payload" "$pr/lower"
+has "ext prune: ... and names it" "/etc/tool.conf"
+there "ext prune: ... and changes nothing" "$pr/tree/etc/ld.so.cache"
+expect pass "ext prune: scriptlet and hook leftovers" ext_prune_tree "$pr/tree" "$pr/owned" "$pr/lower"
+gone "ext prune: ... nothing outside usr/ (etc)" "$pr/tree/etc"
+gone "ext prune: ... (var)" "$pr/tree/var"
+gone "ext prune: ... (a dotfile)" "$pr/tree/.hidden"
+has "ext prune: ... each removal listed" "removed etc/ld.so.cache"
+gone "ext prune: ... a lower layer's file it does not own" "$pr/tree/usr/share/icons/hicolor/icon-theme.cache"
+has "ext prune: ... listed" "removed usr/share/icons/hicolor/icon-theme.cache"
+gone "ext prune: ... an empty directory a lower layer has" "$pr/tree/usr/lib/copied"
+there "ext prune: ... keeps what it owns" "$pr/tree/usr/bin/tool"
+there "ext prune: ... (in a directory the base has)" "$pr/tree/usr/share/icons/hicolor/48x48/apps/tool.png"
+there "ext prune: ... an empty directory of its own" "$pr/tree/usr/share/tool/empty"
+there "ext prune: ... a new file it does not own (check-tree judges it)" "$pr/tree/usr/lib/newcache"
+if (( whiteout )); then
+    gone "ext prune: ... an overlay whiteout" "$pr/tree/usr/lib/gone"
+fi
+
 # ------------------------------------------------------------------- iso.sh --
 iso=$tmp/iso
 mkdir -p "$iso/in"

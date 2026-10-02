@@ -2,7 +2,8 @@
 #
 #   go        gofmt, vet, race-enabled unit tests, the static `vos` binary
 #   image     the OS (root.erofs, kernel, initramfs, systemd-boot and an
-#             unsigned manifest.json), built by build/build.sh in the same
+#             unsigned manifest.json; artifact os) and the extension images
+#             (ext-<id>.raw; artifact ext), built by build/build.sh in the same
 #             container as the dev loop. That container runs package scriptlets
 #             as root, so no signing key ever comes near this job.
 #   sign      on a fresh runner that runs no package code: checks the image
@@ -16,10 +17,11 @@
 #             (an unsigned ISO: checks that its installer refuses to install
 #             it). A signed build must pass it under KVM.
 #   publish   signed pushes that passed vm-test only: checks the signed manifest
-#             against keys/release.pub, pushes the OS to ghcr.io as an OCI
-#             artifact tagged <version> and <channel> (the channel tag only
-#             ever moves to a higher rollback_index), and attaches the ISO to a
-#             GitHub release (main: latest; other branches: prerelease)
+#             against keys/release.pub, pushes the OS, extension images
+#             included, to ghcr.io as an OCI artifact tagged <version> and
+#             <channel> (the channel tag only ever moves to a higher
+#             rollback_index), and attaches the ISO to a GitHub release (main:
+#             latest; other branches: prerelease)
 #
 # The version is the commit's UTC time (YYYYMMDD.HHMMSS), so every job and
 # every re-run of a commit agree on it. The channel is the branch name, which
@@ -225,12 +227,13 @@ jobs:
       - name: Test the build scripts
         run: docker run --rm --privileged --platform linux/amd64 -v "$PWD:/src:ro" vos-builder:ci /src/build/selftest.sh
 
+      # (The extensions' packages are cached too: see "Trim the package cache".)
       - uses: actions/cache@v6
         with:
           path: ${{ env.SCRATCH }}/pkgcache
-          key: pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-${{ steps.week.outputs.week }}
+          key: pacman-${{ hashFiles('packages.txt', 'build/pacman.conf', 'extensions/**/extension.json') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            pacman-${{ hashFiles('packages.txt', 'build/pacman.conf') }}-
+            pacman-${{ hashFiles('packages.txt', 'build/pacman.conf', 'extensions/**/extension.json') }}-
             pacman-
 
       - name: Build the image
@@ -269,21 +272,39 @@ jobs:
             echo "::error::the image build left a signature or an ISO in out/"
             exit 1
           fi
+          # Exactly the extension images the manifest lists.
+          want=$(jq -r '.extensions // {} | .[].name' out/manifest.json | sort)
+          have=$(find out -maxdepth 1 -name 'ext-*.raw' -printf '%f\n' | sort)
+          if [ "$want" != "$have" ]; then
+            echo "::error::out/ holds the extension images [${have//$'\n'/ }], the manifest lists [${want//$'\n'/ }]"
+            exit 1
+          fi
 
       - name: Trim the package cache
         run: |
           # pacman ran as root in the container; actions/cache saves as us.
           sudo chown -R "$(id -u):$(id -g)" "$SCRATCH/pkgcache"
           # Leftover download directories, and every package this build did
-          # not install, so the cache holds exactly the current package set.
+          # not install, so the cache holds exactly the current package set:
+          # the base's, and each extension's (build/extensions.sh leaves its
+          # package database in work/ext/<id>/db).
           find "$SCRATCH/pkgcache" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
           db=$SCRATCH/work/base/var/lib/pacman/local
           if [ -d "$db" ]; then
+            dbs=("$db")
+            for d in "$SCRATCH"/work/ext/*/db/local; do
+              [ ! -d "$d" ] || dbs+=("$d")
+            done
+            echo "trimming against ${#dbs[@]} package database(s)"
             for f in "$SCRATCH"/pkgcache/*.pkg.tar.*; do
               [ -e "$f" ] || continue
               id=$(basename "$f")
               id=${id%-*.pkg.tar.*}
-              [ -d "$db/$id" ] || rm -f "$f"
+              keep=false
+              for d in "${dbs[@]}"; do
+                if [ -d "$d/$id" ]; then keep=true; break; fi
+              done
+              [ "$keep" = true ] || rm -f "$f"
             done
           else
             echo "::warning::no package database at $db; the package cache is saved untrimmed"
@@ -294,7 +315,21 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: os
-          path: out/
+          path: |
+            out/
+            !out/ext-*.raw
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+          compression-level: 0
+
+      # Apart from the OS files, so a job that needs only these fetches only
+      # these. Every image has core extensions (Proton), so there is always one.
+      - name: Upload the extension images
+        uses: actions/upload-artifact@v7
+        with:
+          name: ext
+          path: out/ext-*.raw
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -331,6 +366,12 @@ jobs:
           name: os
           path: out
 
+      # The manifest this job signs vouches for them too.
+      - uses: actions/download-artifact@v8
+        with:
+          name: ext
+          path: out
+
       - name: Install the ISO tools
         run: |
           for try in 1 2 3; do
@@ -351,9 +392,15 @@ jobs:
       - name: Check manifest.json
         run: |
           python3 - "$VERSION" "$CHANNEL" "$GITHUB_SHA" rootfs/usr/lib/vos/cmdline <<'EOF'
-          import calendar, hashlib, json, os, sys, time
+          import calendar, hashlib, json, os, re, sys, time
           version, channel, git, cmdline_path = sys.argv[1:]
           errors = []
+          def sha256(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for block in iter(lambda: f.read(1 << 20), b""):
+                      h.update(block)
+              return h.hexdigest()
           if os.path.exists("out/manifest.json.sig"):
               errors.append("out/manifest.json.sig came from the image job, which must never sign")
           with open("out/manifest.json") as f:
@@ -381,12 +428,57 @@ jobs:
               if not os.path.isfile(path):
                   errors.append(f"artifacts.{role}: no file {path}")
                   continue
-              h = hashlib.sha256()
-              with open(path, "rb") as f:
-                  for block in iter(lambda: f.read(1 << 20), b""):
-                      h.update(block)
-              if os.path.getsize(path) != a.get("size") or h.hexdigest() != a.get("sha256"):
+              if os.path.getsize(path) != a.get("size") or sha256(path) != a.get("sha256"):
                   errors.append(f"{path} does not match its size/sha256 in the manifest")
+          # The extension images (docs/CONTRACTS.md "Extensions"): each entry
+          # names its own file, which is here as described, and no other is.
+          exts = m.get("extensions", {})
+          if not isinstance(exts, dict):
+              errors.append("extensions is not an object")
+              exts = {}
+          fields = {"name", "size", "sha256", "fsverity", "core", "requires", "key"}
+          for xid, x in sorted(exts.items()):
+              at = f"extensions.{xid}"
+              if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", xid) or not isinstance(x, dict):
+                  errors.append(f"{at}: an invalid id, or not an object")
+                  continue
+              if set(x) - fields:
+                  errors.append(f"{at} has unknown fields {sorted(set(x) - fields)}")
+              name = x.get("name")
+              if not isinstance(name, str) or not re.fullmatch(r"ext-[a-z0-9-]+\.raw", name) or name != f"ext-{xid}.raw":
+                  errors.append(f"{at}.name is {name!r}, expected 'ext-{xid}.raw'")
+                  continue
+              if not isinstance(x.get("fsverity"), str) or not re.fullmatch(r"[0-9a-f]{64}", x["fsverity"]):
+                  errors.append(f"{at}.fsverity is not 64 hex digits")
+              if not isinstance(x.get("core", False), bool):
+                  errors.append(f"{at}.core is not true or false")
+              reqs = x.get("requires", [])
+              if not isinstance(reqs, list) or any(not isinstance(r, str) or r == xid or r not in exts for r in reqs):
+                  errors.append(f"{at}.requires {reqs!r} must name other extensions of this manifest")
+              key = x.get("key", "")
+              if not isinstance(key, str) or (key and not re.fullmatch(r"[0-9a-f]{16,64}", key)):
+                  errors.append(f"{at}.key {key!r} is not 16 to 64 hex digits")
+              path = os.path.join("out", name)
+              if not os.path.isfile(path):
+                  errors.append(f"{at}: no file {path}")
+              elif type(x.get("size")) is not int or os.path.getsize(path) != x["size"] or sha256(path) != x.get("sha256"):
+                  errors.append(f"{path} does not match its size/sha256 in the manifest")
+          state = {}
+          def cyclic(xid):
+              if xid in state:
+                  return state[xid] == "busy"
+              state[xid] = "busy"
+              reqs = exts[xid].get("requires", []) if isinstance(exts[xid], dict) else []
+              if isinstance(reqs, list) and any(isinstance(r, str) and r in exts and cyclic(r) for r in reqs):
+                  return True
+              state[xid] = "done"
+              return False
+          if any(cyclic(xid) for xid in sorted(exts)):
+              errors.append("extensions: their requires go round in a cycle")
+          named = sorted(x["name"] for x in exts.values() if isinstance(x, dict) and isinstance(x.get("name"), str))
+          here = sorted(f for f in os.listdir("out") if f.startswith("ext-") and f.endswith(".raw"))
+          if here != named:
+              errors.append(f"out/ holds the extension images {here}, the manifest names {named}")
           for e in errors:
               print(f"::error file=out/manifest.json::{e}")
           sys.exit(1 if errors else 0)
@@ -504,6 +596,14 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: iso
+          path: out
+
+      # The extension images, next to the ISO's manifest, for the extension
+      # tests: the ISO never carries them, so the guest fetches them from the
+      # runner, as an installed machine fetches them from its update source.
+      - uses: actions/download-artifact@v8
+        with:
+          name: ext
           path: out
 
       # GitHub's Linux runners expose /dev/kvm, but only to root until a udev
@@ -650,6 +750,12 @@ jobs:
           name: os
           path: out
 
+      - uses: actions/download-artifact@v8
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          name: ext
+          path: out
+
       # A release that installed systems do not trust would be refused by
       # every one of them, so check it before publishing anything.
       - name: Check the signed manifest
@@ -686,9 +792,10 @@ jobs:
             echo "::error file=out/manifest.json::the signed manifest is not the one of $VERSION ($CHANNEL) at $GITHUB_SHA"
             exit 1
           fi
-          # ...and it describes the files about to be pushed.
+          # ...and it describes the files about to be pushed, extension images
+          # included.
           cd out
-          jq -r '.artifacts | .root, .kernel, .initrd | "\(.sha256)  \(.name)"' manifest.json |
+          jq -r '(.artifacts | .root, .kernel, .initrd), (.extensions // {} | .[]) | "\(.sha256)  \(.name)"' manifest.json |
             sha256sum --check --strict
 
       - name: Checksums
@@ -799,7 +906,13 @@ jobs:
           fi
           # (oras login in the step before stored the credentials.)
           # oras records each file's name as its org.opencontainers.image.title
-          # annotation, which is how `vos update` finds the files.
+          # annotation, which is how `vos update` finds the files. Each
+          # extension image the manifest lists is a layer of its own, titled
+          # ext-<id>.raw.
+          ext=()
+          while IFS= read -r name; do
+            ext+=("$name:application/vnd.vaporos.extension.v1.erofs")
+          done < <(jq -r '.extensions // {} | .[].name' manifest.json)
           oras push "$repo:$(IFS=,; echo "${tags[*]}")" \
             --artifact-type application/vnd.vaporos.os.v1 \
             --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
@@ -809,7 +922,8 @@ jobs:
             manifest.json.sig:application/vnd.vaporos.manifest.signature.v1 \
             root.erofs:application/vnd.vaporos.root.v1.erofs \
             vmlinuz:application/vnd.vaporos.kernel.v1 \
-            initramfs.img:application/vnd.vaporos.initrd.v1
+            initramfs.img:application/vnd.vaporos.initrd.v1 \
+            "${ext[@]}"
           summary=
           for t in "${tags[@]}"; do summary+="${summary:+, }\`$repo:$t\`"; done
           echo "OCI: $summary" >>"$GITHUB_STEP_SUMMARY"
