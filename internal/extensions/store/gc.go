@@ -35,10 +35,11 @@ func KeepImages(wanted []string, cats []*catalog.Catalog, rep *BootReport) map[s
 	return keep
 }
 
-// Collect is the store's whole garbage collection: GC with the images
-// KeepImages names, then proven pruned to the pairs that a catalog of cats
-// lists or this boot mounted. cats are the booted catalog and both slot
-// files' (a nil one lists nothing). Caller holds Lock.
+// Collect is the store's garbage collection, and the one its callers use:
+// GC with the images KeepImages names, then proven pruned to the pairs that
+// a catalog of cats lists or this boot mounted. cats are the booted catalog
+// and both slot files' (a nil one lists nothing), read under the same Lock
+// (a stage writes a slot file under it). Caller holds Lock.
 func Collect(wanted []string, cats []*catalog.Catalog, rep *BootReport) ([]string, error) {
 	removed, err := GC(KeepImages(wanted, cats, rep))
 	if err != nil {
@@ -50,9 +51,9 @@ func Collect(wanted []string, cats []*catalog.Catalog, rep *BootReport) ([]strin
 // GC removes the images whose sha256 keep does not name (an image or a temp
 // file only once nothing has written to it for an hour; anything else in
 // images/ at once), the sets that neither enabled, pending nor this boot's
-// report names, and leftover temp links.
-// It returns what it removed, relative to the store. Collect also prunes
-// proven. Caller holds Lock.
+// report names, and leftover temp links. It returns what it removed,
+// relative to the store. It is only Collect's first half: callers use
+// Collect, as GC alone never prunes proven. Caller holds Lock.
 func GC(keep map[string]bool) ([]string, error) {
 	removed, err := gcImages(keep, time.Now())
 	if err != nil {
@@ -152,7 +153,7 @@ func gcSets() ([]string, error) {
 // pruneProven keeps the proven pairs a catalog of cats lists or this boot
 // mounted, so the file stays far below maxListFile however many versions
 // pass. It reads the file without that limit, so it also shrinks one that
-// grew past it.
+// grew past it, and rewrites one with a line too long to read.
 func pruneProven(cats []*catalog.Catalog, rep *BootReport) error {
 	listed := map[Pair]bool{}
 	for _, c := range cats {
@@ -168,7 +169,7 @@ func pruneProven(cats []*catalog.Catalog, rep *BootReport) error {
 	}
 	kept := map[Pair]bool{}
 	dropped := false
-	err := scanLines(config.ExtProvenPath(), 0, func(line string) {
+	long, err := scanLines(config.ExtProvenPath(), 0, func(line string) {
 		f := strings.Fields(line)
 		if len(f) == 2 {
 			if p := (Pair{ID: f[0], FSVerity: f[1]}); listed[p] && !kept[p] {
@@ -178,7 +179,7 @@ func pruneProven(cats []*catalog.Catalog, rep *BootReport) error {
 		}
 		dropped = true
 	})
-	if err != nil || !dropped {
+	if err != nil || (!dropped && long == 0) {
 		return err
 	}
 	lines := make([]string, 0, len(kept))

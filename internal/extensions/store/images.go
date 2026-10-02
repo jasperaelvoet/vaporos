@@ -43,7 +43,8 @@ func checkEntry(e catalog.Entry) error {
 // in the images directory and get their final name only once their size,
 // sha256 and fs-verity digest match e and the kernel has sealed them. Any
 // failure removes the temp file. An image already sealed is not fetched
-// again.
+// again, and one that would leave less than ExtReserve free is not fetched
+// at all (ErrNoSpace).
 func Put(ctx context.Context, e catalog.Entry, fetch func(w io.Writer, onChunk func(done int64) error) error) error {
 	if err := checkEntry(e); err != nil {
 		return err
@@ -54,6 +55,9 @@ func Put(ctx context.Context, e catalog.Entry, fetch func(w io.Writer, onChunk f
 	dir := config.ExtImagesDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	if err := CheckSpace(e.Size); err != nil {
+		return fmt.Errorf("extension %s: %w", e.ID, err)
 	}
 	f, err := os.CreateTemp(dir, tempPrefix+e.ID+"-*")
 	if err != nil {

@@ -41,7 +41,7 @@ multi-call:
 | `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr (`<id>: <problem>`, warnings as `<id>: warning: <text>`), exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
 | `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
-| `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then writes `slots/a.json` from the manifest (under the update lock) and, under the store lock, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `enabled` set, without a trial, of the target ids whose image sealed and whose requirements did; `--repair` also removes `slots/b.json`, `pending` and `failed`. Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the missing images, never going down); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
+| `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher (see Extensions). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. Until the dispatcher hooks anything it execs CMD (looked up in `PATH` unless absolute; `argv[0]` as given) with ARGS and the environment unchanged; `--shortcut` refuses instead (exit 1, reason on stderr) unless `/run/vos/extensions.json`, which it reads as `vapor`, lists ID as mounted; `--app` always runs CMD. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
 | `vos version` | prints the version |
@@ -398,17 +398,24 @@ and directory sources serve it by that name next to `manifest.json`.
 Images are sealed without the lock (a final name is always sealed), and may
 be fetched before the `wanted`, set or slot file that keeps them, so GC
 leaves an image, sealed or temp (`images/.tmp-*`), alone for an hour after
-its last write (mtime). `/run/vos/ext.lock` (flock) serialises every write to
+its last write (mtime). An image is fetched only while it fits on the data
+partition with 2 GiB to spare (checked before its download starts).
+`/run/vos/ext.lock` (flock) serialises every write to
 `wanted`, the sets, `enabled`, `pending`, `proven`, `failed` and the store's
 garbage collection. The slot files are written under the update lock and
 ext.lock. Lock order: the update lock, then ext.lock; whoever holds ext.lock
-waits for the update lock only for a bounded time. GC keeps the images that
+waits for the update lock only for a bounded time. GC (one run, which reads
+the slot files under ext.lock) keeps the images that
 `wanted` ∪ core resolve to in the booted catalog and in both slot files, and
 those mounted this boot; the sets that `enabled`, `pending` or the boot report
 name; and the `proven` lines whose pair the booted catalog or a slot file
-lists or this boot mounted. vos reads the line files (`wanted`, `proven`,
+lists or this boot mounted: every run prunes `proven`. vos reads the line files (`wanted`, `proven`,
 `failed`, a set's files) whole or not at all: one over 1 MiB is an error, and
-a line of 4 KiB or more (longer than any valid one) is skipped.
+a line of 4 KiB or more (longer than any valid one) is skipped. Two writers
+of `proven` read it whatever its size: GC, which rewrites it without the
+lines it drops (those too long included), and recording a good boot, which
+rewrites one over 1 MiB from its valid lines (from the new ones alone if
+those do not fit either).
 
 **Boot** (the initramfs hook, after `/state`, `/var` and `/etc` are mounted;
 never in live mode; never `vos_die`):
@@ -472,7 +479,7 @@ health` treats it like a counted boot with a fallback: a failure exits 1 (so
 `FailureAction=reboot` tries again and, once the tries are used up, the next
 boot uses `enabled`), and `vos.health.fail=1` applies. On success, under the
 lock: every mounted `id fsverity` is added to `proven` (also on an OS trial);
-then, if `pending` still points at the booted set and every id of the set
+then, even when `proven` could not be written, if `pending` still points at the booted set and every id of the set
 mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
 (rename, directory fsync) and `pending` removed. A set the user no longer
 wants is never promoted: reconcile removes or replaces such a `pending`, also
@@ -503,9 +510,11 @@ boot that mounted nothing on purpose (mode `off`, or no report) counts as
 1. A `pending` outside its own trial that names the booted or the `enabled`
    set (a promotion cut short) is removed, never failed.
 2. A `pending` with `tries` 0 that this boot did not use moves to `failed`
-   (fingerprint at the booted catalog's digests). On an OS trial it is only
-   removed: its trials ran at the old image's digests, and the desired set gets
-   a trial of its own at the new ones.
+   (fingerprint at the booted catalog's digests). It is only removed on an OS
+   trial (its trials ran at the old image's digests, and the desired set gets
+   a trial of its own at the new ones) and when the image of an id of it that
+   the booted catalog lists is not sealed now (its trials could not mount it;
+   reconcile proposes it again once the image is there).
 3. Desired equal to what booted: no `pending`, unless this boot is that
    `pending` set's trial and the set booted whole (every id mounted or skipped
    as `not-in-catalog`), which `vos health` promotes.
@@ -516,51 +525,73 @@ boot that mounted nothing on purpose (mode `off`, or no report) counts as
 
 After a removal (1, 2, 3 or 5) reconcile runs again. A restart is needed (to
 try `pending`) only while `pending` has tries left, this boot is neither its
-trial nor one with reason `cmdline` or `skip-once`, and every image it names
+trial nor one with reason `cmdline`, `skip-once`, `tries-write` or `no-report`
+(after those the next boot would not try it either), and every image it names
 is sealed.
 
 **vosd** (installed systems only; `internal/extensions`). At start it removes
 the temp files of downloads that stopped (`images/.tmp-*` untouched for an
-hour) and writes `slots/<booted>.json` from the booted catalog (each `name`
-`ext-<id>.raw`), under the update lock, unless the file already lists the same
-images for the booted version. It reconciles at start, whenever a change asks
-for it (wanted, a setting, the store), and, while an image it could fetch is
-still missing or a reconcile failed, again after 1 minute, doubling up to
-every 30 minutes. One reconcile:
-1. under the lock, applies what the plan says to fail or clear;
-2. without the lock, fetches and seals the plan's missing images for the
+hour). It reconciles at start, whenever a change asks
+for it (wanted, a setting, the store), and, while something is left that a
+later reconcile could do (an image it could fetch still missing, a slot file
+or a reconcile that failed, a trial `vos health` has not passed yet), again
+after 1 minute, doubling up to every 30 minutes. One reconcile:
+1. writes `slots/<booted>.json` from the booted catalog (each `name`
+   `ext-<id>.raw`), under the update lock (waiting at most 10 s) and then the
+   lock, unless the file already lists the same images for the booted version;
+2. under the lock, when this boot is the trial of the set `pending` still
+   names and `/run/vos/ext-trial-ok` names it too (`vos health` passed it but
+   may not have recorded it), first records the boot as `vos health` does,
+   promoting only when what booted is the desired set; then applies what
+   rules 1 and 2 say (a `pending` left over or out of tries), and nothing
+   else: a `pending` whose image is still to come is not removed for it;
+3. without the lock, fetches and seals the plan's missing images for the
    booted version;
-3. under the lock, plans again and acts in full (fail, clear, propose, keep or
+4. under the lock, plans again and acts in full (fail, clear, propose, keep or
    blocked, as above), planning again after each write;
-4. fetches, best effort, the images `wanted` ∪ core need in the other slot
+5. fetches, best effort, the images `wanted` ∪ core need in the other slot
    file's version, when it names another;
-5. runs GC, unless a slot file cannot be read.
+6. runs GC, unless a slot file cannot be read.
 
 Images come from `config.update.source` at the version: a registry at the tag
-`<version>` (any tag in the source is replaced), by layer title, and when that
-download fails, as the blob by digest, which still works once the tag is gone;
-an HTTP or directory source by name. A source that served other bytes for an
-image is not asked for it again until a reconcile is asked for, and on a disk
-that cannot seal (boot reason `no-verity`, or a seal refused as unsupported)
-nothing is fetched until the next boot. Once per boot, after the first
-reconcile, vosd reads every mounted image through at idle I/O priority
+`<version>` (any tag in the source is replaced), by layer title, and when the
+registry answered otherwise (no such tag or layer, other bytes), as the blob
+by digest, which still works once the tag is gone or moved; an HTTP or
+directory source by name. A network failure (one the download gave up on), a
+failed write to the disk or a failed seal is never followed by the blob.
+Before its first download, a reconcile asks the source for its manifest: a
+source it cannot reach, or that stops answering during a download, is asked
+for nothing else in that reconcile. A source that served other bytes for an
+image is not asked for it again until a reconcile is asked for; an image that
+does not fit (2 GiB to spare, also a disk that filled up during its download)
+is not fetched again until more space is free or a reconcile is asked for, and
+its card says so; on a disk that cannot seal (boot reason `no-verity`, or a
+seal refused as unsupported) nothing is fetched until the next boot. Once per
+boot, after the first reconcile and beside the later ones, vosd reads every
+mounted image through at idle I/O priority
 (`ioprio_set`, class idle). A read that fails with `EIO` (fs-verity checks
 every block) or bytes whose size or sha256 are not the booted catalog's delete
-the image, at most once per digest per boot, and the next reconcile fetches it
-again: the desired set keeps it meanwhile, so the next boot mounts the new
-copy. A missing file is not damage. While vosd downloads, seals or re-reads an
-image, idle shutdown counts it as busy (`adding an extension`).
+the image, at most once per digest per boot, and a reconcile follows that
+fetches it again: the desired set keeps it meanwhile, so the next boot mounts
+the new copy. A missing file is not damage. Idle shutdown counts as busy
+(`adding an extension`) a download from its first bytes until it and its seal
+end, unless no bytes came for 2 minutes, and the re-read.
 
 **Install** (the `configure` step, after slot a is written and the target is
 mounted): the installer runs the new image's own
 `<target>/usr/bin/vos ext fetch --state-dir <target>/var/lib/vos --from SRC --version <ver> --seed`
 (plus `--repair` on a repair), which seals the image's core extensions into
-the new system's store. SRC is the install's source, or for the live medium
+the new system's store and makes them `pending`: the first boot is their
+trial, and `vos health` promotes them to `enabled` (a fresh install has no
+`enabled` before that). A repair tries core only; the rest of `wanted`
+(kept, its images fetched too) vosd proposes through a trial of its own.
+SRC is the install's source, or for the live medium
 (which carries no extension images) the new system's `config.update.source`.
 It is best effort and capped at 20 minutes: a failure is logged, and vosd
 fetches what is missing once the system runs. Its progress lines show as
 `configure`. Before it runs, a repair removes `slots/b.json` (slot b was
-wiped), `pending` and `failed`.
+wiped), `enabled`, `pending` and `failed`, so a repair that cannot fetch
+boots with no extension rather than the old set.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 

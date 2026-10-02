@@ -145,6 +145,36 @@ func TestPutWithoutVerity(t *testing.T) {
 	}
 }
 
+// An image that would eat into the reserve is not fetched at all; the
+// check looks at the store's filesystem even before the store exists.
+func TestPutNeedsRoom(t *testing.T) {
+	setup(t)
+	img := newImage(t, "proton", 3_000)
+	var asked string
+	free := ExtReserve + 2_999
+	freeBytes = func(dir string) (int64, error) { asked = dir; return free, nil }
+	err := Put(t.Context(), img.entry, func(io.Writer, func(int64) error) error {
+		t.Fatal("fetched an image that does not fit")
+		return nil
+	})
+	if !errors.Is(err, ErrNoSpace) {
+		t.Fatalf("Put = %v, want ErrNoSpace", err)
+	}
+	eq(t, "statfs of", asked, config.ExtImagesDir())
+	if n := entries(t, config.ExtImagesDir()); len(n) != 0 {
+		t.Errorf("images dir holds %v", n)
+	}
+	free++
+	put(t, img)
+
+	check(t, os.RemoveAll(config.ExtDir()))
+	if _, err := Free(); err != nil || asked != config.StateDir {
+		t.Errorf("Free looked at %q (%v), want the nearest existing directory %q", asked, err, config.StateDir)
+	}
+	free = -1
+	check(t, CheckSpace(1<<50))
+}
+
 func TestPutRejectsBadEntry(t *testing.T) {
 	setup(t)
 	img := newImage(t, "proton", 100)

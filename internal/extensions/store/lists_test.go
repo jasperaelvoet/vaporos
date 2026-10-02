@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -60,6 +61,29 @@ func TestProven(t *testing.T) {
 	p, err = Proven()
 	check(t, err)
 	eq(t, "defensive", len(p), 1)
+}
+
+// A proven file past the limit does not stop a boot from being recorded:
+// it is rebuilt from its valid pairs or, when those do not fit either,
+// from the new ones alone.
+func TestAddProvenRebuildsAnOversizedFile(t *testing.T) {
+	setup(t)
+	old, add := Pair{"coolercontrol", hex64('c')}, Pair{"proton", hex64('a')}
+	writeFile(t, config.ExtProvenPath(), strings.Repeat("junk\n", maxListFile/5+1)+old.line()+"\n"+strings.Repeat("y", 2*maxLine)+"\n")
+	check(t, AddProven([]Pair{add}))
+	data, err := os.ReadFile(config.ExtProvenPath())
+	check(t, err)
+	eq(t, "rebuilt", string(data), old.line()+"\n"+add.line()+"\n")
+
+	var b strings.Builder
+	for i := 0; b.Len() <= maxListFile; i++ {
+		fmt.Fprintf(&b, "proton %064x\n", i)
+	}
+	writeFile(t, config.ExtProvenPath(), b.String())
+	check(t, AddProven([]Pair{add, add}))
+	data, err = os.ReadFile(config.ExtProvenPath())
+	check(t, err)
+	eq(t, "new pairs only", string(data), add.line()+"\n")
 }
 
 func TestFailed(t *testing.T) {

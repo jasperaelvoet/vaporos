@@ -24,6 +24,16 @@ var (
 	retryMax  = 30 * time.Minute
 )
 
+// busyStall is how long a download counts as busy after its last bytes: a
+// download that stalls lets the PC idle, and so does one still asking the
+// source for its first bytes. Bytes are counted per 4 MiB (update.ChunkSize),
+// so this is well above the time one takes on a slow line. Variables for
+// tests.
+var (
+	busyStall = 2 * time.Minute
+	now       = time.Now
+)
+
 // slotLockWait bounds the wait for the update lock to write the booted
 // slot file; a stage holds it for minutes, and the next pass tries again.
 const slotLockWait = 10 * time.Second
@@ -35,18 +45,23 @@ const slotLockWait = 10 * time.Second
 // mounted images through to find damaged ones.
 type Service struct {
 	cfg  *config.Config // shared: read through Snapshot
-	kick chan struct{}
+	kick chan struct{}  // Reconcile: someone changed something
+	wake chan struct{}  // the re-read deleted an image: fetch it again
 
 	mu        sync.Mutex
-	fetching  int  // downloads under way
-	rehashing bool // the once-per-boot re-read is under way
-	rehashed  bool
+	receiving time.Time            // when the download under way last got bytes; zero before its first
+	rehashing bool                 // the once-per-boot re-read is under way
 	progress  map[string]*Progress // by id, downloads for the booted version
 	errs      map[string]string    // by id: why its image for the booted version is missing
 	damaged   map[string]bool      // sha256 of images deleted as damaged this boot
 	bad       map[string]bool      // sha256 the source serves other bytes for: not fetched again until Reconcile
+	full      map[string]int64     // sha256 that did not fit, with the bytes free then: not fetched again until more are
 	noVerity  bool                 // vos_data cannot seal: nothing is fetched this boot
 	view      view                 // what the last pass saw, for Status
+
+	// down is why the source could not be reached this pass, which then
+	// fetches nothing more. Only the goroutine running the pass uses it.
+	down error
 
 	// options renders the module options of a set's ids from their
 	// settings; nil until an extension has any.
@@ -61,10 +76,12 @@ func NewService(cfg *config.Config) *Service {
 	return &Service{
 		cfg:      cfg,
 		kick:     make(chan struct{}, 1),
+		wake:     make(chan struct{}, 1),
 		progress: map[string]*Progress{},
 		errs:     map[string]string{},
 		damaged:  map[string]bool{},
 		bad:      map[string]bool{},
+		full:     map[string]int64{},
 	}
 }
 
@@ -94,10 +111,11 @@ func loadBooted() (*booted, error) {
 	return b, nil
 }
 
-// Run reconciles at start, whenever Reconcile asks, and, while an image is
-// still missing, again after retryBase, doubling up to retryMax. After the
-// first pass it re-reads the mounted images once. The live system has no
-// store: Run returns at once.
+// Run reconciles at start, whenever Reconcile asks, and, while a pass left
+// something a later one could do, again after retryBase, doubling up to
+// retryMax. After the first pass it re-reads the mounted images once,
+// beside the passes; a damaged image it deletes brings on another pass. The
+// live system has no store: Run returns at once.
 func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
@@ -113,14 +131,22 @@ func (s *Service) Run(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
+	var rehash sync.WaitGroup
+	defer rehash.Wait()
 	failures := 0
-	for {
+	for first := true; ; first = false {
 		retry := s.pass(ctx, b)
 		if ctx.Err() != nil {
 			return
 		}
-		if s.firstRehash() && s.rehash(ctx, b.cat) {
-			continue // fetch the deleted images again now
+		if first {
+			rehash.Add(1)
+			go func() {
+				defer rehash.Done()
+				if s.rehash(ctx, b.cat) {
+					s.signal(s.wake)
+				}
+			}()
 		}
 		var t *time.Timer
 		var wait <-chan time.Time
@@ -135,7 +161,8 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 		case <-s.kick:
 			failures = 0
-			s.retryBad()
+			s.retryAll()
+		case <-s.wake:
 		case <-wait:
 		}
 		if t != nil {
@@ -157,37 +184,36 @@ func retryDelay(failures int) time.Duration {
 
 // Reconcile asks Run for another pass, after a change to wanted, a
 // setting or the store. It never blocks.
-func (s *Service) Reconcile() {
+func (s *Service) Reconcile() { s.signal(s.kick) }
+
+func (s *Service) signal(c chan struct{}) {
 	select {
-	case s.kick <- struct{}{}:
+	case c <- struct{}{}:
 	default:
 	}
 }
 
-// retryBad lets the next pass fetch again the images whose source served
-// other bytes: someone asked for a pass.
-func (s *Service) retryBad() {
+// retryAll lets the next pass fetch again the images whose source served
+// other bytes, and those that did not fit: someone asked for a pass.
+func (s *Service) retryAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clear(s.bad)
+	clear(s.full)
 }
 
-// Busy keeps the PC awake while an image downloads, seals or is re-read.
+// Busy keeps the PC awake while an image's bytes arrive (from the first
+// until the download and its seal end, unless none came for busyStall) and
+// while the mounted images are re-read.
 func (s *Service) Busy() (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fetching > 0 || s.rehashing {
+	if s.busyLocked() {
 		return true, busyReason
 	}
 	return false, ""
 }
 
-// firstRehash reports whether the once-per-boot re-read is still to do,
-// and marks it done.
-func (s *Service) firstRehash() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	first := !s.rehashed
-	s.rehashed = true
-	return first
+func (s *Service) busyLocked() bool {
+	return s.rehashing || (!s.receiving.IsZero() && now().Sub(s.receiving) < busyStall)
 }

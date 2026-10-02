@@ -106,6 +106,19 @@ func TestCollectPrunesProven(t *testing.T) {
 	eq(t, "mtime", fi.ModTime().Equal(old), true)
 }
 
+// A line too long to read is dropped too, even when every pair it can read
+// stays.
+func TestCollectDropsOverlongProvenLines(t *testing.T) {
+	setup(t)
+	keep := "proton " + hex64('2')
+	writeFile(t, config.ExtProvenPath(), keep+"\n"+strings.Repeat("x", 2*maxLine)+"\n")
+	_, err := Collect(nil, []*catalog.Catalog{testCatalog}, nil)
+	check(t, err)
+	data, err := os.ReadFile(config.ExtProvenPath())
+	check(t, err)
+	eq(t, "proven", string(data), keep+"\n")
+}
+
 func TestGCEmptyStore(t *testing.T) {
 	setup(t)
 	removed, err := GC(nil)

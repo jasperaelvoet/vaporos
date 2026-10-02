@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -84,18 +85,27 @@ func Proven() (map[Pair]bool, error) {
 	return out, nil
 }
 
-// AddProven adds pairs to proven, writing only when something is new.
-// Caller holds Lock.
+// AddProven adds pairs to proven, writing only when something is new. A
+// file grown past maxListFile (only junk gets it there: GC prunes it) is
+// rewritten from the valid pairs in it, or, when even those do not fit,
+// from pairs alone: what a boot proved is always recorded. Caller holds
+// Lock.
 func AddProven(pairs []Pair) error {
 	have, err := Proven()
+	changed := false
+	if errors.Is(err, ErrListTooBig) {
+		have, err = salvageProven()
+		changed = true
+	}
 	if err != nil {
 		return err
 	}
-	changed := false
+	var added []string
 	for _, p := range pairs {
 		if p.valid() && !have[p] {
 			have[p] = true
 			changed = true
+			added = append(added, p.line())
 		}
 	}
 	if !changed {
@@ -105,8 +115,36 @@ func AddProven(pairs []Pair) error {
 	for p := range have {
 		lines = append(lines, p.line())
 	}
+	if len(joinLines(lines)) > maxListFile {
+		lines = added
+	}
 	slices.Sort(lines)
-	return writeLines(config.ExtProvenPath(), lines)
+	return writeLines(config.ExtProvenPath(), slices.Compact(lines))
+}
+
+// salvageProven reads the valid pairs of a proven file over maxListFile,
+// whatever its size, holding no more than maxListFile of them: with more,
+// it returns none.
+func salvageProven() (map[Pair]bool, error) {
+	out := map[Pair]bool{}
+	size, over := 0, false
+	_, err := scanLines(config.ExtProvenPath(), 0, func(line string) {
+		f := strings.Fields(line)
+		if over || len(f) != 2 {
+			return
+		}
+		if p := (Pair{ID: f[0], FSVerity: f[1]}); p.valid() && !out[p] {
+			if size += len(p.line()) + 1; size > maxListFile {
+				over = true
+				return
+			}
+			out[p] = true
+		}
+	})
+	if over {
+		clear(out)
+	}
+	return out, err
 }
 
 // Failed returns the fingerprints of the sets whose trial failed.

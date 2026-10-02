@@ -57,28 +57,30 @@ const tempPrefix = ".tmp-"
 // missing file has none; one over maxListFile is ErrListTooBig.
 func readLines(path string) ([]string, error) {
 	var out []string
-	err := scanLines(path, maxListFile, func(line string) { out = append(out, line) })
+	_, err := scanLines(path, maxListFile, func(line string) { out = append(out, line) })
 	return out, err
 }
 
 // scanLines calls fn with each trimmed, non-empty, non-comment line of path
-// shorter than maxLine. A limit > 0 refuses a larger file before reading
-// any of it. Only a regular file is read: anything else might never end.
-func scanLines(path string, limit int64, fn func(line string)) error {
+// shorter than maxLine, and returns how many longer lines it skipped (a
+// rewrite of the file then drops them). A limit > 0 refuses a larger file
+// before reading any of it. Only a regular file is read: anything else
+// might never end.
+func scanLines(path string, limit int64, fn func(line string)) (long int, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s: not a regular file", path)
+		return 0, fmt.Errorf("%s: not a regular file", path)
 	}
 	tooBig := func(size int64) error {
 		return fmt.Errorf("%s: %w (%d bytes, at most %d)", path, ErrListTooBig, size, limit)
@@ -89,16 +91,17 @@ func scanLines(path string, limit int64, fn func(line string)) error {
 	lr := &io.LimitedReader{R: f, N: limit + 1}
 	if limit > 0 {
 		if fi.Size() > limit {
-			return tooBig(fi.Size())
+			return 0, tooBig(fi.Size())
 		}
 		in = lr
 	}
 	r := bufio.NewReaderSize(in, maxLine)
 	for {
-		line, long, err := r.ReadLine()
-		if long {
-			for long && err == nil {
-				_, long, err = r.ReadLine()
+		line, more, err := r.ReadLine()
+		if more {
+			long++
+			for more && err == nil {
+				_, more, err = r.ReadLine()
 			}
 		} else if err == nil {
 			if l := strings.TrimSpace(string(line)); l != "" && !strings.HasPrefix(l, "#") {
@@ -106,13 +109,13 @@ func scanLines(path string, limit int64, fn func(line string)) error {
 			}
 		}
 		if errors.Is(err, io.EOF) && limit > 0 && lr.N == 0 {
-			return tooBig(limit + 1)
+			return long, tooBig(limit + 1)
 		}
 		if errors.Is(err, io.EOF) {
-			return nil
+			return long, nil
 		}
 		if err != nil {
-			return err
+			return long, err
 		}
 	}
 }

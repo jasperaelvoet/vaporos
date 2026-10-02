@@ -9,7 +9,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -120,45 +119,66 @@ func TestPassKeepsWhatBootedWhileAnImageIsMissing(t *testing.T) {
 }
 
 // A pending set out of tries fails before any download, even one that
-// cannot start.
+// cannot start; one whose image is missing, which its trials could not
+// mount, is only removed, also when the download brings the image.
 func TestPassFailsAStalePendingFirst(t *testing.T) {
-	e := newEnv(t)
-	proton := newImage(t, "proton", "", 5000, true)
-	cc := newImage(t, "coolercontrol", "", 2000, false)
-	cat := e.catalog(proton, cc)
-	e.seal(proton)
-	e.cfg.Update.Source = "oci://"
-	var enabled *store.Set
-	locked(t, func() (err error) {
-		if enabled, err = store.WriteEnabled([]string{"proton"}, nil); err != nil {
-			return err
+	for _, missing := range []bool{false, true} {
+		e := newEnv(t)
+		proton := newImage(t, "proton", "", 5000, true)
+		cc := newImage(t, "coolercontrol", "", 2000, false)
+		tool := newImage(t, "tool", "", 1000, false)
+		cat := e.catalog(proton, cc, tool)
+		e.seal(proton)
+		e.cfg.Update.Source = "oci://"
+		if missing {
+			e.cfg.Update.Source = e.src
+			e.serve(cc)
+		} else {
+			e.seal(cc)
 		}
-		if err = store.WriteWanted([]string{"coolercontrol"}); err != nil {
-			return err
-		}
-		set, err := store.WriteSet([]string{"proton", "coolercontrol"}, nil, 0)
-		if err != nil {
-			return err
-		}
-		return os.Symlink("sets/"+set.Name, config.ExtPendingLink())
-	})
-	e.report(store.BootReport{Mode: store.ModeEnabled, Set: enabled.Name, Reason: store.ReasonTriesUsed, Mounted: mountedAs(proton)})
+		var enabled *store.Set
+		locked(t, func() (err error) {
+			if enabled, err = store.WriteEnabled([]string{"proton"}, nil); err != nil {
+				return err
+			}
+			if err = store.WriteWanted([]string{"coolercontrol", "tool"}); err != nil {
+				return err
+			}
+			set, err := store.WriteSet([]string{"proton", "coolercontrol"}, nil, 0)
+			if err != nil {
+				return err
+			}
+			return os.Symlink("sets/"+set.Name, config.ExtPendingLink())
+		})
+		e.report(store.BootReport{Mode: store.ModeEnabled, Set: enabled.Name, Reason: store.ReasonTriesUsed, Mounted: mountedAs(proton)})
 
-	s, b := e.service()
-	if retry := s.pass(t.Context(), b); !retry {
-		t.Fatal("no retry while coolercontrol is missing")
-	}
-	failed, err := store.Failed()
-	must(t, err)
-	fp := store.Fingerprint(store.Pairs(cat, []string{"proton", "coolercontrol"}), nil)
-	if !failed[fp] {
-		t.Fatalf("failed = %v, want %s", failed, fp)
-	}
-	if p, _ := store.Pending(); p != nil {
-		t.Fatalf("pending = %+v", p)
-	}
-	if x := e.state(s, "coolercontrol"); x.State != StateNeedsAttention || x.Error == "" {
-		t.Fatalf("coolercontrol = %+v", x)
+		s, b := e.service()
+		if retry := s.pass(t.Context(), b); !retry {
+			t.Fatal("no retry while tool is missing")
+		}
+		failed, err := store.Failed()
+		must(t, err)
+		fp := store.Fingerprint(store.Pairs(cat, []string{"proton", "coolercontrol"}), nil)
+		if failed[fp] == missing {
+			t.Fatalf("missing %v: failed = %v", missing, failed)
+		}
+		p, _ := store.Pending()
+		if x := e.state(s, "tool"); x.State != StateNeedsAttention || x.Error == "" {
+			t.Fatalf("tool = %+v", x)
+		}
+		if !missing {
+			if p != nil {
+				t.Fatalf("pending = %+v", p)
+			}
+			if x := e.state(s, "coolercontrol"); x.State != StateNeedsAttention {
+				t.Fatalf("coolercontrol = %+v", x)
+			}
+			continue
+		}
+		// It is proposed again, now that its image is here.
+		if p == nil || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) || p.Tries != store.ProposeTries {
+			t.Fatalf("pending = %+v", p)
+		}
 	}
 }
 
@@ -251,7 +271,7 @@ func TestPassStopsRetryingWhatCannotSeal(t *testing.T) {
 	if x := e.state(s, "proton"); x.State != StateNeedsAttention || !strings.Contains(x.Error, "checksum") {
 		t.Fatalf("proton = %+v", x)
 	}
-	s.retryBad() // someone asked: Reconcile
+	s.retryAll() // someone asked: Reconcile
 	e.serve(proton)
 	s.pass(t.Context(), b)
 	if x := e.state(s, "proton"); x.State != StateRestartNeeded {
@@ -298,7 +318,7 @@ func TestBootedSlotFile(t *testing.T) {
 	staged["proton"] = x
 	must(t, store.WriteSlot("a", bootedVersion, staged))
 	s, b := e.service()
-	s.writeBootedSlot(t.Context(), b)
+	must(t, s.writeBootedSlot(t.Context(), b))
 	sl, err := store.ReadSlot("a")
 	must(t, err)
 	if !b.slotDone || sl.Extensions["proton"].Key == "" {
@@ -307,7 +327,7 @@ func TestBootedSlotFile(t *testing.T) {
 	// Another version's file is replaced.
 	must(t, store.WriteSlot("a", otherVersion, staged))
 	b.slotDone = false
-	s.writeBootedSlot(t.Context(), b)
+	must(t, s.writeBootedSlot(t.Context(), b))
 	if sl, _ := store.ReadSlot("a"); sl.Version != bootedVersion || sl.Extensions["proton"].Key != "" {
 		t.Fatalf("slot a = %+v", sl)
 	}
@@ -391,58 +411,72 @@ type eioReader struct{}
 
 func (eioReader) Read([]byte) (int, error) { return 0, syscall.EIO }
 
-// Busy and the card's progress while an image downloads.
-func TestBusyWhileFetching(t *testing.T) {
+// stepSource is a fakeSource that stops, until told to go on, before a
+// download asks for anything and again after its first chunk.
+type stepSource struct {
+	*fakeSource
+	at   chan string // "connect", then "chunk"
+	next chan struct{}
+}
+
+func (s stepSource) Fetch(ctx context.Context, a manifest.Artifact, w io.Writer, onChunk func(int64) error) error {
+	s.at <- "connect"
+	<-s.next
+	first := true
+	return s.fakeSource.Fetch(ctx, a, w, func(n int64) error {
+		err := onChunk(n)
+		if first {
+			first = false
+			s.at <- "chunk"
+			<-s.next
+		}
+		return err
+	})
+}
+
+// Busy only while bytes arrive: not while a download waits for its first,
+// nor once they stop coming; the card shows the download all along.
+func TestBusyWhileBytesArrive(t *testing.T) {
 	e := newEnv(t)
 	proton := newImage(t, "proton", "", 5000, true)
 	e.catalog(proton)
-	release := make(chan struct{})
-	var once sync.Once
-	free := func() { once.Do(func() { close(release) }) }
-	started := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ext-proton.raw" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Length", "5000")
-		w.Write(proton.data[:1000])
-		w.(http.Flusher).Flush()
-		started <- struct{}{}
-		<-release
-		w.Write(proton.data[1000:])
-	}))
-	defer srv.Close()
-	defer free()
-	e.cfg.Update.Source = srv.URL + "/"
+	src := stepSource{fakeSource: &fakeSource{byName: map[string]served{"ext-proton.raw": {data: proton.data}}},
+		at: make(chan string), next: make(chan struct{})}
+	o := openSource
+	t.Cleanup(func() { openSource = o })
+	openSource = func(string, string) (source, error) { return src, nil }
+	var skew atomic.Int64
+	n := now
+	t.Cleanup(func() { now = n })
+	now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
 
 	s, b := e.service()
-	if busy, _ := s.Busy(); busy {
-		t.Fatal("busy before anything")
-	}
+	busy := func() bool { on, why := s.Busy(); return on && why == busyReason && s.Status().Busy }
 	done := make(chan bool)
 	go func() { done <- s.pass(context.Background(), b) }()
-	<-started
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		x := e.state(s, "proton")
-		if x.State == StateDownloading && x.Progress != nil && x.Progress.Total == 5000 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("proton = %+v", x)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if at := <-src.at; at != "connect" || busy() {
+		t.Fatalf("at %s: busy %v before the first bytes", at, busy())
 	}
-	if busy, why := s.Busy(); !busy || why != busyReason {
-		t.Fatalf("Busy = %v %q", busy, why)
+	if x := e.state(s, "proton"); x.State != StateDownloading || x.Progress == nil || x.Progress.Total != 5000 {
+		t.Fatalf("proton = %+v", x)
 	}
-	free()
+	src.next <- struct{}{}
+	if at := <-src.at; at != "chunk" || !busy() {
+		t.Fatalf("at %s: not busy while bytes arrive", at)
+	}
+	if x := e.state(s, "proton"); x.Progress == nil || x.Progress.Bytes != 1000 {
+		t.Fatalf("proton = %+v", x)
+	}
+	skew.Store(int64(busyStall + time.Second))
+	if busy() {
+		t.Fatal("busy while the download stalls")
+	}
+	src.next <- struct{}{}
 	if retry := <-done; retry {
 		t.Fatal("retry")
 	}
-	if busy, _ := s.Busy(); busy {
-		t.Fatal("still busy")
+	if busy() || !sealed(proton.entry) {
+		t.Fatalf("busy %v, sealed %v after the download", busy(), sealed(proton.entry))
 	}
 }
 

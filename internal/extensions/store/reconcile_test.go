@@ -50,6 +50,7 @@ func TestPlanReconcile(t *testing.T) {
 		wantIDs     []string
 		wantMissing []string
 		wantBlocked bool
+		wantRule    int // 0: not checked
 	}{
 		{
 			name:    "booted set is desired",
@@ -99,8 +100,9 @@ func TestPlanReconcile(t *testing.T) {
 				Report: &BootReport{Mode: ModePending, Set: "2", TriesLeft: 1, Mounted: mounted("proton"),
 					Skipped: []Skipped{{ID: "truckersmp", Reason: SkipMissing}}},
 				BootedSet: set2(1, "proton", "truckersmp"), Enabled: set1, Pending: set2(1, "proton", "truckersmp")},
-			want:    ActionClearPending,
-			wantIDs: []string{"proton"},
+			want:     ActionClearPending,
+			wantIDs:  []string{"proton"},
+			wantRule: 3,
 		},
 		{
 			name: "trial of a set that did not boot whole, still wanted",
@@ -141,8 +143,37 @@ func TestPlanReconcile(t *testing.T) {
 			name: "pending used up its tries",
 			in: ReconcileInput{Wanted: []string{"truckersmp"}, Report: bootedProton, BootedSet: set1, Enabled: set1,
 				Pending: set2(0, "proton", "truckersmp")},
-			want:    ActionFailPending,
-			wantIDs: []string{"proton", "truckersmp"},
+			want:     ActionFailPending,
+			wantIDs:  []string{"proton", "truckersmp"},
+			wantRule: 2,
+		},
+		{
+			name: "pending used up its tries with an image missing",
+			in: ReconcileInput{Wanted: []string{"truckersmp"}, Report: bootedProton, BootedSet: set1, Enabled: set1,
+				Pending: set2(0, "proton", "truckersmp"), Have: haveAllBut("truckersmp")},
+			want:        ActionClearPending,
+			wantIDs:     []string{"proton"},
+			wantMissing: []string{"truckersmp"},
+			wantRule:    2,
+		},
+		{
+			name: "enabled id skipped missing gives no failure",
+			in: ReconcileInput{Wanted: []string{"coolercontrol"}, Have: haveAllBut("proton"),
+				Report: &BootReport{Mode: ModeEnabled, Set: "1", Reason: ReasonTriesUsed,
+					Skipped: []Skipped{{ID: "proton", Reason: SkipMissing}}},
+				BootedSet: set1, Enabled: set1, Pending: set2(0, "proton", "coolercontrol")},
+			want:        ActionClearPending,
+			wantIDs:     []string{"proton", "coolercontrol"},
+			wantMissing: []string{"proton"},
+			wantRule:    2,
+		},
+		{
+			name: "pending used up its tries, with an id the catalog does not list",
+			in: ReconcileInput{Report: bootedProton, BootedSet: set1, Enabled: set1,
+				Pending: set2(0, "proton", "star-citizen")},
+			want:     ActionFailPending,
+			wantIDs:  []string{"proton"},
+			wantRule: 2,
 		},
 		{
 			name: "pending used up its tries, booted without extensions",
@@ -165,8 +196,9 @@ func TestPlanReconcile(t *testing.T) {
 				Report:    &BootReport{Mode: ModeEnabled, Set: "2", Mounted: mounted("proton", "truckersmp")},
 				BootedSet: set2(0, "proton", "truckersmp"), Enabled: set2(0, "proton", "truckersmp"),
 				Pending: set2(0, "proton", "truckersmp")},
-			want:    ActionClearPending,
-			wantIDs: []string{"proton", "truckersmp"},
+			want:     ActionClearPending,
+			wantIDs:  []string{"proton", "truckersmp"},
+			wantRule: 1,
 		},
 		{
 			name: "pending names the booted set outside its trial",
@@ -348,6 +380,12 @@ func TestPlanReconcile(t *testing.T) {
 			eq(t, "missing", strs(missing), strs(tt.wantMissing))
 			eq(t, "blocked", p.Blocked, tt.wantBlocked)
 			eq(t, "fingerprint", p.Fingerprint, Fingerprint(Pairs(testCatalog, p.IDs), p.Options))
+			if tt.wantRule != 0 {
+				eq(t, "rule", p.Rule, tt.wantRule)
+			}
+			if p.Rule < 1 || p.Rule > 6 {
+				t.Errorf("rule %d", p.Rule)
+			}
 		})
 	}
 }
@@ -386,8 +424,10 @@ func TestRestartNeeded(t *testing.T) {
 		{"pending ready", normal, pending, all, true},
 		{"removal ready", normal, &Set{Name: "2", Tries: 2}, all, true},
 		{"after an os trial", &BootReport{Mode: ModeOSTrial, Set: "1"}, pending, all, true},
-		{"no report", nil, pending, all, true},
 		{"no verity", &BootReport{Mode: ModeEnabled, Set: "1", Reason: ReasonNoVerity}, pending, all, true},
+		{"no report", &BootReport{Mode: ModeOff, Reason: ReasonNoReport}, pending, all, false},
+		{"nil report", nil, pending, all, false},
+		{"tries could not be written", &BootReport{Mode: ModeEnabled, Set: "1", Reason: ReasonTriesWrite}, pending, all, false},
 		{"no pending", normal, nil, all, false},
 		{"no tries left", normal, &Set{Name: "2", IDs: []string{"proton"}}, all, false},
 		{"this boot tries it", &BootReport{Mode: ModePending, Set: "2"}, pending, all, false},

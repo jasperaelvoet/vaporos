@@ -1,10 +1,61 @@
 package store
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
+
+// A trial that passed is promoted whatever becomes of proven: one grown
+// past its limit is rebuilt, and one that cannot be read at all is an error
+// only after the promotion.
+func TestAfterHealthyPromotesDespiteProven(t *testing.T) {
+	proton := Mounted{ID: "proton", SHA256: hex64('1'), FSVerity: hex64('2')}
+	rep := &BootReport{Mode: ModePending, Set: "1", Mounted: []Mounted{proton}}
+
+	setup(t)
+	writeSet(t, []string{"proton"}, nil, 1)
+	check(t, setLink(config.ExtPendingLink(), "1"))
+	junk := strings.Repeat("junk line\n", maxListFile/10+1) + "coolercontrol " + hex64('4') + "\n"
+	writeFile(t, config.ExtProvenPath(), junk)
+	check(t, AfterHealthy(rep))
+	eq(t, "enabled", readLink(t, config.ExtEnabledLink()), "sets/1")
+	p, err := Proven()
+	check(t, err)
+	if len(p) != 2 || !p[Pair{"proton", hex64('2')}] || !p[Pair{"coolercontrol", hex64('4')}] {
+		t.Fatalf("proven = %v", p)
+	}
+
+	setup(t)
+	writeSet(t, []string{"proton"}, nil, 1)
+	check(t, setLink(config.ExtPendingLink(), "1"))
+	check(t, os.MkdirAll(config.ExtProvenPath(), 0o755))
+	if err := AfterHealthy(rep); err == nil {
+		t.Error("no error for a proven that cannot be read")
+	}
+	eq(t, "enabled", readLink(t, config.ExtEnabledLink()), "sets/1")
+	eq(t, "pending", readLink(t, config.ExtPendingLink()), "")
+}
+
+func TestTrialOK(t *testing.T) {
+	setup(t)
+	got, err := TrialOK()
+	check(t, err)
+	eq(t, "none", got, "")
+	check(t, WriteTrialOK("12"))
+	got, err = TrialOK()
+	check(t, err)
+	eq(t, "written", got, "12")
+	if err := WriteTrialOK("../x"); err == nil {
+		t.Error("WriteTrialOK took a bad set name")
+	}
+	writeFile(t, config.ExtTrialOKPath(), "sets/3\n")
+	got, err = TrialOK()
+	check(t, err)
+	eq(t, "junk", got, "")
+}
 
 func TestAfterHealthy(t *testing.T) {
 	proton := Mounted{ID: "proton", SHA256: hex64('1'), FSVerity: hex64('2')}

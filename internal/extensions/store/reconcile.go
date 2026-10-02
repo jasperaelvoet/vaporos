@@ -26,9 +26,13 @@ type ReconcileInput struct {
 	Options   func(ids []string) []string // module option lines their settings render
 	Report    *BootReport
 	BootedSet *Set // the set the report names; nil when none
-	Enabled   *Set
-	Pending   *Set
-	Failed    map[string]bool // fingerprints
+	// Enabled is the last good set: nil on a fresh install until its first
+	// trial passes. Its ids stay desired while their images are missing,
+	// a pending set naming it is a promotion cut short, and on a boot that
+	// mounted nothing on purpose it stands in for what booted.
+	Enabled *Set
+	Pending *Set
+	Failed  map[string]bool // fingerprints
 }
 
 // Plan is what reconcile should do.
@@ -39,6 +43,10 @@ type Plan struct {
 	Options     []string        // its module options, normalized
 	Fingerprint string          // of IDs at the catalog's digests and Options
 	Action      string
+	// Rule is the reconcile rule that chose Action (1-6, as numbered in
+	// docs/CONTRACTS.md "Reconcile"). Rules 1 and 2 deal with a pending set
+	// left over or out of tries, which nothing a download brings changes.
+	Rule int
 	// Blocked: the desired set's fingerprint is in failed, so it is not
 	// proposed; it needs attention ("Try again" removes the fingerprint).
 	Blocked bool
@@ -57,8 +65,9 @@ type Plan struct {
 // at the catalog's digests stands in for it. A pending set outside its own
 // trial that names the booted or the enabled set is left over from a
 // promotion cut short: cleared. A pending set with no tries left that this
-// boot did not try fails (on an OS trial it is only cleared: its trials ran
-// at other digests). Then: the desired set equal to what booted needs no
+// boot did not try fails, unless its trials ran at other digests (an OS
+// trial) or could not mount one of its images (one not sealed now): then
+// it is only cleared. Then: the desired set equal to what booted needs no
 // pending, unless this boot is the trial of a pending set that booted whole
 // (`vos health` promotes it). Equal to pending: left alone. Its fingerprint
 // failed before: blocked, and a pending set goes. Otherwise proposed.
@@ -92,7 +101,7 @@ func PlanReconcile(in ReconcileInput) Plan {
 		p.Options = normOptions(in.Options(slices.Clone(p.IDs)))
 	}
 	p.Fingerprint = Fingerprint(Pairs(cat, p.IDs), p.Options)
-	p.Action = planAction(in, &p)
+	p.Rule, p.Action = planAction(in, &p)
 	return p
 }
 
@@ -113,43 +122,58 @@ func established(in ReconcileInput) []string {
 	return ids
 }
 
-func planAction(in ReconcileInput, p *Plan) string {
+// planAction returns the rule that applies, and its action.
+func planAction(in ReconcileInput, p *Plan) (int, string) {
 	rep, pend := in.Report, in.Pending
 	trying := pend != nil && rep.IsTrial() && rep.Set == pend.Name
 	if pend != nil && !trying {
 		leftover := (rep != nil && pend.Name == rep.Set) || (in.Enabled != nil && pend.Name == in.Enabled.Name)
 		switch {
 		case leftover:
-			return ActionClearPending
+			return 1, ActionClearPending
 		case pend.Tries <= 0 && rep != nil && rep.Mode == ModeOSTrial:
-			return ActionClearPending
+			return 2, ActionClearPending
+		case pend.Tries <= 0 && !allSealed(in, pend.IDs):
+			// Its trials could not mount that image: not the set's fault.
+			return 2, ActionClearPending
 		case pend.Tries <= 0:
-			return ActionFailPending
+			return 2, ActionFailPending
 		}
 	}
 	booted := bootedFingerprint(in)
 	if p.Fingerprint == booted {
 		switch {
 		case pend == nil:
-			return ActionNone
+			return 3, ActionNone
 		case trying && Fingerprint(Pairs(in.Catalog, pend.IDs), pend.Options) == booted:
 			// This boot is the pending set's trial and it booted whole:
 			// `vos health` promotes it, which needs pending in place.
-			return ActionKeepPending
+			return 3, ActionKeepPending
 		}
-		return ActionClearPending
+		return 3, ActionClearPending
 	}
 	if pend != nil && sameIDs(pend.IDs, p.IDs) && slices.Equal(normOptions(pend.Options), p.Options) {
-		return ActionKeepPending
+		return 4, ActionKeepPending
 	}
 	if in.Failed[p.Fingerprint] {
 		p.Blocked = true
 		if pend != nil {
-			return ActionClearPending
+			return 5, ActionClearPending
 		}
-		return ActionBlocked
+		return 5, ActionBlocked
 	}
-	return ActionPropose
+	return 6, ActionPropose
+}
+
+// allSealed reports whether the image of every id of ids that the catalog
+// lists is sealed in the store.
+func allSealed(in ReconcileInput, ids []string) bool {
+	for _, id := range ids {
+		if e, ok := in.Catalog.Get(id); ok && (in.Have == nil || !in.Have(e)) {
+			return false
+		}
+	}
+	return true
 }
 
 // bootedFingerprint is the fingerprint of what this boot runs: the mounted
@@ -178,13 +202,17 @@ func sameIDs(a, b []string) bool {
 
 // RestartNeeded reports whether a restart would try the pending set: it has
 // tries left, this boot did not try it, this boot did not skip extensions
-// on purpose, and every image it needs is sealed (has).
+// on purpose, nothing says the next boot would not try it either (tries
+// that could not be written, or no report at all), and every image it
+// needs is sealed (has).
 func RestartNeeded(rep *BootReport, pending *Set, has func(id string) bool) bool {
-	if pending == nil || pending.Tries <= 0 || has == nil {
+	if rep == nil || pending == nil || pending.Tries <= 0 || has == nil || pending.Name == rep.Set {
 		return false
 	}
-	if rep != nil && (pending.Name == rep.Set || rep.HasReason(ReasonCmdline) || rep.HasReason(ReasonSkipOnce)) {
-		return false
+	for _, r := range []string{ReasonCmdline, ReasonSkipOnce, ReasonTriesWrite, ReasonNoReport} {
+		if rep.HasReason(r) {
+			return false
+		}
 	}
 	for _, id := range pending.IDs {
 		if !has(id) {
