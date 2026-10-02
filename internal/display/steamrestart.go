@@ -93,42 +93,61 @@ func (m *Manager) maybeRestartSteam(ctx context.Context) {
 // session's mode switch) it checks that a restart is due and allowed,
 // then asks the Steam client holding steam.pipe to shut down, so gamescope
 // exits with it and systemd starts both again; without such a client it
-// restarts gamescope's unit. It lets go of m.op while Steam shuts down,
-// and judges by Steam's pid or the unit's main process start whether that
-// worked; after steamWait it restarts the unit instead.
+// restarts gamescope's unit. `steam -shutdown` gets steamShutdownWait and
+// runs without m.op, so a session's Begin is never held up behind it:
+// Begin waits for gamescope to come back instead (steamDown). The attempt
+// judges by Steam's pid or the unit's main process start whether Steam
+// came back; when the command failed, or after steamWait, it restarts the
+// unit instead.
 func (m *Manager) restartSteam(ctx context.Context, req *steamRequest) (steamOutcome, error) {
 	if !m.op.TryLock() {
 		return steamNotNow, nil
 	}
-	locked := true
-	defer func() {
-		if locked {
-			m.op.Unlock()
+	out, ok := m.steamRestartAllowed(ctx)
+	var main0 time.Time
+	if ok {
+		var job time.Time
+		job, main0 = m.h.UnitStarted(ctx, GamescopeUnit, true)
+		if !job.IsZero() && job.After(req.since) {
+			out, ok = steamNotNeeded, false // its prepare step ran after the change
+		} else if busy, _ := m.h.Busy(ctx); busy {
+			out, ok = steamNotNow, false
 		}
-	}()
-	if out, ok := m.steamRestartAllowed(ctx); !ok {
+	}
+	if !ok {
+		m.op.Unlock()
 		return out, nil
-	}
-	job, main0 := m.h.UnitStarted(ctx, GamescopeUnit, true)
-	if !job.IsZero() && job.After(req.since) {
-		return steamNotNeeded, nil // its prepare step ran after the change
-	}
-	if busy, _ := m.h.Busy(ctx); busy {
-		return steamNotNow, nil
 	}
 	pid := m.h.SteamPID()
 	if pid == 0 {
+		defer m.op.Unlock()
 		log.Printf("display: restarting gamescope and Steam: %s", req.reason)
 		return steamRestarted, m.h.RestartUnit(ctx, GamescopeUnit, true)
 	}
-	log.Printf("display: restarting Steam (pid %d): %s", pid, req.reason)
-	if err := m.h.ShutdownSteam(ctx, pid); err != nil {
-		log.Printf("display: steam -shutdown: %v; restarting gamescope instead", err)
-		return steamRestarted, m.h.RestartUnit(ctx, GamescopeUnit, true)
-	}
-	m.op.Unlock()
-	locked = false
 
+	down := make(chan struct{})
+	m.mu.Lock()
+	m.steamDown = down
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.steamDown = nil
+		m.mu.Unlock()
+		close(down)
+	}()
+	m.op.Unlock()
+
+	log.Printf("display: restarting Steam (pid %d): %s", pid, req.reason)
+	sctx, cancel := context.WithTimeout(ctx, m.steamShutdownWait)
+	err := m.h.ShutdownSteam(sctx, pid)
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return steamNotNow, nil
+		}
+		log.Printf("display: steam -shutdown: %v; restarting gamescope instead", err)
+		return m.restartGamescope(ctx)
+	}
 	tries := max(int(m.steamWait/max(m.steamPoll, time.Millisecond)), 1)
 	for range tries {
 		if !sleepCtx(ctx, m.steamPoll) {
@@ -141,14 +160,20 @@ func (m *Manager) restartSteam(ctx context.Context, req *steamRequest) (steamOut
 			return steamRestarted, nil
 		}
 	}
+	log.Printf("display: Steam did not shut down within %s; restarting gamescope", m.steamWait)
+	return m.restartGamescope(ctx)
+}
+
+// restartGamescope restarts gamescope's unit, and Steam with it, when
+// m.op is free and a restart still allowed.
+func (m *Manager) restartGamescope(ctx context.Context) (steamOutcome, error) {
 	if !m.op.TryLock() {
 		return steamNotNow, nil
 	}
-	locked = true
+	defer m.op.Unlock()
 	if out, ok := m.steamRestartAllowed(ctx); !ok {
 		return out, nil
 	}
-	log.Printf("display: Steam did not shut down within %s; restarting gamescope", m.steamWait)
 	return steamRestarted, m.h.RestartUnit(ctx, GamescopeUnit, true)
 }
 
@@ -164,10 +189,34 @@ func (m *Manager) steamRestartAllowed(ctx context.Context) (steamOutcome, bool) 
 		return steamNotNeeded, false
 	case session:
 		return steamNotNow, false
-	case !m.h.UnitActive(ctx, GamescopeUnit, true):
-		return steamNotNeeded, false // its next start runs prepare
 	}
-	return 0, true
+	switch m.h.UnitState(ctx, GamescopeUnit, true) {
+	case "active", "reloading":
+		return 0, true
+	case "activating", "deactivating":
+		// Starting (prepare may be reading the old steam.json right now),
+		// waiting out RestartSec, or stopping: look again once it settles.
+		return steamNotNow, false
+	}
+	return steamNotNeeded, false // down: its next start runs prepare
+}
+
+// awaitSteamBack lets a Begin that found Steam shutting down for a restart
+// wait, within ctx, until the restart is over: gamescope exits with Steam
+// and comes back, and Begin must switch the mode of the gamescope that
+// stays. Callers hold m.op.
+func (m *Manager) awaitSteamBack(ctx context.Context) {
+	m.mu.Lock()
+	down := m.steamDown
+	m.mu.Unlock()
+	if down == nil {
+		return
+	}
+	log.Printf("display: session begin: waiting for Steam to come back from its restart")
+	select {
+	case <-down:
+	case <-ctx.Done():
+	}
 }
 
 // awaitSteamJSON gives the extensions service a moment to write this

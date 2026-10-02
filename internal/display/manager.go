@@ -99,11 +99,11 @@ type Manager struct {
 	// steamGated: vosd's first gamescope start has waited for steam.json
 	// (guarded by op).
 	steamGated bool
-	// Steam restarts (steamrestart.go): the most Steam waits to shut down,
-	// how often that is checked, the least time between two restarts vosd
-	// asks for itself, and the most the first gamescope start waits for
-	// steam.json.
-	steamWait, steamPoll, steamEvery, steamGateWait time.Duration
+	// Steam restarts (steamrestart.go): the most `steam -shutdown` may
+	// take, the most Steam then waits to shut down, how often that is
+	// checked, the least time between two restarts vosd asks for itself,
+	// and the most the first gamescope start waits for steam.json.
+	steamShutdownWait, steamWait, steamPoll, steamEvery, steamGateWait time.Duration
 	// kick wakes the Run loop to reconcile and refresh welcome.json.
 	kick chan struct{}
 	// startOnce starts what lives as long as vosd, not as long as one Run
@@ -137,9 +137,12 @@ type Manager struct {
 	upSince     time.Time // the first init: when this vosd started
 	// steamReq is a Steam restart waiting for its moment, steamBusy is set
 	// while one is under way, and steamLast is when Steam last restarted.
+	// steamDown is closed once a Steam that was told to shut down is back
+	// (or the attempt ended); nil while none is.
 	steamReq  *steamRequest
 	steamBusy bool
 	steamLast time.Time
+	steamDown chan struct{}
 }
 
 // opLock is a mutex whose Lock can give up when a context ends.
@@ -201,18 +204,19 @@ func newManager(cfg *config.Config, h host, hub *events.Hub) *Manager {
 		// Sunshine is ready ~3 s after. 75 s leaves the full 60 s mode wait
 		// plus time for units and composition, and still answers the hook
 		// (and Moonlight) well before its 90 s ceiling.
-		beginBudget:    75 * time.Second,
-		composeReserve: 5 * time.Second,
-		compositeEvery: 5 * time.Second,
-		steamWait:      30 * time.Second,
-		steamPoll:      time.Second,
-		steamEvery:     10 * time.Minute,
-		steamGateWait:  5 * time.Second,
-		now:            time.Now,
-		op:             newOpLock(),
-		state:          StateNone,
-		lastStart:      map[string]time.Time{},
-		kick:           make(chan struct{}, 1),
+		beginBudget:       75 * time.Second,
+		composeReserve:    5 * time.Second,
+		compositeEvery:    5 * time.Second,
+		steamShutdownWait: 10 * time.Second,
+		steamWait:         30 * time.Second,
+		steamPoll:         time.Second,
+		steamEvery:        10 * time.Minute,
+		steamGateWait:     5 * time.Second,
+		now:               time.Now,
+		op:                newOpLock(),
+		state:             StateNone,
+		lastStart:         map[string]time.Time{},
+		kick:              make(chan struct{}, 1),
 	}
 	m.rescan()
 	return m

@@ -137,10 +137,31 @@ func TestRestartSteamWaitsOrSkips(t *testing.T) {
 			t.Fatalf("outcome %v, calls %q", out, steamCalls(h))
 		}
 	})
-	t.Run("gamescope is down", func(t *testing.T) {
+	// Down, its next start runs prepare; on its way up (prepare may be
+	// reading the old steam.json) or down, Steam is looked at again later.
+	for state, want := range map[string]steamOutcome{
+		"inactive":     steamNotNeeded,
+		"failed":       steamNotNeeded,
+		"activating":   steamNotNow,
+		"deactivating": steamNotNow,
+	} {
+		t.Run("gamescope is "+state, func(t *testing.T) {
+			m, h, _ := gamingBox(t, false)
+			h.mu.Lock()
+			h.states = map[string]string{unitKey(GamescopeUnit, true): state}
+			h.mu.Unlock()
+			if out, _ := m.restartSteam(ctx, request(m, "x", true)); out != want || len(steamCalls(h)) != 0 {
+				t.Fatalf("outcome %v (want %v), calls %q", out, want, steamCalls(h))
+			}
+		})
+	}
+	t.Run("gamescope waits out RestartSec", func(t *testing.T) {
 		m, h, _ := gamingBox(t, false)
-		h.setActive(GamescopeUnit, true, false)
-		if out, _ := m.restartSteam(ctx, request(m, "x", true)); out != steamNotNeeded || len(steamCalls(h)) != 0 {
+		h.mu.Lock()
+		h.active[unitKey(GamescopeUnit, true)] = false
+		h.restarting[unitKey(GamescopeUnit, true)] = true
+		h.mu.Unlock()
+		if out, _ := m.restartSteam(ctx, request(m, "x", true)); out != steamNotNow || len(steamCalls(h)) != 0 {
 			t.Fatalf("outcome %v, calls %q", out, steamCalls(h))
 		}
 	})
@@ -155,6 +176,88 @@ func TestRestartSteamWaitsOrSkips(t *testing.T) {
 			t.Fatalf("outcome %v, calls %q", out, steamCalls(h))
 		}
 	})
+}
+
+// `steam -shutdown` that hangs is given steamShutdownWait, without m.op,
+// and then gamescope's unit is restarted.
+func TestRestartSteamBoundsTheShutdown(t *testing.T) {
+	m, h, _ := gamingBox(t, false)
+	m.steamShutdownWait = 30 * time.Millisecond
+	started := make(chan struct{})
+	h.mu.Lock()
+	h.shutdownGate, h.shutdownStarted = make(chan struct{}), started // never opens
+	h.mu.Unlock()
+	opFree := make(chan bool, 1)
+	go func() {
+		<-started
+		free := m.op.TryLock()
+		if free {
+			m.op.Unlock()
+		}
+		opFree <- free
+	}()
+	begun := time.Now()
+	out, err := m.restartSteam(context.Background(), request(m, "x", false))
+	if err != nil || out != steamRestarted || time.Since(begun) > 5*time.Second {
+		t.Fatalf("outcome %v, %v after %s", out, err, time.Since(begun))
+	}
+	if !<-opFree {
+		t.Error("m.op was held while steam -shutdown ran")
+	}
+	if got := steamCalls(h); !slices.Equal(got, []string{"steam -shutdown 4242", "restart " + GamescopeUnit}) {
+		t.Fatalf("calls %q", got)
+	}
+	m.mu.Lock()
+	down := m.steamDown
+	m.mu.Unlock()
+	if down != nil {
+		t.Fatal("the restart still counts as under way")
+	}
+}
+
+// A stream that begins while Steam shuts down for a restart waits for
+// gamescope to come back, then switches the mode of the one that stays.
+func TestBeginWaitsForSteamToComeBack(t *testing.T) {
+	m, h, _ := gamingBox(t, false)
+	gate, started := make(chan struct{}), make(chan struct{})
+	h.mu.Lock()
+	h.steamExits = true
+	h.shutdownGate, h.shutdownStarted = gate, started
+	h.mu.Unlock()
+	restarted := make(chan steamOutcome, 1)
+	go func() {
+		out, _ := m.restartSteam(context.Background(), request(m, "x", false))
+		restarted <- out
+	}()
+	<-started
+	began := make(chan session.Response, 1)
+	go func() {
+		began <- m.Begin(context.Background(), session.Request{Client: "Deck", Width: 1280, Height: 800, FPS: 90})
+	}()
+	select {
+	case r := <-began:
+		t.Fatalf("Begin answered while Steam shut down: %+v", r)
+	case <-time.After(50 * time.Millisecond):
+	}
+	h.mu.Lock()
+	starts := h.gsStarts
+	h.mu.Unlock()
+	close(gate) // Steam exits; gamescope comes back with a new one
+	if out := <-restarted; out != steamRestarted {
+		t.Fatalf("restart: %v", out)
+	}
+	r := <-began
+	h.mu.Lock()
+	scan, gsStarts := h.scan, h.gsStarts
+	h.mu.Unlock()
+	if !r.OK || r.Mode != "1280x800@90" || scan.String() != "1280x800@90" || gsStarts != starts+1 {
+		t.Fatalf("begin %+v, scanning %s, gamescope starts %d (was %d)", r, scan, gsStarts, starts)
+	}
+	for _, c := range h.callLog() {
+		if c == "restart "+GamescopeUnit || c == "start "+GamescopeUnit {
+			t.Errorf("Begin restarted gamescope itself: %q", h.callLog())
+		}
+	}
 }
 
 // waitSteam waits for the restart maybeRestartSteam started to end.
