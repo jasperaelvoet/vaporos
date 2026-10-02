@@ -172,6 +172,7 @@ func (s *Service) Install(ctx context.Context, id string, options map[string]any
 	s.forget(ids...)
 	log.Printf("extensions: adding %v", ids)
 	s.syncSteam() // one removed until the restart is back in Steam at once
+	s.syncPorts()
 	s.Reconcile()
 	return nil
 }

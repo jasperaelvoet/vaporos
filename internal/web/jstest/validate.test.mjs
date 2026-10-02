@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   audioSinkError, bitrateError, channelError, cleanDeviceName, cleanHostname, hostnameError, idleMinutesError, modeError,
-  normalizeCode, passwordError, pinError, safeNext, sshKeyError, sshKeys,
+  normalizeCode, passwordError, pinError, safeNext, sshKeyError, sshKeys, webNext,
 } from '../static/js/validate.js';
 
 const V = JSON.parse(readFileSync(new URL('./testdata/validate-vectors.json', import.meta.url), 'utf8'));
@@ -63,4 +63,21 @@ test('safeNext stays on this origin and off sign-in', () => {
   for (const bad of ['//evil.example', '/\\evil.example', 'https://evil.example/', '/\t/evil', '/login', '/setup?code=x', '', null]) {
     assert.equal(safeNext(bad), '/', String(bad));
   }
+});
+
+test('webNext goes back to an extension page on this host only', () => {
+  const here = { hostname: 'vapor.local', port: '' };
+  assert.equal(webNext('http://vapor.local:11987/', here), 'http://vapor.local:11987/');
+  assert.equal(webNext('http://vapor.local:11987/dash?x=a%40b#y', here), 'http://vapor.local:11987/dash?x=a%40b#y');
+  assert.equal(webNext('http://[fd00::50]:11987/', { hostname: '[fd00::50]', port: '' }), 'http://[fd00::50]:11987/');
+  for (const bad of [
+    'http://evil.example:11987/', 'https://vapor.local:11987/', 'http://vapor.local/', 'http://vapor.local:80/',
+    'http://vapor.local:22/', 'http://user@vapor.local:11987/', 'http://vapor.local:11987@evil.example/',
+    'http://vapor.local:11987\\@evil.example/', 'http://vapor.local:11987\t/', '//vapor.local:11987/', '/system',
+    'javascript:alert(1)', '', null,
+  ]) {
+    assert.equal(webNext(bad, here), '', String(bad));
+  }
+  assert.equal(webNext('http://vapor.local:8080/', { hostname: 'vapor.local', port: '8080' }), '', 'the sign-in page itself');
+  assert.equal(webNext('http://vapor.local:11987/', undefined), '');
 });

@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "coolercontrol",
+  "name": "CoolerControl",
+  "summary": "Fan curves for your CPU, case fans, liquid cooler and graphics card, set from a web page.",
+  "category": "system",
+  "upstream": {
+    "name": "CoolerControl",
+    "url": "https://gitlab.com/coolercontrol/coolercontrol",
+    "license": "GPL-3.0-or-later"
+  },
+  "caveats": [
+    "When it stops or you remove it, VaporOS puts every fan back to how it was before CoolerControl started.",
+    "Some motherboard fan chips and the graphics card's fan curve need an option below, which takes a restart."
+  ],
+  "copy": {
+    "install": "CoolerControl runs as a system service with full control of your fans, pump and GPU fan. Sign in to it with your VaporOS password.",
+    "remove": "Fans go back to the BIOS settings. Its profiles stay unless you also delete its settings."
+  },
+  "packages": ["cachyos/coolercontrold", "extra/liquidctl"],
+  "strip": ["usr/lib/udev/rules.d/71-liquidctl.rules"],
+  "provides": ["fan-control.hwmon", "fan-control.amdgpu"],
+  "permissions": ["service", "modules"],
+  "services": [{"unit": "coolercontrold.service", "scope": "system"}],
+  "module_options": [
+    {"module": "amdgpu", "param": "ppfeaturemask", "setting": "gpu_fan_curves"},
+    {"module": "it87", "param": "ignore_resource_conflict", "setting": "it87_conflicts"}
+  ],
+  "network": {
+    "ports": [{"proto": "tcp", "port": 11987, "mode": "proxied", "upstream": "127.0.0.1:11986"}]
+  },
+  "web": {"port": 11987, "label": "CoolerControl"},
+  "data": [{"name": "config", "where": "system"}],
+  "settings": [
+    {
+      "key": "gpu_fan_curves",
+      "type": "bool",
+      "label": "Graphics card fan curve",
+      "help": "Lets CoolerControl set an AMD card's fan curve. This turns on the card's overclocking controls, so a wrong setting there can make the card unstable.",
+      "restart": true
+    },
+    {
+      "key": "it87_conflicts",
+      "type": "bool",
+      "label": "Motherboard fan chip (it87)",
+      "help": "Makes fans on some ITE chips show up. The chip is then shared with the board's firmware, which may rarely read wrong sensor values.",
+      "restart": true
+    }
+  ]
+}

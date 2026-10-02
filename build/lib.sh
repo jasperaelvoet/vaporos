@@ -104,26 +104,43 @@ is_ed25519_pubkey() {
 }
 
 # Check the firewall as the kernel's nftables parser sees it (nft -c changes
-# nothing), with every optional port both closed and open, and make sure a
-# broken config.json opens nothing. Needs CAP_NET_ADMIN.
+# nothing), with every optional port both closed and open and with
+# extensions' ports, and make sure a broken config.json or ports file opens
+# nothing and an extension's port stays on the local network even with
+# web.allow_public. Needs CAP_NET_ADMIN.
 # Usage: check_firewall SCRIPT RULES
 check_firewall() {
     local script=$1 rules=$2 tmp cfg rc=0
     tmp=$(mktemp -d)
+    printf 'tcp 11987\nudp 27015\n' >"$tmp/ports"
     for cfg in '{}' \
                '{"ssh":{"enabled":true},"web":{"https":true}}' \
                '{"ssh":{"enabled":true},"web":{"https":true,"allow_public":true}}' \
                'not json'; do
         printf '%s\n' "$cfg" >"$tmp/config.json"
-        if ! VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json bash "$script" --check; then
-            echo "firewall: the ruleset does not load with config.json = $cfg" >&2
+        if ! VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/ports bash "$script" --check; then
+            echo "firewall: the ruleset does not load with config.json = $cfg and extension ports" >&2
             rc=1
         fi
     done
     # $tmp/config.json is the malformed one now.
-    if VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json bash "$script" --print |
+    if VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/none bash "$script" --print |
             grep -q '^add rule inet vos optional'; then
         echo "firewall: a malformed config.json opened ports" >&2
+        rc=1
+    fi
+    printf '{"web":{"allow_public":true}}\n' >"$tmp/config.json"
+    VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/ports bash "$script" --print |
+        grep -E '^add rule inet vos optional .*dport (11987|27015) ' >"$tmp/ext" || true
+    if (( $(grep -c 'saddr @lan[46] ' "$tmp/ext") != 4 || $(wc -l <"$tmp/ext") != 4 )); then
+        echo "firewall: extension ports are not open to exactly the local network:" >&2
+        cat "$tmp/ext" >&2
+        rc=1
+    fi
+    printf 'tcp 11987\ntcp 22\n' >"$tmp/ports"
+    if VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/ports bash "$script" --print |
+            grep -q 'dport 11987'; then
+        echo "firewall: a malformed ports file opened ports" >&2
         rc=1
     fi
     rm -rf "$tmp"

@@ -43,6 +43,7 @@ multi-call:
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal into the store the extension images of version V (default: the booted image's) from SRC (default: config.json's `update.source`; a registry at the tag V, replacing any tag in SRC). It reads and verifies V's signed manifest as `vos update` does and refuses a source that serves another version, then fetches the images the store lacks of `ids` (default: `wanted` ∪ the manifest's core; with `--seed` core is always added), with their requirements, as vosd does (see Extensions). It stops at a disk that cannot seal (fs-verity unsupported) or a source that cannot be reached, and without `--state-dir` fetches nothing when the boot report has reason `no-verity`; the images left are reported as not sealed. `--state-dir` uses DIR as `/var/lib/vos` (the installer's target). `--seed` (needs `--from`) then, under the update lock and then the store lock, writes `slots/a.json` from the manifest, `wanted` (the ids given less core; without ids an existing `wanted` stays, else it is written empty) and a new `pending` set with `tries` 2 of core and the ids given (with `--repair`, core only), with their requirements, as far as their images sealed (none when none did). It never writes `enabled`: the first boot is that set's trial, which `vos health` promotes. `--repair` first removes `slots/b.json`, `enabled`, `pending` and `failed` (`wanted` stays, and vosd proposes the rest of it through a trial). Prints `{"bytes":N,"total":N}` lines on stdout (the bytes of the run's missing images, never going down, ending at the total); exit 0 when every image is sealed, 1 when one is not or anything else fails (reasons on stderr; `--seed` still seeds what sealed), 2 on bad arguments |
 | `vos ext launch [--app N\|--shortcut ID/KEY] [--] CMD [ARGS...]` | Steam launch dispatcher, run as `vapor` from the launch options `vos steam prepare` writes (see Extensions, Steam). Its options end at `--` or at the first other word, CMD, after which nothing is read: N is a Steam app id (decimal, 1–4294967295), ID/KEY an extension id and one of its shortcut keys, and at most one of them is given. What starts is, in order: `--app` or `--shortcut`; the `AppId=` of Steam's reaper line when CMD is one (as in Units, Display policy); `SteamAppId`, then `SteamGameId` in its environment. An id with the top bit set, or a shortcut's game id (`(appid << 32) \| 0x02000000`), names an extension's shortcut when `/var/lib/vos/ext/steam.json` lists one with that app id (`crc32("<owner>/<key>") \| 0x80000000`) or prepare's record holds it, and nothing otherwise. For an app it runs the launch hooks of the extensions steam.json lists in that app's `hooks` and `/run/vos/extensions.json` names as mounted, in that file's (catalog) order; for a shortcut, its extension's hook, refusing when that extension is not mounted (also when the report cannot be read). A hook is Go in `vos` (`Helper.LaunchHook`) that may rewrite the command and add to its environment; the programs a hook starts run without `LD_PRELOAD`, while the command keeps Steam's environment. It then execs the command (looked up in `PATH` unless absolute; `argv[0]` as given); with no hook to run that is CMD with ARGS and the environment unchanged. A refusal, a hook's error or a hook that leaves no command is exit 1, with the reason on stderr and in a message for vosd: `$XDG_RUNTIME_DIR/vos/ext-messages/<unix nanoseconds>.json` (`/run/user/<uid>` without an absolute `XDG_RUNTIME_DIR`), `{"level":"warning","text"}`, written to a temp file and renamed. Exit 2 on bad arguments, 1 when it refuses or CMD cannot be run |
+| `vos ext coolercontrol prepare` / `fans snapshot` / `fans restore` | the steps of the CoolerControl extension's `coolercontrold.service`, as root (see Extensions, CoolerControl): exit 0, 1 on failure (a failed `prepare` stops the start), 2 on bad arguments |
 | `vos index IMAGE` | writes `IMAGE.idx`, the block index of a root image (the build runs it; see "Block index") |
 | `vos steam prepare [--unwrap]` | as `vapor`, before every start of Steam (`vos-gamescope.service`): brings Steam's files in line with `/var/lib/vos/ext/steam.json` (compatibility tools, launch options through `vos ext launch`, shortcuts and their art, branches) within 5 s; `--unwrap` takes the dispatcher and VaporOS's compatibility tools back out (see Extensions, Steam). Does nothing as root; exit 0, 2 on bad arguments |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
@@ -74,6 +75,8 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/` | vosd, initramfs, `vos health`, `vos ext fetch` | the extension store, sets and trial state (see Extensions) |
 | `/run/vos/extensions.json` | initramfs | which extensions this boot mounted, and why others were skipped |
 | `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
+| `/var/lib/vos/ext/ports` | vosd | the network ports of the running extensions, which `vos-firewall` opens to the local network (see Firewall) |
+| `/run/vos/coolercontrol-fans.json` | `vos ext coolercontrol fans snapshot` | each fan's control mode before CoolerControl took it, this boot (see Extensions, CoolerControl) |
 | `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only (see Extensions, Steam) |
 | `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
 | `/run/user/1000/vos/ext-messages/` | `vos ext launch` | the dispatcher's refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
@@ -466,6 +469,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `settings/<id>.json` | the extension's settings (never in config.json): one JSON object of its descriptor's setting keys, written whole (temp + rename) when it is added and on each change. A key missing, or with a value its setting does not take, reads as the default: the descriptor's `default` when the setting takes it, else `false`, the first choice, or `""` (no disk). Purging the extension deletes it |
 | `settings/<id>.installed` | present: the extension's helper finished its `Install` and no `Remove` came after (see Control center) |
 | `steam.json` | what the mounted extensions want in Steam, written by vosd for `vos steam prepare` (see Steam) |
+| `ports` | `<proto> <port>` lines (`tcp` or `udp`, 1024-65535, sorted, each once): the descriptors' `network.ports` of the extensions this boot mounted that `wanted` ∪ core (with their requirements) still wants, never 47990. vosd writes it (0644, atomically) at start, after every reconcile and when the control center adds or removes an extension, only when its bytes change, and then reloads `vos-firewall.service` (a reload that failed is tried again at the next of those moments). A missing file opens nothing, as an empty one (see Firewall) |
 | `autorestart.json` | `{"restarts":[{"at","set","fingerprint","version"}]}`: the auto-restarts vosd made (RFC 3339 UTC; the pending set's number and fingerprint; the VaporOS version it restarted from), the last 32, written atomically. A file that cannot be read counts as empty |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
@@ -919,7 +923,8 @@ order, then the wanted ids it lacks, each card from the shipped descriptor:
 `permissions` and `runs_as_root` are what the build verified (its `build`
 section; none without one), never the descriptor's own words; `size` is the
 image's (the catalog's); `web` is the descriptor's web UI, listed whether or
-not it runs (vosd serves it only while the extension is mounted); `status`
+not it runs (vosd serves it only while the extension is mounted, still
+wanted and its services run; see HTTP API, Extension web UIs); `status`
 is its helper's lines (`tone` `warning` or `error`, or none); `requires` its
 direct requirements; `required_by` the wanted or core extensions that
 require it, directly or not; `needs_password` whether adding it takes the
@@ -1020,6 +1025,82 @@ set's fingerprint, or one from another VaporOS version (an OS trial does not
 try `pending`), and fewer than 3 in the last 24 hours (one timed in the
 future counts). After that only a restart from the control center applies it.
 
+**CoolerControl** (`extensions/coolercontrol/`, helper
+`internal/extensions/coolercontrol`; a system extension that runs as root).
+Packages `cachyos/coolercontrold` and `extra/liquidctl`, less liquidctl's
+`usr/lib/udev/rules.d/71-liquidctl.rules` (a `uaccess` rule, with no seat to
+act on); provides `fan-control.hwmon` and `fan-control.amdgpu`; permissions
+`service` (`coolercontrold.service`, system) and `modules`
+(`modules-load.d/vos-coolercontrol.conf`: `drivetemp`). Its web UI is port
+11987, proxied to `127.0.0.1:11986` (HTTP API, Extension web UIs). Its
+system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
+`.passwd`), `data/` (`CC_DATA_DIR`) and `vaporos.json`
+(`{"passwd_sha256","daemon"}`, `prepare`'s record).
+- The drop-in `coolercontrold.service.d/vos.conf` sets `CC_CONFIG_DIR`,
+  `CC_DATA_DIR`, `CC_PLUGINS_DIR=/usr/lib/vos/ext/coolercontrol/plugins`
+  (empty and in the image: no plugin runs), `CC_HOST_IP4=127.0.0.1`,
+  `CC_HOST_IP6=::1`, `CC_PORT=11986`, `CC_TLS=OFF` (`false` would turn TLS
+  on) and `CC_SERVICE_MANAGER=OFF`; `StateDirectory=vos/ext/data/coolercontrol`,
+  `RuntimeDirectory=coolercontrold`, `ProtectSystem=strict`,
+  `ProtectHome=yes`, `PrivateTmp=yes`, `ReadWritePaths=` the data area,
+  `NoExecPaths=/var /run /tmp`, `ExecPaths=/usr`,
+  `CapabilityBoundingSet=CAP_SYS_MODULE CAP_SYS_RAWIO CAP_DAC_OVERRIDE
+  CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_SYS_NICE` (no
+  `CAP_SYS_ADMIN`; no `ProtectKernel*` or `PrivateDevices`: it writes
+  `/sys`, reads `/dev/port` and hidraw, loads drivers) and
+  `TimeoutStartSec=300s`; then `ExecStartPre=` `/usr/bin/vos ext
+  coolercontrol prepare`, `/usr/bin/coolercontrold detect --load` and
+  `+/usr/bin/vos ext coolercontrol fans snapshot`, in that order, and
+  `ExecStopPost=+/usr/bin/vos ext coolercontrol fans restore`, which runs
+  after any stop (`+`: outside the sandbox, for `/run/vos`).
+- `prepare` (in the sandbox, `CC_CONFIG_DIR` and `CC_DATA_DIR` from the
+  environment when absolute) makes `config/` and `data/` (0700), then:
+  1. copies auth.json's argon2id PHC string, as it is (no newline;
+     coolercontrold verifies it with the parameters in it), to `.passwd`
+     (0600) when that file is missing or still holds the bytes it wrote last
+     (their sha256 is `passwd_sha256`); one changed in CoolerControl stays.
+     Without auth.json, or with a hash that is not argon2id, it fails, so
+     the daemon never starts with its default password. A new VaporOS
+     password thus reaches CoolerControl at the daemon's next start (the
+     next restart);
+  2. when `usr/lib/vos/ext/coolercontrol/packages.txt` names a
+     `coolercontrold` version other than `daemon`, runs `coolercontrold
+     backup` (in the data area, at most 2 minutes) if `config.toml` exists,
+     and records the version; a failed backup is logged and tried again at
+     the next start, and without `config.toml` the version is only
+     recorded;
+  3. writes `config.toml`'s `[settings]` (the file made when missing,
+     everything else in it kept): `trusted_proxies = ["127.0.0.1", "::1"]`,
+     `ipv4_address = "127.0.0.1"`, `ipv6_address = "::1"`, `port = 11986`
+     and `tls_enabled = false` at every start; `poll_rate = 1.0` and
+     `drivetemp_suspend = true` only where the table lacks them, so a choice
+     made in CoolerControl stays. A `config.toml` it cannot change (settings
+     as dotted keys or an inline table, a table or key twice, a value never
+     closed) fails the start.
+- `fans snapshot` records the value of every
+  `/sys/class/hwmon/hwmon*/pwm<N>_enable` under the key
+  `<realpath of hwmon*/device, else of hwmon* itself>/pwm<N>_enable` in
+  `/run/vos/coolercontrol-fans.json` (`{"fans":{"<key>":"<value>"}}`, 0600,
+  atomically), never replacing a key it has: a restart of the daemon, or a
+  chip whose driver loads later, keeps what the firmware set. `fans
+  restore` writes back every recorded value (1 to 3 digits) that differs,
+  wherever the chip is numbered now.
+- Its helper's status: nothing while it is not mounted or no longer
+  wanted; "CoolerControl is starting." (no tone) while the unit activates;
+  nothing while the unit is active and `GET
+  http://<proxied upstream>/handshake` answers 200; otherwise
+  "CoolerControl isn't running. Restart VaporOS, or remove it."
+  (`warning`). It looks at most every 5 s. Its module options: setting
+  `gpu_fan_curves` gives `options amdgpu ppfeaturemask=0x<hex>`, the running
+  `/sys/module/amdgpu/parameters/ppfeaturemask` (hex or decimal) with
+  `0x4000` (OverDrive) added, so this boot's own option renders the same
+  line again, and nothing without amdgpu or when that would be
+  `0xffffffff`; `it87_conflicts` gives `options it87
+  ignore_resource_conflict=1`. Its `Remove` stops `coolercontrold.service`
+  while it is mounted (whose `ExecStopPost` puts the fans back), runs `fans
+  restore` itself in case that could not, and with `purge` deletes the
+  data area.
+
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
 **Middleware, in order:**
@@ -1105,7 +1186,15 @@ future counts). After that only a restart from the control center applies it.
 | POST `/install/reboot` | Setup | → `{}` |
 | GET `/welcome` | Local | the welcome.json content without the setup code (`code` empty, `qr` cut before `setup?`) |
 
-**Pages** (server-rendered shells plus JS modules that call the API): `/` home, `/devices`, `/screen`, `/system` with `/system/updates`, `/system/power`, `/system/storage`, `/system/extensions`, `/system/settings`, `/system/logs` and `/system/about`, plus `/login` and `/setup` (the first-run password, or the installer wizard on the ISO). The old paths `/pair`, `/streaming`, `/display`, `/storage`, `/updates`, `/power` and `/advanced` answer 303 to their new pages (`/pair` goes to `/devices#pair`) and keep the query. On the ISO, every page answers 303 to `/setup`. There are no external assets (no CDN): everything is embedded. The installer's `/setup` adds `connect-src 'self' http://*.local`.
+**Pages** (server-rendered shells plus JS modules that call the API): `/` home, `/devices`, `/screen`, `/system` with `/system/updates`, `/system/power`, `/system/storage`, `/system/extensions`, `/system/settings`, `/system/logs` and `/system/about`, plus `/login` and `/setup` (the first-run password, or the installer wizard on the ISO). The old paths `/pair`, `/streaming`, `/display`, `/storage`, `/updates`, `/power` and `/advanced` answer 303 to their new pages (`/pair` goes to `/devices#pair`) and keep the query. On the ISO, every page answers 303 to `/setup`. There are no external assets (no CDN): everything is embedded. The installer's `/setup` adds `connect-src 'self' http://*.local`. `/login`'s `?next=` returns to a path on vosd's own origin, or to an extension's web UI: an `http` URL with the sign-in page's own host name, no user info and another explicit port of 1024 or more.
+
+**Extension web UIs** (installed systems only; a second listener per port, `internal/extensions`): for each `network.ports` entry with mode `proxied` of an extension this boot mounted that `wanted` ∪ core (with their requirements) still wants, vosd listens on `:<port>` (every address) while each of its `services` that is not a template is active. It looks every 5 s and whenever the ports file is written; a unit that is activating or reloading keeps a port already served, and a port that cannot be bound is logged and tried again, never stopping vosd. Each request passes, in order:
+1. the source IP is loopback, private, link-local or ULA, whatever `web.allow_public` says (else 403);
+2. `Host` is in vosd's allowlist (else 421);
+3. a request other than GET or HEAD is same-origin, as on vosd (else 403);
+4. it carries a live `vos_session` (else GET and HEAD answer 303 to `http://<host>[:<vosd's port>]/login?next=<URL-escaped http://<host>:<port><request URI>>`, the port the one it came in on, and the rest 401).
+
+None of vosd's headers are added (no CSP). Only a request other than GET or HEAD, or a navigation (`Sec-Fetch-Mode: navigate`, or, without that header, which browsers send only to secure origins, an `Accept` with `text/html`), counts as web UI activity. The request then goes to the entry's `upstream` on loopback (`httputil.ReverseProxy`: `Rewrite` with `SetXForwarded`, so `X-Forwarded-For` is the peer and a client's own forwarding headers are dropped; `Host` as the browser sent it; flushed as it comes, for event streams) without `vos_*` cookies or `X-VOS-*` headers, and the answer loses any `Set-Cookie` of a `vos_*` name (cookies are per host, not per port). An upstream that does not answer is 502 "`<name>` isn't answering. Try again in a moment.". The firewall opens the port to the local network only (see Firewall).
 
 ## Session protocol (`/run/vos/session.sock`)
 
@@ -1164,7 +1253,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 - `vos-health.service`: `FailureAction=reboot` (see "Health")
 - `vos-generator` (`/usr/lib/systemd/system-generators`), following `/run/vos/extensions.json` and never intent: for each mounted extension, the system units its shipped descriptor (`/usr/share/vos/extensions/<id>.json`) lists in `services` with scope `system` are wanted by `multi-user.target` (`.service`), `sockets.target`, `timers.target` or `paths.target` by suffix (an instance links to its template's file); a unit file that is missing is logged and skipped. On a trial boot (mode `pending`, or any boot systemd-boot counts: `LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f` in efivars, the variable `vos health` reads, also when `vos.ext=0` or `skip-once` left mode `off` or the report cannot be read) it writes `vos-health.service.d/50-vos-trial.conf`: `[Unit]` `JobTimeoutSec=10min`, `JobTimeoutAction=reboot-force`. It always exits 0
 - `seatd.service.d/vos.conf`
-- `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
+- `vos-firewall.service`: `/usr/lib/vos/vos-firewall`, which loads `/usr/lib/vos/nftables.nft` with the optional rules of config.json and `/var/lib/vos/ext/ports` in one transaction (see Firewall); vosd reloads it when either changes
 - every `systemd-sysext*` and `systemd-confext*` unit is masked: only the initramfs merges extensions
 - no `RuntimeWatchdogSec` in `/usr/lib/systemd/system.conf.d`: CachyOS blacklists the hardware watchdog drivers, and only trial boots load them and set it, in `/run/systemd/system.conf.d/50-vos-trial.conf` (see Extensions, Trial and promotion)
 
@@ -1195,7 +1284,12 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - accept lo, established, ICMP/ICMPv6, udp 5353, udp 67-68;
 - tcp 80 (and 443 if HTTPS) from private ranges;
 - Sunshine tcp 47984, 47989, 48010 and udp 47998-48000;
-- tcp 22 only while SSH is enabled.
+- tcp 22 only while SSH is enabled;
+- the running extensions' ports (`/var/lib/vos/ext/ports`, see Extensions)
+  from the private ranges only (`allow_lan`: the `lan4`/`lan6` sets), whatever
+  `web.allow_public` says. Each line must be exactly `tcp <port>` or
+  `udp <port>`, 1024-65535 without a leading zero and never 47990, at most
+  64 lines; one that is not (a blank line too), and the file opens nothing.
 
 47990 is never reachable from outside.
 

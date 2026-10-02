@@ -77,7 +77,8 @@ type Service struct {
 	publish         func(topic string, data any)
 	missingAccounts string
 
-	cc ccState // the control center's side (routes.go)
+	cc  ccState  // the control center's side (routes.go)
+	web webState // the extensions' ports and web UIs (ports.go, proxy.go)
 }
 
 // NewService returns the extensions service; Run does the work.
@@ -96,6 +97,7 @@ func NewService(cfg *config.Config) *Service {
 		full:     map[string]int64{},
 		publish:  events.Publish,
 		cc:       newCCState(events.Publish),
+		web:      newWebState(),
 	}
 	s.options = s.moduleOptions
 	return s
@@ -138,12 +140,17 @@ func (s *Service) Run(ctx context.Context) {
 	}
 	// steam.json first: vosd's first gamescope start waits for it.
 	s.syncSteam()
+	s.syncPorts()
 	steamCtx, stopSteam := context.WithCancel(ctx)
 	var watch sync.WaitGroup
-	watch.Add(1)
+	watch.Add(2)
 	go func() {
 		defer watch.Done()
 		s.watchSteam(steamCtx)
+	}()
+	go func() {
+		defer watch.Done()
+		s.runWeb(steamCtx)
 	}()
 	defer watch.Wait()
 	defer stopSteam()
@@ -181,6 +188,7 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		}
 		s.syncSteam()
+		s.syncPorts()
 		if first {
 			rehash.Add(1)
 			go func() {

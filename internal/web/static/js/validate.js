@@ -124,3 +124,21 @@ export function safeNext(next) {
   if (u.origin !== base || /^\/(login|setup)(?:\/|$)/.test(u.pathname)) return '/';
   return u.pathname + u.search + u.hash;
 }
+
+// webNext lets ?next= go back to an extension's web UI, which VaporOS
+// serves on a port of its own on this same host: an http URL with here's
+// host name and another explicit port of 1024 or more. '' otherwise, and
+// safeNext applies.
+export function webNext(next, here) {
+  if (typeof next !== 'string' || /[\u0000-\u001f\u007f\\]/.test(next) || !/^http:\/\/[^/?#@]+(?:[/?#]|$)/i.test(next)) return '';
+  let u;
+  try {
+    u = new URL(next);
+  } catch {
+    return '';
+  }
+  const port = Number(u.port);
+  if (u.protocol !== 'http:' || u.username || u.password || !u.port || port < 1024 ||
+    u.port === String(here?.port ?? '') || u.hostname !== String(here?.hostname ?? '')) return '';
+  return u.href;
+}

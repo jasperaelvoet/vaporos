@@ -1,0 +1,139 @@
+package extensions
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"slices"
+	"time"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
+)
+
+// sunshineAdminPort is never opened, whatever an extension asks: Sunshine's
+// admin UI and API (docs/CONTRACTS.md "Firewall").
+const sunshineAdminPort = 47990
+
+// firewallUnit loads the ports file with the rest of the firewall.
+const firewallUnit = "vos-firewall.service"
+
+// exposed is a port an extension this boot runs opens to the local network.
+type exposed struct {
+	id       string
+	name     string // the extension's name
+	proto    string // "tcp" | "udp"
+	port     int
+	mode     string // "proxied": vosd serves it | "lan": its service does
+	upstream string // proxied: 127.0.0.1:<port>
+	services []descriptor.Service
+}
+
+// exposedPorts lists the network ports of the extensions this boot mounted
+// that are still wanted (wanted ∪ core with their requirements), in the
+// boot report's order: one removed until the restart closes its ports at
+// once, and opens them again when it is added back.
+func exposedPorts() ([]exposed, error) {
+	rep, err := store.LoadBootReport()
+	if err != nil {
+		return nil, fmt.Errorf("boot report: %w", err)
+	}
+	if len(rep.Mounted) == 0 {
+		return nil, nil
+	}
+	cat, err := catalog.Load(config.ExtCatalogPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	wanted, err := store.Wanted()
+	if err != nil {
+		return nil, err
+	}
+	want := wantSet(cat, wanted)
+	var out []exposed
+	for _, m := range rep.Mounted {
+		if !want[m.ID] {
+			continue
+		}
+		d, err := Shipped(m.ID)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				log.Printf("extensions: %s: %v", m.ID, err)
+			}
+			continue
+		}
+		if d.Network == nil {
+			continue
+		}
+		for _, p := range d.Network.Ports {
+			if p.Port < 1024 || p.Port > 65535 || p.Port == sunshineAdminPort {
+				continue
+			}
+			out = append(out, exposed{id: m.ID, name: d.Name, proto: p.Proto, port: p.Port, mode: p.Mode,
+				upstream: p.Upstream, services: d.Services})
+		}
+	}
+	return out, nil
+}
+
+// portsFile is /var/lib/vos/ext/ports as vos-firewall reads it: one
+// "<proto> <port>" line per port, sorted, each once.
+func portsFile(ps []exposed) []byte {
+	var lines []string
+	for _, p := range ps {
+		lines = append(lines, fmt.Sprintf("%s %d\n", p.proto, p.port))
+	}
+	slices.Sort(lines)
+	var b bytes.Buffer
+	for _, l := range slices.Compact(lines) {
+		b.WriteString(l)
+	}
+	return b.Bytes()
+}
+
+// firewallWait bounds the firewall's reload.
+const firewallWait = 30 * time.Second
+
+// syncPorts writes the ports file for the extensions this boot runs and,
+// when it changed (or the last reload failed), reloads the firewall, which
+// opens those ports to the local network only (docs/CONTRACTS.md
+// "Firewall"). It also tells the web UIs' listeners to look again.
+func (s *Service) syncPorts() {
+	defer s.signal(s.web.kick)
+	s.web.portsMu.Lock()
+	defer s.web.portsMu.Unlock()
+	ps, err := exposedPorts()
+	if err != nil {
+		log.Printf("extensions: ports: %v", err)
+		return
+	}
+	b := portsFile(ps)
+	cur, err := os.ReadFile(config.ExtPortsPath())
+	unreadable := err != nil && !errors.Is(err, fs.ErrNotExist) // a missing file opens nothing, as an empty one
+	if unreadable {
+		log.Printf("extensions: ports: %v", err)
+	}
+	if unreadable || !bytes.Equal(cur, b) {
+		if err := config.WriteFileAtomic(config.ExtPortsPath(), b, 0o644); err != nil {
+			log.Printf("extensions: ports: %v", err)
+			return
+		}
+		s.web.portsReload = true
+	}
+	if !s.web.portsReload {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), firewallWait)
+	defer cancel()
+	if err := s.cc.systemctl(ctx, false, "reload", firewallUnit); err != nil {
+		log.Printf("extensions: reloading the firewall for the ports %q: %v", bytes.TrimSpace(b), err)
+		return
+	}
+	s.web.portsReload = false
+}

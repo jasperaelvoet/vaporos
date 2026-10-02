@@ -533,7 +533,14 @@ has "iso: ... and it says what is missing" systemd-bootx64.efi
 # ---------------------------------------------------------------- firewall --
 render() { # render CONFIG_JSON -> the ruleset vos-firewall would load
     printf '%s\n' "$1" >"$tmp/config.json"
-    VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json bash "$firewall" --print
+    VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/no-ports bash "$firewall" --print
+}
+# render_ports CONFIG_JSON PORTS: the same with /var/lib/vos/ext/ports
+# holding PORTS (printf %b: \n, \r and \t as escapes).
+render_ports() {
+    printf '%s\n' "$1" >"$tmp/config.json"
+    printf '%b' "$2" >"$tmp/ports"
+    VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/ports bash "$firewall" --print
 }
 
 expect pass "firewall: loads (nft -c) closed, open and with a broken config" check_firewall "$firewall" "$rules"
@@ -565,8 +572,36 @@ expect pass "firewall: a string \"true\" is not true" render '{"ssh":{"enabled":
 lacks "firewall: ... so 22 stays closed" 'dport 22'
 
 expect pass "firewall: a missing config.json" \
-    env VOS_NFT_RULES="$rules" VOS_CONFIG="$tmp/nonexistent.json" bash "$firewall" --print
+    env VOS_NFT_RULES="$rules" VOS_CONFIG="$tmp/nonexistent.json" VOS_EXT_PORTS="$tmp/no-ports" bash "$firewall" --print
 lacks "firewall: ... opens nothing optional" 'add rule inet vos optional'
+
+# Extensions' ports (vosd's /var/lib/vos/ext/ports): the LAN sets only,
+# whatever web.allow_public says, and all or nothing.
+expect pass "firewall: extension ports with web.allow_public" \
+    render_ports '{"web":{"allow_public":true}}' 'tcp 11987\nudp 27015\n'
+has "firewall: ... opens 11987 to the LAN (v4)" 'add rule inet vos optional ip saddr @lan4 tcp dport 11987 accept'
+has "firewall: ... opens 11987 to the LAN (v6)" 'add rule inet vos optional ip6 saddr @lan6 tcp dport 11987 accept'
+has "firewall: ... and udp 27015" 'add rule inet vos optional ip saddr @lan4 udp dport 27015 accept'
+lacks "firewall: ... never to everyone" 'add rule inet vos optional tcp dport 11987'
+has "firewall: ... while 80 is public" 'add rule inet vos optional tcp dport 80 accept'
+
+expect pass "firewall: a last line without a newline" render_ports '{}' 'tcp 11987'
+has "firewall: ... still counts" 'ip saddr @lan4 tcp dport 11987 accept'
+
+for bad in 'a line that is not a port=tcp 11987\nhttp 8080\n' \
+           'Sunshine'"'"'s admin port=tcp 11987\ntcp 47990\n' \
+           'a port below 1024=tcp 11987\ntcp 22\n' \
+           'a port above 65535=tcp 65536\n' \
+           'a leading zero=tcp 011987\n' \
+           'a trailing space=tcp 11987 \n' \
+           'a CRLF line=tcp 11987\r\n' \
+           'an empty line=tcp 11987\n\n'; do
+    expect pass "firewall: a ports file with ${bad%%=*}" render_ports '{"web":{"allow_public":true}}' "${bad#*=}"
+    lacks "firewall: ... opens none of it" 'add rule inet vos optional ip saddr'
+done
+many=$(for ((p = 20000; p < 20065; p++)); do printf 'tcp %d\\n' "$p"; done)
+expect pass "firewall: a ports file of 65 ports" render_ports '{}' "$many"
+lacks "firewall: ... opens none of them" 'dport 20000'
 
 echo
 if (( failures )); then
