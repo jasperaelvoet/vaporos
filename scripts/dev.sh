@@ -13,7 +13,8 @@
 #   log       follow the VM's serial console
 #   reset     wipe the dev VM and install it from scratch
 #   test      reinstall the dev VM from scratch and check it end to end: web
-#             install, API, hardening, update, rollback, health fallback
+#             install, API, hardening, extensions (core, then CoolerControl),
+#             update, rollback, health fallback
 #   status | down | destroy
 #   send TXT | expect REGEX [TIMEOUT]    drive the serial console by hand
 #
@@ -620,6 +621,43 @@ vm_add_core_extensions() {
     expect_ext 'mode=enabled set=* mounted=proton' "$ext"
 }
 
+# vm_api METHOD PATH [JSON]: call the installed system's API from the
+# Proxmox host, signed in with the admin password. Prints the response body;
+# fails, showing vosd's error, on an HTTP error.
+vm_api() {
+    local method=$1 path=$2 body=${3:-} login
+    login=$(printf '{"password":"%s"}' "$ADMIN_PASS")
+    pve "set -e; jar=\$(mktemp); trap 'rm -f \$jar' EXIT
+         curl -sS --fail-with-body -m 30 -c \$jar -H 'Content-Type: application/json' \
+              -d $(printf %q "$login") http://$VM_IP/api/v1/auth/login >/dev/null
+         csrf=\$(curl -sS -m 30 -b \$jar http://$VM_IP/api/v1/auth/me |
+                python3 -c 'import json,sys; print(json.load(sys.stdin)[\"csrf\"])')
+         curl -sS --fail-with-body -m 120 -b \$jar -X $method -H \"X-VOS-CSRF: \$csrf\" \
+              -H 'Content-Type: application/json' ${body:+-d $(printf %q "$body")} \
+              http://$VM_IP/api/v1$path"
+}
+
+# Add CoolerControl as a person does, in the control center with the admin
+# password (its image sealed from this build first, as the core extensions'
+# are), boot its trial and the normal boot after it, and check it there.
+# The dev VM has no fan chips: vm-checks.sh only warns about what needs them.
+vm_add_coolercontrol() {
+    local ext
+    say "Adding CoolerControl"
+    vm_sh "vos ext fetch --from http://$PVE_HOST:$SERVE_PORT/ coolercontrol >/dev/null" 900
+    vm_api POST /extensions/coolercontrol "$(printf '{"password":"%s"}' "$ADMIN_PASS")" >/dev/null ||
+        fail "the control center did not add CoolerControl"
+    vm_sh "for i in \$(seq 60); do test -L /var/lib/vos/ext/pending && break; sleep 1; done; test -L /var/lib/vos/ext/pending" 90
+    ext=$(vm_reboot_ext)
+    expect_ext 'mode=pending set=* mounted=*coolercontrol*' "$ext"
+    vm_checks extensions --mode pending --mounted proton --mounted coolercontrol
+    vm_sh "test \"\$(readlink /var/lib/vos/ext/enabled)\" = \"sets/\$(cat /run/vos/ext-trial-ok)\" && ! test -e /var/lib/vos/ext/pending"
+    ok "vos health promoted CoolerControl's trial set to enabled"
+    ext=$(vm_reboot_ext)
+    expect_ext 'mode=enabled set=* mounted=*coolercontrol*' "$ext"
+    vm_checks coolercontrol --password "$ADMIN_PASS"
+}
+
 # An extension trial that fails its health check every time falls back to
 # what was enabled before, and its set is recorded as failed, with no restart
 # loop. Then "Try again" (forget the failure) brings it back.
@@ -640,7 +678,7 @@ vm_failed_extension_trial() {
     for try in 1 2; do
         ext=$(match_ 'VaporOS: extensions (mode=\S+ set=\S+ mounted=\S+)' 300) ||
             fail "no extensions line for failing try $try"
-        expect_ext 'mode=pending set=* mounted=proton' "$ext"
+        expect_ext 'mode=pending set=* mounted=*proton*' "$ext"
         [[ $(match_ 'VOS-HEALTH result=(\S+)' 300) == failed ]] ||
             fail "vos health did not fail extension trial $try with vos.health.fail=1"
         ok "try $try failed its health check, as forced"
@@ -658,7 +696,7 @@ vm_failed_extension_trial() {
     vm_sh "ls /efi/loader >/dev/null; sed -i 's/ vos.health.fail=1//' /efi/loader/entries/*.conf && ! grep -q vos.health.fail=1 /efi/loader/entries/*.conf"
     vm_sh ": >/var/lib/vos/ext/failed && sync && systemctl restart vosd && for i in \$(seq 30); do test -L /var/lib/vos/ext/pending && break; sleep 1; done; test -L /var/lib/vos/ext/pending" 60
     ext=$(vm_reboot_ext)
-    expect_ext 'mode=pending set=* mounted=proton' "$ext"
+    expect_ext 'mode=pending set=* mounted=*proton*' "$ext"
     vm_sh "test -L /var/lib/vos/ext/enabled && ! test -e /var/lib/vos/ext/pending"
     ok "the trial passed and was promoted"
 }
@@ -820,6 +858,8 @@ cmd_test() {
     # Serve build 1 (its extension images included) for vos ext fetch.
     stage_update
     vm_add_core_extensions
+    # While build 1 is served: the rest of the test runs with it added.
+    vm_add_coolercontrol
 
     say "Building a second image to update to"
     rebuild
