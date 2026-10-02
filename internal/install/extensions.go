@@ -15,12 +15,18 @@ import (
 )
 
 // The new system's extensions (docs/CONTRACTS.md "Extensions"): its core
-// images are fetched and sealed into its store while installing, so it
-// starts with them. Only as far as the network allows: an offline install
-// still works, and vosd fetches them once the system is online.
+// images are fetched and sealed into its store while installing, as the
+// pending set, so its first boot tries them and `vos health` promotes them.
+// Only as far as the network allows: an offline install still works, and
+// vosd fetches them once the system is online.
 
-// seedTimeout caps the fetch, so a slow network costs at most this.
-var seedTimeout = 20 * time.Minute
+var (
+	// seedTimeout caps the fetch, so a slow network costs at most this.
+	seedTimeout = 20 * time.Minute
+	// seedReportEvery is how often progress is reported while bytes come
+	// in: the percent alone moves only twice in the configure step.
+	seedReportEvery = time.Second
+)
 
 // seedRun runs name with args, calling stdout and stderr with each line
 // the command prints there. Tests fake it.
@@ -48,13 +54,26 @@ func (in *installer) seedExtensions(ctx context.Context) error {
 	sctx, cancel := context.WithTimeout(ctx, seedTimeout)
 	defer cancel()
 	logLine := func(line string) { in.env.logf("install: vos ext fetch: %s", line) }
+	var (
+		reported bool
+		lastDone int64
+		lastAt   time.Time
+	)
 	err := seedRun(sctx, filepath.Join(in.rootDir, "usr", "bin", "vos"), args, func(line string) {
 		var p struct{ Bytes, Total int64 }
-		if json.Unmarshal([]byte(line), &p) == nil && p.Total > 0 {
-			in.reportBytes(StepConfigure, 96, 98, p.Bytes, p.Total, what)
+		if json.Unmarshal([]byte(line), &p) != nil || p.Total <= 0 {
+			logLine(line)
 			return
 		}
-		logLine(line)
+		// The bytes cover the whole run. The first line always shows, then
+		// a new percent, the end, or new bytes once seedReportEvery passed.
+		done := min(max(p.Bytes, 0), p.Total)
+		pct, now := 96+int(2*done/p.Total), time.Now()
+		if reported && (done == lastDone || pct == in.percent && done != p.Total && now.Sub(lastAt) < seedReportEvery) {
+			return
+		}
+		reported, lastDone, lastAt = true, done, now
+		in.report(StepConfigure, pct, "%s (%s of %s)", what, humanBytes(done), humanBytes(p.Total))
 	}, logLine)
 	if cerr := ctx.Err(); cerr != nil {
 		return cerr
@@ -86,11 +105,14 @@ func (in *installer) seedSource() string {
 }
 
 // resetExtensions drops what a repaired system must not carry over: slot
-// b's catalog (the slot was wiped), the set waiting for its trial and the
-// failed sets. `vos ext fetch --repair` does the same and resets enabled;
-// doing it here as well covers a repair that cannot run it.
+// b's catalog (the slot was wiped), the enabled set, the set waiting for its
+// trial and the failed sets; wanted stays. `vos ext fetch --repair` does
+// the same and then seeds the core extensions as a pending trial. Doing it
+// here first means a repair that cannot run it (offline) boots with no
+// extension rather than the old set, and vosd proposes them again later.
 func (in *installer) resetExtensions() {
-	for _, p := range []string{filepath.Join(config.ExtSlotsDir(), "b.json"), config.ExtPendingLink(), config.ExtFailedPath()} {
+	for _, p := range []string{filepath.Join(config.ExtSlotsDir(), "b.json"), config.ExtEnabledLink(),
+		config.ExtPendingLink(), config.ExtFailedPath()} {
 		if err := os.Remove(filepath.Join(in.rootDir, p)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			in.env.logf("install: %v", err)
 		}

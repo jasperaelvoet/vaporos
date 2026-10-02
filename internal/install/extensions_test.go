@@ -3,6 +3,9 @@ package install
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,7 +32,15 @@ const seedPrefix = "@/run/vos/target/root/usr/bin/vos ext fetch --state-dir @/ru
 func TestInstallSeedsExtensions(t *testing.T) {
 	f, img := installMachine(t)
 	img.withExtensions(t)
+	var ext string
 	f.seed = func(ctx context.Context, args []string, stdout func(string)) error {
+		// What the command leaves (docs/CONTRACTS.md): the core set pending,
+		// so the first boot tries it, and no enabled set.
+		ext = filepath.Join(args[3], "ext") // --state-dir DIR
+		os.MkdirAll(filepath.Join(ext, "sets", "1"), 0o755)
+		os.WriteFile(filepath.Join(ext, "sets", "1", "ids"), []byte("proton\n"), 0o644)
+		os.WriteFile(filepath.Join(ext, "sets", "1", "tries"), []byte("2\n"), 0o644)
+		os.Symlink("sets/1", filepath.Join(ext, "pending"))
 		stdout(`{"bytes":0,"total":4096}`)
 		stdout("fetching proton")
 		stdout(`{"bytes":4096,"total":4096}`)
@@ -49,33 +60,98 @@ func TestInstallSeedsExtensions(t *testing.T) {
 	if got := strings.Join(stepsOf(recs), ","); got != "probe,partition,write,verify,bootloader,configure,done" {
 		t.Fatalf("steps %s", got)
 	}
-	seen := false
+	var seeded []int
 	for i, rec := range recs {
 		if i > 0 && rec.percent < recs[i-1].percent {
 			t.Fatalf("progress went backwards: %v -> %v", recs[i-1], rec)
 		}
-		if rec.step == StepConfigure && strings.HasPrefix(rec.message, "Adding extensions (") && rec.percent == 98 {
-			seen = true
+		if rec.step == StepConfigure && strings.HasPrefix(rec.message, "Adding extensions (") {
+			seeded = append(seeded, rec.percent)
 		}
 	}
-	if !seen {
-		t.Fatalf("no extension progress: %+v", recs)
+	// The first line shows even though its percent is the step's own.
+	if len(seeded) != 2 || seeded[0] != 96 || seeded[1] != 98 {
+		t.Fatalf("extension progress at %v%%: %+v", seeded, recs)
+	}
+	// A new install leaves the trial to the first boot.
+	if l, err := os.Readlink(filepath.Join(ext, "pending")); err != nil || l != "sets/1" {
+		t.Fatalf("pending: %q %v", l, err)
+	}
+	if _, err := os.Lstat(filepath.Join(ext, "enabled")); !os.IsNotExist(err) {
+		t.Fatalf("enabled: %v", err)
+	}
+}
+
+// Progress lines arrive faster than the configure step's two percent move:
+// the first one shows, then a new percent, the end, and in between new
+// bytes at least every seedReportEvery.
+func TestInstallSeedProgress(t *testing.T) {
+	lines := []int64{0, 100, 100, 200, 499, 500, 999, 1000} // MiB of 1000
+	for _, c := range []struct {
+		name  string
+		every time.Duration
+		want  []int64
+	}{
+		{"by percent", time.Hour, []int64{0, 500, 1000}},
+		{"by time", 0, []int64{0, 100, 200, 499, 500, 999, 1000}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, img := installMachine(t)
+			img.withExtensions(t)
+			seedReportEvery = c.every
+			f.seed = func(ctx context.Context, args []string, stdout func(string)) error {
+				for _, n := range lines {
+					stdout(fmt.Sprintf(`{"bytes":%d,"total":%d}`, n*mib, 1000*mib))
+				}
+				return nil
+			}
+			var recs []progressRec
+			if err := runInstall(context.Background(), f.env(f.runner()), Options{Disk: "sda"}, recorder(&recs)); err != nil {
+				t.Fatal(err)
+			}
+			var got, want []string
+			for _, rec := range recs {
+				if strings.HasPrefix(rec.message, "Adding extensions (") {
+					got = append(got, fmt.Sprintf("%d%% %s", rec.percent, rec.message))
+				}
+			}
+			for _, n := range c.want {
+				want = append(want, fmt.Sprintf("%d%% Adding extensions (%d MiB of 1000 MiB)", 96+2*n/1000, n))
+			}
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("reports:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
 	}
 }
 
 // From a directory, http(s) or a registry, the images come from the same
 // place as the image.
 func TestInstallSeedsFromTheSource(t *testing.T) {
-	f, _ := installMachine(t)
-	dir := t.TempDir()
-	img := writeImage(t, dir, 1<<20).withExtensions(t)
-	r := f.runner()
-	if err := runInstall(context.Background(), f.env(r), Options{Disk: "sda", Source: dir}, nil); err != nil {
-		t.Fatal(err)
-	}
-	want := seedPrefix + " --from " + strings.ReplaceAll(dir, f.root, "@") + " --version " + img.man.Version + " --seed"
-	if len(f.seeds) != 1 || f.seeds[0] != want {
-		t.Fatalf("seeds %q, want %q", f.seeds, want)
+	for _, kind := range []string{srcDir, srcHTTP, srcOCI} {
+		t.Run(kind, func(t *testing.T) {
+			f, _ := installMachine(t)
+			dir := t.TempDir()
+			img := writeImage(t, dir, 1<<20).withExtensions(t)
+			src := dir
+			switch kind {
+			case srcHTTP:
+				srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
+				t.Cleanup(srv.Close)
+				src = srv.URL + "/"
+			case srcOCI:
+				src = newFakeRegistry(t, dir, []string{"main"}, nil).spec()
+			}
+			r := f.runner()
+			if err := runInstall(context.Background(), f.env(r), Options{Disk: "sda", Source: src}, nil); err != nil {
+				t.Fatal(err)
+			}
+			// A registry is asked at --version: the tag the command uses.
+			want := seedPrefix + " --from " + strings.ReplaceAll(src, f.root, "@") + " --version " + img.man.Version + " --seed"
+			if len(f.seeds) != 1 || f.seeds[0] != want {
+				t.Fatalf("seeds %q, want %q", f.seeds, want)
+			}
+		})
 	}
 }
 
@@ -125,9 +201,10 @@ func TestInstallCancelledWhileSeeding(t *testing.T) {
 	}
 }
 
-// A repair rewrites slot a's catalog and resets the extension state
-// (`--repair`); slot b's catalog, the pending set and the failed sets are
-// gone before it runs, so an offline repair drops them too.
+// A repair rewrites slot a's catalog and reseeds the extension state
+// (`--repair`); slot b's catalog, the enabled and pending sets and the
+// failed sets are gone before it runs, so an offline repair boots without
+// extensions rather than with the old set. wanted stays.
 func TestInstallRepairResetsExtensions(t *testing.T) {
 	f := newFakeSys(t)
 	f.addDisk("sda", "8:0", "ata1", 64*gib, "SSD")
@@ -151,7 +228,7 @@ func TestInstallRepairResetsExtensions(t *testing.T) {
 		return "", nil, false
 	}
 	f.seed = func(ctx context.Context, args []string, stdout func(string)) error {
-		for _, p := range []string{"slots/b.json", "pending", "failed"} {
+		for _, p := range []string{"slots/b.json", "enabled", "pending", "failed"} {
 			if _, err := os.Lstat(filepath.Join(ext, p)); !os.IsNotExist(err) {
 				t.Errorf("%s still there when seeding starts: %v", p, err)
 			}
@@ -166,10 +243,13 @@ func TestInstallRepairResetsExtensions(t *testing.T) {
 	if len(f.seeds) != 1 || f.seeds[0] != want {
 		t.Fatalf("seeds %q, want %q", f.seeds, want)
 	}
-	for _, p := range []string{"slots/a.json", "wanted", "enabled", "sets/4/ids"} {
+	for _, p := range []string{"slots/a.json", "wanted", "sets/4/ids"} {
 		if _, err := os.Lstat(filepath.Join(ext, p)); err != nil {
 			t.Errorf("%s: %v", p, err)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(ext, "enabled")); !os.IsNotExist(err) {
+		t.Errorf("enabled survived an offline repair: %v", err)
 	}
 }
 

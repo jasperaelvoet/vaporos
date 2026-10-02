@@ -561,12 +561,19 @@ image, idle shutdown counts it as busy (`adding an extension`).
 mounted): the installer runs the new image's own
 `<target>/usr/bin/vos ext fetch --state-dir <target>/var/lib/vos --from SRC --version <ver> --seed`
 (plus `--repair` on a repair), which seals the image's core extensions into
-the new system's store. SRC is the install's source, or for the live medium
+the new system's store as the `pending` set (tries 2): the first boot is an
+extension trial that `vos health` proves and promotes, and a new install has
+no `enabled`. SRC is the install's source (a directory, http(s) or a
+registry, which the command asks at the tag `<ver>`), or for the live medium
 (which carries no extension images) the new system's `config.update.source`.
 It is best effort and capped at 20 minutes: a failure is logged, and vosd
-fetches what is missing once the system runs. Its progress lines show as
-`configure`. Before it runs, a repair removes `slots/b.json` (slot b was
-wiped), `pending` and `failed`.
+fetches what is missing once the system runs. Its progress lines (bytes of
+the whole run) show as `configure`: the first one, then whenever the percent
+moves, at least once a second while bytes come in, and the last. Before it
+runs, a repair removes `slots/b.json` (slot b was wiped), `enabled`,
+`pending` and `failed`, and keeps `wanted`: a repair that cannot run the
+command (offline) boots without extensions rather than with the old set, and
+vosd proposes the wanted ones through a trial once it can.
 
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
