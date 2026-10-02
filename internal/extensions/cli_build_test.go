@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,8 +30,20 @@ func write(t *testing.T, root string, files map[string]string) {
 	}
 }
 
+// unprivileged drops check-tree's warning that it cannot see trusted.*
+// attributes, which depends on who runs the tests.
+func unprivileged[T any](ws []T) []T {
+	var out []T
+	for _, w := range ws {
+		if !strings.Contains(fmt.Sprint(w), "CAP_SYS_ADMIN") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 func TestBuildCommandsAreRegistered(t *testing.T) {
-	for _, name := range []string{"check-tree", "catalog", "digest"} {
+	for _, name := range []string{"check-tree", "catalog", "digest", "validate"} {
 		if _, ok := commands[name]; !ok {
 			t.Errorf("vos ext %s is not registered", name)
 		}
@@ -64,7 +77,7 @@ func TestCheckTreeCommand(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got["runs_as_root"] != false || len(got["permissions"].([]any)) != 0 || len(got["warnings"].([]any)) != 0 {
+	if len(got) != 3 || got["runs_as_root"] != false || len(got["permissions"].([]any)) != 0 || len(unprivileged(got["warnings"].([]any))) != 0 {
 		t.Fatalf("--json wrote %s", b)
 	}
 
@@ -74,7 +87,7 @@ func TestCheckTreeCommand(t *testing.T) {
 	if rc := checkTreeCmd(args, &stderr); rc != 1 {
 		t.Fatalf("exit %d for a bad tree", rc)
 	}
-	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+	lines := unprivileged(strings.Split(strings.TrimSpace(stderr.String()), "\n"))
 	if len(lines) != 2 || lines[0] != "demo: etc: outside usr/" || lines[1] != "demo: usr/bin/vos: the base already ships it" {
 		t.Fatalf("stderr %q", lines)
 	}
@@ -122,6 +135,44 @@ func TestCatalogCommand(t *testing.T) {
 	}
 	if rc := catalogCmd([]string{"--stage", stage}, &bytes.Buffer{}); rc != 2 {
 		t.Fatalf("usage: exit %d", rc)
+	}
+}
+
+func TestValidateCommand(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"good/extension.json":    cliDescriptor,
+		"unknown/extension.json": strings.Replace(cliDescriptor, `"schema": 1,`, `"schema": 1, "bogus": true,`, 1),
+		"invalid/extension.json": strings.Replace(strings.Replace(cliDescriptor, `"id": "demo"`, `"id": "Demo"`, 1), `"name": "Demo", `, "", 1),
+		"built/extension.json":   strings.Replace(cliDescriptor, `"schema": 1,`, `"schema": 1, "build": {"size": 1, "permissions": []},`, 1),
+	})
+	file := func(name string) string { return filepath.Join(dir, name, "extension.json") }
+	var stderr bytes.Buffer
+	if rc := validateCmd([]string{file("good"), file("good")}, &stderr); rc != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit %d: %q", rc, stderr.String())
+	}
+	missing := filepath.Join(dir, "missing.json")
+	if rc := validateCmd([]string{file("unknown"), file("good"), file("invalid"), file("built"), missing}, &stderr); rc != 1 {
+		t.Fatalf("exit %d", rc)
+	}
+	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+	want := []string{
+		file("unknown") + `: json: unknown field "bogus"`,
+		file("invalid") + ": ",
+		file("invalid") + ": ",
+		file("built") + ": build is written by the build, not by hand",
+		missing + ": no such file or directory",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("stderr %q", lines)
+	}
+	for i := range want {
+		if !strings.HasPrefix(lines[i], want[i]) || strings.Count(lines[i], file("invalid")) > 1 {
+			t.Errorf("line %d: %q, want %q...", i, lines[i], want[i])
+		}
+	}
+	if rc := validateCmd(nil, &bytes.Buffer{}); rc != 2 {
+		t.Fatalf("no files: exit %d", rc)
 	}
 }
 

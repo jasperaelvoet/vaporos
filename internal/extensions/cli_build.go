@@ -2,9 +2,11 @@ package extensions
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -22,6 +24,37 @@ func init() {
 		func(args []string) int { return catalogCmd(args, os.Stderr) })
 	register("digest", "FILE...: print each file's fs-verity digest",
 		func(args []string) int { return digestCmd(args, os.Stdout, os.Stderr) })
+	register("validate", "DESCRIPTOR...: check source descriptors (build)",
+		func(args []string) int { return validateCmd(args, os.Stderr) })
+}
+
+// validateCmd checks each source descriptor before the build reads any
+// field of it: one problem per line, "<file>: <problem>".
+func validateCmd(args []string, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: vos ext validate DESCRIPTOR...")
+		return 2
+	}
+	rc := 0
+	for _, file := range args {
+		d, err := descriptor.Load(file)
+		if err == nil {
+			err = d.ValidateSource()
+		}
+		if err == nil {
+			continue
+		}
+		rc = 1
+		var pe *fs.PathError
+		msg := strings.TrimPrefix(err.Error(), file+": ")
+		if errors.As(err, &pe) {
+			msg = pe.Err.Error()
+		}
+		for _, line := range strings.Split(msg, "\n") {
+			fmt.Fprintf(stderr, "%s: %s\n", file, line)
+		}
+	}
+	return rc
 }
 
 // dirList is a repeatable directory flag.

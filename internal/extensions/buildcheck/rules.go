@@ -46,6 +46,22 @@ var forbiddenDirs = []struct{ dir, why string }{
 	{"usr/lib/initcpio", "initramfs hooks belong to the base"},
 	{"usr/share/libalpm", "pacman hooks belong to the base"},
 	{"usr/lib/NetworkManager", "network configuration belongs to the base"},
+	{"usr/lib/credstore", "systemd imports credentials from it (sysctl, tmpfiles, sysusers and SSH keys among them), which belong to the base"},
+	{"usr/lib/credstore.encrypted", "systemd imports credentials from it (sysctl, tmpfiles, sysusers and SSH keys among them), which belong to the base"},
+	{"usr/lib/firmware", "firmware (updates/ included) belongs to the base: the kernel loads it for every device"},
+	{"usr/share/p11-kit", "p11-kit's modules and trust belong to the base"},
+	{"usr/lib/pkcs11", "PKCS#11 modules belong to the base"},
+	{"usr/share/ca-certificates", "certificate trust belongs to the base"},
+	{"usr/lib/gio/modules", "GIO modules load into every GLib program, and the base's giomodule.cache would not list them"},
+	{"usr/lib/gdk-pixbuf-2.0", "pixbuf loaders load only through the base's loaders.cache, which would not list them"},
+	{"usr/share/glib-2.0/schemas", "GSettings reads only the base's gschemas.compiled, which would not include them"},
+}
+
+// warnAreas are places an image may ship to, but where what it ships does
+// not work as its package expects: a warning, not a failure.
+var warnAreas = []struct{ dir, why string }{
+	{"usr/share/mime/packages", "the base's MIME database (update-mime-database) does not include these types"},
+	{"usr/share/icons", "the base's icon theme caches do not list these icons, so some programs will not find them"},
 }
 
 // unitSuffixes are the systemd unit types.
@@ -171,6 +187,9 @@ func unitVerdict(rel, dir string, isDir bool, perm string) verdict {
 		return verdict{forbid: "not a directory"}
 	}
 	p := strings.Split(strings.TrimPrefix(rel, dir+"/"), "/")
+	if u := namedUnit(p[0], isDir || len(p) > 1); u != "" && prefixStem(u) {
+		return verdict{forbid: "a unit name that ends in '-' before '@' or its type makes systemd apply its drop-ins to every unit with that prefix"}
+	}
 	switch len(p) {
 	case 1:
 		if isDir {
@@ -198,6 +217,32 @@ func unitVerdict(rel, dir string, isDir bool, perm string) verdict {
 		}
 	}
 	return verdict{forbid: "not a unit, drop-in or dependency link"}
+}
+
+// namedUnit returns the unit an entry of a unit directory names: a unit
+// file or alias, or the unit of a drop-in or dependency directory.
+func namedUnit(name string, isDir bool) string {
+	if !isDir {
+		if isUnitName(name) {
+			return name
+		}
+		return ""
+	}
+	if u, ok := dropInUnit(name); ok {
+		return u
+	}
+	u, _ := depDirUnit(name)
+	return u
+}
+
+// prefixStem reports whether a unit name's stem (before '@' or its type)
+// ends in '-': systemd reads foo-.service.d/ for every foo-*.service.
+func prefixStem(unit string) bool {
+	stem := unit[:strings.LastIndexByte(unit, '.')]
+	if at := strings.IndexByte(stem, '@'); at >= 0 {
+		stem = stem[:at]
+	}
+	return strings.HasSuffix(stem, "-")
 }
 
 // dropInUnit returns the unit a drop-in directory (<unit>.d) is for.
@@ -235,6 +280,30 @@ func unitTemplate(name string) (string, bool) {
 		return "", false
 	}
 	return name[:at+1] + name[dot:], true
+}
+
+// unitType returns a unit name's type ("service", "socket", ...).
+func unitType(name string) string {
+	return name[strings.LastIndexByte(name, '.')+1:]
+}
+
+// instanceOf names template's instance with the instance string of name
+// (foo@.service and bar@x.service give foo@x.service).
+func instanceOf(template, name string) (string, bool) {
+	if !isTemplate(template) {
+		return "", false
+	}
+	at, dot := strings.IndexByte(name, '@'), strings.LastIndexByte(name, '.')
+	if at < 0 || dot <= at+1 || unitType(template) != unitType(name) {
+		return "", false
+	}
+	return strings.Replace(template, "@.", "@"+name[at+1:dot]+".", 1), true
+}
+
+// isTemplate reports whether a unit name is a template (foo@.service).
+func isTemplate(name string) bool {
+	at := strings.IndexByte(name, '@')
+	return at > 0 && at+1 == strings.LastIndexByte(name, '.')
 }
 
 func isKernelModule(name string) bool {

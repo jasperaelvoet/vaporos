@@ -20,8 +20,10 @@ type unitScope struct {
 
 	units   map[string]string   // unit name -> rel of its unit file
 	aliases map[string]string   // unit name -> rel of a symlink to another unit
-	dropIns map[string][]string // unit name -> rels of its *.conf drop-ins
+	dropIns map[string][]string // the name a drop-in directory is for -> rels of its *.conf drop-ins
 	depDirs map[string]string   // unit name -> rel of its .wants/.requires/.upholds
+	linked  []string            // drop-ins that are symlinks
+	target  map[string]string   // alias -> the unit it names (filled by check)
 }
 
 func newUnitScope(scope string, system bool) *unitScope {
@@ -33,6 +35,7 @@ func newUnitScope(scope string, system bool) *unitScope {
 		aliases:  map[string]string{},
 		dropIns:  map[string][]string{},
 		depDirs:  map[string]string{},
+		target:   map[string]string{},
 	}
 }
 
@@ -49,21 +52,38 @@ func (s *unitScope) note(rel string, isDir, isLink bool) {
 			s.depDirs[u] = rel
 		}
 	case len(p) == 2:
-		if u, ok := dropInUnit(p[0]); ok {
+		if u, ok := dropInUnit(p[0]); ok && isLink {
+			s.linked = append(s.linked, rel)
+		} else if ok {
 			s.dropIns[u] = append(s.dropIns[u], rel)
 		}
 	}
 }
 
-// ships reports whether the extension ships unit u (or its template).
+// canonical returns the unit a name means: an alias's unit, or the
+// matching instance of an aliased template.
+func (s *unitScope) canonical(name string) string {
+	if t, ok := s.target[name]; ok {
+		return t
+	}
+	if tmpl, ok := unitTemplate(name); ok {
+		if t, ok := s.target[tmpl]; ok {
+			if inst, ok := instanceOf(t, name); ok {
+				return inst
+			}
+		}
+	}
+	return name
+}
+
+// ships reports whether the extension ships unit u (or its template),
+// under its own name or an alias.
 func (s *unitScope) ships(u string) bool {
-	if _, ok := s.units[u]; ok {
+	c := s.canonical(u)
+	if _, ok := s.units[c]; ok {
 		return true
 	}
-	if _, ok := s.aliases[u]; ok {
-		return true
-	}
-	if t, ok := unitTemplate(u); ok {
+	if t, ok := unitTemplate(c); ok {
 		_, ok = s.units[t]
 		return ok
 	}
@@ -76,24 +96,25 @@ type unitFacts struct {
 	runsAsRoot bool
 }
 
-// check applies the unit rules: drop-ins and dependency directories only
-// for the extension's own units, aliases only to them, no Before= on a unit
-// the base has, and every system service with a drop-in that bounds its
-// start (so a hanging extension cannot hold the boot).
+// execSections are the unit types that run commands, with the section
+// that holds their commands, user and timeout.
+var execSections = map[string]string{"service": "Service", "socket": "Socket", "mount": "Mount", "swap": "Swap"}
+
+// commandKeys are the settings that run a command line.
+var commandKeys = map[string]bool{
+	"ExecCondition": true, "ExecStartPre": true, "ExecStart": true, "ExecStartPost": true,
+	"ExecReload": true, "ExecStop": true, "ExecStopPre": true, "ExecStopPost": true,
+}
+
+// check applies the unit rules: names that neither are nor reach into the
+// base's units, drop-ins and dependency directories only for the
+// extension's own units, aliases only to them, no Before= on a unit the
+// base has, and every system unit that runs commands with a drop-in that
+// bounds them (so a hanging extension cannot hold the boot).
 func (s *unitScope) check(tree, base string) unitFacts {
 	var f unitFacts
 	bad := func(format string, a ...any) { f.problems = append(f.problems, fmt.Sprintf(format, a...)) }
 
-	for _, u := range sortedKeys(s.dropIns) {
-		if !s.ships(u) {
-			bad("%s: drop-in for %s, which the extension does not ship (extensions never change the base's units)", path.Dir(s.dropIns[u][0]), u)
-		}
-	}
-	for _, u := range sortedKeys(s.depDirs) {
-		if !s.ships(u) {
-			bad("%s: adds dependencies to %s, which the extension does not ship", s.depDirs[u], u)
-		}
-	}
 	for _, name := range sortedKeys(s.aliases) {
 		rel := s.aliases[name]
 		target, err := os.Readlink(filepath.Join(tree, filepath.FromSlash(rel)))
@@ -109,23 +130,64 @@ func (s *unitScope) check(tree, base string) unitFacts {
 			}
 			if path.Dir(t) != "/"+s.dir || s.units[path.Base(t)] == "" {
 				bad("%s: an alias must point at one of the extension's own units, not %s", rel, target)
+			} else {
+				s.target[name] = path.Base(t)
 			}
 		}
 	}
-
-	for _, u := range sortedKeys(s.units) {
-		files := []string{s.units[u]}
-		var drops []string
-		if t, ok := unitTemplate(u); ok && t != u {
-			drops = append(drops, s.dropIns[t]...)
+	for _, rel := range s.linked {
+		bad("%s: a drop-in must be a file, not a symlink", rel)
+	}
+	names := make(map[string]string, len(s.units)+len(s.aliases))
+	for n, rel := range s.units {
+		names[n] = rel
+	}
+	for n, rel := range s.aliases {
+		names[n] = rel
+	}
+	for _, n := range sortedKeys(names) {
+		switch {
+		case existsIn(base, names[n]):
+			// the same path: the collision check reports it
+		case s.baseHas(base, n):
+			bad("%s: the base has %s or its template; an extension never replaces a unit of the base", names[n], n)
+		case isTemplate(n) && s.baseInstances(base, n):
+			bad("%s: the base has instances of %s, which its drop-ins would change", names[n], n)
 		}
-		drops = append(drops, s.dropIns[u]...)
-		sort.SliceStable(drops, func(i, j int) bool { return path.Base(drops[i]) < path.Base(drops[j]) })
-		files = append(files, drops...)
+	}
+	for _, u := range sortedKeys(s.dropIns) {
+		if !s.ships(u) {
+			bad("%s: drop-in for %s, which the extension does not ship (extensions never change the base's units)", path.Dir(s.dropIns[u][0]), u)
+		}
+	}
+	for _, u := range sortedKeys(s.depDirs) {
+		if !s.ships(u) {
+			bad("%s: adds dependencies to %s, which the extension does not ship", s.depDirs[u], u)
+		}
+	}
 
+	// Every unit file, and every instance with drop-ins of its own.
+	todo := map[string]bool{}
+	for u := range s.units {
+		todo[u] = true
+	}
+	for k := range s.dropIns {
+		c := s.canonical(k)
+		if t, ok := unitTemplate(c); ok && s.units[t] != "" {
+			todo[c] = true
+		}
+	}
+	for _, u := range sortedKeys(todo) {
+		file := s.units[u]
+		if file == "" {
+			t, _ := unitTemplate(u)
+			file = s.units[t]
+		}
+		drops, p := s.dropInsOf(u)
+		f.problems = append(f.problems, p...)
 		var as []assignment
-		for _, rel := range files {
-			b, err := readLimited(filepath.Join(tree, filepath.FromSlash(rel)), 1<<20)
+		for _, rel := range append([]string{file}, drops...) {
+			b, err := readIn(tree, rel, 1<<20)
 			if err != nil {
 				bad("%s: %v", rel, err)
 				continue
@@ -142,16 +204,53 @@ func (s *unitScope) check(tree, base string) unitFacts {
 				}
 			}
 		}
-		if s.system && strings.HasSuffix(u, ".service") {
-			if p := startTimeoutProblem(u, len(drops) > 0, as); p != "" {
-				bad("%s: %s", s.units[u], p)
-			}
-			if runsAsRoot(as) {
-				f.runsAsRoot = true
-			}
+		typ := unitType(u)
+		section, ok := execSections[typ]
+		if !s.system || !ok || (typ == "socket" && len(commands(as, section)) == 0) {
+			continue
+		}
+		if p := timeoutProblem(u, section, len(drops) > 0, as); p != "" {
+			bad("%s/%s: %s", s.dir, u, p)
+		}
+		if runsAsRoot(typ, as) {
+			f.runsAsRoot = true
 		}
 	}
 	return f
+}
+
+// dropInsOf returns unit u's drop-ins in the order systemd applies them,
+// by file name: those of its own directory, its template's and its
+// aliases'. An instance's drop-in hides its template's of the same name;
+// between other directories systemd leaves that open, which is a problem.
+func (s *unitScope) dropInsOf(u string) (drops, problems []string) {
+	tmpl, _ := unitTemplate(u)
+	byName := map[string][]string{}
+	for _, k := range sortedKeys(s.dropIns) {
+		if c := s.canonical(k); c != u && (tmpl == "" || c != tmpl) {
+			continue
+		}
+		for _, rel := range s.dropIns[k] {
+			byName[path.Base(rel)] = append(byName[path.Base(rel)], rel)
+		}
+	}
+	for _, name := range sortedKeys(byName) {
+		rels := byName[name]
+		if len(rels) == 2 {
+			a, _ := dropInUnit(path.Base(path.Dir(rels[0])))
+			b, _ := dropInUnit(path.Base(path.Dir(rels[1])))
+			if t, ok := unitTemplate(a); ok && t == b {
+				rels = rels[:1]
+			} else if t, ok := unitTemplate(b); ok && t == a {
+				rels = rels[1:]
+			}
+		}
+		if len(rels) > 1 {
+			problems = append(problems, fmt.Sprintf("%s: drop-ins of the same name for %s, in an order systemd leaves open", strings.Join(rels, ", "), u))
+		}
+		drops = append(drops, rels...)
+	}
+	return drops, problems
 }
 
 // baseHas reports whether the base has unit u (or its template) in this
@@ -174,16 +273,38 @@ func (s *unitScope) baseHas(base, u string) bool {
 	return false
 }
 
-// startTimeoutProblem checks that the last TimeoutStartSec= (or
-// TimeoutSec=) of a service comes from a drop-in and is finite.
-func startTimeoutProblem(unit string, hasDropIn bool, as []assignment) string {
-	want := fmt.Sprintf("needs a drop-in (%s.d/*.conf) that sets a finite TimeoutStartSec=", unit)
+// baseInstances reports whether the base has a unit file that is an
+// instance of template t in this scope: t's drop-ins would apply to it.
+func (s *unitScope) baseInstances(base, t string) bool {
+	for _, d := range s.baseDirs {
+		ents, _, err := readDirIn(base, d)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if tt, ok := unitTemplate(e.Name()); ok && tt == t {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// timeoutProblem checks that the last timeout of a unit's commands comes
+// from a drop-in and is finite: TimeoutStartSec= or TimeoutSec= of a
+// service, TimeoutSec= of a socket, mount or swap.
+func timeoutProblem(unit, section string, hasDropIn bool, as []assignment) string {
+	key := "TimeoutSec"
+	if section == "Service" {
+		key = "TimeoutStartSec"
+	}
+	want := fmt.Sprintf("needs a drop-in (%s.d/*.conf) that sets a finite %s=", unit, key)
 	if !hasDropIn {
 		return want
 	}
 	var last *assignment
 	for i, a := range as {
-		if a.section == "Service" && (a.key == "TimeoutStartSec" || a.key == "TimeoutSec") {
+		if a.section == section && (a.key == key || a.key == "TimeoutSec") {
 			last = &as[i]
 		}
 	}
@@ -200,12 +321,35 @@ func startTimeoutProblem(unit string, hasDropIn bool, as []assignment) string {
 	return ""
 }
 
-// runsAsRoot reports whether a service runs as root: no User= other than
-// root, and no DynamicUser=.
-func runsAsRoot(as []assignment) bool {
-	user, dynamic := "", false
+// commands returns a section's command lines by setting, after the resets
+// (an empty value) that drop-ins may do.
+func commands(as []assignment, section string) map[string][]string {
+	out := map[string][]string{}
 	for _, a := range as {
-		if a.section != "Service" {
+		switch {
+		case a.section != section || !commandKeys[a.key]:
+		case a.value == "":
+			delete(out, a.key)
+		default:
+			out[a.key] = append(out[a.key], a.value)
+		}
+	}
+	return out
+}
+
+// runsAsRoot reports whether a unit that runs commands runs one as root:
+// mount and swap units always do (mount(8), swapon(8)); otherwise a
+// command prefixed '+' or '!' ('!!'), PermissionsStartOnly= with commands
+// besides ExecStart=, or no User= other than root without DynamicUser=.
+func runsAsRoot(typ string, as []assignment) bool {
+	if typ == "mount" || typ == "swap" {
+		return true
+	}
+	section := execSections[typ]
+	cmds := commands(as, section)
+	user, dynamic, startOnly := "", false, false
+	for _, a := range as {
+		if a.section != section {
 			continue
 		}
 		switch a.key {
@@ -213,9 +357,36 @@ func runsAsRoot(as []assignment) bool {
 			user = a.value
 		case "DynamicUser":
 			dynamic = parseBool(a.value)
+		case "PermissionsStartOnly":
+			startOnly = parseBool(a.value)
+		}
+	}
+	for key, lines := range cmds {
+		if startOnly && key != "ExecStart" {
+			return true
+		}
+		for _, l := range lines {
+			if elevated(l) {
+				return true
+			}
 		}
 	}
 	return !dynamic && (user == "" || user == "root" || user == "0")
+}
+
+// elevated reports whether a command line's prefixes run it with root's
+// credentials whatever User= says: '+' (no sandbox at all), '!' and '!!'.
+func elevated(cmd string) bool {
+	for _, r := range cmd {
+		switch r {
+		case '+', '!':
+			return true
+		case '-', '@', ':', '|':
+			continue
+		}
+		return false
+	}
+	return false
 }
 
 // assignment is one Key=value of a unit file or drop-in.

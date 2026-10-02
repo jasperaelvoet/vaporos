@@ -122,8 +122,8 @@ func TestUnreadableELFWarns(t *testing.T) {
 	writeTree(t, tree, map[string]string{"usr/lib/demo/broken": "\x7fELF\x02\x01\x01" + strings.Repeat("\xff", 60)})
 	r := run(t, tree, newBase(t), d)
 	wantClean(t, r)
-	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "usr/lib/demo/broken: unreadable ELF") {
-		t.Fatalf("warnings %q", r.Warnings)
+	if w := warningsOf(r); len(w) != 1 || !strings.Contains(w[0], "usr/lib/demo/broken: unreadable ELF") {
+		t.Fatalf("warnings %q", w)
 	}
 }
 

@@ -65,6 +65,70 @@ func TestUnitRules(t *testing.T) {
 			"usr/lib/systemd/user/vos-gamescope.service.d/x.conf": "[Service]\nEnvironment=A=1\n",
 		}, want: "drop-in for vos-gamescope.service"},
 		"listed service missing": {remove: []string{unit, dropIn}, want: "services[0]: demo.service is not a unit in usr/lib/systemd/system"},
+		"instance drop-in orders before the base": {files: map[string]string{
+			"usr/lib/systemd/system/demo@.service":            "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/demo@.service.d/vos.conf": "[Service]\nTimeoutStartSec=5\n",
+			"usr/lib/systemd/system/demo@x.service.d/x.conf":  "[Unit]\nBefore=multi-user.target\n",
+		}, want: "usr/lib/systemd/system/demo@x.service.d/x.conf: Before=multi-user.target"},
+		"instance drop-in unbounds": {files: map[string]string{
+			"usr/lib/systemd/system/demo@.service":            "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/demo@.service.d/vos.conf": "[Service]\nTimeoutStartSec=5\n",
+			"usr/lib/systemd/system/demo@x.service.d/zz.conf": "[Service]\nTimeoutStartSec=infinity\n",
+		}, want: "usr/lib/systemd/system/demo@x.service: TimeoutStartSec=infinity"},
+		"instance drop-in hides the template's": {files: map[string]string{
+			"usr/lib/systemd/system/demo@.service":             "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/demo@.service.d/vos.conf":  "[Service]\nTimeoutStartSec=5\n",
+			"usr/lib/systemd/system/demo@x.service.d/vos.conf": "[Service]\nNice=1\n",
+		}, want: "usr/lib/systemd/system/demo@x.service: needs a drop-in"},
+		"alias drop-in orders before the base": {files: map[string]string{
+			"usr/lib/systemd/system/demo-alias.service":          "@demo.service",
+			"usr/lib/systemd/system/demo-alias.service.d/x.conf": "[Unit]\nBefore=vosd.service\n",
+		}, want: "usr/lib/systemd/system/demo-alias.service.d/x.conf: Before=vosd.service"},
+		"alias drop-in unbounds": {files: map[string]string{
+			"usr/lib/systemd/system/demo-alias.service":           "@demo.service",
+			"usr/lib/systemd/system/demo-alias.service.d/zz.conf": "[Service]\nTimeoutSec=infinity\n",
+		}, want: "usr/lib/systemd/system/demo.service: TimeoutSec=infinity"},
+		"alias drop-in of the same name": {files: map[string]string{
+			"usr/lib/systemd/system/demo-alias.service":            "@demo.service",
+			"usr/lib/systemd/system/demo-alias.service.d/vos.conf": "[Service]\nTimeoutStartSec=5\n",
+		}, want: "in an order systemd leaves open"},
+		"aliased template's instance drop-in": {files: map[string]string{
+			"usr/lib/systemd/system/demo@.service":                 "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/demo@.service.d/vos.conf":      "[Service]\nTimeoutStartSec=5\n",
+			"usr/lib/systemd/system/demo-alias@.service":           "@demo@.service",
+			"usr/lib/systemd/system/demo-alias@x.service.d/x.conf": "[Unit]\nBefore=multi-user.target\n",
+		}, want: "demo-alias@x.service.d/x.conf: Before=multi-user.target"},
+		"symlinked drop-in": {files: map[string]string{
+			"usr/lib/systemd/system/demo.service.d/zz.conf": "@/etc/passwd",
+		}, want: "usr/lib/systemd/system/demo.service.d/zz.conf: a drop-in must be a file, not a symlink"},
+		"a unit the base has in /etc": {files: map[string]string{
+			"usr/lib/systemd/system/local.service":          "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/local.service.d/x.conf": "[Service]\nTimeoutStartSec=5\n",
+		}, want: "usr/lib/systemd/system/local.service: the base has local.service or its template"},
+		"an instance of a base template": {files: map[string]string{
+			"usr/lib/systemd/system/getty@ttyS0.service":          "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/getty@ttyS0.service.d/x.conf": "[Service]\nTimeoutStartSec=5\n",
+		}, want: "usr/lib/systemd/system/getty@ttyS0.service: the base has getty@ttyS0.service or its template"},
+		"an alias the base has": {files: map[string]string{
+			"usr/lib/systemd/system/local.service": "@demo.service",
+		}, want: "usr/lib/systemd/system/local.service: the base has local.service"},
+		"socket with commands": {files: map[string]string{
+			"usr/lib/systemd/system/demo.socket": "[Socket]\nListenStream=1234\nExecStartPre=/usr/bin/demo\nUser=demo\n",
+		}, want: "usr/lib/systemd/system/demo.socket: needs a drop-in (demo.socket.d/*.conf) that sets a finite TimeoutSec="},
+		"socket without commands": {files: map[string]string{
+			"usr/lib/systemd/system/demo.socket": "[Socket]\nListenStream=1234\n",
+		}},
+		"socket bounded": {files: map[string]string{
+			"usr/lib/systemd/system/demo.socket":            "[Socket]\nListenStream=1234\nExecStartPre=/usr/bin/demo\nUser=demo\n",
+			"usr/lib/systemd/system/demo.socket.d/vos.conf": "[Socket]\nTimeoutSec=10\n",
+		}},
+		"mount": {files: map[string]string{
+			"usr/lib/systemd/system/srv-demo.mount": "[Mount]\nWhat=tmpfs\nWhere=/srv/demo\n",
+		}, want: "usr/lib/systemd/system/srv-demo.mount: needs a drop-in (srv-demo.mount.d/*.conf) that sets a finite TimeoutSec="},
+		"mount with a service timeout": {files: map[string]string{
+			"usr/lib/systemd/system/srv-demo.mount":            "[Mount]\nWhat=tmpfs\nWhere=/srv/demo\n",
+			"usr/lib/systemd/system/srv-demo.mount.d/vos.conf": "[Service]\nTimeoutSec=10\n",
+		}, want: "srv-demo.mount: needs a drop-in"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tree, d := newDemo(t)
@@ -102,16 +166,76 @@ func TestRunsAsRoot(t *testing.T) {
 		"drop-in sets":    {map[string]string{unit: "[Service]\n", "usr/lib/systemd/system/demo.service.d/zz.conf": "[Service]\nUser=demo\n"}, false},
 		"User in [Unit]":  {map[string]string{unit: "[Unit]\nUser=demo\n[Service]\n"}, true},
 		"a root template": {map[string]string{"usr/lib/systemd/system/demo@.service": "[Service]\n", "usr/lib/systemd/system/demo@.service.d/vos.conf": "[Service]\nTimeoutStartSec=5\n"}, true},
+		"+":               {map[string]string{unit: "[Service]\nUser=demo\nExecStart=+/usr/bin/demo\n"}, true},
+		"!":               {map[string]string{unit: "[Service]\nUser=demo\nExecStart=/usr/bin/demo\nExecStartPre=-!/usr/bin/demo prep\n"}, true},
+		"!!":              {map[string]string{unit: "[Service]\nUser=demo\nExecStart=/usr/bin/demo\nExecStopPost=!!/usr/bin/demo stop\n"}, true},
+		"@ and -":         {map[string]string{unit: "[Service]\nUser=demo\nExecStart=-@/usr/bin/demo demo\n"}, false},
+		"reset +": {map[string]string{
+			unit: "[Service]\nUser=demo\nExecStart=/usr/bin/demo\nExecStartPre=+/usr/bin/demo prep\n",
+			"usr/lib/systemd/system/demo.service.d/zz.conf": "[Service]\nExecStartPre=\nExecStartPre=/usr/bin/demo prep\n",
+		}, false},
+		"PermissionsStartOnly":                 {map[string]string{unit: "[Service]\nUser=demo\nPermissionsStartOnly=yes\nExecStartPre=/usr/bin/demo prep\nExecStart=/usr/bin/demo\n"}, true},
+		"PermissionsStartOnly, ExecStart only": {map[string]string{unit: "[Service]\nUser=demo\nPermissionsStartOnly=yes\nExecStart=/usr/bin/demo\n"}, false},
+		"an instance's drop-in resets User": {map[string]string{
+			"usr/lib/systemd/system/demo@.service":            "[Service]\nUser=demo\n",
+			"usr/lib/systemd/system/demo@.service.d/vos.conf": "[Service]\nTimeoutStartSec=5\n",
+			"usr/lib/systemd/system/demo@x.service.d/x.conf":  "[Service]\nUser=\n",
+		}, true},
+		"socket with commands": {map[string]string{
+			"usr/lib/systemd/system/demo.socket":            "[Socket]\nListenStream=1234\nExecStartPre=/usr/bin/demo\n",
+			"usr/lib/systemd/system/demo.socket.d/vos.conf": "[Socket]\nTimeoutSec=10\n",
+		}, true},
+		"socket with commands and User": {map[string]string{
+			"usr/lib/systemd/system/demo.socket":            "[Socket]\nListenStream=1234\nExecStartPre=/usr/bin/demo\nUser=demo\n",
+			"usr/lib/systemd/system/demo.socket.d/vos.conf": "[Socket]\nTimeoutSec=10\n",
+		}, false},
+		"socket without commands": {map[string]string{"usr/lib/systemd/system/demo.socket": "[Socket]\nListenStream=1234\n"}, false},
+		"mount": {map[string]string{
+			"usr/lib/systemd/system/srv-demo.mount":            "[Mount]\nWhat=tmpfs\nWhere=/srv/demo\n",
+			"usr/lib/systemd/system/srv-demo.mount.d/vos.conf": "[Mount]\nTimeoutSec=10\n",
+		}, true},
+		"user service": {map[string]string{
+			"usr/lib/systemd/user/demo.service": "[Service]\nExecStart=+/usr/bin/demo\n",
+		}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tree, d := newDemo(t)
 			writeTree(t, tree, c.files)
+			if _, ok := c.files["usr/lib/systemd/user/demo.service"]; ok {
+				d = declare(t, tree, "service", "user-service")
+			}
 			r := run(t, tree, base, d)
 			wantClean(t, r)
 			if r.RunsAsRoot != c.root {
 				t.Fatalf("runs_as_root %v, want %v", r.RunsAsRoot, c.root)
 			}
 		})
+	}
+}
+
+func TestTemplateWithBaseInstances(t *testing.T) {
+	base := newBase(t)
+	writeTree(t, base, map[string]string{"etc/systemd/system/demo-tty@tty1.service": "[Service]\n"})
+	tree, d := newDemo(t)
+	writeTree(t, tree, map[string]string{
+		"usr/lib/systemd/system/demo-tty@.service":            "[Service]\nUser=demo\n",
+		"usr/lib/systemd/system/demo-tty@.service.d/vos.conf": "[Service]\nTimeoutStartSec=5\n",
+	})
+	wantProblem(t, run(t, tree, base, d), "usr/lib/systemd/system/demo-tty@.service: the base has instances of demo-tty@.service")
+}
+
+func TestInstanceOf(t *testing.T) {
+	for _, c := range [][3]string{
+		{"foo@.service", "bar@x.service", "foo@x.service"},
+		{"foo@.service", "bar@a.b.service", "foo@a.b.service"},
+		{"foo@.service", "bar@x.socket", ""},
+		{"foo@.service", "bar@.service", ""},
+		{"foo.service", "bar@x.service", ""},
+	} {
+		got, ok := instanceOf(c[0], c[1])
+		if got != c[2] || ok != (c[2] != "") {
+			t.Errorf("instanceOf(%s, %s) = %q %v, want %q", c[0], c[1], got, ok, c[2])
+		}
 	}
 }
 

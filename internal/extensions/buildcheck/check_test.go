@@ -15,7 +15,7 @@ func TestCleanTreePasses(t *testing.T) {
 	tree, d := newDemo(t)
 	r := run(t, tree, newBase(t), d)
 	wantClean(t, r)
-	if !reflect.DeepEqual(r.Permissions, []string{"service"}) || r.RunsAsRoot || len(r.Warnings) != 0 {
+	if !reflect.DeepEqual(r.Permissions, []string{"service"}) || r.RunsAsRoot || len(warningsOf(r)) != 0 {
 		t.Fatalf("result %+v", r.Result)
 	}
 }
@@ -78,6 +78,26 @@ func TestClassify(t *testing.T) {
 		{"usr/lib/initcpio/hooks/x", file, "", "initramfs"},
 		{"usr/share/libalpm/hooks/x.hook", file, "", "pacman"},
 		{"usr/lib/NetworkManager/conf.d/x.conf", file, "", "network"},
+		{"usr/lib/credstore/vos.sysctl", file, "", "credentials"},
+		{"usr/lib/credstore.encrypted/x", file, "", "credentials"},
+		{"usr/lib/firmware/amdgpu/x.bin", file, "", "firmware"},
+		{"usr/lib/firmware/updates/amdgpu/x.bin", file, "", "firmware"},
+		{"usr/share/p11-kit/modules/x.module", file, "", "p11-kit"},
+		{"usr/lib/pkcs11/x.so", file, "", "PKCS#11"},
+		{"usr/share/ca-certificates/trust-source/anchors/x.pem", file, "", "certificate trust"},
+		{"usr/lib/gio/modules/libx.so", file, "", "GIO modules"},
+		{"usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/x.so", file, "", "pixbuf"},
+		{"usr/share/glib-2.0/schemas/x.gschema.xml", file, "", "GSettings"},
+		{"usr/share/mime/packages/x.xml", file, "", ""},
+		{"usr/share/icons/hicolor/48x48/apps/x.png", file, "", ""},
+		{"usr/lib/systemd/system/vos-.service.d", dir, "", "ends in '-'"},
+		{"usr/lib/systemd/system/vos-.service.d/x.conf", file, "", "ends in '-'"},
+		{"usr/lib/systemd/system/demo-.service", file, "", "ends in '-'"},
+		{"usr/lib/systemd/system/demo-@.service", file, "", "ends in '-'"},
+		{"usr/lib/systemd/system/demo-@x.service.d", dir, "", "ends in '-'"},
+		{"usr/lib/systemd/system/demo-.service.wants", dir, "", "ends in '-'"},
+		{"usr/lib/systemd/user/vos-.service.d/x.conf", file, "", "ends in '-'"},
+		{"usr/lib/systemd/system/demo-x@y-.service", file, descriptor.PermService, ""},
 		{"usr/lib/ld.so.conf.d", dir, "", "library search paths"},
 		{"usr/lib/demo/ld.so.conf.d", dir, "", "library search paths"},
 		{"usr/lib/modules/6.1/extra/demo.ko", file, "", "kernel modules"},
@@ -113,6 +133,91 @@ func TestForbiddenDirReportedOnceAndOnlyWithFiles(t *testing.T) {
 	r := run(t, tree, newBase(t), d)
 	if len(r.Problems) != 1 || !strings.HasPrefix(r.Problems[0], "usr/lib/udev/hwdb.d: ") {
 		t.Fatalf("problems %q", r.Problems)
+	}
+}
+
+func TestEmptyDirectoriesCannotHideBaseFiles(t *testing.T) {
+	base := newBase(t)
+	writeTree(t, base, map[string]string{
+		"usr/lib/systemd/systemd":                       "systemd",
+		"usr/lib/vos/extensions.list":                   "dispatcher 1\n",
+		"usr/lib/security/pam_unix.so":                  "pam",
+		"usr/share/vulkan/icd.d/radeon_icd.x86_64.json": "{}",
+	})
+	tree, d := newDemo(t)
+	writeTree(t, tree, map[string]string{
+		"usr/lib/systemd/systemd/":                       "",
+		"usr/lib/systemd/system/vosd.service/":           "",
+		"usr/lib/vos/extensions.list/":                   "",
+		"usr/lib/security/pam_unix.so/":                  "",
+		"usr/share/vulkan/icd.d/radeon_icd.x86_64.json/": "",
+		"usr/lib/udev/hwdb.d/empty/":                     "",
+	})
+	r := run(t, tree, base, d)
+	for _, p := range []string{
+		"usr/lib/systemd/systemd",
+		"usr/lib/systemd/system/vosd.service",
+		"usr/lib/vos/extensions.list",
+		"usr/lib/security/pam_unix.so",
+		"usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+	} {
+		wantProblem(t, r, p+": a directory where the base has a file")
+	}
+	if len(r.Problems) != 5 {
+		t.Fatalf("problems %q", r.Problems)
+	}
+}
+
+func TestMergedDirectoriesKeepTheBaseMode(t *testing.T) {
+	base := newBase(t)
+	other := t.TempDir()
+	writeTree(t, other, map[string]string{"usr/share/demo-shared/a": "a"})
+	tree, d := newDemo(t)
+	writeTree(t, tree, map[string]string{"usr/lib/demo/private/x": "x", "usr/share/demo-shared/b": "b"})
+	for dir, mode := range map[string]fs.FileMode{"usr/bin": 0o700, "usr/lib/demo/private": 0o700, "usr/share/demo-shared": 0o775} {
+		if err := os.Chmod(filepath.Join(tree, dir), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := run(t, tree, base, d, other)
+	wantProblem(t, r, "usr/bin: a directory of mode 0700 where the base has 0755")
+	wantProblem(t, r, "usr/share/demo-shared: a directory of mode 0775 where the extension in "+other+" has 0755")
+	if len(r.Problems) != 2 {
+		t.Fatalf("problems %q", r.Problems)
+	}
+
+	if os.Geteuid() != 0 {
+		t.Skip("changing a directory's owner needs root")
+	}
+	if err := os.Chmod(filepath.Join(tree, "usr/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Lchown(filepath.Join(tree, "usr/share"), 0, 102); err != nil {
+		t.Fatal(err)
+	}
+	wantProblem(t, run(t, tree, base, d, other), "usr/share: a directory owned by 0:102 where the base has one owned by")
+}
+
+func TestWarnings(t *testing.T) {
+	tree, d := newDemo(t)
+	writeTree(t, tree, map[string]string{
+		"usr/lib/python3.13/site-packages/demo.pth":   "import demo\n",
+		"usr/lib/python3.13/site-packages/demo.py":    "",
+		"usr/share/mime/packages/demo.xml":            "<mime-info/>",
+		"usr/share/icons/hicolor/48x48/apps/demo.png": "png",
+		"usr/share/icons/hicolor/64x64/apps/demo.png": "png",
+	})
+	r := run(t, tree, newBase(t), d)
+	wantClean(t, r)
+	got := warningsOf(r)
+	want := []string{"usr/lib/python3.13/site-packages/demo.pth: ", "usr/share/icons: ", "usr/share/mime/packages: "}
+	if len(got) != len(want) {
+		t.Fatalf("warnings %q", got)
+	}
+	for i := range want {
+		if !strings.HasPrefix(got[i], want[i]) {
+			t.Errorf("warning %q, want %q...", got[i], want[i])
+		}
 	}
 }
 
@@ -187,7 +292,7 @@ func TestModeProblem(t *testing.T) {
 func TestSetuidFileFails(t *testing.T) {
 	tree, d := newDemo(t)
 	p := filepath.Join(tree, "usr/bin/demo")
-	if err := os.Chmod(p, 0o4755); err != nil {
+	if err := os.Chmod(p, 0o755|fs.ModeSetuid); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(p); err != nil || fi.Mode()&fs.ModeSetuid == 0 {
@@ -219,9 +324,23 @@ func TestUaccessWarns(t *testing.T) {
 	})
 	r := run(t, tree, newBase(t), d)
 	wantClean(t, r)
-	if len(r.Warnings) != 1 || !strings.HasPrefix(r.Warnings[0], "usr/lib/udev/rules.d/70-demo.rules: ") {
-		t.Fatalf("warnings %q", r.Warnings)
+	if w := warningsOf(r); len(w) != 1 || !strings.HasPrefix(w[0], "usr/lib/udev/rules.d/70-demo.rules: ") {
+		t.Fatalf("warnings %q", w)
 	}
+
+	// A rule that is a symlink is read where it points inside the image,
+	// never on the build host.
+	writeTree(t, tree, map[string]string{
+		"usr/lib/udev/rules.d/70-demo.rules": "@../../../share/demo/70-demo.rules",
+		"usr/share/demo/70-demo.rules":       "SUBSYSTEM==\"hidraw\", TAG+=\"uaccess\"\n",
+	})
+	r = run(t, tree, newBase(t), d)
+	wantClean(t, r)
+	if w := warningsOf(r); len(w) != 1 || !strings.HasPrefix(w[0], "usr/lib/udev/rules.d/70-demo.rules: ") {
+		t.Fatalf("warnings %q", w)
+	}
+	writeTree(t, tree, map[string]string{"usr/lib/udev/rules.d/72-host.rules": "@/etc/hosts"})
+	wantProblem(t, run(t, tree, newBase(t), d), "usr/lib/udev/rules.d/72-host.rules: ")
 }
 
 func TestStripMustBeGone(t *testing.T) {
