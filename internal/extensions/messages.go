@@ -75,6 +75,50 @@ type MessageWords interface {
 // helperCodeRe is a helper's message code.
 var helperCodeRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
+// Refusal is a helper's error with a code its helper words (MessageWords).
+// A launch hook's Refusal reaches the person as that sentence instead of
+// the dispatcher's own, and so does an Install's or Remove's on the card;
+// Err goes to the journal only.
+type Refusal struct {
+	Code string
+	Err  error
+}
+
+func (r *Refusal) Error() string {
+	if r.Err == nil {
+		return r.Code
+	}
+	return r.Code + ": " + r.Err.Error()
+}
+
+func (r *Refusal) Unwrap() error { return r.Err }
+
+// Refuse is err as a Refusal with code.
+func Refuse(code string, err error) error { return &Refusal{Code: code, Err: err} }
+
+// refusalCode is err's Refusal code when extension id's helper has words
+// for it, and "" otherwise.
+func refusalCode(id string, err error) string {
+	var ref *Refusal
+	if !errors.As(err, &ref) || ref.Code == codeNotMounted || ref.Code == codeHookFailed {
+		return ""
+	}
+	if _, ok := helperText(launchRecord{Code: ref.Code, ID: id}); !ok {
+		return ""
+	}
+	return ref.Code
+}
+
+// refusalNote is the card's reason for a failed Install or Remove of id:
+// its helper's sentence for a Refusal, fallback otherwise.
+func refusalNote(id string, err error, fallback string) string {
+	if code := refusalCode(id, err); code != "" {
+		text, _ := helperText(launchRecord{Code: code, ID: id})
+		return text
+	}
+	return fallback
+}
+
 // WriteMessage leaves vosd a record that a command of extension id's
 // helper refused with code, one its helper's MessageText words; detail
 // goes to the journal only. It runs as the gaming user.

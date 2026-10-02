@@ -1,6 +1,8 @@
 package extensions
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,5 +166,26 @@ func TestPollMessagesRefusesASymlinkedDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(elsewhere, "1.json")); err != nil {
 		t.Errorf("deleted through a symlink: %v", err)
+	}
+}
+
+// A failed Install or Remove shows its helper's sentence for a Refusal,
+// through any wrapping, and the fallback for anything else.
+func TestRefusalNote(t *testing.T) {
+	withHelper(t, "truckersmp", wordsHelper{})
+	const fallback = "Setting up TruckersMP didn't finish. Try again, or remove it."
+	for _, tc := range []struct {
+		id   string
+		err  error
+		want string
+	}{
+		{"truckersmp", errors.Join(errors.New("x"), fmt.Errorf("install: %w", Refuse("starting", nil))), "TruckersMP is already starting. Wait for the game to open."},
+		{"truckersmp", Refuse("pwned", errors.New("x")), fallback},
+		{"truckersmp", errors.New("plain"), fallback},
+		{"star-citizen", Refuse("starting", nil), fallback},
+	} {
+		if got := refusalNote(tc.id, tc.err, fallback); got != tc.want {
+			t.Errorf("%s %v: %q", tc.id, tc.err, got)
+		}
 	}
 }

@@ -60,7 +60,7 @@ func (s *Service) Remove(ctx context.Context, id string, purge bool) error {
 	s.mu.Lock()
 	delete(s.cc.tries, id)
 	if err != nil && !back {
-		s.cc.notes[id] = removeNote(s.name(id))
+		s.cc.notes[id] = refusalNote(id, err, removeNote(s.name(id)))
 	} else {
 		delete(s.cc.notes, id)
 	}

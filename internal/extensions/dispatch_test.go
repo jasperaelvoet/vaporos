@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -376,5 +377,28 @@ func TestDispatchLongError(t *testing.T) {
 	s.pollMessages()
 	if len(*got) != 1 || (*got)[0].topic != "system.message" {
 		t.Fatalf("published %+v", *got)
+	}
+}
+
+// wordyHook is a hook whose helper words its own refusals.
+type wordyHook struct{ testHelper }
+
+func (wordyHook) MessageText(code string) (string, bool) { return wordsHelper{}.MessageText(code) }
+
+// A hook's Refusal with a code its helper words is recorded with that
+// code; one it has no words for is a plain hook-failed.
+func TestDispatchHookRefusal(t *testing.T) {
+	_, calls, hooks := dispatchBox(t)
+	for _, tc := range []struct{ code, want string }{{"starting", "starting"}, {"pwned", codeHookFailed}, {codeNotMounted, codeHookFailed}} {
+		withHelper(t, "truckersmp", wordyHook{testHelper: testHelper{id: "truckersmp", calls: hooks, hook: func(context.Context, *Launch) error {
+			return fmt.Errorf("multiplayer: %w", Refuse(tc.code, errors.New("a handoff unit is loaded")))
+		}}})
+		if rc, _ := runLaunch("--app", "227300", "/games/ets2"); rc != 1 || len(*calls) != 0 {
+			t.Fatalf("%s: exit %d, calls %d", tc.code, rc, len(*calls))
+		}
+		recs := launchMessages(t)
+		if r := recs[len(recs)-1]; r.Code != tc.want || r.ID != "truckersmp" || !strings.Contains(r.Detail, "a handoff unit is loaded") {
+			t.Fatalf("%s: record %+v", tc.code, r)
+		}
 	}
 }

@@ -509,7 +509,7 @@ func (s *Service) install(ctx context.Context, cat *catalog.Catalog, id string) 
 	}
 	s.mu.Lock()
 	if err != nil && wanted {
-		s.cc.notes[id] = installNote(s.name(id), d.Core)
+		s.cc.notes[id] = refusalNote(id, err, installNote(s.name(id), d.Core))
 	} else {
 		delete(s.cc.notes, id)
 	}

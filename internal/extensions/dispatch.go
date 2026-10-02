@@ -183,7 +183,11 @@ func dispatch(ctx context.Context, l launch, env []string, stderr io.Writer) int
 		if err == nil {
 			continue
 		}
-		return refuseLaunch(stderr, launchRecord{Code: codeHookFailed, ID: h, Detail: err.Error()})
+		code := refusalCode(h, err)
+		if code == "" {
+			code = codeHookFailed
+		}
+		return refuseLaunch(stderr, launchRecord{Code: code, ID: h, Detail: err.Error()})
 	}
 	if ctx.Err() != nil {
 		return stopped(stderr, "", nil)
