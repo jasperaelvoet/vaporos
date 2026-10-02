@@ -44,6 +44,11 @@ type fakeSys struct {
 	// onStep, if set, runs for every progress report of f.recorder, in
 	// the installer's goroutine: tests use it to act between steps.
 	onStep func(step string)
+
+	// seeds records each `vos ext fetch` the install ran, the fake root
+	// shown as "@"; seed, if set, plays the command.
+	seeds []string
+	seed  func(ctx context.Context, args []string, stdout func(string)) error
 }
 
 type entryCall struct {
@@ -65,12 +70,22 @@ func newFakeSys(t *testing.T) *fakeSys {
 
 	oldPaths, oldBlock, oldAllow := paths, isBlockDevice, allowAnywhere
 	oldRun, oldLive, oldKeys, oldInfo := config.RunDir, config.LiveMedium, config.KeysDir, config.ImageInfoPath
-	oldProbeTimeout := probeImageTimeout
+	oldProbeTimeout, oldSeed, oldSeedTimeout := probeImageTimeout, seedRun, seedTimeout
 	t.Cleanup(func() {
 		paths, isBlockDevice, allowAnywhere = oldPaths, oldBlock, oldAllow
 		config.RunDir, config.LiveMedium, config.KeysDir, config.ImageInfoPath = oldRun, oldLive, oldKeys, oldInfo
-		probeImageTimeout = oldProbeTimeout
+		probeImageTimeout, seedRun, seedTimeout = oldProbeTimeout, oldSeed, oldSeedTimeout
 	})
+	seedRun = func(ctx context.Context, name string, args []string, stdout, stderr func(string)) error {
+		f.mu.Lock()
+		f.seeds = append(f.seeds, strings.ReplaceAll(strings.Join(append([]string{name}, args...), " "), f.root, "@"))
+		seed := f.seed
+		f.mu.Unlock()
+		if seed != nil {
+			return seed(ctx, args, stdout)
+		}
+		return nil
+	}
 
 	paths = sysPaths{
 		ClassBlock: f.path("sys/class/block"),

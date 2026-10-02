@@ -19,6 +19,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
@@ -26,9 +27,11 @@ import (
 // before boot-complete.target; if it fails, FailureAction= reboots, and
 // systemd-boot's counting falls back to the previous slot after three
 // tries. It only ever fails a boot that is counted and has a slot to fall
-// back to: failing any other boot would reboot into the same entry forever.
-// The GPU and streaming checks apply only if they passed on the previous
-// good boot (health-ok), so a machine without a GPU is healthy.
+// back to, or an extension trial (the initramfs falls back to the enabled
+// set once the trial's tries are used up): failing any other boot would
+// reboot into the same entry forever. The GPU, streaming and LAN checks
+// apply only if they passed on the previous good boot (health-ok), so a
+// machine without a GPU is healthy.
 
 var (
 	MountInfoPath = "/proc/self/mountinfo"
@@ -38,7 +41,9 @@ var (
 
 	healthTimeout = 90 * time.Second // the whole check
 	pingTimeout   = 60 * time.Second // vosd must answer within this
+	lanTimeout    = 60 * time.Second // from the start of the check
 	healthPoll    = time.Second
+	extLockWait   = 30 * time.Second // for ext.lock, to promote a set
 
 	// DRMClassDir and GPUDrivers decide whether a supported GPU is present.
 	// The display package owns GPU profiles; this deliberately small copy
@@ -53,6 +58,7 @@ const sunshineUnit = "vos-sunshine.service"
 type HealthOK struct {
 	GPU    bool `json:"gpu"`
 	Stream bool `json:"stream"`
+	LAN    bool `json:"lan"`
 }
 
 // healthEnv is everything a health check looks at, so tests can fake it.
@@ -64,6 +70,10 @@ type healthEnv struct {
 	counting   func() bool // is this boot on trial (boot counting)?
 	fallback   func() bool // would another entry boot once this one runs out of tries?
 	forced     func() bool // vos.health.fail=1
+	lan        func() lanState
+	extensions func() (*store.BootReport, error) // what the initramfs mounted
+	// healthy records a boot that passed (store.AfterHealthy, under ext.lock).
+	healthy func(rep *store.BootReport) error
 }
 
 func systemHealthEnv() healthEnv {
@@ -84,6 +94,18 @@ func systemHealthEnv() healthEnv {
 		forced: func() bool {
 			v, _ := config.KernelArg("vos.health.fail")
 			return v == "1"
+		},
+		lan:        probeLAN,
+		extensions: store.LoadBootReport,
+		healthy: func(rep *store.BootReport) error {
+			ctx, cancel := context.WithTimeout(context.Background(), extLockWait)
+			defer cancel()
+			unlock, err := store.Lock(ctx)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			return store.AfterHealthy(rep)
 		},
 	}
 }
@@ -117,6 +139,24 @@ func checkHealth(ctx context.Context, env healthEnv, prev HealthOK, logf func(st
 			}
 		}
 	}
+
+	// The LAN check runs alongside the others, from the start.
+	lctx, lcancel := context.WithTimeout(ctx, lanTimeout)
+	defer lcancel()
+	lanc := make(chan lanState, 1)
+	go func() {
+		st := env.lan()
+		for st != lanUp {
+			select {
+			case <-lctx.Done():
+				lanc <- st
+				return
+			case <-time.After(healthPoll):
+			}
+			st = env.lan()
+		}
+		lanc <- st
+	}()
 
 	ms, err := env.mounts()
 	if err == nil {
@@ -166,6 +206,27 @@ func checkHealth(ctx context.Context, env healthEnv, prev HealthOK, logf func(st
 		res.seen.Stream = streamUp()
 	}
 
+	// LAN: waited for (up to lanTimeout) only when it is required; else
+	// whatever it found by now.
+	if !prev.LAN {
+		lcancel()
+	}
+	switch st := <-lanc; {
+	case st == lanUp:
+		res.seen.LAN = true
+		if prev.LAN {
+			check("lan", nil)
+		}
+	case st == lanNoCarrier:
+		// Nothing is plugged in: that says nothing about this image.
+		res.seen.LAN = prev.LAN
+		if prev.LAN {
+			logf("ok    lan: no interface has a link; not checked")
+		}
+	case prev.LAN:
+		check("lan", errors.New("an interface has a link but no address, but the last good boot had one"))
+	}
+
 	if env.forced() {
 		check("forced", errors.New("vos.health.fail=1 is on the kernel command line"))
 	}
@@ -177,6 +238,15 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 	var prev HealthOK
 	if err := config.ReadJSON(config.HealthOKPath(), &prev); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		logf("health-ok: %v (checking the basics only)", err)
+	}
+	rep, err := env.extensions()
+	if err != nil {
+		logf("extensions: %v (not treated as a trial)", err)
+		rep = nil
+	}
+	trial := rep.IsTrial()
+	if trial {
+		logf("extensions: this boot tries set %s (%d tries left after it)", rep.Set, rep.TriesLeft)
 	}
 	res := checkHealth(ctx, env, prev, logf)
 	if len(res.failures) == 0 {
@@ -195,19 +265,28 @@ func runHealth(ctx context.Context, env healthEnv, logf func(string, ...any)) in
 			}
 			return nil
 		})
+		if rep != nil && rep.Mode != store.ModeOff {
+			if err := env.healthy(rep); err != nil {
+				logf("extensions: recording this good boot: %v", err)
+			}
+		}
 		logf("health: ok")
 		healthSerial("ok", nil)
 		return 0
 	}
-	// Failing reboots, and only a counted entry with another one behind it
-	// ever boots anything else. On any other boot (a blessed entry, or the
-	// last entry systemd-boot has left) failing would boot the same image
-	// forever: report it, and let the baseline follow what the hardware
-	// does now (a GPU that was taken out stays out). The test knob
-	// vos.health.fail=1 follows the same rule.
+	// Failing reboots, and only a counted entry with another one behind it,
+	// or an extension trial, ever boots anything else. On any other boot (a
+	// blessed entry, or the last entry systemd-boot has left) failing would
+	// boot the same image forever: report it, and let the baseline follow
+	// what the hardware does now (a GPU that was taken out stays out). The
+	// test knob vos.health.fail=1 follows the same rule.
 	switch {
 	case env.counting() && env.fallback():
 		logf("health: FAILED; this boot is on trial, so the next boot can fall back")
+		healthSerial("failed", res.failures)
+		return 1
+	case trial:
+		logf("health: FAILED; this boot tries new extensions, so the next boot can fall back")
 		healthSerial("failed", res.failures)
 		return 1
 	case env.counting():

@@ -40,9 +40,9 @@ multi-call:
 | `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr, exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
 | `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
-| `vos ext fetch [--from SRC] [--version V] [ids...]` | fetch and seal extension images into the store (dev and tests; vosd does the same) |
+| `vos ext fetch [--from SRC] [--version V] [--state-dir DIR] [--seed [--repair]] [ids...]` | fetch and seal extension images into the store (dev and tests; vosd does the same). `--state-dir` puts the store under DIR instead of `/var/lib/vos`. `--seed` (the installer): fetch V's core extensions, then write `wanted`, an `enabled` set of the core ids it holds sealed, and `slots/a.json` from V's manifest; `--repair` first removes `slots/b.json`, `pending` and `failed`, and keeps `wanted`. Prints `{"bytes":N,"total":N}` progress lines on stdout; exit 0 on success, 1 on failure |
 | `vos ext launch [--app N\|--shortcut ID/KEY] -- CMD...` | Steam launch dispatcher (see Extensions); runs CMD unchanged when no mounted extension hooks it |
-| `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions |
+| `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions and the trial drop-in (see Units) |
 | `vos version` | prints the version |
 
 The build embeds the version with `-ldflags "-X main.version=… -X main.commit=…"`.
@@ -141,7 +141,8 @@ Slot size: `clamp(3 × image size, 8 GiB, 16 GiB)`. The minimum disk is
 Mounting is done by the initramfs hook (erofs slot ro at `/`, data at `/state`,
 `/var` bind, `/etc` overlay `index=off`, then the mounted extensions as a
 read-only overlay on `/usr`, see Extensions). vos_data is ext4 with the
-`verity` feature (`mkfs.ext4 -O verity -b 4096`; older installs get it at boot). It finds the partitions by GPT name
+`verity` feature (`mkfs.ext4 -O verity -b 4096`; older installs get it at boot, or from a repair install's
+`tune2fs -O verity` after `e2fsck`). It finds the partitions by GPT name
 on the `vos.disk` disk (and reboots if that disk does not appear). Before any
 reboot it takes, it renames an uncounted entry of the failing slot to
 `+0-1` when the other slot has a bootable entry.
@@ -188,8 +189,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - `oci://ghcr.io/jasperaelvoet/vaporos` with a tag, which is the channel (branch name, `main` by default). Pulled anonymously:
   1. `GET https://ghcr.io/token?scope=repository:jasperaelvoet/vaporos:pull&service=ghcr.io`
   2. manifest with `Accept: application/vnd.oci.image.manifest.v1+json`
-  3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`. Follow the 307 redirect; resume with `Range`.
-- `http(s)://host/dir/` or a local dir: the same five files by name.
+  3. blobs by `org.opencontainers.image.title` annotation: `manifest.json`, `manifest.json.sig`, `root.erofs`, `vmlinuz`, `initramfs.img`, and each extension image `ext-<id>.raw`. Follow the 307 redirect; resume with `Range`.
+- `http(s)://host/dir/` or a local dir: the same files by name.
 
 **Acceptance:**
 - The signature verifies against any key in `/usr/lib/vos/keys`.
@@ -202,8 +203,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
 - Staging refuses (unless `--force`) while the running entry is on trial, or while it is marked bad and the idle slot's entry is bootable (a rollback waiting for a restart). Neither is recorded as `last_error`.
 
 **Write order:**
-0. Fetch and seal the extension images the new image needs (`wanted` ∪ its core, with requirements) that the store lacks, next to kernel and initrd, before anything is unhooked.
-1. Remove the idle slot's entries, then write `ext/slots/<idle>.json` from the new manifest.
+0. Fetch kernel and initrd, then fetch and seal (`store.Put`) the extension images the new image needs (`wanted` ∪ its core, with requirements, as its manifest lists them) that the store lacks, before anything is unhooked. Before fetching, the data partition must have those images' bytes plus 2 GiB free, else the stage fails. A data partition that cannot seal (no fs-verity) skips the images: the new image then starts without them. Any other failure fails the stage.
+1. Under ext.lock: remove the idle slot's entries, then write `ext/slots/<idle>.json` from the new manifest (an empty `extensions` object when it has none). An image of step 0 that GC removed in between (no slot file named it yet) is fetched again.
 2. Stream root into the idle slot partition while hashing.
 3. Re-read and verify.
 4. Kernel and initrd to `/efi/vos/<ver>/` (tmp + rename).
@@ -216,6 +217,8 @@ The build writes `manifest.json` next to `root.erofs`, `vmlinuz` and `initramfs.
  "available":{"version":"<ver>","size":123,"checked":"RFC3339"},"checked":"RFC3339","last_error":"",
  "held":{"version":"<ver>","rollback_index":N}}
 ```
+`available.size` is the root plus the extension images this machine would
+still have to fetch for it (Write order step 0).
 On daemon start: if `staged.version` ≠ booted, and the staged entry has no
 tries left (or is gone), append it to `failed` and clear `staged`. If it
 equals booted, clear `staged` once the boot is no longer on trial.
@@ -232,14 +235,22 @@ or above it passes health.
 - `user@1000.service` is active;
 - if `health-ok.gpu`, a DRM card with an amdgpu (or other supported) driver exists;
 - if `health-ok.stream`, `vos-sunshine.service` is active;
-- if `health-ok.lan`, some interface with carrier has a non-loopback, non-link-local address within 60 s (no carrier anywhere passes);
+- if `health-ok.lan`, the LAN is up within 60 s of the start (the check runs alongside the others): some network interface with a device (`/sys/class/net/<if>/device`; not `lo`, bridges or tunnels) and `carrier` 1 has an IPv4 address that is neither loopback nor link-local, or a global or unique local IPv6 one. No carrier anywhere at the deadline passes (nothing is plugged in) and keeps `health-ok.lan`;
 - `vos.health.fail=1` forces a failure.
 
+A check that `health-ok` does not require is still looked at once (the LAN
+check: what it found by the time the others are done), and the result goes
+into the new `health-ok`.
+
 It exits non-zero only on a counted boot when another entry would boot once
-this one runs out of tries, and on an extension trial (see Extensions); otherwise a failing check is logged as degraded
+this one runs out of tries, and on an extension trial (`/run/vos/extensions.json`
+mode `pending`; see Extensions); otherwise a failing check is logged as degraded
 and it exits 0. It writes `health-ok` unless it fails, and prints the
 `VOS-HEALTH` serial line on every outcome. `FailureAction=reboot`, and
-systemd-boot counting does the rest.
+systemd-boot counting (or the trial's tries) does the rest. After a good boot
+whose report mounted anything on purpose (mode other than `off`), it takes
+ext.lock (waiting up to 30 s) and records the boot (proven images, promotion;
+see "Trial and promotion"); a problem there is logged and never fails the boot.
 
 ## Extensions
 
@@ -334,7 +345,7 @@ and directory sources serve it by that name next to `manifest.json`.
 | `proven` | `<id> <fsverity>` lines: images that passed a boot |
 | `failed` | `<fingerprint>` lines: sets whose trial failed. The fingerprint is the hex sha256 of the set's sorted, unique `<id> <fsverity>` lines (digests from the booted catalog) followed by its sorted, unique option lines, each ending in `\n` |
 | `skip-once` | present: the next boot mounts no extension, then the initramfs removes it |
-| `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest |
+| `slots/<a\|b>.json` | `{"version","extensions":{...manifest extensions...}}`: the catalog of each slot's image, from its signed manifest. `vos update` writes the idle slot's (Write order 1), the installer `a.json` (`vos ext fetch --seed`) |
 | `settings/<id>.json` | the extension's settings (never in config.json) |
 | `data/<id>/` | its `system` data area (`home` ones are in `/var/home/vapor/.local/share/vaporos/ext/<id>/`, `library` ones in `<library>/VaporOS/<id>`) |
 
@@ -342,6 +353,9 @@ Images are sealed without the lock (a final name is always sealed), and GC
 leaves a temp image (`images/.tmp-*`) alone for an hour after its last write.
 `/run/vos/ext.lock` (flock) serialises every write to `wanted`, the sets,
 `enabled`, `pending`, `proven`, `failed` and the store's garbage collection.
+The slot files are written under the update lock and ext.lock. Lock order:
+the update lock, then ext.lock; whoever holds ext.lock waits for the update
+lock only for a bounded time.
 GC keeps the images that `wanted` ∪ core resolve to in the booted catalog and
 in both slot files, and those mounted this boot.
 
@@ -415,6 +429,17 @@ Once per boot, at idle I/O priority, vosd reads every mounted image through; an
 I/O error or a wrong digest deletes it, fetches it again (once per digest per
 boot) and proposes a new set.
 
+**Install** (the `configure` step, after slot a is written and the target is
+mounted): the installer runs the new image's own
+`<target>/usr/bin/vos ext fetch --state-dir <target>/var/lib/vos --from SRC --version <ver> --seed`
+(plus `--repair` on a repair), which seals the image's core extensions into
+the new system's store. SRC is the install's source, or for the live medium
+(which carries no extension images) the new system's `config.update.source`.
+It is best effort and capped at 20 minutes: a failure is logged, and vosd
+fetches what is missing once the system runs. Its progress lines show as
+`configure`. Before it runs, a repair removes `slots/b.json` (slot b was
+wiped), `pending` and `failed`.
+
 ## HTTP API (`vosd`, port 80, prefix `/api/v1`, JSON)
 
 **Middleware, in order:**
@@ -437,7 +462,7 @@ boot) and proposes a new set.
 
 | Topic | Data |
 | --- | --- |
-| `update.progress` | `{phase,percent,bytes,total,version,error?}` (phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped) |
+| `update.progress` | `{phase,percent,bytes,total,version,error?}`. A stage goes through `check`, `download` (kernel, initrd and extension images), `write` (root into the idle slot), `verify` (read back), `install` (ESP) and `done`; `percent` covers the whole stage, with `download` and `write` sharing 0-80 % by their bytes, while `bytes` and `total` count the current phase. Phase `error` carries why a stage stopped; `idle` ends a stage that found nothing to do (already up to date, or already staged); `cancelled` ends one that `POST /update/cancel` stopped |
 | `update.state` | the update-state |
 | `install.progress` | `{step,percent,message,state}` |
 | `session.begin` | `{client,app?,mode,hdr,since}` (`app`: Sunshine's app, `Steam` or a game's name, omitted when Sunshine names none; `since`: when it was launched, RFC 3339 UTC; a resume keeps both) |
@@ -548,6 +573,7 @@ vosd re-emits `VOS-READY` whenever its IP changes.
 - `vosd.service`: `ExecStart=/usr/bin/vos daemon`, `Restart=always`
 - `vos-welcome.service`: started and stopped by vosd only
 - `vos-health.service`: `FailureAction=reboot` (see "Health")
+- `vos-generator` (`/usr/lib/systemd/system-generators`), following `/run/vos/extensions.json` and never intent: for each mounted extension, the system units its shipped descriptor (`/usr/share/vos/extensions/<id>.json`) lists in `services` with scope `system` are wanted the way their `[Install]` would (`.service` by `multi-user.target`, `.socket`, `.timer` and `.path` by `sockets.target`, `timers.target` and `paths.target`; an instance links to its template's file); a unit file that is missing is logged and skipped. On a trial boot (mode `pending` or `os-trial`) it writes `vos-health.service.d/50-vos-trial.conf`: `[Unit]` `JobTimeoutSec=10min`, `JobTimeoutAction=reboot-force`. It always exits 0
 - `seatd.service.d/vos.conf`
 - `vos-firewall.service`: `nft -f /usr/lib/vos/nftables.nft`
 - every `systemd-sysext*` and `systemd-confext*` unit is masked: only the initramfs merges extensions

@@ -7,9 +7,11 @@ Documentation=https://github.com/jasperaelvoet/vaporos/blob/main/docs/CONTRACTS.
 # boot-complete.target) while another entry would start once this one runs
 # out of tries: then the entry is never blessed and the machine reboots,
 # and after three failed tries systemd-boot starts the other slot and vosd
-# records the version as failed. On any other boot a failure would start
-# the same entry again forever, so vos health reports and exits 0; that
-# includes the vos.health.fail=1 test knob.
+# records the version as failed. It also fails an extension trial, whose
+# tries the initramfs counts before falling back to the enabled set. On any
+# other boot a failure would start the same entry again forever, so vos
+# health reports and exits 0; that includes the vos.health.fail=1 test knob.
+# On trial boots vos-generator adds a drop-in that reboots a hung check.
 ConditionKernelCommandLine=!vos.mode=live
 Wants=vosd.service
 After=vosd.service systemd-logind.service network.target

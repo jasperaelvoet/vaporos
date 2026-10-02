@@ -103,7 +103,7 @@ func TestInstallErase(t *testing.T) {
 		"udevadm settle",
 		"wipefs -qa @/dev/sda3",
 		"mkfs.vfat -F 32 -n VOS_ESP @/dev/sda1",
-		"mkfs.ext4 -q -F -L vos_data @/dev/sda4",
+		"mkfs.ext4 -q -F -O verity -b 4096 -L vos_data @/dev/sda4",
 		"mount -t vfat -o fmask=0077,dmask=0077 @/dev/sda1 " + T + "/esp",
 		"bootctl install --esp-path=" + T + "/esp --graceful --no-pager",
 		"mount -t erofs -o ro @/dev/sda2 " + T + "/root",
@@ -124,6 +124,9 @@ func TestInstallErase(t *testing.T) {
 		if strings.Contains(c, "sgdisk -q") || strings.Contains(c, "useradd") || strings.Contains(c, "chpasswd") {
 			t.Errorf("unexpected command %q", c)
 		}
+	}
+	if len(f.seeds) != 0 {
+		t.Errorf("an image without extensions seeded: %v", f.seeds)
 	}
 
 	// Slot a holds exactly the image.
@@ -329,6 +332,7 @@ func TestInstallRepair(t *testing.T) {
 	}
 	assertSubsequence(t, r.relCalls(), []string{
 		"e2fsck -f -p @/dev/nvme0n1p4",
+		"tune2fs -O verity @/dev/nvme0n1p4",
 		"wipefs -qa @/dev/nvme0n1p1",
 		"wipefs -qa @/dev/nvme0n1p3",
 		"mkfs.vfat -F 32 -n VOS_ESP @/dev/nvme0n1p1",

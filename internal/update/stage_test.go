@@ -5,10 +5,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -16,6 +20,8 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 	"github.com/jasperaelvoet/vaporos/internal/manifest"
 )
 
@@ -547,5 +553,301 @@ func TestReconcile(t *testing.T) {
 	e.write(config.ImageInfoPath, `{"version":"`+oldIdleVersion+`","rollback_index":50}`)
 	if st, _ := Reconcile(); st.Staged != nil || !st.HasFailed(bootedVersion) {
 		t.Fatalf("after the fallback: %+v", st)
+	}
+}
+
+// testExt is an extension image for makeImageExt.
+type testExt struct {
+	id       string
+	size     int
+	core     bool
+	requires []string
+}
+
+// makeImageExt is makeImage with extension images: ext-<id>.raw files and
+// their entries in the signed manifest.
+func (e *testEnv) makeImageExt(version string, rollback int64, rootSize int, exts ...testExt) *image {
+	e.t.Helper()
+	files := map[string][]byte{}
+	img := e.makeImage(version, rollback, rootSize, func(m *manifest.Manifest) {
+		m.Extensions = map[string]manifest.Extension{}
+		for i, x := range exts {
+			b := bytes.Repeat([]byte{byte(i + 1), byte(rollback)}, x.size/2)
+			name := manifest.ExtensionFile(x.id)
+			files[name] = b
+			m.Extensions[x.id] = manifest.Extension{Name: name, Size: int64(len(b)), SHA256: strings.TrimPrefix(sha(b), "sha256:"),
+				FSVerity: fmt.Sprintf("%064x", i+1), Core: x.core, Requires: x.requires}
+		}
+	})
+	maps.Copy(img.files, files)
+	return img
+}
+
+// fakeStore stands in for sealing, which needs fs-verity (neither the dev
+// Mac nor a tmpfs has it): an image counts as sealed once its file is in
+// place with the right size.
+type fakeStore struct {
+	puts        []string
+	free        int64 // what storeFree reports; -1 = unknown
+	unsupported bool
+	afterPut    func(id string)
+}
+
+func (e *testEnv) fakeStore() *fakeStore {
+	f := &fakeStore{free: -1}
+	oldPut, oldHas, oldFree := putImage, hasImage, storeFree
+	e.t.Cleanup(func() { putImage, hasImage, storeFree = oldPut, oldHas, oldFree })
+	hasImage = func(c catalog.Entry) (bool, error) {
+		fi, err := os.Stat(store.ImagePath(c.SHA256))
+		return err == nil && fi.Size() == c.Size, nil
+	}
+	storeFree = func() (int64, error) { return f.free, nil }
+	putImage = func(ctx context.Context, c catalog.Entry, fetch func(io.Writer, func(int64) error) error) error {
+		f.puts = append(f.puts, c.ID)
+		if ok, _ := hasImage(c); ok {
+			return nil
+		}
+		var buf bytes.Buffer
+		if err := fetch(&buf, func(int64) error { return ctx.Err() }); err != nil {
+			return err
+		}
+		if f.unsupported {
+			return store.ErrUnsupported
+		}
+		path := store.ImagePath(c.SHA256)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+			return err
+		}
+		if f.afterPut != nil {
+			f.afterPut(c.ID)
+		}
+		return nil
+	}
+	return f
+}
+
+func (e *testEnv) sealed(img *image, id string) bool {
+	x := img.m.Extensions[id]
+	fi, err := os.Stat(store.ImagePath(x.SHA256))
+	return err == nil && fi.Size() == x.Size
+}
+
+// The extensions every test image carries: core proton, cooler and truck,
+// both requiring proton.
+var testExts = []testExt{
+	{id: "proton", size: 40 << 10, core: true},
+	{id: "cooler", size: 30 << 10, requires: []string{"proton"}},
+	{id: "truck", size: 20 << 10, requires: []string{"proton"}},
+}
+
+func TestStageFetchesExtensions(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 200<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	var progress []Progress
+	opts := Options{Progress: func(p Progress) { progress = append(progress, p) }}
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), opts); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+	// wanted ∪ core with requirements, in catalog order; truck is not wanted.
+	if strings.Join(fs.puts, " ") != "proton cooler" {
+		t.Fatalf("put %v", fs.puts)
+	}
+	if !e.sealed(img, "proton") || !e.sealed(img, "cooler") || e.sealed(img, "truck") {
+		t.Fatal("the store does not hold exactly proton and cooler")
+	}
+	// The idle slot's catalog is the new image's, whole.
+	slot, err := store.ReadSlot("b")
+	if err != nil || slot == nil || slot.Version != newVersion || len(slot.Extensions) != 3 ||
+		slot.Extensions["truck"].SHA256 != img.m.Extensions["truck"].SHA256 {
+		t.Fatalf("slots/b.json: %+v %v", slot, err)
+	}
+
+	// Download counts kernel, initrd and the two images, and shares the
+	// first 80% with write by bytes.
+	d := bootFilesSize(img.m) + img.m.Extensions["proton"].Size + img.m.Extensions["cooler"].Size
+	split := int(80 * d / (d + int64(len(img.root()))))
+	last, lastDownload, firstWrite := -1, Progress{}, -1
+	for _, p := range progress {
+		if p.Percent < last {
+			t.Fatalf("progress went back: %+v after %d%%", p, last)
+		}
+		last = p.Percent
+		switch {
+		case p.Phase == "download":
+			lastDownload = p
+		case p.Phase == "write" && firstWrite < 0:
+			firstWrite = p.Percent
+		}
+	}
+	if lastDownload.Total != d || lastDownload.Bytes != d || lastDownload.Percent != split {
+		t.Fatalf("last download progress %+v, want %d bytes at %d%%", lastDownload, d, split)
+	}
+	if firstWrite != split || last != 100 {
+		t.Fatalf("write starts at %d%%, ends at %d%%; want %d and 100", firstWrite, last, split)
+	}
+}
+
+// Images the store already holds are neither fetched nor counted.
+func TestStageExtensionsAlreadySealed(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	fs := e.fakeStore()
+	x := img.m.Extensions["proton"]
+	e.write(store.ImagePath(x.SHA256), string(img.files[x.Name]))
+
+	res, err := Check(context.Background(), e.cfg(e.srcDir(img)), Options{})
+	if err != nil || res.Available == nil || res.Available.Size != int64(len(img.root())) {
+		t.Fatalf("check: %+v %v", res, err)
+	}
+	e.write(config.ExtWantedPath(), "cooler\ntruck\n")
+	res, err = Check(context.Background(), e.cfg(e.srcDir(img)), Options{})
+	want := int64(len(img.root())) + img.m.Extensions["cooler"].Size + img.m.Extensions["truck"].Size
+	if err != nil || res.Available == nil || res.Available.Size != want {
+		t.Fatalf("check with cooler and truck wanted: %+v %v, want size %d", res.Available, err, want)
+	}
+
+	var total int64
+	opts := Options{Progress: func(p Progress) {
+		if p.Phase == "download" {
+			total = p.Total
+		}
+	}}
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(fs.puts, " ") != "cooler truck" {
+		t.Fatalf("put %v", fs.puts)
+	}
+	if want := bootFilesSize(img.m) + img.m.Extensions["cooler"].Size + img.m.Extensions["truck"].Size; total != want {
+		t.Fatalf("download total %d, want %d", total, want)
+	}
+}
+
+// Failures before the idle slot is unhooked leave it as it was.
+func TestStageExtensionFailures(t *testing.T) {
+	cases := map[string]struct {
+		prepare func(img *image, fs *fakeStore, src string)
+		msg     string
+	}{
+		"no space": {msg: "not enough free space", prepare: func(img *image, fs *fakeStore, src string) {
+			fs.free = 2<<30 + 30<<10 // less than the proton image plus the reserve
+		}},
+		"missing from the source": {msg: "ext-proton.raw", prepare: func(img *image, fs *fakeStore, src string) {
+			os.Remove(filepath.Join(src, "ext-proton.raw"))
+		}},
+		"damaged in the source": {msg: "checksum", prepare: func(img *image, fs *fakeStore, src string) {
+			b := slices.Clone(img.files["ext-proton.raw"])
+			b[100] ^= 0xff
+			os.WriteFile(filepath.Join(src, "ext-proton.raw"), b, 0o644)
+		}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := setup(t)
+			img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+			fs := e.fakeStore()
+			src := e.srcDir(img)
+			c.prepare(img, fs, src)
+			_, err := Stage(context.Background(), e.cfg(src), Options{})
+			if err == nil || !strings.Contains(err.Error(), c.msg) {
+				t.Fatalf("got %v, want %q", err, c.msg)
+			}
+			if b := e.entry("b"); b == nil || b.Version != oldIdleVersion {
+				t.Fatalf("slot b entry: %+v", b)
+			}
+			if slot, _ := store.ReadSlot("b"); slot != nil {
+				t.Fatalf("slots/b.json written: %+v", slot)
+			}
+			if st := e.state(); st.LastError == "" || st.Staged != nil {
+				t.Fatalf("state %+v", st)
+			}
+		})
+	}
+}
+
+// A data partition that cannot seal does not hold back the OS update.
+func TestStageExtensionsUnsupported(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	fs.unsupported = true
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+	if strings.Join(fs.puts, " ") != "proton" {
+		t.Fatalf("kept fetching after the first refusal: %v", fs.puts)
+	}
+	if slot, err := store.ReadSlot("b"); err != nil || slot == nil || len(slot.Extensions) != 3 {
+		t.Fatalf("slots/b.json: %+v %v", slot, err)
+	}
+}
+
+// An image GC removed before the slot file named it is fetched again once
+// the slot file protects it.
+func TestStageRefetchesCollectedImage(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	fs.afterPut = func(id string) {
+		if id == "cooler" {
+			os.Remove(store.ImagePath(img.m.Extensions["proton"].SHA256))
+		}
+	}
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(fs.puts, " ") != "proton cooler proton" || !e.sealed(img, "proton") {
+		t.Fatalf("put %v", fs.puts)
+	}
+}
+
+// A manifest without extensions still records the slot, with none.
+func TestStageWritesEmptySlotCatalog(t *testing.T) {
+	e := setup(t)
+	e.write(filepath.Join(config.ExtSlotsDir(), "b.json"), `{"version":"`+oldIdleVersion+`","extensions":{}}`)
+	img := e.makeImage(newVersion, 200, 1000, nil)
+	if _, err := Stage(context.Background(), e.cfg(e.srcDir(img)), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	slot, err := store.ReadSlot("b")
+	if err != nil || slot == nil || slot.Version != newVersion || slot.Extensions == nil || len(slot.Extensions) != 0 {
+		t.Fatalf("slots/b.json: %+v %v", slot, err)
+	}
+	var raw map[string]json.RawMessage
+	if err := config.ReadJSON(filepath.Join(config.ExtSlotsDir(), "b.json"), &raw); err != nil || string(raw["extensions"]) != "{}" {
+		t.Fatalf("slots/b.json: %v %v", raw, err)
+	}
+}
+
+func TestStageExtensionsFromOCI(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	f := newFakeRegistry(t, img)
+	fs := e.fakeStore()
+	if _, err := Stage(context.Background(), e.cfg(f.spec()), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+	if strings.Join(fs.puts, " ") != "proton" || !e.sealed(img, "proton") {
+		t.Fatalf("put %v", fs.puts)
+	}
+}
+
+func TestStageSpans(t *testing.T) {
+	s := stageSpans(20, 80)
+	if s["download"] != [2]int{0, 16} || s["write"] != [2]int{16, 80} || s["verify"] != [2]int{80, 98} {
+		t.Fatalf("spans %v", s)
+	}
+	if s := stageSpans(0, 0); s["download"] != [2]int{0, 0} || s["write"] != [2]int{0, 80} {
+		t.Fatalf("spans before the sizes are known: %v", s)
 	}
 }

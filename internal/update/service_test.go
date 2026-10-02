@@ -319,7 +319,8 @@ func TestServiceCancel(t *testing.T) {
 			t.Fatalf("error event: %+v", last)
 		}
 	}
-	if last.Phase != "cancelled" || last.Version != newVersion || last.Percent < 2 || last.Percent >= 80 {
+	write := stageSpans(bootFilesSize(img.m), int64(len(img.root())))["write"]
+	if last.Phase != "cancelled" || last.Version != newVersion || last.Percent < write[0] || last.Percent >= write[1] {
 		t.Fatalf("last event %+v", last)
 	}
 	if p := lastProgress(t); p != last {

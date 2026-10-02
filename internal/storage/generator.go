@@ -25,10 +25,11 @@ const deviceTimeout = "10s"
 // CLIGenerator is the systemd generator (argv: normal-dir [early-dir late-dir]).
 //
 // It runs very early in every boot and on each daemon-reload, before most
-// of the system exists, so it only reads config.json and writes files: no
-// network, no D-Bus, no lsblk. A generator that fails can take boot with
-// it, so every problem is logged and the exit status is always 0; a broken
-// library entry costs that library, never the machine.
+// of the system exists, so it only reads config.json, the extensions' boot
+// report and their descriptors, and writes files: no network, no D-Bus, no
+// lsblk. A generator that fails can take boot with it, so every problem is
+// logged and the exit status is always 0; a broken library entry costs that
+// library, never the machine.
 func CLIGenerator(args []string) int {
 	if len(args) < 1 || args[0] == "" {
 		fmt.Fprintln(os.Stderr, "vos-generator: usage: vos-generator NORMAL-DIR [EARLY-DIR LATE-DIR]")
@@ -42,11 +43,11 @@ func CLIGenerator(args []string) int {
 
 // generate writes every unit it can and returns the problems it met.
 func generate(dir string) []error {
+	errs := generateExtensions(dir)
 	cfg, err := config.Load()
 	if err != nil {
-		return []error{fmt.Errorf("%w (no library mounts or SSH generated)", err)}
+		return append(errs, fmt.Errorf("%w (no library mounts or SSH generated)", err))
 	}
-	var errs []error
 	for _, lib := range cfg.Storage.Libraries {
 		if err := writeLibraryUnit(dir, lib); err != nil {
 			errs = append(errs, fmt.Errorf("library %s: %w", lib.UUID, err))
