@@ -567,6 +567,96 @@ vm_update() {
     [[ $have == "$want" ]] || fail "VM booted $have, expected $want (did it fall back to the old slot?)"
 }
 
+# vm_sh CMD [TIMEOUT]: run CMD in the VM's serial root shell; fail unless it
+# exits 0.
+vm_sh() {
+    local tok=$RANDOM
+    send_ "$1; echo VOS-SH-$tok=\$?"
+    rc_is_zero "VOS-SH-$tok" "${2:-120}" || fail "in the VM, this failed: $1"
+}
+
+# Reboot the VM and print what the initramfs said about its extensions
+# ("mode=… set=… mounted=…"); then wait for the installed system to be up
+# and its health check to finish.
+vm_reboot_ext() {
+    local ext
+    mark_
+    send_ "systemctl reboot"
+    ext=$(match_ 'VaporOS: extensions (mode=\S+ set=\S+ mounted=\S+)' 300) ||
+        fail "the initramfs printed no extensions line after the reboot"
+    expect_ 'VOS-HEALTH result=\S+' 300 || fail "vos health printed nothing after the reboot"
+    expect_ 'VOS-READY mode=os' 300 || fail "the VM did not come back after the reboot"
+    echo "$ext"
+}
+
+# expect_ext WANT GOT: GOT (vm_reboot_ext's line) must match the glob WANT.
+expect_ext() {
+    # shellcheck disable=SC2053 # $1 is a glob on purpose
+    [[ $2 == $1 ]] || fail "extensions: '$2', expected '$1'"
+    ok "extensions: $2"
+}
+
+# Seal the core extensions from this build's served images and let vosd
+# propose them; the next boot is their trial, the one after that a normal
+# boot. Dev builds are never published, so the install could not fetch them.
+vm_add_core_extensions() {
+    local ext
+    say "Adding the core extensions"
+    vm_sh "vos ext fetch --from http://$PVE_HOST:$SERVE_PORT/ >/dev/null" 900
+    # vosd reconciles when it starts (the control center's install does the same).
+    vm_sh "systemctl restart vosd && for i in \$(seq 30); do test -L /var/lib/vos/ext/pending && break; sleep 1; done; test -L /var/lib/vos/ext/pending" 60
+    ext=$(vm_reboot_ext)
+    expect_ext 'mode=pending set=* mounted=proton' "$ext"
+    vm_checks extensions --mode pending --mounted proton
+    vm_sh "test \"\$(readlink /var/lib/vos/ext/enabled)\" = \"sets/\$(cat /run/vos/ext-trial-ok)\" && ! test -e /var/lib/vos/ext/pending"
+    ok "vos health promoted the trial set to enabled"
+    ext=$(vm_reboot_ext)
+    expect_ext 'mode=enabled set=* mounted=proton' "$ext"
+}
+
+# An extension trial that fails its health check every time falls back to
+# what was enabled before, and its set is recorded as failed, with no restart
+# loop. Then "Try again" (forget the failure) brings it back.
+vm_failed_extension_trial() {
+    local ext
+    say "Failing an extension trial on purpose"
+    # Forget the proven set, so the next proposal is a fresh trial.
+    vm_sh "rm -f /var/lib/vos/ext/enabled /var/lib/vos/ext/proven && sync"
+    ext=$(vm_reboot_ext)
+    expect_ext 'mode=* set=- mounted=-' "$ext"
+    vm_sh "for i in \$(seq 60); do test -L /var/lib/vos/ext/pending && break; sleep 1; done; test -L /var/lib/vos/ext/pending" 90
+    # The running (blessed) entry: its trial of the set fails, as forced.
+    vm_sh "ls /efi/loader >/dev/null; s=\$(grep -o 'vos[.]slot=[ab]' /proc/cmdline) && f=\$(grep -l \"^options.*\$s\" /efi/loader/entries/*.conf | head -n1) && sed -i '/^options/s/\$/ vos.health.fail=1/' \"\$f\" && grep -q vos.health.fail=1 \"\$f\""
+    # A failing trial reboots by itself (FailureAction=reboot): one reboot
+    # from here, then two failed tries, then the boot without the set.
+    mark_
+    send_ "systemctl reboot"
+    for try in 1 2; do
+        ext=$(match_ 'VaporOS: extensions (mode=\S+ set=\S+ mounted=\S+)' 300) ||
+            fail "no extensions line for failing try $try"
+        expect_ext 'mode=pending set=* mounted=proton' "$ext"
+        [[ $(match_ 'VOS-HEALTH result=(\S+)' 300) == failed ]] ||
+            fail "vos health did not fail extension trial $try with vos.health.fail=1"
+        ok "try $try failed its health check, as forced"
+    done
+    ext=$(match_ 'VaporOS: extensions (mode=\S+ set=\S+ mounted=\S+)' 300) ||
+        fail "no extensions line after the failed tries"
+    expect_ext 'mode=* set=- mounted=-' "$ext"
+    expect_ 'VOS-READY mode=os' 300 || fail "the VM did not come back after the failed trial"
+    vm_sh "for i in \$(seq 60); do test -s /var/lib/vos/ext/failed && ! test -e /var/lib/vos/ext/pending && break; sleep 1; done; test -s /var/lib/vos/ext/failed && ! test -e /var/lib/vos/ext/pending" 90
+    ok "the failed trial fell back and its set is recorded as failed, with no pending set left"
+    vm_sh "sleep 20; ! test -e /var/lib/vos/ext/pending" 60
+    ok "vosd does not propose the failed set again"
+
+    say "Trying it again"
+    vm_sh "ls /efi/loader >/dev/null; sed -i 's/ vos.health.fail=1//' /efi/loader/entries/*.conf && ! grep -q vos.health.fail=1 /efi/loader/entries/*.conf"
+    vm_sh ": >/var/lib/vos/ext/failed && sync && systemctl restart vosd && for i in \$(seq 30); do test -L /var/lib/vos/ext/pending && break; sleep 1; done; test -L /var/lib/vos/ext/pending" 60
+    ext=$(vm_reboot_ext)
+    expect_ext 'mode=pending set=* mounted=proton' "$ext"
+    vm_sh "test -L /var/lib/vos/ext/enabled && ! test -e /var/lib/vos/ext/pending"
+    ok "the trial passed and was promoted"
+}
+
 # Run one group of tests/vm-checks.sh in the VM, over the serial shell, and
 # show every result. Any failed check fails the run.
 vm_checks() {
@@ -721,6 +811,10 @@ cmd_test() {
     vm_checks system --slot a --version "$v1" --password "$ADMIN_PASS"
     screendump os-idle
 
+    # Serve build 1 (its extension images included) for vos ext fetch.
+    stage_update
+    vm_add_core_extensions
+
     say "Building a second image to update to"
     rebuild
     v2=$(build_version)
@@ -729,6 +823,7 @@ cmd_test() {
     # No --force: the normal acceptance rules (signature, newer, not failed) apply.
     vm_update
     vm_checks booted --slot b --version "$v2" --blessed
+    vm_checks extensions --mode os-trial --mounted proton
     ok "updated $v1 -> $v2 in slot b, and the new entry was blessed"
 
     say "Rolling back"
@@ -737,6 +832,7 @@ cmd_test() {
     have=$(vm_reboot) || fail "the VM did not come back after the rollback"
     [[ $have == "$v1" ]] || fail "after the rollback the VM booted $have, expected $v1"
     vm_checks booted --slot a --version "$v1"
+    vm_checks extensions --mode enabled --mounted proton
     ok "rolled back to $v1 in slot a"
 
     say "Staging $v2 again, with a health check that always fails"
@@ -761,7 +857,10 @@ cmd_test() {
     done
     ok "$v2 failed its health check and systemd-boot fell back to $v1"
     vm_checks fallback --slot a --version "$v1" --failed "$v2"
+    vm_checks extensions --mode enabled --mounted proton
     screendump final
+
+    vm_failed_extension_trial
 
     echo
     ok "End-to-end test passed. VM $VMID runs VaporOS $v1 ($v2 is marked failed; 'make' installs it with --force)"
