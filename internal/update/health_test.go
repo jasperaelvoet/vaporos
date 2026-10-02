@@ -58,6 +58,7 @@ type fakeHealth struct {
 	mountsOK, pingOK, userOK, gpu, stream, counting, forced bool
 	noFallback                                              bool       // nothing else would boot
 	lan                                                     []lanState // what each probe sees; the last one repeats
+	macs                                                    []string   // the network devices present
 
 	ext        *store.BootReport // nil: no report (mode off)
 	extErr     error
@@ -66,6 +67,7 @@ type fakeHealth struct {
 	mu      sync.Mutex
 	probes  int
 	healthy []*store.BootReport // AfterHealthy calls
+	markers []string            // the trial-ok marker at each call ("-" when absent)
 }
 
 func (f *fakeHealth) env() healthEnv {
@@ -92,14 +94,23 @@ func (f *fakeHealth) env() healthEnv {
 		counting: func() bool { return f.counting },
 		fallback: func() bool { return !f.noFallback },
 		forced:   func() bool { return f.forced },
-		lan: func() lanState {
+		lan: func() lanProbe {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.probes++
-			if len(f.lan) == 0 {
-				return lanNoCarrier
+			p := lanProbe{state: lanNoCarrier, macs: f.macs}
+			if len(f.lan) > 0 {
+				p.state = f.lan[min(f.probes, len(f.lan))-1]
 			}
-			return f.lan[min(f.probes, len(f.lan))-1]
+			switch p.state {
+			case lanUp:
+				if len(f.macs) > 0 {
+					p.mac = f.macs[0]
+				}
+			case lanNoAddress:
+				p.detail = "enp5s0 has a link but no address"
+			}
+			return p
 		},
 		extensions: func() (*store.BootReport, error) {
 			if f.ext == nil && f.extErr == nil {
@@ -111,13 +122,21 @@ func (f *fakeHealth) env() healthEnv {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.healthy = append(f.healthy, rep)
+			m, err := os.ReadFile(config.ExtTrialOKPath())
+			if err != nil {
+				m = []byte("-")
+			}
+			f.markers = append(f.markers, string(m))
 			return f.healthyErr
 		},
 	}
 }
 
+const testMAC = "52:54:00:12:34:56"
+
 func healthy() *fakeHealth {
-	return &fakeHealth{mountsOK: true, pingOK: true, userOK: true, gpu: true, stream: true, lan: []lanState{lanUp}}
+	return &fakeHealth{mountsOK: true, pingOK: true, userOK: true, gpu: true, stream: true,
+		lan: []lanState{lanUp}, macs: []string{testMAC}}
 }
 
 func runFake(t *testing.T, f *fakeHealth) (int, string) {
@@ -149,7 +168,7 @@ func TestHealthOK(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, log)
 	}
-	if h := healthOK(t); !h.GPU || !h.Stream || !h.LAN {
+	if h := healthOK(t); !h.GPU || !h.Stream || !h.LAN || h.LANMAC != testMAC {
 		t.Fatalf("health-ok %+v", h)
 	}
 	// Running and healthy: no longer failed, no longer merely staged.
@@ -349,6 +368,9 @@ func TestHealthExtensionTrialFails(t *testing.T) {
 	if len(f.healthy) != 0 {
 		t.Fatalf("a failed trial was recorded as good: %v", f.healthy)
 	}
+	if _, err := os.Stat(config.ExtTrialOKPath()); !os.IsNotExist(err) {
+		t.Fatalf("trial-ok marker on a failed trial: %v", err)
+	}
 }
 
 func TestHealthExtensionTrialForced(t *testing.T) {
@@ -387,6 +409,15 @@ func TestHealthExtensionsRecorded(t *testing.T) {
 			if h := healthOK(t); !h.GPU {
 				t.Fatalf("health-ok %+v", h)
 			}
+			// A passed trial is on record before the store is touched, so
+			// vosd can promote it should health not get the lock.
+			want := "-"
+			if mode == store.ModePending {
+				want = "3\n"
+			}
+			if f.markers[0] != want {
+				t.Fatalf("trial-ok marker %q when recording, want %q", f.markers[0], want)
+			}
 		})
 	}
 
@@ -412,29 +443,44 @@ func TestHealthExtensionReportUnreadable(t *testing.T) {
 }
 
 func TestHealthLAN(t *testing.T) {
+	const other = "52:54:00:aa:bb:cc"
 	cases := []struct {
 		name     string
 		prevLAN  bool
+		prevMAC  string
 		lan      []lanState
+		macs     []string
 		code     int
 		seenLAN  bool
+		seenMAC  string
 		minProbe int // at least this many probes
 	}{
-		{name: "up", prevLAN: true, lan: []lanState{lanUp}, seenLAN: true},
-		{name: "comes up", prevLAN: true, lan: []lanState{lanNoCarrier, lanNoAddress, lanNoAddress, lanUp}, seenLAN: true, minProbe: 4},
-		{name: "no address", prevLAN: true, lan: []lanState{lanNoAddress}, code: 1},
+		{name: "up", prevLAN: true, lan: []lanState{lanUp}, macs: []string{testMAC}, seenLAN: true, seenMAC: testMAC},
+		{name: "comes up", prevLAN: true, lan: []lanState{lanNoCarrier, lanNoAddress, lanNoAddress, lanUp},
+			macs: []string{testMAC}, seenLAN: true, seenMAC: testMAC, minProbe: 4},
+		// A device down, or with a link and no address, at the deadline.
+		{name: "no address", prevLAN: true, lan: []lanState{lanNoAddress}, macs: []string{testMAC}, code: 1},
 		// Nothing plugged in: inconclusive, so it passes and keeps the baseline.
-		{name: "no carrier", prevLAN: true, lan: []lanState{lanNoCarrier}, seenLAN: true},
-		{name: "first seen", lan: []lanState{lanUp}, seenLAN: true},
+		{name: "no carrier", prevLAN: true, prevMAC: testMAC, lan: []lanState{lanNoCarrier}, macs: []string{testMAC},
+			seenLAN: true, seenMAC: testMAC},
+		{name: "no carrier, no device known", prevLAN: true, lan: []lanState{lanNoCarrier}, seenLAN: true},
+		// The device that had the LAN is gone (a driver the image lost).
+		{name: "device gone", prevLAN: true, prevMAC: other, lan: []lanState{lanNoCarrier}, macs: []string{testMAC}, code: 1},
+		{name: "device gone, no other", prevLAN: true, prevMAC: other, lan: []lanState{lanNoCarrier}, code: 1},
+		// Another device has the LAN now: up is up.
+		{name: "device replaced", prevLAN: true, prevMAC: other, lan: []lanState{lanUp}, macs: []string{testMAC},
+			seenLAN: true, seenMAC: testMAC},
+		{name: "first seen", lan: []lanState{lanUp}, macs: []string{testMAC}, seenLAN: true, seenMAC: testMAC},
 		{name: "not required", lan: []lanState{lanNoAddress}},
+		{name: "not required, device gone", prevMAC: other, lan: []lanState{lanNoCarrier}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := setup(t)
-			e.write(config.HealthOKPath(), fmt.Sprintf(`{"gpu":true,"stream":true,"lan":%v}`, c.prevLAN))
+			e.write(config.HealthOKPath(), fmt.Sprintf(`{"gpu":true,"stream":true,"lan":%v,"lan_mac":%q}`, c.prevLAN, c.prevMAC))
 			f := healthy()
 			f.counting = true
-			f.lan = c.lan
+			f.lan, f.macs = c.lan, c.macs
 			code, log := runFake(t, f)
 			if code != c.code {
 				t.Fatalf("exit %d, want %d\n%s", code, c.code, log)
@@ -443,8 +489,8 @@ func TestHealthLAN(t *testing.T) {
 				t.Fatalf("%d probes", f.probes)
 			}
 			if c.code == 0 {
-				if h := healthOK(t); h.LAN != c.seenLAN {
-					t.Fatalf("health-ok %+v", h)
+				if h := healthOK(t); h.LAN != c.seenLAN || h.LANMAC != c.seenMAC {
+					t.Fatalf("health-ok %+v, want lan %v %q", h, c.seenLAN, c.seenMAC)
 				}
 			}
 		})
@@ -469,37 +515,68 @@ func TestProbeLAN(t *testing.T) {
 		}
 		return out, nil
 	}
-	nic := func(name string, device bool, carrier string, a ...string) {
+	// nic adds an interface. flags "" leaves that file out, and carrier ""
+	// too: the kernel refuses to read it while the interface is down.
+	nic := func(name string, device bool, flags, carrier string, a ...string) {
 		dir := filepath.Join(NetClassDir, name)
+		os.RemoveAll(dir)
 		os.MkdirAll(dir, 0o755)
 		if device {
 			os.MkdirAll(filepath.Join(dir, "device"), 0o755)
+		}
+		os.WriteFile(filepath.Join(dir, "address"), []byte(fmt.Sprintf("52:54:00:00:00:%02x\n", len(name))), 0o644)
+		if flags != "" {
+			os.WriteFile(filepath.Join(dir, "flags"), []byte(flags+"\n"), 0o644)
 		}
 		if carrier != "" {
 			os.WriteFile(filepath.Join(dir, "carrier"), []byte(carrier+"\n"), 0o644)
 		}
 		addrs[name] = a
 	}
+	probe := func(want lanState, what string) lanProbe {
+		t.Helper()
+		p := probeLAN()
+		if p.state != want {
+			t.Fatalf("%s: %+v, want state %v", what, p, want)
+		}
+		return p
+	}
 
-	if got := probeLAN(); got != lanNoCarrier {
-		t.Fatalf("no interfaces: %v", got)
+	if p := probe(lanNoCarrier, "no interfaces"); len(p.macs) != 0 {
+		t.Fatalf("devices %v", p.macs)
 	}
-	nic("lo", true, "1", "127.0.0.1/8", "::1/128")
-	nic("docker0", false, "1", "172.17.0.1/16") // virtual: no device
-	nic("eno1", true, "0", "192.168.1.5/24")    // no link
-	if got := probeLAN(); got != lanNoCarrier {
-		t.Fatalf("only lo, a bridge and an unplugged NIC: %v", got)
+	nic("lo", true, "0x9", "1", "127.0.0.1/8", "::1/128")
+	nic("docker0", false, "0x1003", "1", "172.17.0.1/16") // virtual: no device
+	nic("docker1", false, "0x1002", "")                   // virtual and down
+	nic("eno1", true, "0x1003", "0", "192.168.1.5/24")    // up, nothing plugged in
+	nic("wlan0", true, "", "0")                           // no flags: a readable carrier means up
+	if p := probe(lanNoCarrier, "only lo, bridges and devices without a link"); len(p.macs) != 2 {
+		t.Fatalf("devices %v", p.macs)
 	}
-	nic("enp5s0", true, "1", "169.254.10.2/16", "fe80::1/64")
-	if got := probeLAN(); got != lanNoAddress {
-		t.Fatalf("link-local only: %v", got)
+
+	nic("enp5s0", true, "0x1002", "") // down, so its carrier cannot be read
+	if p := probe(lanNoAddress, "a device that is down"); p.detail != "enp5s0 is down" || len(p.macs) != 3 {
+		t.Fatalf("down: %+v", p)
+	}
+	nic("enp5s0", true, "", "") // neither flags nor carrier readable
+	probe(lanNoAddress, "a device whose carrier cannot be read")
+	nic("enp5s0", true, "0x1002", "1", "10.0.0.7/8") // flags say down, whatever carrier says
+	probe(lanNoAddress, "a down device with a carrier file")
+
+	nic("enp5s0", true, "0x1003", "1", "169.254.10.2/16", "fe80::1/64")
+	if p := probe(lanNoAddress, "link-local only"); p.detail != "enp5s0 has a link but no address" {
+		t.Fatalf("detail %q", p.detail)
 	}
 	addrs["enp5s0"] = append(addrs["enp5s0"], "fd12:3456::2/64")
-	if got := probeLAN(); got != lanUp {
-		t.Fatalf("a ULA address: %v", got)
+	if p := probe(lanUp, "a ULA address"); p.mac != "52:54:00:00:00:06" || p.detail != "" || len(p.macs) != 3 {
+		t.Fatalf("up: %+v", p)
 	}
 	addrs["enp5s0"] = []string{"10.0.0.7/8"}
-	if got := probeLAN(); got != lanUp {
-		t.Fatalf("a private IPv4 address: %v", got)
+	probe(lanUp, "a private IPv4 address")
+	// Another device down does not matter once one has the LAN, and every
+	// device present is still listed.
+	nic("enp6s0", true, "0x1002", "")
+	if p := probe(lanUp, "one up, one down"); len(p.macs) != 4 {
+		t.Fatalf("devices %v", p.macs)
 	}
 }
