@@ -400,4 +400,4 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 - Networks joined in Steam are saved in `/etc/NetworkManager/system-connections/`, kept by the `/etc` overlay.
 - `/usr/share/polkit-1/rules.d/50-vos-networkmanager.rules` grants every `org.freedesktop.NetworkManager.*` action to `vapor`, which has no seat session.
 
-**SteamOS helpers** Steam runs with `-steamos3`, as stubs in `/usr/bin`: `steamos-update` exits 7 (no update; VaporOS updates through vos) and `steamos-select-branch -c` prints `stable`.
+**SteamOS helpers** Steam runs with `-steamos3`, as stubs in `/usr/bin`: `steamos-update` exits 7 (no update; VaporOS updates through vos) and `steamos-select-branch -c` prints `stable`. Steam checks for and applies OS updates through `/usr/bin/steamos-polkit-helpers/steamos-update`, which runs `/usr/bin/steamos-update` with the same arguments; without it, first-run setup stops at "Unable to download the required update (2)".

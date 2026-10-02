@@ -210,7 +210,8 @@ info "kernel $KVER"
 # checkout, so drop them: everything is root's.
 cp -a --no-preserve=ownership,xattr "$SRC/rootfs/." "$ROOT/"
 chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" \
-    "$ROOT/usr/bin/steamos-update" "$ROOT/usr/bin/steamos-select-branch"
+    "$ROOT/usr/bin/steamos-update" "$ROOT/usr/bin/steamos-select-branch" \
+    "$ROOT/usr/bin/steamos-polkit-helpers/steamos-update"
 sed -i "s/@VERSION@/$VERSION/g" "$ROOT/usr/lib/os-release"
 ln -sf ../usr/lib/os-release "$ROOT/etc/os-release"
 
@@ -526,7 +527,7 @@ check_image() {
         usr/lib/NetworkManager/conf.d/50-vos.conf usr/share/polkit-1/rules.d/50-vos-networkmanager.rules; do
         [[ -e $m/$f ]] || problem "/$f is missing"
     done
-    for f in usr/bin/steamos-update usr/bin/steamos-select-branch; do
+    for f in usr/bin/steamos-update usr/bin/steamos-select-branch usr/bin/steamos-polkit-helpers/steamos-update; do
         [[ -x $m/$f ]] || problem "/$f is not executable"
     done
 

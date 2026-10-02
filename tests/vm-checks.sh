@@ -165,7 +165,8 @@ check_network() {
     else
         bad nm-polkit "vapor's NetworkManager permissions: $(tr '\n' ' ' <<<"$perms")"
     fi
-    /usr/bin/steamos-update check >/dev/null 2>&1
+    # Steam runs the polkit helper, which hands over to /usr/bin/steamos-update.
+    runuser -u vapor -- /usr/bin/steamos-polkit-helpers/steamos-update check >/dev/null 2>&1
     rc=$?
     if (( rc == 7 )); then ok steamos-update "reports no update"; else bad steamos-update "exited $rc, expected 7"; fi
 }
