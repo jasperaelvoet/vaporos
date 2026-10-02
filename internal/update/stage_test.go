@@ -10,12 +10,16 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
 	"github.com/jasperaelvoet/vaporos/internal/config"
@@ -590,6 +594,7 @@ type fakeStore struct {
 	puts        []string
 	free        int64 // what storeFree reports; -1 = unknown
 	unsupported bool
+	beforePut   func(id string)
 	afterPut    func(id string)
 }
 
@@ -604,6 +609,9 @@ func (e *testEnv) fakeStore() *fakeStore {
 	storeFree = func() (int64, error) { return f.free, nil }
 	putImage = func(ctx context.Context, c catalog.Entry, fetch func(io.Writer, func(int64) error) error) error {
 		f.puts = append(f.puts, c.ID)
+		if f.beforePut != nil {
+			f.beforePut(c.ID)
+		}
 		if ok, _ := hasImage(c); ok {
 			return nil
 		}
@@ -820,6 +828,122 @@ func TestStageNoVerity(t *testing.T) {
 	// The slot file still lists the new image's catalog.
 	if slot, err := store.ReadSlot("b"); err != nil || slot == nil || len(slot.Extensions) != 3 {
 		t.Fatalf("slots/b.json: %+v %v", slot, err)
+	}
+}
+
+// checkHooked fails unless the idle slot is as it was before a stage that
+// stopped early: still bootable, no new catalog, nothing recorded.
+func (e *testEnv) checkHooked() {
+	e.t.Helper()
+	if b := e.entry("b"); b == nil || b.Version != oldIdleVersion {
+		e.t.Fatalf("slot b entry: %+v", b)
+	}
+	if slot, _ := store.ReadSlot("b"); slot != nil {
+		e.t.Fatalf("slots/b.json written: %+v", slot)
+	}
+	if st := e.state(); st.LastError != "" || st.Staged != nil {
+		e.t.Fatalf("state %+v", st)
+	}
+}
+
+// stageCancelled runs Stage until cancel is called with ErrCancelled, as
+// the update service's Cancel does.
+func (e *testEnv) stageCancelled(src string, run func(cancel func())) error {
+	e.t.Helper()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	run(func() { cancel(ErrCancelled) })
+	done := make(chan error, 1)
+	go func() {
+		_, err := Stage(ctx, e.cfg(src), Options{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		e.t.Fatal("Stage did not stop")
+		return nil
+	}
+}
+
+// A cancel while an extension image downloads stops before the idle slot
+// is touched, and is no error to remember.
+func TestStageCancelledFetchingExtension(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	err := e.stageCancelled(e.srcDir(img), func(cancel func()) {
+		fs.beforePut = func(id string) {
+			if id == "cooler" {
+				cancel()
+			}
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	e.checkHooked()
+	if e.sealed(img, "cooler") {
+		t.Fatal("the cancelled image was sealed")
+	}
+}
+
+// A cancel while Stage waits for ext.lock to unhook the idle slot leaves
+// it hooked.
+func TestStageCancelledWaitingForExtLock(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	unlock, err := store.Lock(context.Background())
+	e.must(err)
+	defer unlock()
+	err = e.stageCancelled(e.srcDir(img), func(cancel func()) {
+		fs.afterPut = func(id string) {
+			if id == "cooler" { // the last image: next comes the lock
+				time.AfterFunc(50*time.Millisecond, cancel)
+			}
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	e.checkHooked()
+}
+
+// An http(s) source serves the extension images by name next to the
+// manifest.
+func TestStageExtensionsFromHTTPS(t *testing.T) {
+	e := setup(t)
+	img := e.makeImageExt(newVersion, 200, 100<<10, testExts...)
+	e.write(config.ExtWantedPath(), "cooler\n")
+	fs := e.fakeStore()
+	var mu sync.Mutex
+	var asked []string
+	files := http.FileServer(http.Dir(e.srcDir(img)))
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, strings.TrimPrefix(r.URL.Path, "/vos/"))
+		mu.Unlock()
+		http.StripPrefix("/vos", files).ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	httpClient = srv.Client()
+	if _, err := Stage(context.Background(), e.cfg(srv.URL+"/vos/"), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	e.checkStaged(img)
+	if strings.Join(fs.puts, " ") != "proton cooler" || !e.sealed(img, "proton") || !e.sealed(img, "cooler") {
+		t.Fatalf("put %v", fs.puts)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, name := range []string{"ext-proton.raw", "ext-cooler.raw"} {
+		if !slices.Contains(asked, name) {
+			t.Fatalf("%s not fetched from the server: %v", name, asked)
+		}
 	}
 }
 
