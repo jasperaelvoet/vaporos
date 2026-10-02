@@ -23,19 +23,24 @@ type Node struct {
 	Children []*Node
 	Block    bool
 
+	// cond is the platform conditional after the entry ("$WIN32" for
+	// [$WIN32]), "" when it has none.
+	cond string
 	// Byte offsets in the parsed text, for edits that splice it
 	// (vdfedit.go): the key token, the value token (for a block its '{'
 	// and '}'), and the end of the entry, a conditional included.
 	start, valStart, valEnd, end int
 }
 
-// Child returns the first child whose key matches (case-insensitively).
+// Child returns the first child whose key matches (case-insensitively)
+// and that Steam on Linux reads: one whose conditional is false there,
+// such as [$WIN32], is passed over.
 func (n *Node) Child(key string) *Node {
 	if n == nil {
 		return nil
 	}
 	for _, c := range n.Children {
-		if strings.EqualFold(c.Key, key) {
+		if c.applies() && strings.EqualFold(c.Key, key) {
 			return c
 		}
 	}
@@ -50,6 +55,40 @@ func (n *Node) Str(key string) string {
 		return ""
 	}
 	return c.Value
+}
+
+// applies reports whether Steam on Linux reads the entry.
+func (n *Node) applies() bool { return linuxCond(n.cond) }
+
+// linuxDefines are the platform names a conditional can test, as they
+// are on Linux.
+var linuxDefines = map[string]bool{
+	"$WIN32": false, "$WINDOWS": false, "$OSX": false, "$X360": false, "$PS3": false,
+	"$LINUX": true, "$POSIX": true,
+}
+
+// linuxCond evaluates a conditional such as $WIN32, !$LINUX or
+// $WIN32||$OSX as Steam on Linux does. One that names something else is
+// taken as true, as every conditional was before VaporOS read them.
+func linuxCond(cond string) bool {
+	if cond == "" {
+		return true
+	}
+	result := false
+	for _, alt := range strings.Split(cond, "||") {
+		all := true
+		for _, term := range strings.Split(alt, "&&") {
+			term = strings.TrimSpace(term)
+			not := strings.HasPrefix(term, "!")
+			v, known := linuxDefines[strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(term, "!")))]
+			if !known {
+				return true
+			}
+			all = all && v != not
+		}
+		result = result || all
+	}
+	return result
 }
 
 // Limits that keep a corrupt or hostile file from costing more than a
@@ -77,10 +116,33 @@ func parseVDF(data []byte, limit int) (*Node, error) {
 	return root, nil
 }
 
+// checkVDF reports whether data parses, without building its tree: the
+// check every edit makes of its own result.
+func checkVDF(data []byte, limit int) error {
+	if len(data) > limit {
+		return fmt.Errorf("vdf: file too large (%d bytes)", len(data))
+	}
+	p := &vdfParser{s: string(data), scan: true}
+	return p.block(nil, 0, false)
+}
+
 type vdfParser struct {
-	s   string
-	pos int
-	tok int // where the last token starts
+	s    string
+	pos  int
+	tok  int  // where the last token starts
+	scan bool // only check the syntax
+	slab []Node
+}
+
+// node allocates nodes a slab at a time: a large localconfig.vdf has
+// millions, and one allocation each costs more than parsing them.
+func (p *vdfParser) node() *Node {
+	if len(p.slab) == 0 {
+		p.slab = make([]Node, 512)
+	}
+	n := &p.slab[0]
+	p.slab = p.slab[1:]
+	return n
 }
 
 type tokKind int
@@ -95,6 +157,7 @@ const (
 var errUnexpectedEOF = errors.New("vdf: unexpected end of file")
 
 // block reads key/value pairs into parent until '}' (nested) or EOF (top).
+// Scanning, parent is nil and nothing is kept.
 func (p *vdfParser) block(parent *Node, depth int, nested bool) error {
 	if depth > maxVDFDepth {
 		return errors.New("vdf: nesting too deep")
@@ -125,38 +188,49 @@ func (p *vdfParser) block(parent *Node, depth int, nested bool) error {
 			return err
 		}
 		var n *Node
+		if !p.scan {
+			n = p.node()
+			n.Key, n.start, n.valStart = key, start, p.tok
+		}
 		switch kind {
 		case tokEOF:
 			return errUnexpectedEOF
 		case tokClose:
 			return fmt.Errorf("vdf: key %q has no value", key)
 		case tokOpen:
-			n = &Node{Key: key, Block: true, start: start, valStart: p.tok}
 			if err := p.block(n, depth+1, true); err != nil {
 				return err
 			}
-			n.valEnd = p.pos - 1 // the '}'
+			if n != nil {
+				n.Block, n.valEnd = true, p.pos-1 // the '}'
+			}
 		default:
-			n = &Node{Key: key, Value: val, start: start, valStart: p.tok, valEnd: p.pos}
+			if n != nil {
+				n.Value, n.valEnd = val, p.pos
+			}
 		}
-		p.skipConditional()
-		n.end = p.pos
-		parent.Children = append(parent.Children, n)
+		cond := p.skipConditional()
+		if n != nil {
+			n.cond, n.end = cond, p.pos
+			parent.Children = append(parent.Children, n)
+		}
 	}
 }
 
-// skipConditional drops a platform conditional such as [$WIN32] that may
-// follow a value or block. VaporOS is one platform, so they carry nothing.
-func (p *vdfParser) skipConditional() {
+// skipConditional moves past a platform conditional such as [$WIN32]
+// that may follow a value or block, and returns what is in its brackets.
+func (p *vdfParser) skipConditional() string {
 	save := p.pos
 	p.skipSpace()
 	if p.pos < len(p.s) && p.s[p.pos] == '[' {
 		if end := strings.IndexByte(p.s[p.pos:], ']'); end >= 0 {
+			cond := p.s[p.pos+1 : p.pos+end]
 			p.pos += end + 1
-			return
+			return cond
 		}
 	}
 	p.pos = save
+	return ""
 }
 
 func (p *vdfParser) skipSpace() {
@@ -195,21 +269,28 @@ func (p *vdfParser) next() (tokKind, string, error) {
 		return tokString, s, err
 	default:
 		start := p.pos
-		for p.pos < len(p.s) {
-			c := p.s[p.pos]
-			if c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '{' || c == '}' || c == '"' {
-				break
-			}
+		for p.pos < len(p.s) && unquotedByte(p.s[p.pos]) {
 			p.pos++
 		}
 		return tokString, p.s[start:p.pos], nil
 	}
 }
 
+// unquotedByte reports whether c continues an unquoted token.
+func unquotedByte(c byte) bool {
+	return c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != '{' && c != '}' && c != '"'
+}
+
 // quoted reads a "..." token. Steam writes \\ for a backslash and \" for a
 // quote; \n and \t also occur in user-visible strings.
 func (p *vdfParser) quoted() (string, error) {
 	p.pos++ // opening quote
+	rest := p.s[p.pos:]
+	if end := strings.IndexByte(rest, '"'); end >= 0 && strings.IndexByte(rest[:end], '\\') < 0 {
+		// No escapes, as in nearly every token: the text itself.
+		p.pos += end + 1
+		return rest[:end], nil
+	}
 	var b strings.Builder
 	for p.pos < len(p.s) {
 		c := p.s[p.pos]

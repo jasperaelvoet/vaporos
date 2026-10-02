@@ -3,8 +3,10 @@ package steamprep
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
@@ -15,10 +17,19 @@ func (b *box) betaKey() string {
 	return k
 }
 
-func withBeta(d Desired, app uint32, beta string) Desired {
+func (b *box) setBetaKey(branch string) {
+	b.edit("steamapps/appmanifest_227300.acf", func(d []byte) []byte {
+		out, _, err := steam.SetBetaKey(d, branch)
+		b.check(err)
+		return out
+	})
+}
+
+// withBeta asks for app's branch, as request id.
+func withBeta(d Desired, app uint32, branch, id string) Desired {
 	for i := range d.Apps {
 		if d.Apps[i].App == app {
-			d.Apps[i].Beta = &beta
+			d.Apps[i].Beta = &BetaWant{Branch: branch, Request: id}
 		}
 	}
 	return d
@@ -26,12 +37,12 @@ func withBeta(d Desired, app uint32, beta string) Desired {
 
 func TestBranches(t *testing.T) {
 	b := newBox(t)
-	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61"))
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61", "r1"))
 	b.run(false)
 	if k := b.betaKey(); k != "temporary_1_61" {
 		t.Fatalf("BetaKey %q", k)
 	}
-	if bs := b.state().peekApp(ets2).Beta; bs == nil || *bs != (BetaState{Wrote: "temporary_1_61", Before: "temporary_1_53"}) {
+	if bs := b.state().peekApp(ets2).Beta; bs == nil || *bs != (BetaState{Wrote: "temporary_1_61", Before: "temporary_1_53", Request: "r1"}) {
 		t.Fatalf("record %+v", bs)
 	}
 	// Not installed: left for later, without a record.
@@ -49,22 +60,72 @@ func TestBranches(t *testing.T) {
 		t.Errorf("record %+v", a.Beta)
 	}
 
-	// The public branch is a branch too; one the user changed meanwhile
-	// stays theirs.
-	b.desire(withBeta(truckers(proton()), ets2, ""))
+	// The public branch is a branch too. A request is applied once: the
+	// branch the user picks in Steam afterwards stays theirs, while the
+	// request is still there and after it goes.
+	b.desire(withBeta(truckers(proton()), ets2, "", "r2"))
 	b.run(false)
 	if k := b.betaKey(); k != "" {
 		t.Errorf("public: %q", k)
 	}
-	b.edit("steamapps/appmanifest_227300.acf", func(d []byte) []byte {
-		out, _, err := steam.SetBetaKey(d, "temporary_1_58")
-		b.check(err)
-		return out
-	})
+	b.setBetaKey("temporary_1_58")
+	b.run(false)
+	if k := b.betaKey(); k != "temporary_1_58" {
+		t.Errorf("request applied again: %q", k)
+	}
 	b.desire(truckers(proton()))
 	b.run(false)
 	if k := b.betaKey(); k != "temporary_1_58" {
 		t.Errorf("user's branch: %q", k)
+	}
+
+	// A new request is applied, over the user's branch.
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61", "r3"))
+	b.run(false)
+	if k := b.betaKey(); k != "temporary_1_61" {
+		t.Errorf("new request: %q", k)
+	}
+	if bs := b.state().peekApp(ets2).Beta; bs.Before != "temporary_1_58" {
+		t.Errorf("record %+v", bs)
+	}
+}
+
+func TestBranchAlreadySoIsAdopted(t *testing.T) {
+	b := newBox(t)
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_53", "r1"))
+	b.run(false)
+	if bs := b.state().peekApp(ets2).Beta; bs == nil || *bs != (BetaState{Wrote: "temporary_1_53", Request: "r1"}) {
+		t.Fatalf("record %+v", bs)
+	}
+	b.desire(truckers(proton()))
+	b.run(false)
+	if k := b.betaKey(); k != "" {
+		t.Errorf("not back to the public branch: %q", k)
+	}
+}
+
+func TestMalformedBranchLeftAlone(t *testing.T) {
+	b := newBox(t)
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61", "r1"))
+	b.run(false)
+	// The branch as an old vosd wrote it: the rest of the app still
+	// applies, and the branch and its record stay as they are.
+	data, err := os.ReadFile(config.ExtSteamPath())
+	b.check(err)
+	old := strings.Replace(string(data), `{"branch":"temporary_1_61","request":"r1"}`, `"temporary_1_58"`, 1)
+	if old == string(data) {
+		t.Fatalf("steam.json: %s", data)
+	}
+	b.write(config.ExtSteamPath(), []byte(old))
+	b.run(false)
+	if k := b.betaKey(); k != "temporary_1_61" {
+		t.Errorf("BetaKey %q", k)
+	}
+	if bs := b.state().peekApp(ets2).Beta; bs == nil || bs.Request != "r1" {
+		t.Errorf("record %+v", bs)
+	}
+	if o, _ := b.launchOptions(acctA, ets2); !strings.HasPrefix(o, tokenETS2) {
+		t.Errorf("launch options %q", o)
 	}
 }
 
@@ -76,11 +137,39 @@ func TestBranchInAnotherLibrary(t *testing.T) {
 	b.check(os.Remove(filepath.Join(b.root, "steamapps", "appmanifest_227300.acf")))
 	b.write(filepath.Join(b.root, "steamapps", "libraryfolders.vdf"),
 		[]byte("\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\""+b.root+"\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\""+lib+"\"\n\t}\n}\n"))
-	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61"))
+	b.desire(withBeta(truckers(proton()), ets2, "temporary_1_61", "r1"))
 	b.run(false)
 	got, err := readRegular(filepath.Join(lib, "steamapps", "appmanifest_227300.acf"), steam.VDFMax)
 	b.check(err)
 	if k, _, _ := steam.BetaKey(got); k != "temporary_1_61" {
 		t.Errorf("BetaKey %q", k)
+	}
+}
+
+func TestDecideBeta(t *testing.T) {
+	want := &BetaWant{Branch: "b2", Request: "r2"}
+	for _, c := range []struct {
+		name   string
+		cur    string
+		b      *BetaState
+		want   *BetaWant
+		branch string
+		next   *BetaState
+	}{
+		{"apply", "b0", nil, want, "b2", &BetaState{Wrote: "b2", Before: "b0", Request: "r2"}},
+		{"adopt", "b2", nil, want, "b2", &BetaState{Wrote: "b2", Request: "r2"}},
+		{"applied once", "b9", &BetaState{Wrote: "b2", Before: "b0", Request: "r2"}, want, "b9",
+			&BetaState{Wrote: "b2", Before: "b0", Request: "r2"}},
+		{"new request, ours there", "b1", &BetaState{Wrote: "b1", Before: "b0", Request: "r1"}, want, "b2",
+			&BetaState{Wrote: "b2", Before: "b0", Request: "r2"}},
+		{"new request, user's there", "b9", &BetaState{Wrote: "b1", Before: "b0", Request: "r1"}, want, "b2",
+			&BetaState{Wrote: "b2", Before: "b9", Request: "r2"}},
+		{"withdrawn", "b2", &BetaState{Wrote: "b2", Before: "b0", Request: "r2"}, nil, "b0", nil},
+		{"withdrawn, user's", "b9", &BetaState{Wrote: "b2", Before: "b0", Request: "r2"}, nil, "b9", nil},
+	} {
+		branch, next := decideBeta(c.cur, c.b, c.want)
+		if branch != c.branch || (next == nil) != (c.next == nil) || next != nil && *next != *c.next {
+			t.Errorf("%s: %q %+v", c.name, branch, next)
+		}
 	}
 }

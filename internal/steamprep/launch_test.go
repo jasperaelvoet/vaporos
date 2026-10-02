@@ -120,6 +120,20 @@ func TestSeveralCommandsLeftAlone(t *testing.T) {
 	if o, _ := b.launchOptions(acctB, ets2); o != tokenETS2+"%command% -nointro -64bit" {
 		t.Errorf("other account %q", o)
 	}
+
+	// Dispatcher tokens in them go, wherever they are; the rest stays.
+	b.edit(lcA, func(d []byte) []byte {
+		out, _, err := steam.SetLaunchOptions(d, ets2, tokenETS2+"%command% ; /usr/bin/vos ext launch --app 1\t%command% -x")
+		b.check(err)
+		return out
+	})
+	b.run(false)
+	if o, _ := b.launchOptions(acctA, ets2); o != "%command% ; %command% -x" {
+		t.Errorf("tokens left: %q", o)
+	}
+	if l := b.state().peekApp(ets2).Launch["52079950"]; l == nil || !l.Conflict || l.Before != "%command% ; %command% -x" {
+		t.Errorf("record %+v", l)
+	}
 }
 
 func TestDecideLaunch(t *testing.T) {

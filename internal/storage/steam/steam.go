@@ -96,11 +96,15 @@ func (a App) Installed() bool { return a.StateFlags&stateFullyInstalled != 0 }
 // IsTool reports whether the app is Steam plumbing rather than a game:
 // Proton, the Steam Linux Runtime containers and the common redistributables.
 // They have appmanifests like games, but launching them does nothing useful.
+// The ids catch them before they are installed; the names, versions
+// this list does not know yet.
 func (a App) IsTool() bool {
 	switch a.ID {
 	case 228980, // Steamworks Common Redistributables
 		1070560, 1391110, 1628350, 4183110, // Steam Linux Runtime 1.0, 2.0, 3.0, 4.0
 		1493710, 2180100, 3658110, 4628710, // Proton Experimental, Hotfix, 10.0, 11.0
+		2805730, 2348590, 1887720, 1580130, 1420170, // Proton 9.0, 8.0, 7.0, 6.3, 5.13
+		1245040, 1113280, 1054830, 961940, 858280, // Proton 5.0, 4.11, 4.2, 3.16, 3.7
 		1826330, 1161040: // Proton EasyAntiCheat and BattlEye runtimes
 		return true
 	}

@@ -44,9 +44,18 @@ func decideMapping(in mapInput) (mapAction, Mapping) {
 	m := in.m
 	owned := m.Wrote != ""
 	held := owned && !m.Suspended && in.cur != nil && in.cur.Name == m.Wrote
-	var restore mapAction
-	if held {
-		restore = restoreTo(m.Before)
+	// restore puts the entry from before back, where VaporOS's value is
+	// still there. For a tool that is missing, a before that names it
+	// counts as none: Steam could not run that either.
+	restore := func(forMissing bool) mapAction {
+		if !held {
+			return mapAction{}
+		}
+		if forMissing && m.Before != nil && !in.toolOK(m.Before.Name) &&
+			(m.Before.Name == m.Wrote || m.Before.Name == in.want) {
+			return mapAction{del: true}
+		}
+		return restoreTo(m.Before)
 	}
 	switch {
 	case in.unwrap:
@@ -57,16 +66,19 @@ func decideMapping(in mapInput) (mapAction, Mapping) {
 			return mapAction{}, Mapping{} // the user's own choice
 		}
 		m.Suspended = true
-		return restore, m
+		return restore(false), m
 
 	case in.release && owned && in.want == "":
-		if held && !in.toolOK(m.Wrote) {
-			return restore, Mapping{}
+		if !in.toolOK(m.Wrote) {
+			return restore(true), Mapping{}
 		}
 		return mapAction{}, Mapping{}
 
 	case owned && m.Suspended:
 		if in.want != "" && in.toolOK(in.want) {
+			if in.cur != nil && in.cur.Name == in.want {
+				return mapAction{}, Mapping{Wrote: in.want}
+			}
 			// What is there now is Steam's: whatever changed while the
 			// tool was missing is what comes back later.
 			return setTo(in.key, in.want), Mapping{Wrote: in.want, Before: clone(in.cur)}
@@ -83,16 +95,16 @@ func decideMapping(in mapInput) (mapAction, Mapping) {
 		if in.want == "" {
 			switch {
 			case in.shortcut:
-				return restore, Mapping{}
+				return restore(false), Mapping{}
 			case !in.toolOK(m.Wrote):
 				m.Suspended = true
-				return restore, m
+				return restore(true), m
 			}
 			return mapAction{}, m // not asked for any more: kept as it is
 		}
 		if !in.toolOK(in.want) {
 			m.Suspended = true
-			return restore, m
+			return restore(true), m
 		}
 		if held && in.cur.Name == in.want {
 			return mapAction{}, m
@@ -106,12 +118,9 @@ func decideMapping(in mapInput) (mapAction, Mapping) {
 	}
 	if in.cur != nil && in.cur.Name == in.want {
 		// Already so (VaporOS's own value from a run that stopped before
-		// it was recorded, or the user's same choice): VaporOS owns it.
-		before := clone(in.cur)
-		if in.key == 0 || in.shortcut {
-			before = nil
-		}
-		return mapAction{}, Mapping{Wrote: in.want, Before: before}
+		// it was recorded, or the user's same choice): VaporOS owns it,
+		// with no entry of its own to put back.
+		return mapAction{}, Mapping{Wrote: in.want}
 	}
 	if in.key == 0 && in.cur != nil {
 		return mapAction{}, Mapping{} // the user's choice wins
@@ -242,14 +251,14 @@ func (p *prep) mapInputs() []mapInput {
 		}
 	}
 	for id := range release {
-		if !isTool(id) {
+		if !p.isTool(id) {
 			add(id)
 		}
 	}
 	if !unwrap {
 		add(0).want = p.want.DefaultCompatTool
 		for _, a := range p.want.Apps {
-			if a.CompatTool != "" && !isTool(a.App) && a.App&0x80000000 == 0 {
+			if a.CompatTool != "" && !p.isTool(a.App) && a.App&0x80000000 == 0 {
 				add(a.App).want = a.CompatTool
 			}
 		}
@@ -265,8 +274,15 @@ func (p *prep) mapInputs() []mapInput {
 	out := make([]mapInput, 0, len(keys))
 	for _, k := range keys {
 		in := ins[k]
-		if in.shortcut && in.want == "" && p.shortcutsUnread && !unwrap {
-			continue // its shortcut may still be there
+		if in.shortcut && in.want == "" && !unwrap {
+			if p.shortcutsUnread {
+				continue // its shortcut may still be there
+			}
+			if p.keptShortcuts[k] {
+				// Its shortcut stays though steam.json does not list it:
+				// so does the entry, like an app's no longer asked for.
+				in.shortcut = false
+			}
 		}
 		out = append(out, *in)
 	}

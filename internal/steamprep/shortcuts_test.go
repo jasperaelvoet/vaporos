@@ -224,11 +224,168 @@ func TestDecideShortcutsKeepsTheUsers(t *testing.T) {
 	heroic := steam.NewShortcut(0x81234567, "Heroic", "/heroic", "/", "")
 	theirs := steam.NewShortcut(0x87654321, "Star Citizen", "/usr/bin/env", "/", "lutris")
 	want := []Shortcut{{Owner: scOwner, Key: scKey, Name: "Star Citizen", Exe: "/x/setup.exe", StartDir: "/x"}}
-	out, next, removed := decideShortcuts([]steam.Shortcut{heroic, theirs}, true, want, nil, false)
-	if len(out) != 3 || out[0].AppName != "Heroic" || out[1].LaunchOptions != "lutris" || len(removed) != 0 {
-		t.Errorf("%+v %v", out, removed)
+	res := decideShortcuts(shortcutInput{list: []steam.Shortcut{heroic, theirs}, existed: true, want: want,
+		names: func(string) bool { return true }})
+	if len(res.list) != 3 || res.list[0].AppName != "Heroic" || res.list[1].LaunchOptions != "lutris" || len(res.removed) != 0 {
+		t.Errorf("%+v %v", res.list, res.removed)
 	}
-	if next["star-citizen/launcher"].AppID != scApp {
-		t.Errorf("%+v", next)
+	if res.next["star-citizen/launcher"].AppID != scApp {
+		t.Errorf("%+v", res.next)
+	}
+}
+
+// listStarCitizen is steam.json without the Star Citizen shortcut, with
+// its extension still named (a hook of its own), as when its install has
+// no target for the shortcut yet.
+func listStarCitizen(d Desired, listed bool) Desired {
+	if !listed {
+		d.Shortcuts = nil
+		d.Apps = append(d.Apps, AppWant{App: 12345, Hooks: []string{scOwner}})
+	}
+	return d
+}
+
+func TestShortcutMissingOneRun(t *testing.T) {
+	b := newBox(t)
+	b.desire(b.starCitizen(proton()))
+	b.run(false)
+	before := b.steamFile("userdata/52079950/config/shortcuts.vdf")
+
+	// Not listed for a run while its extension is still named: nothing
+	// is taken out, and nothing is added again after.
+	b.desire(listStarCitizen(b.starCitizen(proton()), false))
+	b.run(false)
+	if got := b.steamFile("userdata/52079950/config/shortcuts.vdf"); string(got) != string(before) {
+		t.Error("shortcuts.vdf changed")
+	}
+	if got, _ := b.mapping(scApp); got != oursApp {
+		t.Errorf("mapping %+v", got)
+	}
+	if _, err := os.Stat(b.grid(acctA, scApp, "p")); err != nil {
+		t.Errorf("art: %v", err)
+	}
+	if ss := b.state().Shortcuts["52079950"]["star-citizen/launcher"]; ss == nil || ss.AppID != scApp || ss.Deleted {
+		t.Errorf("record %+v", ss)
+	}
+	// Meanwhile the tool goes: no mapping to it is left behind.
+	b.removeTool(tool)
+	b.run(false)
+	if _, ok := b.mapping(scApp); ok {
+		t.Error("mapped to a missing tool")
+	}
+	b.installTool(tool)
+
+	b.desire(b.starCitizen(proton()))
+	b.run(false)
+	if got := b.steamFile("userdata/52079950/config/shortcuts.vdf"); string(got) != string(before) {
+		t.Error("shortcuts.vdf changed when listed again")
+	}
+	if got, _ := b.mapping(scApp); got != oursApp {
+		t.Errorf("mapping when listed again %+v", got)
+	}
+}
+
+func TestDeletedShortcutStaysDeletedAcrossAnAbsence(t *testing.T) {
+	for name, absent := range map[string]Desired{
+		"extension still named": listStarCitizen(proton(), false),
+		"extension not named":   proton(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := newBox(t)
+			b.desire(b.starCitizen(proton()))
+			b.run(false)
+			b.edit("userdata/52079950/config/shortcuts.vdf", func(d []byte) []byte {
+				list, err := steam.ParseShortcuts(d)
+				b.check(err)
+				out, err := steam.MarshalShortcuts(list[:2])
+				b.check(err)
+				return out
+			})
+			b.run(false) // the user deleted it
+
+			b.desire(absent)
+			b.run(false)
+			if ss := b.state().Shortcuts["52079950"]["star-citizen/launcher"]; ss == nil || !ss.Deleted {
+				t.Errorf("record while absent %+v", ss)
+			}
+			b.desire(b.starCitizen(proton()))
+			b.run(false)
+			if sc, ok := b.vaporShortcut(acctA); ok {
+				t.Errorf("added again: %+v", sc)
+			}
+			if ss := b.state().Shortcuts["52079950"]["star-citizen/launcher"]; ss == nil || !ss.Deleted {
+				t.Errorf("record %+v", ss)
+			}
+		})
+	}
+}
+
+func TestShortcutArtAndIcon(t *testing.T) {
+	b := newBox(t)
+	d := b.starCitizen(proton())
+	b.write(filepath.Join(d.Shortcuts[0].Art, "capsule-wide.png"), []byte("wide"))
+	b.write(filepath.Join(d.Shortcuts[0].Art, "icon.png"), []byte("icon"))
+	b.desire(d)
+	b.run(false)
+	for suffix, content := range map[string]string{"": "wide", "_icon": "icon", "p": "capsule"} {
+		if data, err := os.ReadFile(b.grid(acctA, scApp, suffix)); err != nil || string(data) != content {
+			t.Errorf("art %q: %q %v", suffix, data, err)
+		}
+	}
+	sc, _ := b.vaporShortcut(acctA)
+	if sc.Icon != b.grid(acctA, scApp, "_icon") {
+		t.Errorf("icon %q", sc.Icon)
+	}
+	if sc, _ := b.vaporShortcut(acctB); sc.Icon != b.grid(acctB, scApp, "_icon") {
+		t.Errorf("second account's icon %q", sc.Icon)
+	}
+
+	// An icon the user picked stays.
+	b.edit("userdata/52079950/config/shortcuts.vdf", func(data []byte) []byte {
+		list, err := steam.ParseShortcuts(data)
+		b.check(err)
+		list[2].Icon = "/home/mine.png"
+		out, err := steam.MarshalShortcuts(list)
+		b.check(err)
+		return out
+	})
+	b.run(false)
+	if sc, _ := b.vaporShortcut(acctA); sc.Icon != "/home/mine.png" {
+		t.Errorf("user's icon replaced: %q", sc.Icon)
+	}
+
+	// All of it goes with the shortcut.
+	b.desire(proton())
+	b.run(false)
+	for _, suffix := range []string{"", "_icon", "p", "_hero"} {
+		if _, err := os.Stat(b.grid(acctA, scApp, suffix)); !os.IsNotExist(err) {
+			t.Errorf("art %q left: %v", suffix, err)
+		}
+	}
+}
+
+func TestUnknownAccountsKeepShortcutMappings(t *testing.T) {
+	for name, setup := range map[string]func(b *box){
+		"loginusers.vdf broken": func(b *box) {
+			b.edit("config/loginusers.vdf", func(d []byte) []byte { return d[:len(d)-3] })
+		},
+		"account signed out": func(b *box) {
+			b.edit("config/loginusers.vdf", func([]byte) []byte { return []byte("\"users\"\n{\n}\n") })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := newBox(t)
+			b.desire(b.starCitizen(proton()))
+			b.run(false)
+			setup(b)
+			b.desire(proton()) // Star Citizen removed
+			b.run(false)
+			if got, _ := b.mapping(scApp); got != oursApp {
+				t.Errorf("mapping %+v", got)
+			}
+			if !b.state().peekApp(scApp).Mapping.owned() {
+				t.Error("mapping no longer owned")
+			}
+		})
 	}
 }

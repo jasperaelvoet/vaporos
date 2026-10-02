@@ -212,40 +212,75 @@ func TestParseFailureLeavesFilesUntouched(t *testing.T) {
 }
 
 func TestLeavesSteamAlone(t *testing.T) {
-	for name, setup := range map[string]func(b *box){
-		"no steam.json":  func(b *box) { b.check(os.Remove(config.ExtSteamPath())) },
-		"another set":    func(b *box) { b.bootReport("5") },
-		"no boot report": func(b *box) { b.check(os.Remove(config.ExtBootPath())) },
-		"Steam elsewhere": func(b *box) {
+	for name, c := range map[string]struct {
+		setup   func(b *box)
+		skipped string // "": no record at all
+	}{
+		"no steam.json":  {func(b *box) { b.check(os.Remove(config.ExtSteamPath())) }, skipNoDesired},
+		"another set":    {func(b *box) { b.bootReport("5") }, skipOtherSet},
+		"no boot report": {func(b *box) { b.check(os.Remove(config.ExtBootPath())) }, skipOtherSet},
+		"bad steam.json": {func(b *box) { b.write(config.ExtSteamPath(), []byte("{")) }, skipBadDesired},
+		"Steam running": {func(b *box) {
+			proc := filepath.Join(b.dir, "proc", "4242")
+			b.write(filepath.Join(proc, "comm"), []byte("steamwebhelper\n"))
+		}, skipSteamRunning},
+		"Steam elsewhere": {func(b *box) {
 			link := filepath.Join(b.home, ".steam", "root")
 			b.check(os.Remove(link))
 			other := filepath.Join(b.dir, "flatpak-steam")
 			b.mkdir(other)
 			b.check(os.Symlink(other, link))
-		},
-		"Steam running": func(b *box) {
-			proc := filepath.Join(b.dir, "proc", "4242")
-			b.write(filepath.Join(proc, "comm"), []byte("steamwebhelper\n"))
-		},
-		"lock held": func(b *box) {
+		}, ""},
+		// Another run may be writing the record.
+		"lock held": {func(b *box) {
 			unlock, err := steamlock.Lock(context.Background())
 			b.check(err)
 			b.t.Cleanup(unlock)
-		},
+		}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := newBox(t)
 			b.desire(truckers(proton()))
-			setup(b)
+			c.setup(b)
 			before := b.steamFile("config/config.vdf")
 			b.runWith(Options{Budget: 400 * time.Millisecond})
 			if !bytes.Equal(b.steamFile("config/config.vdf"), before) {
 				t.Errorf("config.vdf changed\n%s", b.logs.String())
 			}
-			if _, err := os.Stat(StatePath(b.home)); !os.IsNotExist(err) {
-				t.Errorf("state written: %v", err)
+			if c.skipped == "" {
+				if _, err := os.Stat(StatePath(b.home)); !os.IsNotExist(err) {
+					t.Errorf("state written: %v", err)
+				}
+				return
+			}
+			// The accounts are recorded all the same, so vosd does not ask
+			// for a Steam restart for them again.
+			st := b.state()
+			if st.Skipped != c.skipped || len(st.Accounts) != 2 || st.Fingerprint != "" || len(st.Apps) != 0 {
+				t.Errorf("record %+v", st)
 			}
 		})
+	}
+}
+
+func TestSkipKeepsTheRecord(t *testing.T) {
+	b := newBox(t)
+	b.desire(truckers(proton()))
+	b.run(false)
+	st := b.state()
+	proc := filepath.Join(b.dir, "proc", "4242")
+	b.write(filepath.Join(proc, "comm"), []byte("steam\n"))
+	b.run(false)
+	skipped := b.state()
+	if skipped.Skipped != skipSteamRunning || skipped.Fingerprint != st.Fingerprint || len(skipped.Apps) != len(st.Apps) {
+		t.Errorf("record %+v", skipped)
+	}
+	// The next run that finds nothing to do says so.
+	b.check(os.RemoveAll(proc))
+	b.logs.Reset()
+	b.run(false)
+	if !strings.Contains(b.logs.String(), "nothing changed") || b.state().Skipped != "" {
+		t.Errorf("skipped %q: %s", b.state().Skipped, b.logs.String())
 	}
 }
 

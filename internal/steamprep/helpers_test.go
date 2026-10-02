@@ -33,14 +33,14 @@ const (
 
 // box is a fake VaporOS with the gaming user's home and Steam in it.
 type box struct {
-	t    *testing.T
+	t    testing.TB
 	dir  string
 	home string
 	root string // Steam's directory
 	logs bytes.Buffer
 }
 
-func newBox(t *testing.T) *box {
+func newBox(t testing.TB) *box {
 	t.Helper()
 	dir := t.TempDir()
 	b := &box{t: t, dir: dir, home: filepath.Join(dir, "home", "vapor")}

@@ -2,6 +2,7 @@ package steamprep
 
 import (
 	"bytes"
+	"path/filepath"
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
@@ -194,17 +195,26 @@ func TestForcedAppsAndRelease(t *testing.T) {
 
 func TestToolAppsNeverMapped(t *testing.T) {
 	b := newBox(t)
+	// A Proton this VaporOS does not know by its id: its manifest says.
+	const future = 9999999
+	manifest := "\"AppState\"\n{\n\t\"appid\"\t\t\"9999999\"\n\t\"name\"\t\t\"Proton 12.0\"\n\t\"StateFlags\"\t\t\"4\"\n\t\"UserConfig\"\n\t{\n\t}\n}\n"
+	b.write(filepath.Join(b.root, "steamapps", "appmanifest_9999999.acf"), []byte(manifest))
 	d := proton()
-	d.Apps = []AppWant{{App: 1493710, CompatTool: tool, Hooks: []string{"x"}}, {App: 4183110, CompatTool: tool}}
+	d.Apps = []AppWant{{App: 1493710, CompatTool: tool, Hooks: []string{"x"}}, {App: 4183110, CompatTool: tool},
+		{App: 2805730, CompatTool: tool, Hooks: []string{"x"}},
+		{App: future, CompatTool: tool, Hooks: []string{"x"}, Beta: &BetaWant{Branch: "beta", Request: "1"}}}
 	b.desire(d)
 	b.run(false)
-	for _, app := range []uint32{1493710, 4183110} {
+	for _, app := range []uint32{1493710, 4183110, 2805730, future} {
 		if _, ok := b.mapping(app); ok {
 			t.Errorf("tool app %d mapped", app)
 		}
 		if _, ok := b.launchOptions(acctA, app); ok {
 			t.Errorf("tool app %d wrapped", app)
 		}
+	}
+	if got := b.steamFile("steamapps/appmanifest_9999999.acf"); string(got) != manifest {
+		t.Errorf("tool's branch changed:\n%s", got)
 	}
 }
 
@@ -237,6 +247,23 @@ func TestDecideMapping(t *testing.T) {
 			mapAction{}, Mapping{}},
 		{"a new tool for an owned entry", mapInput{key: ets2, cur: &oursApp, m: owned, want: "proton-other", toolOK: present},
 			mapAction{set: &steam.CompatTool{Name: "proton-other", Priority: "250"}}, Mapping{Wrote: "proton-other", Before: user}},
+		// An entry that already holds the tool is taken over with nothing
+		// of its own from before, so a missing tool removes it.
+		{"adopt an app's entry", mapInput{key: ets2, cur: &oursApp, want: tool, toolOK: present},
+			mapAction{}, Mapping{Wrote: tool}},
+		{"adopt a shortcut's entry", mapInput{key: 0x80000001, cur: &oursApp, want: tool, toolOK: present, shortcut: true},
+			mapAction{}, Mapping{Wrote: tool}},
+		{"back while it holds the tool", mapInput{key: ets2, cur: &oursApp, m: Mapping{Wrote: tool, Suspended: true}, want: tool, toolOK: present},
+			mapAction{}, Mapping{Wrote: tool}},
+		// A record from before that names the missing tool counts as none.
+		{"before is the missing tool", mapInput{key: ets2, cur: &oursApp, m: Mapping{Wrote: tool, Before: &oursApp}, want: tool, toolOK: absent},
+			mapAction{del: true}, Mapping{Wrote: tool, Before: &oursApp, Suspended: true}},
+		{"before is the missing tool, not asked for", mapInput{key: ets2, cur: &oursApp, m: Mapping{Wrote: tool, Before: &oursApp}, toolOK: absent},
+			mapAction{del: true}, Mapping{Wrote: tool, Before: &oursApp, Suspended: true}},
+		{"released, before is the missing tool", mapInput{key: ets2, cur: &oursApp, m: Mapping{Wrote: tool, Before: &oursApp}, toolOK: absent, release: true},
+			mapAction{del: true}, Mapping{}},
+		{"unwrap puts back even the same tool", mapInput{key: ets2, cur: &oursApp, m: Mapping{Wrote: tool, Before: &oursApp}, want: tool, toolOK: present, unwrap: true},
+			mapAction{set: &oursApp}, Mapping{Wrote: tool, Before: &oursApp, Suspended: true}},
 	} {
 		act, next := decideMapping(c.in)
 		if !sameAction(act, c.act) || !sameMapping(next, c.next) {

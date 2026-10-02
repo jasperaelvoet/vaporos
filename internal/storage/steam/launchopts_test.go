@@ -4,6 +4,7 @@ import "testing"
 
 func TestWrapLaunchOptions(t *testing.T) {
 	const d = "/usr/bin/vos ext launch --app 227300 "
+	const n = "/usr/bin/vos ext launch --app 1091500"
 	for _, c := range []struct {
 		in, want string
 		ok       bool
@@ -16,17 +17,29 @@ func TestWrapLaunchOptions(t *testing.T) {
 		{"gamemoderun %command%", "gamemoderun " + d + "%command%", true},
 		{"echo x; %command%", "echo x; " + d + "%command%", true},
 		{"%command%", d + "%command%", true},
+		{"x%command%", "x" + d + "%command%", true},
 		// Already wrapped, for this app or another: the token is replaced.
 		{d + "%command% -nointro", d + "%command% -nointro", true},
 		{"PROTON_LOG=1 " + d + "%command%", "PROTON_LOG=1 " + d + "%command%", true},
-		{"gamemoderun /usr/bin/vos ext launch --app 1091500 %command% -x", "gamemoderun " + d + "%command% -x", true},
+		{"gamemoderun " + n + " %command% -x", "gamemoderun " + d + "%command% -x", true},
 		{"/usr/bin/vos ext launch --app 1 /usr/bin/vos ext launch --app 2 %command%", d + "%command%", true},
+		// Tokens anywhere, followed by any run of spaces and tabs.
+		{d + "mangohud %command%", "mangohud " + d + "%command%", true},
+		{n + " mangohud %command%", "mangohud " + d + "%command%", true},
+		{d + " %command%", d + "%command%", true},
+		{n + "\t%command%", d + "%command%", true},
+		{n + " \t %command% -x", d + "%command% -x", true},
+		{n + "%command%", d + "%command%", true},
+		{"%command% -x " + n, d + "%command% -x ", true},
+		{n + " -nointro", d + "%command% -nointro", true},
 		// Not a token of ours: kept in front of it.
 		{"/usr/bin/vos ext launch --app x %command%", "/usr/bin/vos ext launch --app x " + d + "%command%", true},
+		{"/usr/bin/vos ext launch --app 7x %command%", "/usr/bin/vos ext launch --app 7x " + d + "%command%", true},
 		{"vos ext launch --app 7 %command%", "vos ext launch --app 7 " + d + "%command%", true},
-		// Several %command%: left alone.
+		// Several %command%: left without our tokens, and reported.
 		{"%command% ; %command%", "%command% ; %command%", false},
 		{"mangohud %command% && echo %command%", "mangohud %command% && echo %command%", false},
+		{n + " %command% ; " + d + "%command%", "%command% ; %command%", false},
 	} {
 		got, ok := WrapLaunchOptions(c.in, 227300)
 		if got != c.want || ok != c.ok {
@@ -55,9 +68,15 @@ func TestUnwrapLaunchOptions(t *testing.T) {
 	for in, want := range map[string]string{
 		"":         "",
 		"-nointro": "-nointro",
-		"/usr/bin/vos ext launch --app 1 %command% -nointro":    "%command% -nointro",
-		"%command% ; /usr/bin/vos ext launch --app 1 %command%": "%command% ; /usr/bin/vos ext launch --app 1 %command%",
-		"/usr/bin/vos ext launch --shortcut a/b %command%":      "/usr/bin/vos ext launch --shortcut a/b %command%",
+		"/usr/bin/vos ext launch --app 1 %command% -nointro":                                     "%command% -nointro",
+		"/usr/bin/vos ext launch --app 1 mangohud %command%":                                     "mangohud %command%",
+		"/usr/bin/vos ext launch --app 1  %command%":                                             "%command%",
+		"/usr/bin/vos ext launch --app 1\t%command%":                                             "%command%",
+		"%command% ; /usr/bin/vos ext launch --app 1 %command%":                                  "%command% ; %command%",
+		"/usr/bin/vos ext launch --app 2 %command% && /usr/bin/vos ext launch --app 3 %command%": "%command% && %command%",
+		"/usr/bin/vos ext launch --app 1":                                                        "",
+		"/usr/bin/vos ext launch --shortcut a/b %command%":                                       "/usr/bin/vos ext launch --shortcut a/b %command%",
+		"/usr/bin/vos ext launch --app %command%":                                                "/usr/bin/vos ext launch --app %command%",
 	} {
 		if got := UnwrapLaunchOptions(in); got != want {
 			t.Errorf("Unwrap(%q) = %q, want %q", in, got, want)

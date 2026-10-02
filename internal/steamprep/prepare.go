@@ -30,12 +30,19 @@ type prep struct {
 	accounts  []uint32
 	plans     []*shortcutPlan
 	tools     map[string]bool
+	toolApps  map[uint32]bool // isTool's answers
+	libs      []string        // Steam's libraries, once read
 	errs      []string
 	cut       bool // ran out of time
 
-	// shortcutsUnread: an account's shortcuts.vdf could not be read, so
-	// which VaporOS shortcuts it has is not known.
+	// shortcutsUnread: which VaporOS shortcuts an account has is not
+	// known (its shortcuts.vdf or loginusers.vdf could not be read, or the
+	// record has an account this run has no plan for), so none of their
+	// mappings goes.
 	shortcutsUnread bool
+	// keptShortcuts are the app ids of VaporOS shortcuts kept although
+	// steam.json does not list them this run.
+	keptShortcuts map[uint32]bool
 }
 
 func prepare(ctx context.Context, o Options) {
@@ -48,32 +55,37 @@ func prepare(ctx context.Context, o Options) {
 		o.Log.Printf("prepare: %v; Steam's files are left alone", err)
 		return
 	}
+	// Without the lock another run may be writing the record, so this
+	// bail-out alone records nothing.
 	unlock, err := steamlock.Lock(ctx)
 	if err != nil {
 		o.Log.Printf("prepare: the Steam lock: %v; Steam's files are left alone", err)
 		return
 	}
 	defer unlock()
-	if steamRunning(o.ProcDir, getuid()) {
-		o.Log.Print("prepare: Steam is running; its files are left alone")
-		return
-	}
-	p := &prep{ctx: ctx, o: o, root: root, statePath: StatePath(o.Home), tools: map[string]bool{}}
+	p := &prep{ctx: ctx, o: o, root: root, statePath: StatePath(o.Home), tools: map[string]bool{},
+		toolApps: map[uint32]bool{}, keptShortcuts: map[uint32]bool{}}
 	if p.st, err = loadState(p.statePath); err != nil {
 		o.Log.Printf("prepare: %v; starting a new record", err)
+	}
+	if steamRunning(o.ProcDir, getuid()) {
+		p.skip(skipSteamRunning, "Steam is running; its files are left alone")
+		return
 	}
 
 	raw, err := readFile(config.ExtSteamPath(), maxDesired)
 	switch {
 	case err != nil:
-		p.finish(fmt.Errorf("steam.json: %w", err))
+		p.fail("prepare", fmt.Errorf("steam.json: %w", err))
+		p.skip(skipBadDesired, "Steam's files are left alone")
 		return
 	case raw.missing && !o.Unwrap:
-		o.Log.Print("prepare: no steam.json yet; nothing to do")
+		p.skip(skipNoDesired, "no steam.json yet; nothing to do")
 		return
 	case !raw.missing:
 		if p.want, err = parseDesired(raw.data, o.Log.Printf); err != nil {
-			p.finish(err)
+			p.fail("prepare", err)
+			p.skip(skipBadDesired, "Steam's files are left alone")
 			return
 		}
 	default:
@@ -85,7 +97,7 @@ func prepare(ctx context.Context, o Options) {
 			o.Log.Printf("prepare: %v", err)
 		}
 		if rep == nil || rep.Set != p.want.Set {
-			o.Log.Printf("prepare: steam.json is for set %q, not this boot's; waiting for vosd to write it", p.want.Set)
+			p.skip(skipOtherSet, fmt.Sprintf("steam.json is for set %q, not this boot's; waiting for vosd to write it", p.want.Set))
 			return
 		}
 	}
@@ -93,9 +105,13 @@ func prepare(ctx context.Context, o Options) {
 	fp := p.fingerprint(raw.data)
 	if fp == p.st.Fingerprint && p.st.Error == "" {
 		o.Log.Print("prepare: nothing changed since the last run")
+		if p.st.Skipped != "" {
+			p.st.Skipped = ""
+			p.commit()
+		}
 		return
 	}
-	p.st.Fingerprint, p.st.Vos = "", config.BinaryVersion
+	p.st.Fingerprint, p.st.Vos, p.st.Skipped = "", config.BinaryVersion, ""
 	p.loadAccounts()
 	for _, step := range []struct {
 		name string
@@ -181,25 +197,57 @@ func steamRoot(home string) (string, error) {
 	return root, nil
 }
 
-// loadAccounts reads the accounts that signed in (loginusers.vdf).
-func (p *prep) loadAccounts() {
-	p.st.Accounts = []string{}
+// skip ends a run that changes nothing. It records why, and the accounts
+// that signed in: vosd asks for a Steam restart when Steam has one the
+// record lacks, and a run that skips must not make it ask again.
+func (p *prep) skip(why, msg string) {
+	p.o.Log.Printf("prepare: %s", msg)
+	p.st.Skipped = why
+	if ids, err := p.readAccounts(); err == nil {
+		p.st.Accounts = acctKeys(ids)
+	}
+	if len(p.errs) > 0 {
+		p.st.Error = strings.Join(p.errs, "; ")
+	}
+	p.commit()
+}
+
+// readAccounts returns the accounts in loginusers.vdf, none while it is
+// missing.
+func (p *prep) readAccounts() ([]uint32, error) {
 	f, err := readFile(steam.LoginUsersPath(p.root), steam.VDFMax)
-	if err == nil && f.missing {
-		return
+	if err != nil || f.missing {
+		return nil, err
 	}
-	var list []steam.Account
-	if err == nil {
-		list, err = steam.Accounts(f.data)
+	list, err := steam.Accounts(f.data)
+	if err != nil {
+		return nil, err
 	}
+	ids := make([]uint32, 0, len(list))
+	for _, a := range list {
+		ids = append(ids, a.AccountID)
+	}
+	return ids, nil
+}
+
+// loadAccounts reads the accounts that signed in. Without them, which
+// shortcuts VaporOS has is not known either.
+func (p *prep) loadAccounts() {
+	ids, err := p.readAccounts()
 	if err != nil {
 		p.fail("loginusers.vdf", err)
-		return
+		p.shortcutsUnread = true
 	}
-	for _, a := range list {
-		p.accounts = append(p.accounts, a.AccountID)
-		p.st.Accounts = append(p.st.Accounts, acctKey(a.AccountID))
+	p.accounts = ids
+	p.st.Accounts = acctKeys(ids)
+}
+
+func acctKeys(ids []uint32) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, acctKey(id))
 	}
+	return out
 }
 
 // toolOK reports whether compatibility tool name is installed. Steam
@@ -263,7 +311,7 @@ func (p *prep) fingerprint(desired []byte) string {
 	statLine(h, steam.ConfigVDFPath(p.root))
 	statLine(h, filepath.Join(p.root, "steamapps", "libraryfolders.vdf"))
 	if apps := p.betaApps(); len(apps) > 0 {
-		libs := steam.Libraries(p.root)
+		libs := p.libraries()
 		for _, app := range apps {
 			for _, lib := range libs {
 				statLine(h, manifestPath(lib, app))
@@ -285,5 +333,30 @@ func statLine(h hash.Hash, path string) {
 func acctKey(id uint32) string { return strconv.FormatUint(uint64(id), 10) }
 
 // isTool reports whether app is Proton, a Steam Linux Runtime or another
-// tool: VaporOS never maps or wraps those.
-func isTool(app uint32) bool { return steam.App{ID: int(app)}.IsTool() }
+// of Steam's tools, by its id or by the name in its installed
+// appmanifest: VaporOS never maps, wraps or switches those.
+func (p *prep) isTool(app uint32) bool {
+	if (steam.App{ID: int(app)}).IsTool() {
+		return true
+	}
+	if app&0x80000000 != 0 {
+		return false // a shortcut
+	}
+	is, seen := p.toolApps[app]
+	if !seen {
+		if f, err := findManifest(p.libraries(), app); err == nil && f != nil {
+			m, err := steam.ParseManifest(f.data)
+			is = err == nil && m.IsTool()
+		}
+		p.toolApps[app] = is
+	}
+	return is
+}
+
+// libraries returns Steam's libraries, read once a run.
+func (p *prep) libraries() []string {
+	if p.libs == nil {
+		p.libs = steam.Libraries(p.root)
+	}
+	return p.libs
+}

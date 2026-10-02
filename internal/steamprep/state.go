@@ -23,8 +23,19 @@ type State struct {
 	Default     Mapping                              `json:"default"`
 	Apps        map[string]*AppState                 `json:"apps"`
 	Shortcuts   map[string]map[string]*ShortcutState `json:"shortcuts"`
-	Error       string                               `json:"error"`
+	// Skipped says why the last run changed nothing (skip* below), ""
+	// when it went ahead.
+	Skipped string `json:"skipped"`
+	Error   string `json:"error"`
 }
+
+// Why a run changed nothing, in the record's skipped.
+const (
+	skipSteamRunning = "steam-running"
+	skipNoDesired    = "no-steam-json"
+	skipBadDesired   = "bad-steam-json"
+	skipOtherSet     = "other-set"
+)
 
 // Mapping is one CompatToolMapping entry VaporOS owns: the tool it wrote
 // (empty: it owns none), the entry before it (nil: there was none), and
@@ -57,11 +68,12 @@ type LaunchState struct {
 	Conflict bool   `json:"conflict,omitempty"`
 }
 
-// BetaState is the branch VaporOS asked Steam for and the one before
-// ("" is the public branch).
+// BetaState is the branch VaporOS asked Steam for, the one before (""
+// is the public branch) and the id of the request it applied.
 type BetaState struct {
-	Wrote  string `json:"wrote"`
-	Before string `json:"before"`
+	Wrote   string `json:"wrote"`
+	Before  string `json:"before"`
+	Request string `json:"request,omitempty"`
 }
 
 // ShortcutState is one of an account's VaporOS shortcuts: the app id

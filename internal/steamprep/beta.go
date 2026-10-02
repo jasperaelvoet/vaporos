@@ -47,16 +47,25 @@ func (p *prep) betaApps() []uint32 {
 }
 
 // decideBeta returns the branch an app's manifest should ask for and
-// VaporOS's record (nil: none). A branch asked for is applied whatever
-// the manifest says; one no longer asked for goes back to the one before,
-// unless it was changed meanwhile.
-func decideBeta(cur string, b *BetaState, want *string) (string, *BetaState) {
+// VaporOS's record (nil: none). Each request is applied once: after that
+// the manifest asks for whatever the user picks in Steam. A branch no
+// longer asked for goes back to the one before, unless it was changed
+// meanwhile.
+func decideBeta(cur string, b *BetaState, want *BetaWant) (string, *BetaState) {
 	if want != nil {
-		next := &BetaState{Wrote: *want, Before: cur}
-		if b != nil {
+		switch {
+		case b != nil && b.Request == want.Request:
+			return cur, b
+		case b == nil && cur == want.Branch:
+			// Already so: VaporOS takes it over, with the public branch
+			// to go back to.
+			return cur, &BetaState{Wrote: cur, Request: want.Request}
+		}
+		next := &BetaState{Wrote: want.Branch, Before: cur, Request: want.Request}
+		if b != nil && cur == b.Wrote {
 			next.Before = b.Before
 		}
-		return *want, next
+		return want.Branch, next
 	}
 	if b != nil && cur == b.Wrote {
 		return b.Before, nil
@@ -66,19 +75,27 @@ func decideBeta(cur string, b *BetaState, want *string) (string, *BetaState) {
 
 // branches is step 5: the BetaKey of each app's appmanifest, which Steam
 // reads when it starts. An app that is not installed is left for later.
-// --unwrap leaves branches alone.
+// --unwrap leaves branches alone, and so does an app whose request in
+// steam.json was not well formed.
 func (p *prep) branches() {
 	if p.o.Unwrap {
 		return
 	}
-	want := map[uint32]*string{}
+	want := map[uint32]*BetaWant{}
+	keep := map[uint32]bool{}
 	for _, a := range p.want.Apps {
-		if a.Beta != nil {
+		switch {
+		case a.keepBranch:
+			keep[a.App] = true
+		case a.Beta != nil && !p.isTool(a.App):
 			want[a.App] = a.Beta
 		}
 	}
-	libs := steam.Libraries(p.root)
+	libs := p.libraries()
 	for _, app := range p.betaApps() {
+		if keep[app] {
+			continue
+		}
 		f, err := findManifest(libs, app)
 		if err != nil {
 			p.fail("appmanifest_"+acctKey(app)+".acf", err)

@@ -1,7 +1,6 @@
 package steamprep
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,7 +19,8 @@ const appToken = steam.Dispatcher + " --app "
 // Wrapped, the user's own options stay around the dispatcher; when they
 // change them in Steam, the new ones are theirs. Unwrapped, options
 // VaporOS wrote and nobody changed go back to exactly what they were, and
-// changed ones lose only the dispatcher.
+// changed ones lose only the dispatcher. Options with several %command%
+// lose the dispatcher too and are otherwise left alone, as a conflict.
 func decideLaunch(app uint32, cur string, has bool, l *LaunchState, wrap bool) (string, bool, *LaunchState) {
 	unchanged := l != nil && l.Wrote != "" && has && cur == l.Wrote
 	if wrap {
@@ -30,7 +30,7 @@ func decideLaunch(app uint32, cur string, has bool, l *LaunchState, wrap bool) (
 		}
 		w, ok := steam.WrapLaunchOptions(cur, app)
 		if !ok {
-			return cur, has, &LaunchState{Before: cur, Conflict: true}
+			return w, has, &LaunchState{Before: w, Conflict: true}
 		}
 		return w, true, &LaunchState{Wrote: w, Before: before}
 	}
@@ -50,7 +50,7 @@ func (p *prep) launchOptions() {
 	hooked := map[uint32]bool{}
 	if p.want.Dispatcher && !p.o.Unwrap {
 		for _, a := range p.want.Apps {
-			if len(a.Hooks) > 0 && !isTool(a.App) && a.App&0x80000000 == 0 {
+			if len(a.Hooks) > 0 && !p.isTool(a.App) && a.App&0x80000000 == 0 {
 				hooked[a.App] = true
 			}
 		}
@@ -70,14 +70,16 @@ func (p *prep) launchOptionsOf(acct uint32, hooked map[uint32]bool) {
 	if err == nil && f.missing {
 		return // Steam writes it when the account signs in
 	}
-	var opts map[uint32]string
+	// One parse for every change: the file can be tens of MiB.
+	var lc *steam.LocalConfig
 	if err == nil {
-		opts, err = steam.AppLaunchOptions(f.data)
+		lc, err = steam.ParseLocalConfig(f.data)
 	}
 	if err != nil {
 		p.fail(name, err)
 		return
 	}
+	opts := lc.LaunchOptions()
 	ak := acctKey(acct)
 	apps := map[uint32]bool{}
 	for app := range hooked {
@@ -101,7 +103,6 @@ func (p *prep) launchOptionsOf(acct uint32, hooked map[uint32]bool) {
 	}
 	slices.Sort(ids)
 
-	data := f.data
 	next := map[uint32]*LaunchState{}
 	for _, app := range ids {
 		cur, has := opts[app]
@@ -112,15 +113,15 @@ func (p *prep) launchOptionsOf(acct uint32, hooked map[uint32]bool) {
 		o, keep, nl := decideLaunch(app, cur, has, l, hooked[app])
 		next[app] = nl
 		if nl != nil && nl.Conflict && (l == nil || !l.Conflict) {
-			p.o.Log.Printf("prepare: %s: app %d's launch options have several %%command%%; left as they are", name, app)
+			p.o.Log.Printf("prepare: %s: app %d's launch options have several %%command%%; only the dispatcher is taken out", name, app)
 		}
 		if o == cur && keep == has {
 			continue
 		}
 		if keep {
-			data, _, err = steam.SetLaunchOptions(data, app, o)
-		} else if data, _, err = steam.DeleteLaunchOptions(data, app); err == nil {
-			data, _, err = steam.DropEmptyApp(data, app)
+			err = lc.SetLaunchOptions(app, o)
+		} else {
+			err = lc.DeleteLaunchOptions(app)
 		}
 		if err != nil {
 			p.fail(name, err)
@@ -128,7 +129,12 @@ func (p *prep) launchOptionsOf(acct uint32, hooked map[uint32]bool) {
 		}
 		p.o.Log.Printf("prepare: %s: launch options of app %d: %q", name, app, o)
 	}
-	if !bytes.Equal(data, f.data) {
+	data, changed, err := lc.Bytes()
+	if err != nil {
+		p.fail(name, err)
+		return
+	}
+	if changed {
 		if !p.step("writing " + name) {
 			return
 		}
