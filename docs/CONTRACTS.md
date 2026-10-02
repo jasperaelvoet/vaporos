@@ -319,7 +319,10 @@ unknown fields rejected; `internal/extensions/descriptor`), and `files/usr/...`,
 copied into the image. A `steam.hooks` entry is `{"apps":[<app id>...]}`
 and nothing more: the hooks of several extensions on one app run in catalog
 order. A setting may be `"required": true` only when its `type` is `disk`:
-a drive the extension cannot do without (see Control center). Integration
+a drive the extension cannot do without (see Control center). A `proxied`
+`network.ports` entry's `upstream` port is none of the descriptor's
+`network.ports`, whatever their proto: vosd or the extension's service
+listens on each of those, on every address. Integration
 logic is Go in `vos`
 (`internal/extensions/<id>`). Non-goals: no `/opt` or `/usr/local` payloads, no
 AUR or DKMS, no `.ko`, no `sysusers.d` or `tmpfiles.d`, no confext, no plugin
@@ -1291,15 +1294,23 @@ Packages `cachyos/coolercontrold` and `extra/liquidctl`, less liquidctl's
 act on); provides `fan-control.hwmon` and `fan-control.amdgpu`; permissions
 `service` (`coolercontrold.service`, system) and `modules`
 (`modules-load.d/vos-coolercontrol.conf`: `drivetemp`). Its web UI is port
-11987, proxied to `127.0.0.1:11986` (HTTP API, Extension web UIs). Its
+11987, proxied to `127.0.0.1:11985` (HTTP API, Extension web UIs). Its
 system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
 `.passwd`), `data/` (`CC_DATA_DIR`) and `vaporos.json`
 (`{"passwd_sha256","daemon"}`, `prepare`'s record).
 - The drop-in `coolercontrold.service.d/vos.conf` sets `CC_CONFIG_DIR`,
   `CC_DATA_DIR`, `CC_PLUGINS_DIR=/usr/lib/vos/ext/coolercontrol/plugins`
   (empty and in the image: no plugin runs), `CC_HOST_IP4=127.0.0.1`,
-  `CC_HOST_IP6=::1`, `CC_PORT=11986`, `CC_TLS=OFF` (`false` would turn TLS
-  on) and `CC_SERVICE_MANAGER=OFF`; `StateDirectory=vos/ext/data/coolercontrol`,
+  `CC_HOST_IP6=::1`, `CC_PORT=11985`, `CC_TLS=OFF` (`false` would turn TLS
+  on) and `CC_SERVICE_MANAGER=OFF`. coolercontrold 5 also serves gRPC on
+  `CC_PORT`+1 at the same addresses, so 11986 on loopback: an unauthenticated,
+  read-only device service (its health, the device list, sensor and fan
+  readings; every call that would change a device is refused or does
+  nothing). Neither port may be one vosd listens on (with `CC_PORT=11986`
+  gRPC took 11987). The firewall's upstream rule covers 11985 only: anyone
+  on the box may read the gRPC port's readings, which change nothing and
+  are mostly what `/sys/class/hwmon` shows every user. Then
+  `StateDirectory=vos/ext/data/coolercontrol`,
   `RuntimeDirectory=coolercontrold`, `ProtectSystem=strict`,
   `ProtectHome=yes`, `PrivateTmp=yes`, `ReadWritePaths=` the data area,
   `NoExecPaths=/var /run /tmp`, `ExecPaths=/usr`,
@@ -1337,9 +1348,10 @@ system data area holds `config/` (`CC_CONFIG_DIR`: `config.toml`,
      it kept): an empty `[devices]`, `[legacy690]` and `[device-settings]`
      table where the file lacks one (coolercontrold stops on a file without
      them), and in `[settings]` `ipv4_address = "127.0.0.1"`,
-     `ipv6_address = "::1"`, `port = 11986` and `tls_enabled = false` at
-     every start; `poll_rate = 1.0` and `drivetemp_suspend = true` only
-     where the table lacks them, so a choice made in CoolerControl stays. A
+     `ipv6_address = "::1"`, `port = 11985` and `tls_enabled = false` at
+     every start (an older `port = 11986` too); `poll_rate = 1.0` and
+     `drivetemp_suspend = true` only where the table lacks them, so a
+     choice made in CoolerControl stays. A
      `config.toml` it cannot change (settings as dotted keys or an inline
      table, a table or key twice, a value never closed) fails the start.
 - `fans snapshot` records, in `/run/vos/coolercontrol-fans.json`
@@ -1872,8 +1884,10 @@ Output (policy accept): what leaves through `lo` passes the `upstream`
 chain, where for each `upstream <port>` of the ports file a TCP packet to
 that port from a socket whose owner (`meta skuid`) is not root is rejected
 with a TCP reset. Only root (vosd, which guards the web UI it proxies)
-reaches an extension's own server on loopback; a game or anything else
-running as `vapor` does not. Packets without a socket are not matched.
+reaches an extension's own server on its upstream port; a game or anything
+else running as `vapor` does not. Other loopback ports of an extension's
+service are not covered (CoolerControl's read-only gRPC port, see
+Extensions). Packets without a socket are not matched.
 
 47990 is never reachable from outside.
 

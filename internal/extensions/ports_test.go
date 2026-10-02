@@ -28,7 +28,7 @@ func bootWith(r *rig, ids ...string) store.BootReport {
 // withPorts is descriptor desc with network.ports replaced by ports.
 func withPorts(t *testing.T, desc, ports string) string {
 	t.Helper()
-	const old = `"network":{"ports":[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11986"}]}`
+	const old = `"network":{"ports":[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"}]}`
 	if !strings.Contains(desc, old) {
 		t.Fatal("the fixture's ports changed")
 	}
@@ -78,7 +78,7 @@ func TestPortsFollowMountedAndWanted(t *testing.T) {
 
 	r.boot()
 	r.s.syncPorts()
-	if got := r.portsFile(); got != "tcp 11987 upstream 11986\n" || r.reloads() != 1 {
+	if got := r.portsFile(); got != "tcp 11987 upstream 11985\n" || r.reloads() != 1 {
 		t.Fatalf("mounted: file %q, %d reloads", got, r.reloads())
 	}
 	r.s.syncPorts()
@@ -95,7 +95,7 @@ func TestPortsFollowMountedAndWanted(t *testing.T) {
 	if code, body := r.do("POST", "/extensions/coolercontrol", `{"password":"`+rigPassword+`"}`); code != 200 {
 		t.Fatalf("add again: %d %s", code, body)
 	}
-	if got := r.portsFile(); got != "tcp 11987 upstream 11986\n" || r.reloads() != 3 {
+	if got := r.portsFile(); got != "tcp 11987 upstream 11985\n" || r.reloads() != 3 {
 		t.Fatalf("added back: file %q, %d reloads", got, r.reloads())
 	}
 }
@@ -116,7 +116,7 @@ func TestPortsReloadRetried(t *testing.T) {
 		return nil
 	}
 	r.s.syncPorts()
-	if got := r.portsFile(); got != "tcp 11987 upstream 11986\n" || r.reloads() != 0 {
+	if got := r.portsFile(); got != "tcp 11987 upstream 11985\n" || r.reloads() != 0 {
 		t.Fatalf("file %q, %d reloads", got, r.reloads())
 	}
 	fail = false
@@ -133,12 +133,12 @@ func TestPortsFile(t *testing.T) {
 	}
 	// A proxied port names its loopback upstream, which only root may reach.
 	got = string(portsFile([]exposed{
-		{proto: "tcp", port: 11987, mode: "proxied", upstream: "127.0.0.1:11986"},
+		{proto: "tcp", port: 11987, mode: "proxied", upstream: "127.0.0.1:11985"},
 		{proto: "tcp", port: 8080, mode: "lan"},
 		{proto: "tcp", port: 9000, mode: "proxied", upstream: "localhost:9001"},
 		{proto: "tcp", port: 9002, mode: "proxied", upstream: "127.0.0.1:80"},
 	}))
-	if got != "tcp 11987 upstream 11986\ntcp 8080\ntcp 9000\ntcp 9002\n" {
+	if got != "tcp 11987 upstream 11985\ntcp 8080\ntcp 9000\ntcp 9002\n" {
 		t.Fatalf("ports file %q", got)
 	}
 	if b := portsFile(nil); len(b) != 0 {
@@ -148,19 +148,25 @@ func TestPortsFile(t *testing.T) {
 
 func TestExposedPortsSkipsSunshineAdmin(t *testing.T) {
 	r := newRig(t)
-	writeFile(t, filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json"), withPorts(t, shipped["coolercontrol"],
-		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11986"},{"proto":"tcp","port":47990,"mode":"lan"},`+
-			`{"proto":"tcp","port":12000,"mode":"proxied","upstream":"127.0.0.1:47990"},{"proto":"udp","port":5000,"mode":"lan"}]`))
 	locked(t, func() error { return store.WriteWanted([]string{"coolercontrol"}) })
 	r.report(bootWith(r, "proton", "coolercontrol"))
-	ps, err := exposedPorts()
-	must(t, err)
-	var got []int
-	for _, p := range ps {
-		got = append(got, p.port)
-	}
-	if !slices.Equal(got, []int{11987, 5000}) {
-		t.Fatalf("exposed ports %v", got)
+	// Apart: a descriptor whose upstream is one of its own ports is invalid.
+	for _, ports := range []string{
+		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"},{"proto":"tcp","port":47990,"mode":"lan"},` +
+			`{"proto":"udp","port":5000,"mode":"lan"}]`,
+		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"},` +
+			`{"proto":"tcp","port":12000,"mode":"proxied","upstream":"127.0.0.1:47990"},{"proto":"udp","port":5000,"mode":"lan"}]`,
+	} {
+		writeFile(t, filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json"), withPorts(t, shipped["coolercontrol"], ports))
+		ps, err := exposedPorts()
+		must(t, err)
+		var got []int
+		for _, p := range ps {
+			got = append(got, p.port)
+		}
+		if !slices.Equal(got, []int{11987, 5000}) {
+			t.Fatalf("%s: exposed ports %v", ports, got)
+		}
 	}
 }
 

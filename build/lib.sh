@@ -113,7 +113,7 @@ is_ed25519_pubkey() {
 check_firewall() {
     local script=$1 rules=$2 tmp cfg rc=0
     tmp=$(mktemp -d)
-    printf 'tcp 11987 upstream 11986\nudp 27015\n' >"$tmp/ports"
+    printf 'tcp 11987 upstream 11985\nudp 27015\n' >"$tmp/ports"
     for cfg in '{}' \
                '{"ssh":{"enabled":true},"web":{"https":true}}' \
                '{"ssh":{"enabled":true},"web":{"https":true,"allow_public":true}}' \
@@ -139,7 +139,7 @@ check_firewall() {
         rc=1
     fi
     if ! VOS_NFT_RULES=$rules VOS_CONFIG=$tmp/config.json VOS_EXT_PORTS=$tmp/ports bash "$script" --print |
-            grep -q '^add rule inet vos upstream tcp dport 11986 meta skuid != 0 reject with tcp reset '; then
+            grep -q '^add rule inet vos upstream tcp dport 11985 meta skuid != 0 reject with tcp reset '; then
         echo "firewall: an extension's upstream is open to more than root on loopback" >&2
         rc=1
     fi

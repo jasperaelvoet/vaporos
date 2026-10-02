@@ -543,14 +543,16 @@ check_extensions() {
 
 # CoolerControl (docs/CONTRACTS.md "Extensions", CoolerControl), once added
 # and booted: its daemon runs with VaporOS's start limit and listens on
-# loopback only, where only root reaches it, vosd's page on :11987 asks
-# for a sign-in (and, with the password, passes a signed-in request
-# through), the firewall lets 11987 in from the LAN sets only, and the
-# daemon got the VaporOS password. A VM has no fan chips, so a daemon that
-# does not run there, and fans with nothing to record, only warn.
+# loopback only (11985, and its gRPC server on 11986), where only root
+# reaches its own port, vosd's page on :11987 asks for a sign-in (and,
+# with the password, passes a signed-in request through), the firewall
+# lets 11987 in from the LAN sets only, config.toml has what prepare
+# writes, and the daemon got the VaporOS password. A VM has no fan chips,
+# so a daemon that does not run there, and fans with nothing to record,
+# only warn.
 check_coolercontrol() {
-    local password=$1 state code loc rules line i hash fans root vapor jar=$tmp/cc-cookies
-    local data=/var/lib/vos/ext/data/coolercontrol
+    local password=$1 state code loc rules line i hash fans root vapor port hex table jar=$tmp/cc-cookies
+    local data=/var/lib/vos/ext/data/coolercontrol cfg=/var/lib/vos/ext/data/coolercontrol/config/config.toml
 
     fans=0
     compgen -G '/sys/class/hwmon/hwmon*/pwm*_enable' >/dev/null && fans=1
@@ -569,17 +571,30 @@ check_coolercontrol() {
         bad cc-start-limit "StartLimitIntervalUSec and StartLimitBurst are '$line', expected '30min 5' (is the drop-in loaded?)"
     fi
 
-    # 11986 (2EE2) listens on 127.0.0.1 and ::1 only.
-    line=$(awk '$4 == "0A" && $2 ~ /:2EE2$/ && $2 != "0100007F:2EE2" && $2 != "00000000000000000000000001000000:2EE2"' \
-        /proc/net/tcp /proc/net/tcp6 2>/dev/null | head -n1)
+    # 11985 (HTTP) and 11986 (gRPC, CC_PORT+1) listen on 127.0.0.1 and ::1
+    # only; /proc/net shows ports in hex.
+    for port in 11985 11986; do
+        printf -v hex ':%04X' "$port"
+        line=$(awk -v p="$hex" '$4 == "0A" && substr($2, length($2) - 4) == p &&
+            $2 != ("0100007F" p) && $2 != ("00000000000000000000000001000000" p)' \
+            /proc/net/tcp /proc/net/tcp6 2>/dev/null | head -n1)
+        if [[ -n $line ]]; then
+            bad cc-loopback "coolercontrold listens on $port beyond loopback: $line"
+        elif [[ $state == active ]]; then
+            ok cc-loopback "$port listens on loopback only"
+        fi
+    done
+    # With CC_PORT=11986, gRPC took 127.0.0.1:11987 and vosd never served
+    # the page.
+    line=$(journalctl -b -u vosd.service -o cat --no-pager 2>/dev/null | grep -m1 'web UI on :11987: .*address already in use')
     if [[ -n $line ]]; then
-        bad cc-loopback "coolercontrold listens beyond loopback: $line"
+        bad cc-web-port "vosd could not listen on 11987: $line"
     elif [[ $state == active ]]; then
-        ok cc-loopback "coolercontrold listens on loopback only"
+        ok cc-web-port "vosd had 11987 to itself"
     fi
 
-    if grep -qx 'tcp 11987 upstream 11986' /var/lib/vos/ext/ports 2>/dev/null; then
-        ok cc-ports "/var/lib/vos/ext/ports lists tcp 11987 with its upstream 11986"
+    if grep -qx 'tcp 11987 upstream 11985' /var/lib/vos/ext/ports 2>/dev/null; then
+        ok cc-ports "/var/lib/vos/ext/ports lists tcp 11987 with its upstream 11985"
     else
         bad cc-ports "/var/lib/vos/ext/ports: '$(tr '\n' ' ' </var/lib/vos/ext/ports 2>/dev/null)'"
     fi
@@ -591,24 +606,40 @@ check_coolercontrol() {
     fi
 
     # Only root (vosd) connects to the daemon's own port; vapor's connection
-    # is reset, whether the daemon runs or not.
-    rules=$(nft list chain inet vos upstream 2>/dev/null | grep 'dport 11986')
+    # is reset, whether the daemon runs or not. The read-only gRPC port has
+    # no such rule (see CONTRACTS).
+    rules=$(nft list chain inet vos upstream 2>/dev/null | grep 'dport 11985')
     if [[ $rules == *skuid* && $rules == *reject* ]]; then
-        ok cc-upstream-rule "loopback 11986 resets everyone but root"
+        ok cc-upstream-rule "loopback 11985 resets everyone but root"
     else
-        bad cc-upstream-rule "11986 in the upstream chain: '${rules:-none}'"
+        bad cc-upstream-rule "11985 in the upstream chain: '${rules:-none}'"
     fi
-    root=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:11986/handshake 2>/dev/null) || true
+    root=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:11985/handshake 2>/dev/null) || true
     vapor=$(setpriv --reuid=1000 --regid=1000 --clear-groups curl -sS -m 5 -o /dev/null -w '%{http_code}' \
-        http://127.0.0.1:11986/handshake 2>/dev/null) || true
+        http://127.0.0.1:11985/handshake 2>/dev/null) || true
     if [[ $vapor != 000 ]]; then
-        bad cc-upstream "vapor reached 127.0.0.1:11986: '${vapor:-no curl}'"
+        bad cc-upstream "vapor reached 127.0.0.1:11985: '${vapor:-no curl}'"
     elif [[ $root == 200 ]]; then
-        ok cc-upstream "root gets 200 from 127.0.0.1:11986, vapor does not get through"
+        ok cc-upstream "root gets 200 from 127.0.0.1:11985, vapor does not get through"
     elif ((fans)); then
-        bad cc-upstream "coolercontrold does not answer root on 127.0.0.1:11986 ($root)"
+        bad cc-upstream "coolercontrold does not answer root on 127.0.0.1:11985 ($root)"
     else
-        warn cc-upstream "coolercontrold does not answer root on 127.0.0.1:11986 ($root); vapor does not get through either"
+        warn cc-upstream "coolercontrold does not answer root on 127.0.0.1:11985 ($root); vapor does not get through either"
+    fi
+
+    # prepare's config.toml: the port vosd proxies to, the tables
+    # coolercontrold 5 stops without, no trusted_proxies (no such setting).
+    line=""
+    [[ -s $cfg ]] || line+=" missing;"
+    grep -qx 'port = 11985' "$cfg" 2>/dev/null || line+=" no 'port = 11985';"
+    for table in devices legacy690 device-settings; do
+        grep -Eq "^\[\"?$table\"?[].]" "$cfg" 2>/dev/null || line+=" no [$table];"
+    done
+    ! grep -q trusted_proxies "$cfg" 2>/dev/null || line+=" has trusted_proxies;"
+    if [[ -z $line ]]; then
+        ok cc-config "config.toml has port 11985 and the devices, legacy690 and device-settings tables"
+    else
+        bad cc-config "$cfg:$line"
     fi
 
     # vosd serves the page only while the daemon runs; it looks every 5 s.

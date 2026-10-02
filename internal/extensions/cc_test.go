@@ -38,7 +38,7 @@ var shipped = map[string]string{
 		"packages":["cachyos/coolercontrold"],"provides":["fan-control.amdgpu"],"permissions":["service","udev","modules"],
 		"services":[{"unit":"coolercontrold.service","scope":"system"},{"unit":"cc-fans@.service","scope":"system"}],
 		"module_options":[{"module":"amdgpu","param":"ppfeaturemask","setting":"overdrive"}],
-		"network":{"ports":[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11986"}]},
+		"network":{"ports":[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"}]},
 		"web":{"port":11987,"label":"Open CoolerControl"},
 		"actions":[{"name":"restore-fans","label":"Restore fans","run_as":"root"},{"name":"curves","label":"Reset curves"}],
 		"data":[{"name":"config","where":"system"}],

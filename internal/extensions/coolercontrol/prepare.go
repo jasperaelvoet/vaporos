@@ -26,6 +26,11 @@ const daemonPackage = "coolercontrold"
 // backupWait bounds `coolercontrold backup`.
 const backupWait = 2 * time.Minute
 
+// daemonPort is coolercontrold's own HTTP port on loopback: the drop-in's
+// CC_PORT and the descriptor's proxied upstream. Its gRPC server takes the
+// next port, so this is never 11986 (gRPC would then take vosd's 11987).
+const daemonPort = "11985"
+
 // The settings vosd's proxy depends on, written at every start: it is the
 // only way in (loopback, plain HTTP behind it). The others are VaporOS's
 // choices, written only where config.toml lacks them, so a change made in
@@ -34,7 +39,7 @@ var (
 	forcedSettings = []setting{
 		{"ipv4_address", `"127.0.0.1"`},
 		{"ipv6_address", `"::1"`},
-		{"port", "11986"},
+		{"port", daemonPort},
 		{"tls_enabled", "false"},
 	}
 	defaultSettings = []setting{

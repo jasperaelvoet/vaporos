@@ -105,10 +105,13 @@ func TestPrepareFirstStart(t *testing.T) {
 	}
 	cfg := r.configToml()
 	for _, want := range []string{"[devices]\n", "\n[legacy690]\n", "\n[device-settings]\n", "\n[settings]\n", "\npoll_rate = 1.0\n",
-		"\ndrivetemp_suspend = true\n", "\nport = 11986\n", "\ntls_enabled = false\n", `ipv4_address = "127.0.0.1"`} {
+		"\ndrivetemp_suspend = true\n", "\nport = 11985\n", "\ntls_enabled = false\n", `ipv4_address = "127.0.0.1"`, `ipv6_address = "::1"`} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config.toml lacks %q:\n%s", want, cfg)
 		}
+	}
+	if strings.Contains(cfg, "trusted_proxies") {
+		t.Errorf("config.toml has trusted_proxies, which coolercontrold has no setting for:\n%s", cfg)
 	}
 	if r.backups != 0 {
 		t.Fatal("backed up before there was anything to back up")
@@ -239,5 +242,19 @@ func TestPrepareKeepsTheUsersConfig(t *testing.T) {
 	must(t, os.WriteFile(cfg, []byte("settings.port = 1\n"), 0o640))
 	if err := r.prepare(); err == nil {
 		t.Fatal("started with a config.toml it could not set up")
+	}
+}
+
+// A config.toml from before the move to 11985 (its gRPC server then took
+// vosd's 11987) gets the new port and keeps the rest.
+func TestPrepareMovesTheOldPort(t *testing.T) {
+	r := newPrepRig(t)
+	must(t, os.MkdirAll(r.d.config, 0o700))
+	old := "[devices]\n\n[legacy690]\n\n[device-settings]\n\n[settings]\nipv4_address = \"127.0.0.1\"\nipv6_address = \"::1\"\n" +
+		"port = 11986\ntls_enabled = false\npoll_rate = 0.5\ndrivetemp_suspend = true\n"
+	must(t, os.WriteFile(filepath.Join(r.d.config, "config.toml"), []byte(old), 0o600))
+	must(t, r.prepare())
+	if got, want := r.configToml(), strings.Replace(old, "port = 11986", "port = 11985", 1); got != want {
+		t.Fatalf("config.toml:\n%s\nwant\n%s", got, want)
 	}
 }

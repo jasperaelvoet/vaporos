@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/buildcheck"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 )
@@ -148,7 +149,7 @@ func TestDropInMatches(t *testing.T) {
 	want := map[string]string{
 		"CC_CONFIG_DIR": area + "/config", "CC_DATA_DIR": area + "/data",
 		"CC_PLUGINS_DIR": "/usr/lib/vos/ext/coolercontrol/plugins",
-		"CC_HOST_IP4":    "127.0.0.1", "CC_HOST_IP6": "::1", "CC_PORT": "11986",
+		"CC_HOST_IP4":    "127.0.0.1", "CC_HOST_IP6": "::1", "CC_PORT": "11985",
 		"CC_TLS": "OFF", "CC_SERVICE_MANAGER": "OFF",
 	}
 	for k, v := range want {
@@ -163,6 +164,20 @@ func TestDropInMatches(t *testing.T) {
 		if s.key == "port" && s.value != env["CC_PORT"] {
 			t.Errorf("config.toml port %s, CC_PORT %s", s.value, env["CC_PORT"])
 		}
+	}
+	if up := upstream(&extensions.Ext{ID: id}); up != d.Network.Ports[0].Upstream {
+		t.Errorf("the status check's own upstream %s, the descriptor's %s", up, d.Network.Ports[0].Upstream)
+	}
+	// coolercontrold's gRPC server takes CC_PORT+1 on the same addresses:
+	// on 11987 it took vosd's web UI port.
+	port, err := strconv.Atoi(env["CC_PORT"])
+	must(t, err)
+	declared := []int{11987, d.Web.Port}
+	for _, p := range d.Network.Ports {
+		declared = append(declared, p.Port)
+	}
+	if slices.Contains(declared, port+1) || slices.Contains(declared, port) {
+		t.Errorf("CC_PORT=%d: it or its gRPC port %d is one of %v, where vosd listens", port, port+1, declared)
 	}
 	if settings["StateDirectory"] != "vos/ext/data/"+id || settings["ReadWritePaths"] != area || settings["ProtectSystem"] != "strict" {
 		t.Errorf("sandbox %v", settings)

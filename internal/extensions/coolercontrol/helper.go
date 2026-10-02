@@ -124,7 +124,7 @@ func upstream(x *extensions.Ext) string {
 			}
 		}
 	}
-	return "127.0.0.1:11986"
+	return "127.0.0.1:" + daemonPort
 }
 
 // Status says when CoolerControl does not run while it should: its unit
