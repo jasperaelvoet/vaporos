@@ -61,6 +61,17 @@ func TestParseRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+// Hooks run in catalog order: a descriptor cannot ask for another.
+func TestParseRejectsHookOrder(t *testing.T) {
+	b := []byte(strings.Replace(string(encode(t, valid())), `"hooks":[{"apps":[227300]}]`, `"hooks":[{"apps":[227300],"order":1}]`, 1))
+	if !strings.Contains(string(b), `"order":1`) {
+		t.Fatal("the test descriptor has no hook")
+	}
+	if _, err := Parse(b); err == nil {
+		t.Fatal("a hook order was accepted")
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]func(d *Descriptor){
 		"schema":             func(d *Descriptor) { d.Schema = 2 },

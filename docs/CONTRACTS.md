@@ -307,7 +307,9 @@ manifest. Each extension is itself immutable: one sealed, read-only image.
 
 **Source** (`extensions/<id>/`): `extension.json`, the descriptor (schema 1,
 unknown fields rejected; `internal/extensions/descriptor`), and `files/usr/...`,
-copied into the image. Integration logic is Go in `vos`
+copied into the image. A `steam.hooks` entry is `{"apps":[<app id>...]}`
+and nothing more: the hooks of several extensions on one app run in catalog
+order. Integration logic is Go in `vos`
 (`internal/extensions/<id>`). Non-goals: no `/opt` or `/usr/local` payloads, no
 AUR or DKMS, no `.ko`, no `sysusers.d` or `tmpfiles.d`, no confext, no plugin
 stores that run code as root.
