@@ -18,6 +18,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 	"github.com/jasperaelvoet/vaporos/internal/steamlock"
 	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
+	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
 // Registering adopted libraries with Steam. Steam finds its libraries in
@@ -58,15 +59,42 @@ const (
 	steamLockWait = 2 * time.Second
 )
 
-// lockSteam takes the Steam lock (a variable for tests).
+// lockSteam takes the Steam lock (a variable for tests). Without the
+// gaming user's runtime directory its user manager is not running, so
+// nobody holds the lock (prepare runs in that manager) and nobody can
+// start Steam meanwhile: the lists are edited without it.
 var lockSteam = func() (func(), error) {
+	if _, err := os.Lstat(config.GamerRuntimeDir); errors.Is(err, fs.ErrNotExist) {
+		return func() {}, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), steamLockWait)
 	defer cancel()
 	return steamlock.Lock(ctx)
 }
 
-// errNoSteamList means Steam has never run, so there is no list to add to.
-var errNoSteamList = errors.New("Steam has not created its library list yet")
+var (
+	// errNoSteamList means Steam has never run, so there is no list to add to.
+	errNoSteamList = errors.New("Steam has not created its library list yet")
+	// errSteamStarting means Steam, or gamescope with prepare before it,
+	// started while the registration waited for the lock.
+	errSteamStarting = errors.New("Steam is starting")
+)
+
+// gamescopeUnit is the gaming user's unit that runs prepare, then Steam.
+const gamescopeUnit = "vos-gamescope.service"
+
+// gamescopeStarting reports whether gamescope's unit is anything but
+// down: on its way up its prepare step runs and Steam starts right after,
+// and on its way down Steam writes its lists back.
+func gamescopeStarting() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	switch sysd.ActiveState(ctx, gamescopeUnit, true) {
+	case "inactive", "failed", "":
+		return false
+	}
+	return true
+}
 
 // pendingPath lists the libraries still to be added to Steam's list.
 func pendingPath() string { return filepath.Join(config.StateDir, "steam-libraries.json") }
@@ -147,12 +175,12 @@ func (s *Service) registerLibrary(dir string) (bool, error) {
 		return true, s.unqueueLocked(dir)
 	}
 	if !s.steamRunning() {
-		err := addToSteam(dir)
+		err := addToSteam(dir, s.steamRunning)
 		if err == nil {
 			log.Printf("storage: added %s to Steam's libraries", dir)
 			return true, s.unqueueLocked(dir)
 		}
-		if !errors.Is(err, errNoSteamList) {
+		if !errors.Is(err, errNoSteamList) && !errors.Is(err, errSteamStarting) {
 			log.Printf("storage: adding %s to Steam's libraries: %v (trying again later)", dir, err)
 		}
 	}
@@ -178,7 +206,11 @@ func (s *Service) applyPending() {
 		if libraryListed(listed, dir) {
 			continue // added in Steam meanwhile
 		}
-		if err := addToSteam(dir); err != nil {
+		if err := addToSteam(dir, s.steamRunning); err != nil {
+			if errors.Is(err, errSteamStarting) {
+				keep = append(keep, dir)
+				continue
+			}
 			if !errors.Is(err, errNoSteamList) && !s.regFailed[dir] {
 				log.Printf("storage: adding %s to Steam's libraries: %v (trying again while Steam is stopped)", dir, err)
 			}
@@ -281,14 +313,19 @@ func canonMnt(p string) string {
 	return p
 }
 
-// addToSteam adds dir to Steam's library lists, under the Steam lock.
-// Steam must not be running.
-func addToSteam(dir string) error {
+// addToSteam adds dir to Steam's library lists, under the Steam lock,
+// unless running says Steam started meanwhile: prepare may hold the lock
+// until just before Steam starts, and Steam would write its own copy of
+// the lists back over the edit.
+func addToSteam(dir string, running func() bool) error {
 	unlock, err := lockSteam()
 	if err != nil {
 		return fmt.Errorf("Steam's files are in use: %w", err)
 	}
 	defer unlock()
+	if running() {
+		return errSteamStarting
+	}
 	label, contentID := libraryMarker(dir)
 	uid, gid := -1, -1
 	if os.Geteuid() == 0 {

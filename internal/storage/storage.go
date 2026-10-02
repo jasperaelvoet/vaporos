@@ -87,7 +87,7 @@ func NewService(cfg *config.Config) *Service {
 		scan:         ScanDisks,
 		systemctl:    sysd.Systemctl,
 		isActive:     func(ctx context.Context, unit string) bool { return sysd.IsActive(ctx, unit, false) },
-		steamRunning: func() bool { return gamerSteamRunning("/proc", config.GamerUID) },
+		steamRunning: func() bool { return gamerSteamRunning("/proc", config.GamerUID) || gamescopeStarting() },
 		mntBase:      "/var/mnt",
 	}
 }
