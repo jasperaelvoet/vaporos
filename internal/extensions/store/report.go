@@ -6,6 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 )
@@ -18,12 +20,16 @@ const (
 	ModeOff     = "off"      // no extension mounted on purpose
 )
 
-// Reasons the initramfs gives for mounting nothing, and the one for a boot
-// without a report.
+// Reasons the initramfs gives (zero or more, space-separated in Reason),
+// and the one for a boot without a report.
 const (
-	ReasonNoExt    = "vos.ext=0"
-	ReasonSkipOnce = "skip-once"
-	ReasonNoReport = "no report"
+	ReasonNoExt      = "cmdline"     // vos.ext=0: mode off
+	ReasonSkipOnce   = "skip-once"   // mode off
+	ReasonNoSet      = "no-set"      // no set to use
+	ReasonTriesUsed  = "tries-used"  // pending had no tries left
+	ReasonTriesWrite = "tries-write" // pending's tries could not be written
+	ReasonNoVerity   = "no-verity"   // no ext4 verity on vos_data, or in the kernel
+	ReasonNoReport   = "no-report"
 )
 
 // Skip reasons for one image.
@@ -82,6 +88,11 @@ func LoadBootReport() (*BootReport, error) {
 		return nil, err
 	}
 	return rep, nil
+}
+
+// HasReason reports whether reason is one of the boot's reasons.
+func (r *BootReport) HasReason(reason string) bool {
+	return r != nil && slices.Contains(strings.Fields(r.Reason), reason)
 }
 
 // IsTrial reports whether this boot is an extension trial.

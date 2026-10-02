@@ -14,8 +14,9 @@ import (
 // on the vos.disk disk and marks a slot that cannot start as bad, in shell.
 // These tests run its functions under dash against a fake sysfs, /dev and
 // ESP: paths are rewritten into a temp tree, [ -b ] becomes [ -e ] (plain
-// files stand in for block devices), and mount, blkid, reboot and the
-// extension tools (tune2fs, fsverity, stat) are stubs.
+// files stand in for block devices), and mount, blkid, reboot, modprobe and
+// the extension tools (tune2fs, fsverity, stat) are stubs. The file TRACE
+// records, in order, the steps whose order matters.
 
 const hookPath = "../../rootfs/usr/lib/initcpio/hooks/vos"
 
@@ -90,7 +91,7 @@ func (h *hookEnv) run(vars, script string) string {
 		h.t.Fatal(err)
 	}
 	hook := strings.NewReplacer("/sys/class/block", h.path("sys/class/block"), "/sys/firmware/", h.path("sys/firmware")+"/",
-		"/dev/", h.path("dev")+"/", "/run/", h.path("run")+"/", "[ -b ", "[ -e ").Replace(string(src))
+		"/sys/fs/", h.path("sys/fs")+"/", "/dev/", h.path("dev")+"/", "/run/", h.path("run")+"/", "[ -b ", "[ -e ").Replace(string(src))
 	h.write("hook.sh", hook)
 	stubs := `
 getarg() { case "$1" in vos.slot) echo "${A_slot:-$2}" ;; vos.disk) echo "${A_disk:-$2}" ;; vos.mode) echo "${A_mode:-$2}" ;; vos.version) echo "${A_version:-$2}" ;; vos.ext) echo "${A_ext:-$2}" ;; *) echo "$2" ;; esac; }
@@ -109,17 +110,31 @@ blkid() {
 #
 # A fake .iso file is its label, then its version. losetup keeps the
 # backing file next to the device, in files: the hook runs it in subshells.
+# FAIL_LOSETUP (sha256s) fails attaching those extension images.
 losetup() {
     local n
     case "$1" in
         -d) echo "DETACH $(cat "$2.backing")"; rm -f "$2" "$2.backing" ;;
-        *) n=$(($(cat "$DEV/loops" 2>/dev/null || echo 0) + 1)); echo "$n" >"$DEV/loops"
+        *) n="${4##*/}"; case " ${FAIL_LOSETUP:-} " in *" ${n%.raw} "*) return 1 ;; esac
+           n=$(($(cat "$DEV/loops" 2>/dev/null || echo 0) + 1)); echo "$n" >"$DEV/loops"
            echo "$4" >"$DEV/loop$n.backing"; : >"$DEV/loop$n"; echo "$DEV/loop$n" ;;
     esac
 }
 udevadm() { :; }
 sleep() { :; }
-sync() { :; }
+sync() { echo SYNC >>"$TRACE"; }
+# Renaming a set's tries into place is the decrement.
+mv() {
+    case "$3" in */tries) echo "DECREMENT $(cat "$2")" >>"$TRACE" ;; esac
+    command mv "$@"
+}
+# Loading ext4 brings /sys/fs/ext4, with verity unless NO_FS_VERITY.
+modprobe() {
+    echo "MODPROBE $*" >>"$TRACE"
+    case "$*" in
+        "-q ext4") mkdir -p "$SYSFS/ext4/features"; [ -n "${NO_FS_VERITY:-}" ] || : >"$SYSFS/ext4/features/verity" ;;
+    esac
+}
 reboot() { echo REBOOT; exit 0; }
 # An extension image (<sha256>.raw, or a loop device backed by one) mounts
 # as a copy of trees/<sha256>. FAIL_FILE_MOUNT fails it unless it comes
@@ -137,7 +152,7 @@ mount() {
                     [ -f "$5.backing" ] || [ -z "${FAIL_FILE_MOUNT:-}" ] || return 32
                     case " ${FAIL_IMAGE:-} " in *" $img "*) return 32 ;; esac
                     cp -R "$TREES/$img/." "$6/" 2>/dev/null
-                    echo "MOUNT erofs $img $6" ;;
+                    echo "MOUNT erofs $img $6"; echo "MOUNT erofs $img" >>"$TRACE" ;;
                 *) [ -n "${FAIL_EROFS:-}" ] && return 1; echo "MOUNT $*" ;;
             esac ;;
         ext4) echo "MOUNT $*"; echo "MOUNT ext4" >>"$TRACE" ;;
@@ -176,6 +191,7 @@ stat() { [ "$1 $2" = "-c %s" ] && [ -f "$3" ] && echo $(($(wc -c <"$3"))); }
 `
 	test := "ESP=" + h.path("esp") + "; NEW=" + h.path("new_root") + "; DEV=" + h.path("dev") + "; HOST=" + h.path("host") +
 		"; TMP=" + h.root + "; TRACE=" + h.path("trace") + "; TREES=" + h.path("trees") + "; FSV=" + h.path("fsv") +
+		"; SYSFS=" + h.path("sys/fs") +
 		"; " + vars + "\n" + stubs +
 		". " + h.path("hook.sh") + "\nrun_hook\n" + script + "\n"
 	h.write("test.sh", test)

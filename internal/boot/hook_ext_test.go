@@ -7,9 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
 // The initramfs half of extensions (docs/CONTRACTS.md "Extensions", Boot):
@@ -58,7 +62,17 @@ func (h *hookEnv) set(name, tries, modprobe string, ids ...string) {
 
 func (h *hookEnv) link(name, target string) {
 	h.mkdir(storeRel)
-	if err := os.Symlink(target, h.path(storeRel, name)); err != nil {
+	h.symlink(target, storeRel+"/"+name)
+}
+
+func (h *hookEnv) symlink(target, rel string) {
+	if err := os.Symlink(target, h.path(rel)); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *hookEnv) rename(from, to string) {
+	if err := os.Rename(h.path(from), h.path(to)); err != nil {
 		h.t.Fatal(err)
 	}
 }
@@ -79,25 +93,27 @@ func (h *hookEnv) read(rel string) string {
 	return string(b)
 }
 
-type extReport struct {
-	Mode      string `json:"mode"`
-	Set       string `json:"set"`
-	TriesLeft int    `json:"tries_left"`
-	Reason    string `json:"reason"`
-	Mounted   []struct {
-		ID       string `json:"id"`
-		SHA256   string `json:"sha256"`
-		FSVerity string `json:"fsverity"`
-	} `json:"mounted"`
-	Skipped []struct {
-		ID     string `json:"id"`
-		Reason string `json:"reason"`
-	} `json:"skipped"`
+// report checks /run/vos/extensions.json against the contract (compact JSON,
+// exactly its fields and words, the catalog's digests), checks that the
+// store reads it the same way, and sums it up in one line.
+func (h *hookEnv) report() string {
+	h.t.Helper()
+	r := h.bootReport()
+	var mounted, skipped []string
+	for _, m := range r.Mounted {
+		if m.SHA256 != shaOf(m.ID) || m.FSVerity != fsvOf(m.ID) {
+			h.t.Errorf("%s mounted with digests %s %s", m.ID, m.SHA256, m.FSVerity)
+		}
+		mounted = append(mounted, m.ID)
+	}
+	for _, s := range r.Skipped {
+		skipped = append(skipped, s.ID+":"+s.Reason)
+	}
+	return fmt.Sprintf("%s set=%s tries=%d reason=%q mounted=%s skipped=%s",
+		r.Mode, r.Set, r.TriesLeft, r.Reason, strings.Join(mounted, ","), strings.Join(skipped, ","))
 }
 
-// report checks /run/vos/extensions.json against the contract (compact JSON,
-// exactly its fields, the catalog's digests) and sums it up in one line.
-func (h *hookEnv) report() string {
+func (h *hookEnv) bootReport() *store.BootReport {
 	h.t.Helper()
 	raw, err := os.ReadFile(h.path("run/vos/extensions.json"))
 	if err != nil {
@@ -118,24 +134,44 @@ func (h *hookEnv) report() string {
 		fields["mounted"][0] != '[' || fields["skipped"][0] != '[' {
 		h.t.Fatalf("extensions.json fields:\n%s", raw)
 	}
-	var r extReport
+	var r store.BootReport
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&r); err != nil {
 		h.t.Fatalf("extensions.json: %v\n%s", err, raw)
 	}
-	var mounted, skipped []string
-	for _, m := range r.Mounted {
-		if m.SHA256 != shaOf(m.ID) || m.FSVerity != fsvOf(m.ID) {
-			h.t.Errorf("%s mounted with digests %s %s", m.ID, m.SHA256, m.FSVerity)
+
+	run := config.RunDir
+	config.RunDir = h.path("run/vos")
+	loaded, err := store.LoadBootReport()
+	config.RunDir = run
+	if err != nil || !reflect.DeepEqual(loaded, &r) {
+		h.t.Fatalf("the store reads extensions.json as %+v (%v), want %+v", loaded, err, r)
+	}
+
+	if !slices.Contains(reportModes, r.Mode) {
+		h.t.Errorf("mode %q", r.Mode)
+	}
+	if r.Mode != store.ModePending && r.TriesLeft != 0 {
+		h.t.Errorf("tries_left %d in mode %s", r.TriesLeft, r.Mode)
+	}
+	if (r.Mode == store.ModeOff) != (r.HasReason(store.ReasonNoExt) || r.HasReason(store.ReasonSkipOnce)) {
+		h.t.Errorf("mode %s with reason %q", r.Mode, r.Reason)
+	}
+	if r.Reason != strings.Join(strings.Fields(r.Reason), " ") {
+		h.t.Errorf("reason %q is not words separated by single spaces", r.Reason)
+	}
+	for _, w := range strings.Fields(r.Reason) {
+		if !slices.Contains(reportReasons, w) {
+			h.t.Errorf("reason %q", w)
 		}
-		mounted = append(mounted, m.ID)
 	}
 	for _, s := range r.Skipped {
-		skipped = append(skipped, s.ID+":"+s.Reason)
+		if !slices.Contains(reportSkips, s.Reason) {
+			h.t.Errorf("%s skipped as %q", s.ID, s.Reason)
+		}
 	}
-	return fmt.Sprintf("%s set=%s tries=%d reason=%q mounted=%s skipped=%s",
-		r.Mode, r.Set, r.TriesLeft, r.Reason, strings.Join(mounted, ","), strings.Join(skipped, ","))
+	return &r
 }
 
 func TestHookExtensionSets(t *testing.T) {
@@ -256,6 +292,70 @@ func TestHookExtensionSets(t *testing.T) {
 			os.Remove(h.path(storeRel, "enabled"))
 			h.link("enabled", "sets/../sets/1")
 		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "a set that is not a number", setup: func(h *hookEnv) {
+			h.set("x1", "", "", "a", "b", "c")
+			h.link("enabled", "sets/x1")
+			h.prove("a", "b", "c")
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "a set number with a leading zero", setup: func(h *hookEnv) {
+			h.set("01", "", "", "a", "b", "c")
+			h.link("enabled", "sets/01")
+			h.prove("a", "b", "c")
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		// The store is root's, but every path still resolves inside it.
+		{name: "a set that is a symlink", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel+"/sets/1", storeRel+"/sets/9")
+			h.symlink("9", storeRel+"/sets/1")
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "sets/ is a symlink", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel+"/sets", storeRel+"/elsewhere")
+			h.symlink("elsewhere", storeRel+"/sets")
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "the store is a symlink", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel, storeRel+".real")
+			h.symlink("ext.real", storeRel)
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "symlinked ids", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel+"/sets/1/ids", storeRel+"/ids")
+			h.symlink("../../ids", storeRel+"/sets/1/ids")
+		}, want: `enabled set= tries=0 reason="no-set" mounted= skipped=`},
+		{name: "symlinked tries", setup: func(h *hookEnv) {
+			pending("")(h)
+			h.write(storeRel+"/two", "2\n")
+			h.symlink("../../two", storeRel+"/sets/2/tries")
+		}, want: `enabled set=1 tries=0 reason="tries-used" mounted=a skipped=`,
+			check: func(t *testing.T, h *hookEnv, out string) {
+				if got := h.read(storeRel + "/two"); got != "2\n" {
+					t.Errorf("the link's target became %q", got)
+				}
+			}},
+		{name: "a tries.new left over", setup: func(h *hookEnv) {
+			pending("2")(h)
+			h.write("elsewhere", "kept\n")
+			h.symlink(h.path("elsewhere"), storeRel+"/sets/2/tries.new")
+		}, want: `pending set=2 tries=1 reason="" mounted=a,b,c skipped=`,
+			check: func(t *testing.T, h *hookEnv, out string) {
+				if got := h.read("elsewhere"); got != "kept\n" {
+					t.Errorf("written through tries.new: %q", got)
+				}
+				if got := h.read(storeRel + "/sets/2/tries"); got != "1\n" {
+					t.Errorf("tries %q", got)
+				}
+			}},
+		{name: "symlinked proven", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel+"/proven", storeRel+"/proven.real")
+			h.symlink("proven.real", storeRel+"/proven")
+		}, want: `enabled set=1 tries=0 reason="" mounted= skipped=a:unproven,b:requires,c:unproven`},
+		{name: "symlinked image", setup: func(h *hookEnv) {
+			enabled(h)
+			h.rename(storeRel+"/images/"+shaOf("c")+".raw", storeRel+"/c.raw")
+			h.symlink("../c.raw", storeRel+"/images/"+shaOf("c")+".raw")
+		}, want: `enabled set=1 tries=0 reason="" mounted=a,b skipped=c:missing`},
 		{name: "missing image", setup: func(h *hookEnv) {
 			enabled(h)
 			os.Remove(h.path(storeRel, "images", shaOf("c")+".raw"))
@@ -303,6 +403,22 @@ func TestHookExtensionSets(t *testing.T) {
 			check: func(t *testing.T, h *hookEnv, out string) {
 				if h.read("dev/loop3.backing") != h.path(storeRel, "images", shaOf("c")+".raw")+"\n" || strings.Contains(out, "DETACH") {
 					t.Errorf("loop devices:\n%s", out)
+				}
+			}},
+		// c gets no loop device, so d mounts at x/2 in its place.
+		{name: "file-backed mount fails, losetup too", vars: "FAIL_FILE_MOUNT=1 FAIL_LOSETUP=" + shaOf("c"),
+			setup: func(h *hookEnv) {
+				h.ext("d")
+				h.set("1", "", "", "a", "c", "d")
+				h.link("enabled", "sets/1")
+				h.prove("a", "c", "d")
+			},
+			want: `enabled set=1 tries=0 reason="" mounted=a,d skipped=c:mount`,
+			check: func(t *testing.T, h *hookEnv, out string) {
+				if strings.Contains(out, "DETACH") || h.read("dev/loop2.backing") != h.path(storeRel, "images", shaOf("d")+".raw")+"\n" ||
+					h.read("run/vos/x/2/usr/share/d/owner") != "d" ||
+					!strings.Contains(out, "lowerdir="+h.path("run/vos/x/2/usr")+":"+h.path("run/vos/x/1/usr")+":"+h.path("new_root/usr")+" ") {
+					t.Errorf("loop devices and mounts:\n%s", out)
 				}
 			}},
 		{name: "no usr", setup: func(h *hookEnv) {
@@ -367,6 +483,37 @@ func TestHookExtensionSets(t *testing.T) {
 				c.check(t, h, out)
 			}
 		})
+	}
+}
+
+func TestHookExtensionCatalogLines(t *testing.T) {
+	// An ext line that is not well formed is no entry at all: its id is not
+	// in this catalog.
+	h := newHookEnv(t)
+	ids := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	for _, id := range ids {
+		h.ext(id)
+	}
+	size := func(id string) int { return len("erofs image of " + id) }
+	h.write("new_root/usr/lib/vos/extensions.list", strings.Join([]string{
+		"dispatcher 1",
+		fmt.Sprintf("ext a %s %d %s -", shaOf("a"), size("a"), fsvOf("a")),
+		fmt.Sprintf("ext b XYZ %d %s -", size("b"), fsvOf("b")),
+		fmt.Sprintf("ext c %s %d %s -", strings.ToUpper(shaOf("c")), size("c"), fsvOf("c")),
+		fmt.Sprintf("ext d %s %d %s -", shaOf("d"), size("d"), fsvOf("d")[1:]),
+		fmt.Sprintf("ext e %s %d %s0 -", shaOf("e"), size("e"), fsvOf("e")),
+		fmt.Sprintf("ext f %s 12a %s -", shaOf("f"), fsvOf("f")),
+		fmt.Sprintf("ext g %s -%d %s -", shaOf("g"), size("g"), fsvOf("g")),
+		"ext h " + shaOf("h"),
+	}, "\n")+"\n")
+	h.set("1", "", "", ids...)
+	h.link("enabled", "sets/1")
+	h.prove(ids...)
+	out := h.run("", `vos_mount_extensions "$NEW"`)
+	want := `enabled set=1 tries=0 reason="" mounted=a skipped=` +
+		"b:not-in-catalog,c:not-in-catalog,d:not-in-catalog,e:not-in-catalog,f:not-in-catalog,g:not-in-catalog,h:not-in-catalog"
+	if got := h.report(); got != want {
+		t.Errorf("got  %s\nwant %s\n%s", got, want, out)
 	}
 }
 
@@ -454,6 +601,16 @@ options it87 force_id=0x8628
 			t.Errorf("%s: module options written:\n%s", vars, out)
 		}
 	}
+
+	// A modprobe.conf that is a symlink is no set's options.
+	h = newHookEnv(t)
+	setup(h)
+	h.rename(storeRel+"/sets/1/modprobe.conf", storeRel+"/modprobe.conf")
+	h.symlink("../../modprobe.conf", storeRel+"/sets/1/modprobe.conf")
+	out = h.run("", `vos_mount_extensions "$NEW"`)
+	if _, err := os.Stat(h.path("run/modprobe.d/vos-ext.conf")); err == nil {
+		t.Errorf("module options through a symlink:\n%s", out)
+	}
 }
 
 func TestHookExtensionVerityFeature(t *testing.T) {
@@ -466,13 +623,15 @@ func TestHookExtensionVerityFeature(t *testing.T) {
 	}
 	trace := func(h *hookEnv) string { return strings.TrimSpace(h.read("trace")) }
 
-	// Missing: turned on between the check and the mount of vos_data, and
-	// the extensions are laid over /usr after /etc is assembled.
+	// Missing: ext4 loaded first, the feature turned on between the check
+	// and the mount of vos_data, and the extensions laid over /usr after
+	// /etc is assembled.
 	h := newHookEnv(t)
 	setup(h)
 	out := h.run(disk, `vos_mount_disk "$NEW"`)
 	dev := h.path("dev/sda4")
-	if got, want := trace(h), "E2FSCK -p "+dev+"\nTUNE2FS -O verity "+dev+"\nMOUNT ext4"; got != want {
+	want := "E2FSCK -p " + dev + "\nMODPROBE -q ext4\nTUNE2FS -O verity " + dev + "\nMOUNT ext4\nMOUNT erofs " + shaOf("a")
+	if got := trace(h); got != want {
 		t.Errorf("trace:\n%s\nwant:\n%s", got, want)
 	}
 	etc, usr := strings.Index(out, "lowerdir="+h.path("new_root/etc")), strings.Index(out, "ro,lowerdir=")
@@ -492,21 +651,38 @@ func TestHookExtensionVerityFeature(t *testing.T) {
 		t.Errorf("tune2fs ran on a filesystem with verity:\n%s", got)
 	}
 
-	// tune2fs fails: the boot goes on, and extensions.json says why.
-	h = newHookEnv(t)
-	setup(h)
-	out = h.run(disk+" FAIL_TUNE2FS=1", `vos_mount_disk "$NEW"`)
-	if strings.Contains(out, "REBOOT") || !strings.Contains(out, "MOUNT -t ext4") {
-		t.Errorf("tune2fs failure stopped the boot:\n%s", out)
-	}
-	if got := h.report(); !strings.Contains(got, `reason="no-verity"`) {
-		t.Errorf("report %s", got)
-	}
-	h = newHookEnv(t)
-	setup(h)
-	h.write(storeRel+"/skip-once", "")
-	h.run(disk+" FAIL_TUNE2FS=1", `vos_mount_disk "$NEW"`)
-	if got := h.report(); !strings.Contains(got, `reason="skip-once no-verity"`) {
-		t.Errorf("report %s", got)
+	// Whatever goes wrong, the boot goes on and extensions.json says why.
+	for _, c := range []struct {
+		name, vars, script, want string
+		skipOnce, tune2fs        bool
+	}{
+		{name: "tune2fs fails", vars: "FAIL_TUNE2FS=1", tune2fs: true,
+			want: `enabled set=1 tries=0 reason="no-verity" mounted=a skipped=`},
+		{name: "no tune2fs in the initramfs", script: `tune2fs() { echo "tune2fs: not found" >&2; return 127; }; `,
+			want: `enabled set=1 tries=0 reason="no-verity" mounted=a skipped=`},
+		// Never touched: only a kernel that has ext4 verity sets the feature.
+		{name: "a kernel without ext4 verity", vars: "NO_FS_VERITY=1",
+			want: `enabled set=1 tries=0 reason="no-verity" mounted=a skipped=`},
+		{name: "with skip-once", vars: "FAIL_TUNE2FS=1", skipOnce: true, tune2fs: true,
+			want: `off set= tries=0 reason="skip-once no-verity" mounted= skipped=`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHookEnv(t)
+			setup(h)
+			if c.skipOnce {
+				h.write(storeRel+"/skip-once", "")
+			}
+			out, dev := h.run(disk+" "+c.vars, c.script+`vos_mount_disk "$NEW"`), h.path("dev/sda4")
+			if strings.Contains(out, "REBOOT") || !strings.Contains(out, "MOUNT -t ext4 -o rw,noatime "+dev) {
+				t.Errorf("the boot stopped:\n%s", out)
+			}
+			tr := trace(h)
+			if !strings.HasPrefix(tr, "E2FSCK -p "+dev+"\nMODPROBE -q ext4\n") || strings.Contains(tr, "TUNE2FS") != c.tune2fs {
+				t.Errorf("trace:\n%s", tr)
+			}
+			if got := h.report(); got != c.want {
+				t.Errorf("got  %s\nwant %s", got, c.want)
+			}
+		})
 	}
 }

@@ -243,6 +243,9 @@ func TestRestartNeeded(t *testing.T) {
 		{"this boot tries it", &BootReport{Mode: ModePending, Set: "2"}, pending, all, false},
 		{"booted with vos.ext=0", &BootReport{Mode: ModeOff, Reason: ReasonNoExt}, pending, all, false},
 		{"booted skip-once", &BootReport{Mode: ModeOff, Reason: ReasonSkipOnce}, pending, all, false},
+		{"booted skip-once without verity", &BootReport{Mode: ModeOff, Reason: "skip-once no-verity"}, pending, all, false},
+		{"booted with vos.ext=0 and skip-once", &BootReport{Mode: ModeOff, Reason: "cmdline skip-once"}, pending, all, false},
+		{"after a boot without verity", &BootReport{Mode: ModeEnabled, Set: "1", Reason: "no-verity"}, pending, all, true},
 		{"image missing", normal, pending, func(id string) bool { return id != "truckersmp" }, false},
 	}
 	for _, tt := range tests {

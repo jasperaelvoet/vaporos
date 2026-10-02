@@ -116,7 +116,7 @@ func RestartNeeded(rep *BootReport, pending *Set, has func(id string) bool) bool
 	if pending == nil || pending.Tries <= 0 || has == nil {
 		return false
 	}
-	if rep != nil && (pending.Name == rep.Set || rep.Reason == ReasonNoExt || rep.Reason == ReasonSkipOnce) {
+	if rep != nil && (pending.Name == rep.Set || rep.HasReason(ReasonNoExt) || rep.HasReason(ReasonSkipOnce)) {
 		return false
 	}
 	for _, id := range pending.IDs {

@@ -16,6 +16,7 @@ func TestLoadBootReport(t *testing.T) {
 	eq(t, "mode", rep.Mode, ModeOff)
 	eq(t, "reason", rep.Reason, ReasonNoReport)
 	eq(t, "trial", rep.IsTrial(), false)
+	eq(t, "has no-report", rep.HasReason(ReasonNoReport), true)
 
 	writeReport(t, `{"mode":"pending","set":"3","tries_left":1,"reason":"",
 		"mounted":[{"id":"proton","sha256":"`+hex64('1')+`","fsverity":"`+hex64('2')+`"},
@@ -34,6 +35,14 @@ func TestLoadBootReport(t *testing.T) {
 	eq(t, "mounted", rep.IsMounted("proton"), true)
 	eq(t, "skip reason", rep.SkipReason("coolercontrol"), SkipNotInCatalog)
 	eq(t, "no skip reason", rep.SkipReason("proton"), "")
+	eq(t, "no reason", rep.HasReason(""), false)
+
+	rep = &BootReport{Mode: ModeOff, Reason: "cmdline skip-once no-verity"}
+	for _, r := range []string{ReasonNoExt, ReasonSkipOnce, ReasonNoVerity} {
+		eq(t, "has "+r, rep.HasReason(r), true)
+	}
+	eq(t, "has no-set", rep.HasReason(ReasonNoSet), false)
+	eq(t, "has part of a word", rep.HasReason("skip"), false)
 
 	writeReport(t, `{"mode":`)
 	if _, err := LoadBootReport(); err == nil {
@@ -42,6 +51,7 @@ func TestLoadBootReport(t *testing.T) {
 	var nilRep *BootReport
 	eq(t, "nil trial", nilRep.IsTrial(), false)
 	eq(t, "nil pairs", len(nilRep.MountedPairs()), 0)
+	eq(t, "nil reason", nilRep.HasReason(ReasonNoExt), false)
 }
 
 func TestSlots(t *testing.T) {
