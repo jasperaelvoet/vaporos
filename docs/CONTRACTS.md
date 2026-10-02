@@ -37,7 +37,9 @@ multi-call:
 | `vos health` | boot health check (vos-health.service, see "Health") |
 | `vos edid generate --out FILE [--modes-from FILE]` / `vos edid decode FILE` | EDID generator |
 | `vos sign --key FILE\|env:VAR MANIFEST` / `vos keygen --out PREFIX` | ed25519 manifest signing |
-| `vos ext check-tree` / `vos ext catalog` | build: check an extension's tree against its descriptor and the base; write the catalog and manifest entries |
+| `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr, exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
+| `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
+| `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [ids...]` | fetch and seal extension images into the store (dev and tests; vosd does the same) |
 | `vos ext launch [--app N\|--shortcut ID/KEY] -- CMD...` | Steam launch dispatcher (see Extensions); runs CMD unchanged when no mounted extension hooks it |
 | `vos-generator` (argv[0], systemd generator symlink) | mount units and SSH from config.json; wants for the services of mounted extensions |
@@ -261,21 +263,32 @@ extension's packages (resolved from the base's own sync snapshot), its
 `module-options` lists the `module param` pairs the extension may set (one per
 line). Its identity is its fs-verity digest: `fsverity digest --hash-alg=sha256
 --block-size=4096`, no salt, as 64 hex digits. The build fails an image that:
-ships anything outside `usr/`; ships a path the base or another extension
-ships (unless identical bytes from the same package); writes under
+ships anything outside `usr/`; ships a path the base ships, or one another
+extension ships unless both are the same file (bytes and mode, or symlink
+target); has a directory where either has a file or symlink; writes under
 `usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
-`usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory or
-`usr/lib/vos/**` except `usr/lib/vos/ext/<id>/**`, beyond the categories its
+`usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory (one
+not reviewed as harmless) or `usr/lib/vos/**` except
+`usr/lib/vos/ext/<id>/**`, or anything under `usr/share/vos`, beyond the categories its
 descriptor declares in `permissions` (`service`, `user-service`, `udev`,
 `sysctl`, `modules`, `tmpfiles`, `polkit`, `dbus`, `compat-tool`), with any
 difference between declared and found failing too; ships `sysusers.d`, `*.ko`,
 `hwdb.d`, `ld.so.conf.d`, network configuration (NetworkManager, networkd,
 nftables, `net.*` sysctls), setuid/setgid files or file capabilities,
 whiteouts or `trusted.overlay.*` xattrs; sets a sysctl key the base or another
-extension sets; ships a system unit without a VaporOS drop-in that sets
-`TimeoutStartSec=` (finite) and no `Before=` on a base unit; or has an ELF
-(outside `elf_exempt`) that does not resolve against the base's
-`ld.so.cache`.
+extension sets; ships a system service whose last `TimeoutStartSec=` (or
+`TimeoutSec=`) is not a finite one set by a drop-in (`<unit>.d/*.conf`) of
+its own, any unit or drop-in with `Before=` on a unit of the base, or drop-ins
+and `.wants`/`.requires` for a unit it does not ship; or has an ELF (outside
+`elf_exempt`) with a `DT_NEEDED` that resolves nowhere: not through its
+`DT_RUNPATH` (else `DT_RPATH`, with `$ORIGIN`) in the image or the base, not
+in the loader's default directories (`usr/lib` and `usr/lib/x86_64-linux-gnu`,
+or `usr/lib32` for 32-bit) of the image or the base, and not in the base's
+`ld.so.conf` directories (in the
+base's `ld.so.cache`, which never lists the image's libraries). `vos ext
+check-tree` also checks that `strip` paths are gone, that the `services` units
+exist, and that `usr/lib/vos/ext/<id>/` holds the source descriptor, the
+descriptor's exact `module_options` pairs and every `fetch` file.
 
 **Catalog** (`/usr/lib/vos/extensions.list`, in the image, so the read-only
 slot is the trust anchor; `internal/extensions/catalog`):
@@ -288,7 +301,10 @@ ext <id> <sha256> <size> <fsverity> <core|-> [requires...]
 `dispatcher` is the `vos ext launch` level the image's vos understands. The
 build also ships every descriptor, with a `build` section it fills in
 (`size`, `packages`, verified `permissions`, `runs_as_root`), as
-`/usr/share/vos/extensions/<id>.json`.
+`/usr/share/vos/extensions/<id>.json`. The build fails a catalog where two
+extensions set Steam's default compatibility tool or force one on the same
+app, or whose images could not all mount at once (a `lowerdir` over 3800
+bytes).
 
 **Manifest:** `manifest.json` gains `"extensions": {"<id>": {"name":
 "ext-<id>.raw", "size", "sha256", "fsverity", "core"?, "requires"?, "key"?}}`

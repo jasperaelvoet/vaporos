@@ -166,6 +166,10 @@ func (m *Manifest) Validate() error {
 	return validateExtensions(m.Extensions)
 }
 
+// ValidateExtensions checks a manifest's extensions map as Validate does;
+// the build checks the entries it writes with it.
+func ValidateExtensions(exts map[string]Extension) error { return validateExtensions(exts) }
+
 // validateExtensions checks every entry and that requires names extensions
 // of the same manifest, without cycles.
 func validateExtensions(exts map[string]Extension) error {
