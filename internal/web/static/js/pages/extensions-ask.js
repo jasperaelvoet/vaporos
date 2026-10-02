@@ -3,9 +3,12 @@
 // Beyond a confirm it lists what an extension can do, takes the VaporOS
 // password and the choice to delete an extension's data, and stays open
 // while the request runs, so a wrong password is said under its field.
+// When the box asks for a password the card did not announce, the field
+// appears with why, and the next press sends it.
 
 import { errorText } from '../core/api.js';
 import { byId, h } from '../core/dom.js';
+import { wantsPassword } from '../ext.js';
 import { fieldError, markBusy } from '../ui/form.js';
 
 let pending = null;
@@ -33,7 +36,8 @@ export function ask(c) {
   byId('ext-dialog-purge-row').hidden = !c.purge;
   pw.value = '';
   fieldError(pw, '');
-  byId('ext-dialog-pw-field').hidden = !c.password;
+  let needPw = !!c.password;
+  byId('ext-dialog-pw-field').hidden = !needPw;
   byId('ext-dialog-pw-hint').textContent = c.passwordHint || 'The one you sign in with.';
   err.textContent = '';
   ok.textContent = c.confirm || 'Continue';
@@ -71,20 +75,25 @@ export function ask(c) {
       if (working()) return;
       err.textContent = '';
       fieldError(pw, '');
-      if (c.password && !pw.value) {
+      if (needPw && !pw.value) {
         fieldError(pw, 'Enter the VaporOS password.');
         pw.focus();
         return;
       }
       markBusy(ok, true);
       try {
-        await c.run({ password: c.password ? pw.value : '', purge: !!c.purge && purge.checked });
+        await c.run({ password: needPw ? pw.value : '', purge: !!c.purge && purge.checked });
         markBusy(ok, false);
         done(true);
       } catch (e2) {
         markBusy(ok, false);
         const text = await errorText(e2);
-        if (c.password && [403, 429, 503].includes(e2 && e2.status)) {
+        if (!needPw && wantsPassword(e2)) {
+          needPw = true;
+          byId('ext-dialog-pw-field').hidden = false;
+          fieldError(pw, text);
+          pw.focus();
+        } else if (needPw && [403, 429, 503].includes(e2 && e2.status)) {
           fieldError(pw, text);
           pw.select();
           pw.focus();
@@ -100,7 +109,7 @@ export function ask(c) {
     dlg.addEventListener('cancel', onEscape);
     dlg.addEventListener('click', onBackdrop);
     if (!dlg.open) dlg.showModal();
-    (c.password ? pw : danger ? cancel : ok).focus();
+    (needPw ? pw : danger ? cancel : ok).focus();
   });
 }
 

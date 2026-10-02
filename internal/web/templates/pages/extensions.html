@@ -6,8 +6,10 @@
   attention), plain words for the facts. A restart applies every change,
   so the page has one Restart now above the cards. Install and Remove ask
   in the page's own dialog (the shared confirm's look), which also takes
-  the VaporOS password and the choice to delete an extension's data.
-  pages/extensions.js fills it; styles/pages/extensions.css is its look.
+  the VaporOS password and the choice to delete an extension's data. The
+  last section leaves every extension out of the next start (skip_once),
+  and calls that off again. pages/extensions.js fills it;
+  styles/pages/extensions.css is its look.
 */ -}}
 {{define "content"}}
 <div class="ext">
@@ -31,7 +33,9 @@
     <h2 class="rack-title" id="ext-skip-title">If VaporOS doesn't start</h2>
     <div class="ext-skip-card">
       <p class="ext-skip-text">When an extension keeps VaporOS from starting, it goes back by itself. You can also leave every extension out of the next start.</p>
+      <p class="ext-skip-on" id="ext-skip-on" hidden>Next start leaves extensions out.</p>
       <button class="btn small ghost" id="ext-skip" type="button" disabled>Start once without extensions</button>
+      <button class="btn small ghost" id="ext-skip-cancel" type="button" hidden>Cancel<span class="sr-only"> the start without extensions</span></button>
     </div>
   </section>
 </div>
@@ -53,8 +57,7 @@
     <details class="ext-more" data-part="more">
       <summary class="ext-more-summary" data-part="more-label">What it can do</summary>
       <div class="ext-more-body">
-        <h3 class="ext-more-title">What it can do</h3>
-        <ul class="ext-facts" data-part="can" role="list"></ul>
+        <div class="ext-more-part" data-part="can-box"><h3 class="ext-more-title">What it can do</h3><ul class="ext-facts" data-part="can" role="list"></ul></div>
         <div class="ext-more-part" data-part="downloads-box" hidden><h3 class="ext-more-title">What it downloads</h3><ul class="ext-facts" data-part="downloads" role="list"></ul></div>
         <div class="ext-more-part" data-part="caveats-box" hidden><h3 class="ext-more-title">Good to know</h3><ul class="ext-facts" data-part="caveats" role="list"></ul></div>
       </div>
