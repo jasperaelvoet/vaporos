@@ -216,8 +216,10 @@ func TestRemove(t *testing.T) {
 	if last := h.Calls()[len(h.Calls())-1]; last != "remove truckersmp purge" {
 		t.Errorf("last call %q", last)
 	}
-	if want := []string{"rm -rf -- " + home}; !slices.Equal(r.gamer, want) {
-		t.Errorf("as vapor %q, want %q", r.gamer, want)
+	// Moved aside at once, then deleted as vapor.
+	r.s.waitTrash()
+	if exists(home) || len(r.gamer) != 1 || !strings.HasPrefix(r.gamer[0], "rm -rf -- "+filepath.Join(filepath.Dir(home), ".trash-truckersmp-")) {
+		t.Errorf("home area there %v, as vapor %q", exists(home), r.gamer)
 	}
 }
 

@@ -34,13 +34,14 @@ type ccState struct {
 
 	installs  sync.WaitGroup // the helper installs' goroutine (startInstalls)
 	passwords sync.WaitGroup // the helpers' PasswordChanged calls (passwordChanged)
+	trash     sync.WaitGroup // purged data areas being deleted (emptyTrash)
 
 	names steamNames // the Steam app names the cards show (appNames)
 
 	// Under Service.mu.
 	notes      map[string]string             // by id: why its helper did not finish setting it up or removing it
 	tries      map[string]int                // by id: its helper's installs this boot
-	helpers    int                           // helper calls under way (Install, Remove, Action): busy
+	helpers    int                           // helper calls (Install, Remove, Action) and purged data being deleted: busy
 	installing map[string]context.CancelFunc // by id: its helper's Install under way
 	removing   map[string]int                // by id: removals waiting for or holding its helper lock
 	stopped    map[string]stoppedUnits       // by id: the units a removal stopped this boot

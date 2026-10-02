@@ -150,6 +150,11 @@ test('the lines under a card', () => {
   assert.deepEqual(X.lines(ext(restart, 'coolercontrol')), [{ text: 'It is added at the next restart.', tone: '' }]);
   assert.deepEqual(X.lines({ state: 'restart-needed', wanted: false, mounted: true }), [{ text: 'It is removed at the next restart.', tone: '' }]);
   assert.deepEqual(X.lines({ state: 'restart-needed', wanted: true, mounted: true }), [{ text: 'Its changes take effect at the next restart.', tone: '' }]);
+  // The next start leaves extensions out: every change waits for the one after.
+  const skip = { ...restart, skip_once: true };
+  for (const x of [ext(restart, 'coolercontrol'), { state: 'restart-needed', wanted: false, mounted: true }, { state: 'restart-needed', wanted: true, mounted: true }]) {
+    assert.deepEqual(X.lines(x, ctx(skip)), [{ text: 'The next start is without extensions. This change applies at the restart after that.', tone: '' }]);
+  }
   assert.match(X.lines({ state: 'not-in-this-version' })[0].text, /^This version of VaporOS doesn't have it\./);
   // The box's own reason, when it gives one, in at most two sentences.
   assert.deepEqual(X.lines({ state: 'not-in-this-version', reason: 'VaporOS 20261003.0915 dropped it. Remove it, or roll back. Then restart.' }), [
@@ -284,6 +289,12 @@ test('what the install dialog says of when it comes', () => {
   const lone = structuredClone(base);
   Object.assign(ext(lone, 'proton'), { core: false, wanted: false, mounted: false });
   assert.equal(X.installNote(ext(lone, 'truckersmp'), lone, ctx(lone)), `It also installs CachyOS Proton. ${auto}`);
+  // The next start leaves extensions out: no restart by itself, and it comes at the one after.
+  const skip = { ...base, skip_once: true, restart: { needed: true, auto: false } };
+  const later = 'The next start is without extensions. This change applies at the restart after that.';
+  assert.equal(X.installNote(ext(base, 'coolercontrol'), skip, ctx(skip)), `It downloads now. ${later}`);
+  assert.equal(X.installedText(ext(base, 'coolercontrol'), ctx(skip)), `CoolerControl is downloading. ${later}`);
+  assert.equal(X.installNote(gone, skip, ctx(skip)), 'It stays, and VaporOS sets it up again.');
 });
 
 test('the restart card names what the next restart changes', () => {
@@ -295,6 +306,9 @@ test('the restart card names what the next restart changes', () => {
   assert.equal(X.restartText({ extensions: [] }), 'Changes to extensions take effect at the next restart.');
   // When no card explains it, the server's reason does.
   assert.equal(X.restartText({ extensions: [], restart: { needed: true, reason: 'restart to finish adding CoolerControl' } }), 'Restart to finish adding CoolerControl.');
+  // While the next start leaves extensions out, the server's reason says when instead.
+  const skip = { ...preset('extensions-restart'), skip_once: true, restart: { needed: true, auto: false, reason: 'The next start is without extensions. Restart again after it to finish adding CoolerControl and TruckersMP.' } };
+  assert.equal(X.restartText(skip), skip.restart.reason);
 });
 
 test('a helper line that repeats a note is said once', () => {

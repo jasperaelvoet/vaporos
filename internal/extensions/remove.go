@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -136,6 +135,7 @@ func (s *Service) undo(ctx context.Context, id string, d *descriptor.Descriptor,
 	if d != nil && mounted {
 		s.stopUnits(ctx, id, d)
 	}
+	helperFailed := false
 	if d != nil && (mounted || isInstalled(id)) {
 		back, _ := stillWanted(cat, id)
 		s.helperBusy(1)
@@ -143,15 +143,18 @@ func (s *Service) undo(ctx context.Context, id string, d *descriptor.Descriptor,
 		s.helperBusy(-1)
 		if err != nil {
 			errs = append(errs, err)
+			helperFailed = true
 		}
 	}
 	if err := unmarkInstalled(id); err != nil {
 		errs = append(errs, err)
 	}
 	if purge {
-		if err := s.purge(ctx, cat, id); err != nil {
+		trash, err := s.purge(cat, id, helperFailed)
+		if err != nil {
 			errs = append(errs, err)
 		}
+		s.emptyTrash(trash)
 	}
 	if back, _ := stillWanted(cat, id); back && mounted {
 		log.Printf("extensions: %s was added again while its removal ran; starting it again", id)
@@ -264,31 +267,40 @@ func listActiveUnits(ctx context.Context, user bool, patterns ...string) ([]stri
 	return units, nil
 }
 
-// purge deletes id's system and home data areas and its settings, unless
-// it was added back: under the change lock, so no add comes in between.
-// Library areas are the helper's to delete: only it knows the disk. The
-// home area is deleted as vapor, whose tree it is (CONTRACTS Users).
-func (s *Service) purge(ctx context.Context, cat *catalog.Catalog, id string) error {
+// purge moves id's system and home data areas aside and deletes its
+// settings, unless it was added back: under the change lock, so no add
+// comes in between, and quick, so no change waits for the deletion
+// (emptyTrash, after it). When its helper's Remove failed, the system area
+// and the settings stay: they say where what is left is (Star Citizen's
+// drive), so removing it again later still finds it. Library areas are the
+// helper's to delete: only it knows the disk.
+func (s *Service) purge(cat *catalog.Catalog, id string, helperFailed bool) ([]trashItem, error) {
 	s.cc.change.Lock()
 	defer s.cc.change.Unlock()
 	if back, _ := stillWanted(cat, id); back {
 		log.Printf("extensions: %s was added again; its data stays", id)
-		return nil
+		return nil, nil
 	}
+	var trash []trashItem
 	var errs []error
-	if err := os.RemoveAll(filepath.Join(config.ExtDataDir(), id)); err != nil {
-		errs = append(errs, err)
-	}
-	home := filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, id)
-	if _, err := os.Lstat(home); err == nil {
-		if _, err := s.cc.asGamer(ctx, "rm", "-rf", "--", home); err != nil {
-			errs = append(errs, fmt.Errorf("deleting %s: %w", home, err))
+	if helperFailed {
+		log.Printf("extensions: %s: its helper did not finish removing it; its system data and settings stay", id)
+	} else {
+		t, err := trashSystemArea(id)
+		trash = append(trash, t...)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if err := os.Remove(settingsPath(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
 		}
 	}
-	if err := os.Remove(settingsPath(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	t, err := trashHomeArea(id)
+	trash = append(trash, t...)
+	if err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	return trash, errors.Join(errs...)
 }
 
 // SetSettings saves a change to id's settings and reconciles: a setting

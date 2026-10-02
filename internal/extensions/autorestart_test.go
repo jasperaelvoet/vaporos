@@ -146,14 +146,16 @@ func TestAutoRestartWithAStagedUpdate(t *testing.T) {
 }
 
 // While the next start leaves the extensions out, a restart would not try
-// the set: no restart is needed for it (nor in /status), and VaporOS does
-// not restart by itself for it.
+// the set: the card still waits for a restart, and the document says it
+// takes the one after the next, but /status has no restart for it and
+// VaporOS does not restart by itself for it.
 func TestAutoRestartSkipOnce(t *testing.T) {
 	a := newAutoRig(t)
 	if code, _ := a.do("POST", "/extensions/skip-once", ""); code != 200 {
 		t.Fatal("skip-once")
 	}
-	if d := a.doc(); !d.SkipOnce || d.Restart != (RestartDoc{}) || a.s.RestartNeeded() {
+	want := RestartDoc{Needed: true, Reason: "The next start is without extensions. Restart again after it to finish adding CoolerControl."}
+	if d := a.doc(); !d.SkipOnce || d.Restart != want || a.s.RestartNeeded() || a.card("coolercontrol").State != StateRestartNeeded {
 		t.Fatalf("document = skip_once %v, restart %+v, RestartNeeded %v", d.SkipOnce, d.Restart, a.s.RestartNeeded())
 	}
 	a.idle(time.Hour)
