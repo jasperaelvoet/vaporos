@@ -12,19 +12,11 @@ import (
 )
 
 // AfterHealthy records a boot that passed `vos health`: every image it
-// mounted is proven (an OS trial included). On an extension trial the
-// tried set becomes enabled, provided pending still names it and every id
-// of the set mounted or was skipped only because this catalog does not list
-// it. Caller holds Lock.
-func AfterHealthy(rep *BootReport) error { return AfterHealthyWant(rep, "") }
-
-// AfterHealthyWant is AfterHealthy for a caller that knows the desired set:
-// want is its fingerprint (Plan.Fingerprint), and the tried set is promoted
-// only when what booted has that fingerprint, so a set the user has since
-// changed is never made the fallback. An empty want skips this check.
-// The promotion does not depend on proven: a failure to record the images
-// is returned after it. Caller holds Lock.
-func AfterHealthyWant(rep *BootReport, want string) error {
+// mounted is proven (an OS trial included), and on an extension trial the
+// tried set is promoted (PromoteTrial, whatever the desired set is). The
+// promotion does not depend on proven: a failure to record the images is
+// returned after it. Caller holds Lock.
+func AfterHealthy(rep *BootReport) error {
 	if rep == nil {
 		return nil
 	}
@@ -33,11 +25,18 @@ func AfterHealthyWant(rep *BootReport, want string) error {
 	case ModePending, ModeOSTrial, ModeEnabled:
 		provenErr = AddProven(rep.MountedPairs())
 	}
-	return errors.Join(provenErr, promoteTrial(rep, want))
+	return errors.Join(provenErr, PromoteTrial(rep, ""))
 }
 
-func promoteTrial(rep *BootReport, want string) error {
-	if rep.Mode != ModePending || rep.Set == "" {
+// PromoteTrial makes the set this boot tried (mode pending) the enabled
+// one, provided pending still names it and every id of the set mounted or
+// was skipped only because this catalog does not list it. A caller that
+// knows the desired set passes want (Plan.PromoteWant), and the set is
+// promoted only when what booted has that fingerprint, so a set the user
+// has since changed is never made the fallback; an empty want skips this
+// check. Caller holds Lock.
+func PromoteTrial(rep *BootReport, want string) error {
+	if rep == nil || rep.Mode != ModePending || rep.Set == "" {
 		return nil
 	}
 	s, err := ReadSet(rep.Set)

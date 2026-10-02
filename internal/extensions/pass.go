@@ -68,7 +68,7 @@ func (s *Service) pass(ctx context.Context, b *booted) (retry bool) {
 		s.failed(b, rep, err)
 		return true
 	}
-	s.pruneErrs(p)
+	s.pruneErrs(b.cat, p)
 	s.record(b, rep, p) // Status shows the downloads
 	if !s.fetchAll(ctx, b.version, p.Missing, true) {
 		retry = true
@@ -137,16 +137,23 @@ func (s *Service) record(b *booted, rep *store.BootReport, p store.Plan) {
 }
 
 // pruneErrs forgets why an image was missing once p no longer misses it.
-// A damaged image's text stays while it is wanted: the re-read may have
-// deleted it after p was planned, and the next pass fetches it.
-func (s *Service) pruneErrs(p store.Plan) {
+// A damaged image's text stays while it is wanted and its image for cat is
+// not sealed: the re-read may have deleted it after p was planned, and the
+// next pass fetches it. Checked under mu, which the re-read takes after it
+// deletes an image, so a deletion after the check sets the text again.
+func (s *Service) pruneErrs(cat *catalog.Catalog, p store.Plan) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, text := range s.errs {
-		missing := slices.ContainsFunc(p.Missing, func(e catalog.Entry) bool { return e.ID == id })
-		if !missing && (text != damagedText || !slices.Contains(p.Want, id)) {
-			delete(s.errs, id)
+		if slices.ContainsFunc(p.Missing, func(e catalog.Entry) bool { return e.ID == id }) {
+			continue
 		}
+		if text == damagedText && slices.Contains(p.Want, id) {
+			if e, ok := cat.Get(id); ok && !sealed(e) {
+				continue
+			}
+		}
+		delete(s.errs, id)
 	}
 }
 
@@ -175,7 +182,7 @@ func (s *Service) settle(ctx context.Context, cat *catalog.Catalog, rep *store.B
 		if !promoted && trialPassed(rep, in.Pending) {
 			promoted = true
 			log.Printf("extensions: set %s passed its trial; recording it as vos health could not", rep.Set)
-			if err := store.AfterHealthyWant(rep, p.Fingerprint); err != nil {
+			if err := s.promote(rep, p.PromoteWant); err != nil {
 				return p, err
 			}
 			continue
@@ -206,6 +213,26 @@ func (s *Service) settle(ctx context.Context, cat *catalog.Catalog, rep *store.B
 		}
 	}
 	return p, errors.New("reconcile did not settle")
+}
+
+// promote records a trial `vos health` passed, as health does: its images
+// proven, best effort, and the set promoted when what booted has want
+// (Plan.PromoteWant). Only a promotion that failed and left pending naming
+// the set stops the pass.
+func (s *Service) promote(rep *store.BootReport, want string) error {
+	if err := store.AddProven(rep.MountedPairs()); err != nil {
+		log.Printf("extensions: set %s: recording its images as proven: %v", rep.Set, err)
+	}
+	err := store.PromoteTrial(rep, want)
+	if err == nil {
+		return nil
+	}
+	pending, perr := store.Pending()
+	if perr != nil || (pending != nil && pending.Name == rep.Set) {
+		return fmt.Errorf("promoting set %s: %w", rep.Set, err)
+	}
+	log.Printf("extensions: promoting set %s: %v", rep.Set, err)
+	return nil
 }
 
 // trialPassed reports whether this boot is the trial of pending and `vos
@@ -378,7 +405,7 @@ func (s *Service) fetchAll(ctx context.Context, version string, entries []catalo
 		s.noteAll(todo, forBooted, version, fmt.Errorf("%q: %w", spec, err))
 		return false
 	}
-	if _, err := src.Manifest(ctx); err != nil && ctx.Err() == nil && unreachable(err) {
+	if _, err := src.Manifest(ctx); err != nil && ctx.Err() == nil && unreachable(src, err) {
 		s.down = fmt.Errorf("%s cannot be reached: %w", src, err)
 		s.noteAll(todo, forBooted, version, s.down)
 		return false
@@ -399,7 +426,7 @@ func (s *Service) fetchAll(ctx context.Context, version string, entries []catalo
 			done = false
 		}
 		s.note(e, forBooted, err)
-		if err != nil && ctx.Err() == nil && unreachable(err) {
+		if err != nil && ctx.Err() == nil && unreachable(src, err) {
 			s.down = fmt.Errorf("%s stopped answering: %w", src, err)
 			s.noteAll(todo[i+1:], forBooted, version, s.down)
 			return false

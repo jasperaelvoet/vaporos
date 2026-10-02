@@ -71,7 +71,10 @@ func GC(keep map[string]bool) ([]string, error) {
 }
 
 func gcImages(keep map[string]bool, now time.Time) ([]string, error) {
-	dir := config.ExtImagesDir()
+	dir, err := imagesDir()
+	if err != nil {
+		return nil, err
+	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil

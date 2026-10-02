@@ -50,7 +50,8 @@ func TestPlanReconcile(t *testing.T) {
 		wantIDs     []string
 		wantMissing []string
 		wantBlocked bool
-		wantRule    int // 0: not checked
+		wantRule    int  // 0: not checked
+		keepTrial   bool // PromoteWant is the pending set's fingerprint, not the desired set's
 	}{
 		{
 			name:    "booted set is desired",
@@ -138,6 +139,73 @@ func TestPlanReconcile(t *testing.T) {
 			want:        ActionClearPending,
 			wantIDs:     []string{"proton", "coolercontrol"},
 			wantBlocked: true,
+		},
+		{
+			name: "trial of a set the desired one adds to",
+			in: ReconcileInput{Wanted: []string{"coolercontrol"}, Report: trial2(1, "proton"),
+				BootedSet: set2(1, "proton"), Pending: set2(1, "proton")},
+			want:      ActionKeepPending,
+			wantIDs:   []string{"proton", "coolercontrol"},
+			wantRule:  6,
+			keepTrial: true,
+		},
+		{
+			name: "trial of a set the desired one adds to, which failed before",
+			in: ReconcileInput{Wanted: []string{"coolercontrol"}, Report: trial2(1, "proton"),
+				BootedSet: set2(1, "proton"), Pending: set2(1, "proton"), Failed: map[string]bool{fpCC: true}},
+			want:        ActionKeepPending,
+			wantIDs:     []string{"proton", "coolercontrol"},
+			wantBlocked: true,
+			wantRule:    5,
+			keepTrial:   true,
+		},
+		{
+			name: "trial of a set the desired one adds to, options as its settings render them",
+			in: ReconcileInput{Wanted: []string{"coolercontrol", "truckersmp"}, Options: ccOptions,
+				Report:    trial2(1, "proton", "coolercontrol"),
+				BootedSet: &Set{Name: "2", IDs: []string{"proton", "coolercontrol"}, Options: []string{ccOption}, Tries: 1},
+				Pending:   &Set{Name: "2", IDs: []string{"proton", "coolercontrol"}, Options: []string{ccOption}, Tries: 1}},
+			want:      ActionKeepPending,
+			wantIDs:   []string{"proton", "coolercontrol", "truckersmp"},
+			wantRule:  6,
+			keepTrial: true,
+		},
+		{
+			name: "trial of a set the desired one adds to, with an id this catalog does not list",
+			in: ReconcileInput{Wanted: []string{"coolercontrol"},
+				Report: &BootReport{Mode: ModePending, Set: "2", TriesLeft: 1, Mounted: mounted("proton"),
+					Skipped: []Skipped{{ID: "star-citizen", Reason: SkipNotInCatalog}}},
+				BootedSet: set2(1, "proton", "star-citizen"), Pending: set2(1, "proton", "star-citizen")},
+			want:      ActionKeepPending,
+			wantIDs:   []string{"proton", "coolercontrol"},
+			keepTrial: true,
+		},
+		{
+			name: "trial of a set the desired one adds to, whose settings changed",
+			in: ReconcileInput{Wanted: []string{"truckersmp"}, Report: trial2(1, "proton"),
+				Options:   func([]string) []string { return []string{"options it87 x=1"} },
+				BootedSet: set2(1, "proton"), Pending: set2(1, "proton")},
+			want:     ActionPropose,
+			wantIDs:  []string{"proton", "truckersmp"},
+			wantRule: 6,
+		},
+		{
+			name: "trial of a set the desired one adds to, which did not boot whole",
+			in: ReconcileInput{Wanted: []string{"coolercontrol", "truckersmp"},
+				Report: &BootReport{Mode: ModePending, Set: "2", TriesLeft: 1, Mounted: mounted("proton"),
+					Skipped: []Skipped{{ID: "truckersmp", Reason: SkipMount}}},
+				BootedSet: set2(1, "proton", "truckersmp"), Pending: set2(1, "proton", "truckersmp")},
+			want:     ActionPropose,
+			wantIDs:  []string{"proton", "coolercontrol", "truckersmp"},
+			wantRule: 6,
+		},
+		{
+			name: "pending outside its trial, the desired set adds to it",
+			in: ReconcileInput{Wanted: []string{"coolercontrol", "truckersmp"}, Report: bootedProton, BootedSet: set1,
+				Enabled: set1, Pending: set2(2, "proton", "coolercontrol")},
+			want:     ActionPropose,
+			wantIDs:  []string{"proton", "coolercontrol", "truckersmp"},
+			wantRule: 6,
 		},
 		{
 			name: "pending used up its tries",
@@ -380,6 +448,11 @@ func TestPlanReconcile(t *testing.T) {
 			eq(t, "missing", strs(missing), strs(tt.wantMissing))
 			eq(t, "blocked", p.Blocked, tt.wantBlocked)
 			eq(t, "fingerprint", p.Fingerprint, Fingerprint(Pairs(testCatalog, p.IDs), p.Options))
+			promoteWant := p.Fingerprint
+			if tt.keepTrial {
+				promoteWant = Fingerprint(Pairs(testCatalog, in.Pending.IDs), in.Pending.Options)
+			}
+			eq(t, "promote want", p.PromoteWant, promoteWant)
 			if tt.wantRule != 0 {
 				eq(t, "rule", p.Rule, tt.wantRule)
 			}

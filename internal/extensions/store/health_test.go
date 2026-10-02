@@ -64,7 +64,7 @@ func TestAfterHealthy(t *testing.T) {
 		name        string
 		rep         *BootReport
 		pendingSet  string // the set pending names before; "1" is {proton, coolercontrol}
-		want        string // AfterHealthyWant's fingerprint
+		want        string // PromoteTrial's fingerprint, after AddProven as settle does
 		wantProven  int
 		wantPromote bool
 	}{
@@ -128,7 +128,8 @@ func TestAfterHealthy(t *testing.T) {
 			if tt.want == "" {
 				check(t, AfterHealthy(tt.rep))
 			} else {
-				check(t, AfterHealthyWant(tt.rep, tt.want))
+				check(t, AddProven(tt.rep.MountedPairs()))
+				check(t, PromoteTrial(tt.rep, tt.want))
 			}
 
 			proven, err := Proven()

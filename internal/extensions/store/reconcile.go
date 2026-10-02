@@ -12,7 +12,7 @@ import (
 const (
 	ActionNone         = "none"          // nothing to write
 	ActionClearPending = "clear-pending" // ClearPending: the pending set is not wanted, or is left over
-	ActionKeepPending  = "keep-pending"  // the pending set is the desired one
+	ActionKeepPending  = "keep-pending"  // the pending set is the desired one, or this boot's trial of a part of it
 	ActionBlocked      = "blocked"       // the desired set failed its trial and nothing is pending (Plan.Blocked)
 	ActionPropose      = "propose"       // Propose(Plan.IDs, Plan.Options)
 	ActionFailPending  = "fail-pending"  // FailPending(the booted catalog)
@@ -50,6 +50,11 @@ type Plan struct {
 	// Blocked: the desired set's fingerprint is in failed, so it is not
 	// proposed; it needs attention ("Try again" removes the fingerprint).
 	Blocked bool
+	// PromoteWant is the fingerprint this boot's trial must have booted to
+	// be promoted (PromoteTrial): Fingerprint, or the trial set's own while
+	// the plan keeps it for `vos health` because the desired set only adds
+	// to it.
+	PromoteWant string
 }
 
 // PlanReconcile decides, without I/O, how the store should change.
@@ -69,8 +74,11 @@ type Plan struct {
 // trial) or could not mount one of its images (one not sealed now): then
 // it is only cleared. Then: the desired set equal to what booted needs no
 // pending, unless this boot is the trial of a pending set that booted whole
-// (`vos health` promotes it). Equal to pending: left alone. Its fingerprint
-// failed before: blocked, and a pending set goes. Otherwise proposed.
+// (`vos health` promotes it). Equal to pending: left alone. While this boot
+// is the trial of a pending set that booted whole and the desired set only
+// adds to it, that set is kept for `vos health` to promote, so the box has
+// it to fall back on; the pass after the promotion acts. Otherwise: its
+// fingerprint failed before: blocked, and a pending set goes; or proposed.
 func PlanReconcile(in ReconcileInput) Plan {
 	cat := in.Catalog
 	p := Plan{Want: cat.Closure(append(slices.Clone(in.Wanted), cat.Core()...))}
@@ -101,6 +109,7 @@ func PlanReconcile(in ReconcileInput) Plan {
 		p.Options = normOptions(in.Options(slices.Clone(p.IDs)))
 	}
 	p.Fingerprint = Fingerprint(Pairs(cat, p.IDs), p.Options)
+	p.PromoteWant = p.Fingerprint
 	p.Rule, p.Action = planAction(in, &p)
 	return p
 }
@@ -155,14 +164,47 @@ func planAction(in ReconcileInput, p *Plan) (int, string) {
 	if pend != nil && sameIDs(pend.IDs, p.IDs) && slices.Equal(normOptions(pend.Options), p.Options) {
 		return 4, ActionKeepPending
 	}
-	if in.Failed[p.Fingerprint] {
-		p.Blocked = true
-		if pend != nil {
-			return 5, ActionClearPending
-		}
+	p.Blocked = in.Failed[p.Fingerprint]
+	rule := 6
+	if p.Blocked {
+		rule = 5
+	}
+	if trying && addsTo(in, p) {
+		// Replacing the trial would leave it unpromotable: `vos health`
+		// promotes it first, and the pass after acts on the rest.
+		p.PromoteWant = Fingerprint(Pairs(in.Catalog, pend.IDs), pend.Options)
+		return rule, ActionKeepPending
+	}
+	switch {
+	case p.Blocked && pend != nil:
+		return 5, ActionClearPending
+	case p.Blocked:
 		return 5, ActionBlocked
 	}
 	return 6, ActionPropose
+}
+
+// addsTo reports whether the pending set, whose trial this boot is, booted
+// whole with the options its ids' settings render now, and the desired set
+// holds every id of it the catalog lists: the desired set only adds to it.
+func addsTo(in ReconcileInput, p *Plan) bool {
+	pend := in.Pending
+	var ids []string
+	for _, id := range cleanIDs(pend.IDs) {
+		if _, ok := in.Catalog.Get(id); !ok {
+			continue
+		}
+		if !slices.Contains(p.IDs, id) {
+			return false
+		}
+		ids = append(ids, id)
+	}
+	var options []string
+	if in.Options != nil {
+		options = normOptions(in.Options(slices.Clone(ids)))
+	}
+	return slices.Equal(options, normOptions(pend.Options)) &&
+		Fingerprint(Pairs(in.Catalog, ids), pend.Options) == bootedFingerprint(in)
 }
 
 // allSealed reports whether the image of every id of ids that the catalog

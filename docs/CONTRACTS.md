@@ -415,7 +415,7 @@ and directory sources serve it by that name next to `manifest.json`.
 
 | Path | What |
 | --- | --- |
-| `images/<sha256>.raw` | A sealed image: written to a temp file, fsynced, sha256-checked, closed, reopened read-only, `FS_IOC_ENABLE_VERITY` (sha256, 4096, no salt), `FS_IOC_MEASURE_VERITY` compared with the catalog, then renamed into place and the directory fsynced. A file under its final name is always sealed; one without fs-verity, or with another digest, is deleted and fetched again |
+| `images/<sha256>.raw` | A sealed image: written to a temp file, fsynced, sha256-checked, closed, reopened read-only, `FS_IOC_ENABLE_VERITY` (sha256, 4096, no salt), `FS_IOC_MEASURE_VERITY` compared with the catalog, then renamed into place and the directory fsynced. A file under its final name is always sealed; one without fs-verity, or with another digest, is deleted and fetched again. `images/` is a real directory: vosd never uses a symlinked one (the initramfs takes it for missing) but replaces the link with a real directory (the parent fsynced), so its images are fetched again |
 | `wanted` | the ids the user added, one per line (core ids are always wanted) |
 | `sets/<n>/ids`, `sets/<n>/modprobe.conf`, `sets/<n>/tries` | one attempt at a set of extensions: ids (one per line, catalog order), the module options it sets (`options <module> <param>=<value>` lines, module and param `[A-Za-z0-9_-]+`, value `[0-9A-Za-z_x.-]+`; other lines are dropped), boots left to try it (one digit; anything else reads as 0). `<n>` is a decimal number that is never used twice: the larger of `sets/.next` and one more than any set in `sets/` or named by a link or the boot report. Written into `sets/.tmp-<n>`, fsynced, renamed |
 | `sets/.next` | the high-water mark: the next set number (one decimal line), written atomically after each new set is renamed into place and never lowered; anything else reads as 0 |
@@ -516,7 +516,9 @@ mounted or was skipped as `not-in-catalog`, `enabled` is replaced by that set
 (rename, directory fsync) and `pending` removed. A set the user no longer
 wants is never promoted: reconcile removes or replaces such a `pending`, also
 on its own trial, and a promoter that knows the desired set's fingerprint
-promotes only when what booted has it. On trial boots (mode `pending`, or any
+promotes only when what booted has it, or the trial set's own while
+reconcile keeps that set because the desired set only adds to it (see
+Reconcile, below rule 6). On trial boots (mode `pending`, or any
 boot systemd-boot counts, also with `vos.ext=0` or `skip-once`) the generator
 gives `vos-health.service` a drop-in with `JobTimeoutSec=10min` and
 `JobTimeoutAction=reboot-force` (see Units).
@@ -557,6 +559,13 @@ boot that mounted nothing on purpose (mode `off`, or no report) counts as
    extension needs attention; "Try again" removes the fingerprint).
 6. Otherwise a new set becomes `pending` with `tries` 2.
 
+Rules 5 and 6 wait while this boot is the trial of the `pending` set, that
+set booted whole (every id the booted catalog lists mounted, with the
+options its ids' settings render now) and the desired set only adds to it
+(it holds every id of the set the booted catalog lists): `pending` is kept,
+so `vos health` promotes it and the box has it to fall back on (an install's
+seeded core set among them), and the pass after the promotion acts.
+
 After a removal (1, 2, 3 or 5) reconcile runs again. A restart is needed (to
 try `pending`) only while `pending` has tries left, this boot is neither its
 trial nor one with reason `cmdline`, `skip-once`, `tries-write` or `no-report`
@@ -575,8 +584,11 @@ after 1 minute, doubling up to every 30 minutes. One reconcile:
    lock, unless the file already lists the same images for the booted version;
 2. under the lock, when this boot is the trial of the set `pending` still
    names and `/run/vos/ext-trial-ok` names it too (`vos health` passed it but
-   may not have recorded it), first records the boot as `vos health` does,
-   promoting only when what booted is the desired set; then applies what
+   may not have recorded it), first records the boot as `vos health` does
+   (the mounted images proven, best effort: a failure is logged and the
+   pass goes on), promoting only when what booted is the desired set, or
+   the trial set itself while rules 5 and 6 wait for it (a promotion that
+   fails and leaves `pending` naming the set ends the pass); then applies what
    rules 1 and 2 say (a `pending` left over or out of tries), and nothing
    else: a `pending` whose image is still to come is not removed for it;
 3. without the lock, fetches and seals the plan's missing images for the
@@ -595,9 +607,12 @@ directory source by name. A network failure (one the download gave up on), a
 failed write to the disk or a failed seal is never followed by the blob.
 Before its first download, a reconcile asks the source for its manifest: a
 source it cannot reach, or that stops answering during a download, is asked
-for nothing else in that reconcile. A source that served other bytes for an
+for nothing else in that reconcile (only a registry or an HTTP(S) source
+stops answering: a file of a directory source that ends early fails that
+image alone). A source that served other bytes for an
 image is not asked for it again until a reconcile is asked for; an image that
-does not fit (2 GiB to spare, also a disk that filled up during its download)
+does not fit (2 GiB to spare, also a disk that filled up during its download
+or its seal: the fsync, close and rename, or the Merkle tree fs-verity writes)
 is not fetched again until more space is free or a reconcile is asked for, and
 its card says so; on a disk that cannot seal (boot reason `no-verity`, or a
 seal refused as unsupported) nothing is fetched until the next boot. Once per
@@ -618,7 +633,8 @@ mounted): the installer runs the new image's own
 the new system's store as the `pending` set (tries 2): the first boot is an
 extension trial that `vos health` proves and promotes, and a new install has
 no `enabled` before that. A repair tries core only; the rest of `wanted`
-(kept, its images fetched too) vosd proposes through a trial of its own. SRC
+(kept, its images fetched too) vosd proposes through a trial of its own
+once the core set's trial is promoted. SRC
 is the install's source (a directory, http(s) or a registry, which the
 command asks at the tag `<ver>`), or for the live medium (which carries no
 extension images) the new system's `config.update.source`. It is best effort
