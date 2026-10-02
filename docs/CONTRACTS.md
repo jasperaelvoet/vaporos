@@ -37,7 +37,8 @@ multi-call:
 | `vos health` | boot health check (vos-health.service, see "Health") |
 | `vos edid generate --out FILE [--modes-from FILE]` / `vos edid decode FILE` | EDID generator |
 | `vos sign --key FILE\|env:VAR MANIFEST` / `vos keygen --out PREFIX` | ed25519 manifest signing |
-| `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr, exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
+| `vos ext validate DESCRIPTOR...` | build: load and check each source descriptor (`extension.json`: schema, every field, no `build` section); one problem per line on stderr as `<file>: <problem>`, exit 1 on any |
+| `vos ext check-tree --id ID --descriptor FILE --tree DIR --base DIR [--other DIR]... [--json OUT]` | build: check an extension's image tree against its descriptor, the base and the extensions built before it; one problem per line on stderr (`<id>: <problem>`, warnings as `<id>: warning: <text>`), exit 1 on any. `--json` (on success) writes `{"permissions","runs_as_root","warnings"}` |
 | `vos ext catalog --stage DIR --out DIR` | build: from `ext-<id>.raw`, `<id>.json`, `<id>.build.json` (check-tree's `--json`) and the optional `<id>.key` and `<id>.packages.txt` in DIR, write `extensions.list`, `extensions.json` (the manifest's `extensions` object) and `descriptors/<id>.json` (with the `build` section) |
 | `vos ext digest FILE...` | prints `<fs-verity digest>  <file>` per file |
 | `vos ext fetch [--from SRC] [--version V] [ids...]` | fetch and seal extension images into the store (dev and tests; vosd does the same) |
@@ -270,8 +271,10 @@ line). Its identity is its fs-verity digest: `fsverity digest --hash-alg=sha256
 --block-size=4096`, no salt, as 64 hex digits. The build fails an image that:
 ships anything outside `usr/`, or whose packages own a file there; ships a
 path the base ships, or one another extension ships unless both are the same
-file (bytes and mode, or symlink target); has a directory where either has a
-file or symlink; writes under
+file (bytes and mode, or symlink target); has a directory (even an empty one,
+wherever it is) where either has a file or symlink, or one that merges with a
+directory of theirs but has another mode or owner (the merged directory takes
+the image's); writes under
 `usr/lib/systemd`, `usr/lib/udev`, `usr/share/dbus-1`, `usr/share/polkit-1`,
 `usr/lib/security`, `usr/share/vulkan`, any other `*.d/` hook directory (one
 not reviewed as harmless) or `usr/lib/vos/**` except
@@ -279,13 +282,36 @@ not reviewed as harmless) or `usr/lib/vos/**` except
 descriptor declares in `permissions` (`service`, `user-service`, `udev`,
 `sysctl`, `modules`, `tmpfiles`, `polkit`, `dbus`, `compat-tool`), with any
 difference between declared and found failing too; ships `sysusers.d`, `*.ko`,
-`hwdb.d`, `ld.so.conf.d`, network configuration (NetworkManager, networkd,
+`hwdb.d`, `ld.so.conf.d`, credentials (`usr/lib/credstore`,
+`usr/lib/credstore.encrypted`: systemd imports sysctl, tmpfiles, sysusers and
+SSH key settings from them), firmware (`usr/lib/firmware`, `updates/`
+included), trust anchors and PKCS#11 modules (`usr/share/p11-kit`,
+`usr/lib/pkcs11`, `usr/share/ca-certificates`), GIO modules, pixbuf loaders or
+GSettings schemas (`usr/lib/gio/modules`, `usr/lib/gdk-pixbuf-2.0`,
+`usr/share/glib-2.0/schemas`, whose caches are the base's, so they would
+silently not load), network configuration (NetworkManager, networkd,
 nftables, `net.*` sysctls), setuid/setgid files or file capabilities,
 whiteouts or `trusted.overlay.*` xattrs; sets a sysctl key the base or another
-extension sets; ships a system service whose last `TimeoutStartSec=` (or
-`TimeoutSec=`) is not a finite one set by a drop-in (`<unit>.d/*.conf`) of
+extension sets; has a `tmpfiles.d` line (read as systemd-tmpfiles reads it,
+with only the `%S %C %L %t %T %V %%` specifiers) whose path is outside the
+extension's own areas (`/var/lib/vos/ext/data/<id>`,
+`/var/home/vapor/.local/share/vaporos/ext/<id>`, `/run/<id>`,
+`/var/cache/<id>`, `/var/log/<id>`), whose `L` target or `C` source is in
+neither those nor `/usr`, whose mode sets setuid or setgid, or whose type is
+`c` or `b` (device nodes) or `t` or `T` (extended attributes); has a unit,
+alias or drop-in directory whose name ends in `-` before `@` or its type (a
+systemd prefix drop-in applies to every unit with that prefix), a unit or alias
+the base has (in `usr/lib/systemd/<scope>` or `etc/systemd/<scope>`) by name or
+template, a template the base has an instance of, a drop-in that is a symlink,
+or two drop-ins of the same name for one unit in directories whose order
+systemd leaves open (an instance's hides its template's); ships a system unit
+that runs commands (a service, a socket with `Exec*=` commands, a mount or a
+swap) whose last `TimeoutStartSec=` or `TimeoutSec=` (only `TimeoutSec=` in
+`[Socket]`, `[Mount]` and `[Swap]`) is not a finite one set by a drop-in of
 its own, any unit or drop-in with `Before=` on a unit of the base, or drop-ins
-and `.wants`/`.requires` for a unit it does not ship; or has an ELF (outside
+and `.wants`/`.requires` for a unit it does not ship (a unit's drop-ins are
+those of `<unit>.d/*.conf`, its template's and its aliases', merged by file
+name before these checks); or has an ELF (outside
 `elf_exempt`) with a `DT_NEEDED` that resolves nowhere: not through its
 `DT_RUNPATH` (else `DT_RPATH`, with `$ORIGIN`) in the image or the base, not
 in the loader's default directories (`usr/lib` and `usr/lib/x86_64-linux-gnu`,
@@ -294,7 +320,16 @@ or `usr/lib32` for 32-bit) of the image or the base, and not in the base's
 base's `ld.so.cache`, which never lists the image's libraries). `vos ext
 check-tree` also checks that `strip` paths are gone, that the `services` units
 exist, and that `usr/lib/vos/ext/<id>/` holds the source descriptor, the
-descriptor's exact `module_options` pairs and every `fetch` file.
+descriptor's exact `module_options` pairs and every `fetch` file. Its
+`runs_as_root` is true when a system unit runs a command as root: any mount or
+swap; a service, or a socket with commands, without a `User=` other than root
+and without `DynamicUser=yes`; a command prefixed `+`, `!` or `!!`; or
+`PermissionsStartOnly=yes` with commands besides `ExecStart=`. It warns,
+without failing, on `TAG+="uaccess"` (VaporOS has no seat), Python `.pth`
+files under `usr/lib/python*` (they run code in every Python program), files
+in `usr/share/mime/packages` or `usr/share/icons` (the base's caches do not
+list them) and, on Linux, when it lacks `CAP_SYS_ADMIN` in the initial user
+namespace, which hides `trusted.*` xattrs from it.
 
 **Catalog** (`/usr/lib/vos/extensions.list`, in the image, so the read-only
 slot is the trust anchor; `internal/extensions/catalog`):

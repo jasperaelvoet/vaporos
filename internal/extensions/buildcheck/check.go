@@ -54,6 +54,7 @@ type checker struct {
 	problems []string
 	warnings []string
 	found    map[string]string // permission -> the first path that needs it
+	warned   map[string]bool   // warnAreas already warned about
 	system   *unitScope
 	user     *unitScope
 	elfs     []string
@@ -67,6 +68,7 @@ func CheckTree(o Options) *Report {
 	c := &checker{
 		o:      o,
 		found:  map[string]string{},
+		warned: map[string]bool{},
 		system: newUnitScope("system", true),
 		user:   newUnitScope("user", false),
 		roots:  append([]string{o.Base}, o.Others...),
@@ -87,10 +89,14 @@ func CheckTree(o Options) *Report {
 			return c.report()
 		}
 	}
+	if w := xattrBlindness(); w != "" {
+		c.warnings = append(c.warnings, w)
+	}
 	c.walk()
 	c.checkPermissions()
 	c.checkUnits()
 	c.checkSysctl()
+	c.checkTmpfiles()
 	c.checkELF()
 	c.checkStrip()
 	c.checkOwnFiles()
@@ -152,23 +158,45 @@ func (c *checker) walk() {
 			c.bad("%s: carries the %s extended attribute", rel, x)
 		}
 		v := classify(c.o.ID, rel, mode)
-		if v.forbid != "" {
-			if !mode.IsDir() || holdsFiles(host) {
-				c.bad("%s: %s", rel, v.forbid)
-			}
+		if v.forbid != "" && (!mode.IsDir() || holdsFiles(host)) {
+			c.bad("%s: %s", rel, v.forbid)
 			return skip(mode)
+		}
+		// Even an empty directory hides a base file of its name, so a
+		// forbidden one is walked for that check alone.
+		c.collide(rel, host, info)
+		if v.forbid != "" {
+			return nil
 		}
 		if v.perm != "" {
 			if _, ok := c.found[v.perm]; !ok {
 				c.found[v.perm] = rel
 			}
 		}
-		c.collide(rel, host, info)
-		c.note(rel, host, info)
+		c.warnArea(rel, mode)
+		c.note(rel, info)
 		return nil
 	})
 	if err != nil {
 		c.bad("walking the tree: %v", err)
+	}
+}
+
+// warnArea warns, once per area, about files that land where they work
+// only partly; and about Python .pth files, which run at every Python
+// start.
+func (c *checker) warnArea(rel string, mode fs.FileMode) {
+	if mode.IsDir() {
+		return
+	}
+	if strings.HasSuffix(rel, ".pth") && strings.HasPrefix(rel, "usr/lib/python") {
+		c.warnings = append(c.warnings, rel+": a Python .pth file; its import lines run in every Python program")
+	}
+	for _, a := range warnAreas {
+		if under(rel, a.dir) && !c.warned[a.dir] {
+			c.warned[a.dir] = true
+			c.warnings = append(c.warnings, a.dir+": "+a.why)
+		}
 	}
 }
 
@@ -206,7 +234,8 @@ func forbiddenXattr(name string) bool {
 }
 
 // holdsFiles reports whether a directory has anything but directories in
-// it. An empty directory in a forbidden place changes nothing on the box.
+// it. An empty directory in a forbidden place changes nothing on the box
+// unless it hides something there, which the collision check covers.
 func holdsFiles(host string) bool {
 	found := errors.New("found")
 	err := filepath.WalkDir(host, func(_ string, d fs.DirEntry, err error) error {
@@ -219,7 +248,8 @@ func holdsFiles(host string) bool {
 }
 
 // collide checks rel against the base and the other trees. Directories
-// merge; anything else replaces what is below it on the merged /usr, which
+// merge, taking the mode and owner of the topmost one, so those must
+// match; anything else replaces what is below it on the merged /usr, which
 // is only allowed for a file identical to another extension's (both
 // carrying the same package's file).
 func (c *checker) collide(rel, host string, info fs.FileInfo) {
@@ -237,9 +267,19 @@ func (c *checker) collide(rel, host string, info fs.FileInfo) {
 			c.bad("%s: %v", rel, err)
 			continue
 		}
+		who := "the base"
+		if i > 0 {
+			who = "the extension in " + root
+		}
 		switch {
 		case info.IsDir() && ofi.IsDir():
 			c.dirIn[i][rel] = true
+			if a, b := info.Mode()&dirBits, ofi.Mode()&dirBits; a != b {
+				c.bad("%s: a directory of mode %s where %s has %s; the merged directory takes the image's mode", rel, octal(a), who, octal(b))
+			}
+			if a, b := owner(info), owner(ofi); a != b {
+				c.bad("%s: a directory owned by %s where %s has one owned by %s; the merged directory takes the image's owner", rel, a, who, b)
+			}
 		case i == 0 && info.IsDir():
 			c.bad("%s: a directory where the base has a %s", rel, kind(ofi.Mode()))
 		case i == 0:
@@ -248,6 +288,24 @@ func (c *checker) collide(rel, host string, info fs.FileInfo) {
 			c.bad("%s: the extension in %s ships it too, with other content", rel, root)
 		}
 	}
+}
+
+// dirBits are the mode bits a merged directory takes from the image.
+const dirBits = fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
+
+// octal shows mode bits as chmod takes them (0755, 2775).
+func octal(m fs.FileMode) string {
+	n := uint32(m.Perm())
+	if m&fs.ModeSetuid != 0 {
+		n |= 0o4000
+	}
+	if m&fs.ModeSetgid != 0 {
+		n |= 0o2000
+	}
+	if m&fs.ModeSticky != 0 {
+		n |= 0o1000
+	}
+	return fmt.Sprintf("%04o", n)
 }
 
 func kind(m fs.FileMode) string {
@@ -304,7 +362,7 @@ func sameBytes(a, b string) bool {
 }
 
 // note records what the checks after the walk need.
-func (c *checker) note(rel, host string, info fs.FileInfo) {
+func (c *checker) note(rel string, info fs.FileInfo) {
 	mode := info.Mode()
 	isLink := mode&fs.ModeSymlink != 0
 	switch {
@@ -312,8 +370,8 @@ func (c *checker) note(rel, host string, info fs.FileInfo) {
 		c.system.note(rel, mode.IsDir(), isLink)
 	case strings.HasPrefix(rel, c.user.dir+"/"):
 		c.user.note(rel, mode.IsDir(), isLink)
-	case strings.HasPrefix(rel, "usr/lib/udev/rules.d/") && mode.IsRegular():
-		b, err := readLimited(host, 4<<20)
+	case strings.HasPrefix(rel, "usr/lib/udev/rules.d/") && (mode.IsRegular() || isLink):
+		b, err := readIn(c.o.Tree, rel, 4<<20)
 		if err != nil {
 			c.bad("%s: %v", rel, err)
 			return

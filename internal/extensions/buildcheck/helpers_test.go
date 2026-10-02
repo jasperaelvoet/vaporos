@@ -257,6 +257,18 @@ func wantProblem(t *testing.T, r *Report, substr string) {
 	t.Errorf("no problem containing %q in:\n%s", substr, strings.Join(r.Problems, "\n"))
 }
 
+// warningsOf returns a report's warnings without the one about this
+// process's privileges, which depends on who runs the tests.
+func warningsOf(r *Report) []string {
+	var out []string
+	for _, w := range r.Warnings {
+		if !strings.Contains(w, "CAP_SYS_ADMIN") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 func wantClean(t *testing.T, r *Report) {
 	t.Helper()
 	if len(r.Problems) > 0 {
