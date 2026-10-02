@@ -33,10 +33,13 @@ RUN pacman-key --init \
 # its capabilities and checks them in the finished image; nftables checks the
 # firewall ruleset; openssl verifies the manifest signature independently of
 # the Go code that made it. (edid-decode is not in the Arch repos; the EDID is
-# checked by the Go tests instead.)
+# checked by the Go tests instead.) fsverity-utils gives each extension image
+# its fs-verity digest independently of vos's own; uuidgen (util-linux, in the
+# base image) names its filesystem.
 RUN pacman -Syu --noconfirm --needed \
         arch-install-scripts \
         erofs-utils \
+        fsverity-utils \
         dosfstools mtools \
         e2fsprogs \
         libisoburn \

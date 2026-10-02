@@ -28,6 +28,11 @@ e2fsprogs
 dosfstools
 gptfdisk
 
+# ---- Extensions: the initramfs measures every extension image (`fsverity
+# measure`) against the catalog before it mounts it. (vosd seals and measures
+# them through the kernel's ioctls; the tool also measures one by hand.)
+fsverity-utils
+
 # ---- Networking: NetworkManager with the iwd backend, which Steam's
 # first-run setup talks to; polkit lets vapor (Steam) use it. resolved comes with base.
 networkmanager

@@ -5,6 +5,8 @@
 #   vmlinuz                 the kernel that matches it
 #   initramfs.img           the initramfs with the vos hook
 #   systemd-bootx64.efi     the boot loader, for the ISO's ESP
+#   ext-<id>.raw            each extension's sealed image (build/extensions.sh),
+#                           listed in the manifest; never on the ISO
 #   manifest.json           version, kernel cmdline, checksums: what `vos update` reads
 #   manifest.json.sig       its ed25519 signature (debug builds with the dev key)
 #   vaporos-<version>.iso   live system + web installer, UEFI, USB/CD hybrid
@@ -46,6 +48,9 @@
 #             packages.txt or pacman.conf changes (or REFRESH=1).
 #   rootfs    an overlayfs on top of base with our files and configuration.
 #             Thrown away every build, so it costs seconds.
+#   extensions  one image per extensions/<id>/, installed from the base's own
+#             package snapshot (build/extensions.sh); reused from /work by
+#             input key, but checked against every new rootfs.
 #   images    initramfs (cached on kernel, package set and hook), erofs, ISO.
 #   checks    the finished erofs is mounted read-only and inspected; a bad
 #             image never reaches /out.
@@ -61,6 +66,8 @@ VOS=$SRC/.build/vos
 ROOT=$WORK/rootfs
 CHECK=$WORK/check
 STAGE=$WORK/stage
+# shellcheck source=build/extensions.sh
+. "$SRC/build/extensions.sh"
 
 VOS_DEBUG=${VOS_DEBUG:-0}
 VOS_PHASE=${VOS_PHASE:-all}
@@ -80,7 +87,9 @@ elapsed() { printf '    (%ss)\n' $((SECONDS - t0)); t0=$SECONDS; }
 mib() { echo $(( ($1 + 524288) / 1048576 )); }
 
 # Unmount whatever a failed build left mounted, so the next one starts clean.
+# The extension overlays first: the rootfs is under them.
 cleanup() {
+    ext_cleanup
     if mountpoint -q "$CHECK" 2>/dev/null; then umount "$CHECK" || true; fi
     umount -R "$ROOT" 2>/dev/null || true
 }
@@ -139,6 +148,24 @@ stub_ok() {
         return 0
     fi
     return 1
+}
+
+# The mkfs.erofs flags, besides -z, for compressor COMPRESS, one per line.
+# zstd and lzma need large physical clusters to compress well (the default
+# 4 KiB cluster wastes most of their advantage); tail packing then saves the
+# partly filled last block of every file, where mkfs.erofs supports it.
+# Usage: erofs_flags COMPRESS
+erofs_flags() {
+    local probe=$WORK/erofs-probe
+    case $1 in lz4*) return 0 ;; esac
+    echo "-C${EROFS_PCLUSTER:-262144}"
+    rm -rf "$probe"
+    mkdir -p "$probe/src"
+    echo probe >"$probe/src/f"
+    if mkfs.erofs -z"$1" -Eztailpacking --quiet "$probe/img" "$probe/src" >/dev/null 2>&1; then
+        echo -Eztailpacking
+    fi
+    rm -rf "$probe"
 }
 
 # ------------------------------------------------------------------ base ----
@@ -303,6 +330,12 @@ systemctl --quiet --root="$ROOT" --global enable \
 # sshd is enabled per machine by vos-generator (config.json ssh.enabled);
 # vos-welcome is started by vosd.
 
+# The systemd-sysext and systemd-confext units the image at ROOT ships, by name.
+sysext_units() {
+    find "$1/usr/lib/systemd/system" -maxdepth 1 ! -type d \
+        \( -name 'systemd-sysext*' -o -name 'systemd-confext*' \) -printf '%f\n' | LC_ALL=C sort
+}
+
 # ---- never a terminal: no gettys anywhere, no first-boot questions, no
 # debug shell. (logind.conf.d/vos.conf stops autovt from spawning any.)
 # And no reboot from a keyboard: every keyboard feeds the kernel's console
@@ -327,6 +360,10 @@ UNIT
 else
     masked+=(serial-getty@.service)
 fi
+# Only the initramfs merges extensions (docs/CONTRACTS.md "Extensions"), so
+# systemd's own system and configuration extensions stay off, every unit of them.
+mapfile -t sysext < <(sysext_units "$ROOT")
+masked+=("${sysext[@]}")
 for unit in "${masked[@]}"; do
     ln -sfn /dev/null "$sysdir/$unit"
 done
@@ -362,6 +399,13 @@ find "$ROOT/var" -mindepth 1 -delete
 rm -rf "$ROOT/boot"/*
 elapsed
 
+# ------------------------------------------------------------ extensions ---
+# On the finished rootfs, which their checks compare against, and before it
+# becomes root.erofs, which carries their catalog (build/extensions.sh).
+rm -rf "$STAGE"; mkdir -p "$STAGE/vos"
+ext_build_all
+elapsed
+
 # --------------------------------------------------------------- initramfs --
 # It depends only on the kernel, the installed packages and our hook/config,
 # so it is cached on exactly those; most rebuilds skip mkinitcpio. The package
@@ -394,37 +438,27 @@ for m in erofs overlay loop ext4 vfat isofs exfat ntfs3; do
         grep -q "/$m\.ko$" "$ROOT/usr/lib/modules/$KVER/modules.builtin" ||
         die "the initramfs has no $m module"
 done
-for b in find blkid losetup mount e2fsck; do
+# fsverity measures extension images, tune2fs turns on ext4 verity on vos_data.
+for b in find blkid losetup mount e2fsck fsverity tune2fs; do
     grep -Eq "(^|/)bin/$b$" <<<"$initrd_files" || die "the initramfs has no $b"
 done
+# The extensions' kernel module options (/run/modprobe.d) reach only modules
+# that load after switch_root.
+if grep -Eq '/(amdgpu|it87)\.ko(\.[a-z]+)?$' <<<"$initrd_files"; then
+    die "the initramfs loads amdgpu or it87, so the extensions' module options for them would never apply"
+fi
 
-rm -rf "$STAGE"; mkdir -p "$STAGE/vos"
 cp "$INITRD_CACHE" "$STAGE/vos/initramfs.img"
 cp "$ROOT/usr/lib/modules/$KVER/vmlinuz" "$STAGE/vos/vmlinuz"
 cp "$ROOT/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$STAGE/vos/systemd-bootx64.efi"
 
 # ------------------------------------------------------------------ erofs ---
-# zstd and lzma need large physical clusters to compress well (the default
-# 4 KiB cluster wastes most of their advantage); tail packing then saves the
-# partly filled last block of every file. Measured on this image (2.8 GiB,
-# 8 cores): lz4hc,9 1645 MiB in 24 s; zstd level 9 with 256 KiB clusters
-# 1310 MiB in 2 min; level 15 only 1% smaller in 8 min, because a third of the
-# image (firmware) is compressed already. -Eall-fragments and -Ededupe were
-# left out on purpose: they make mkfs.erofs single-threaded, over an hour for
-# about 1%.
-erofs_extra=()
-case $COMPRESS in
-    lz4*) ;;
-    *)
-        erofs_extra+=(-C"${EROFS_PCLUSTER:-262144}")
-        probe=$WORK/erofs-probe
-        rm -rf "$probe"; mkdir -p "$probe/src"; echo probe >"$probe/src/f"
-        if mkfs.erofs -z"$COMPRESS" -Eztailpacking --quiet "$probe/img" "$probe/src" >/dev/null 2>&1; then
-            erofs_extra+=(-Eztailpacking)
-        fi
-        rm -rf "$probe"
-        ;;
-esac
+# Measured on this image (2.8 GiB, 8 cores): lz4hc,9 1645 MiB in 24 s; zstd
+# level 9 with 256 KiB clusters 1310 MiB in 2 min; level 15 only 1% smaller in
+# 8 min, because a third of the image (firmware) is compressed already.
+# -Eall-fragments and -Ededupe were left out on purpose: they make mkfs.erofs
+# single-threaded, over an hour for about 1%. (See erofs_flags.)
+mapfile -t erofs_extra < <(erofs_flags "$COMPRESS")
 step "Creating root.erofs (-z$COMPRESS${erofs_extra[*]:+ ${erofs_extra[*]}})"
 mkfs.erofs -z"$COMPRESS" "${erofs_extra[@]}" -T0 --workers="$(nproc)" --quiet \
     "$STAGE/vos/root.erofs" "$ROOT"
@@ -434,21 +468,12 @@ elapsed
 
 # ----------------------------------------------------------------- checks ---
 # Check what ships, not the build tree: mount the erofs read-only and look.
-
-# The builder runs in an LXC whose /dev has no loop devices, though the kernel
-# has plenty. Make the nodes; mount's own loop setup then asks the kernel for
-# a free one (and releases it on umount).
-loop_nodes() {
-    [[ -e /dev/loop-control ]] || mknod -m 0660 /dev/loop-control c 10 237
-    local i
-    for i in $(seq 0 63); do
-        [[ -e /dev/loop$i ]] || mknod -m 0660 "/dev/loop$i" b 7 "$i"
-    done
-}
+# (loop_nodes, in build/lib.sh, makes the loop devices the builder lacks.)
 
 check_image() {
-    local img=$1 m=$CHECK caps edid_head unit bin sysrq key
-    local -a problems=() gettys=()
+    local img=$1 m=$CHECK caps edid_head unit bin sysrq key id line f
+    local _kind _id sha size fsv
+    local -a problems=() gettys=() units=()
     loop_nodes
     mkdir -p "$m"
     mount -t erofs -o ro,loop "$img" "$m" || die "cannot mount $img to check it"
@@ -530,6 +555,30 @@ check_image() {
         [[ -x $m/$f ]] || problem "/$f is not executable"
     done
 
+    # Extensions: only the initramfs merges them, and the catalog it trusts
+    # lists every image this build made, exactly as made.
+    mapfile -t units < <(sysext_units "$m")
+    for unit in "${units[@]}"; do
+        [[ $(readlink "$m/etc/systemd/system/$unit") == /dev/null ]] ||
+            problem "$unit is not masked (only the initramfs merges extensions)"
+    done
+    f=$m/usr/lib/vos/extensions.list
+    if [[ ! -f $f ]]; then
+        problem "/usr/lib/vos/extensions.list is missing"
+    else
+        grep -Eqx 'dispatcher [0-9]+' "$f" || problem "extensions.list has no dispatcher line"
+        [[ $(grep -c '^ext ' "$f") == "${#EXT_IDS[@]}" ]] ||
+            problem "extensions.list lists $(grep -c '^ext ' "$f") images, the build made ${#EXT_IDS[@]}"
+        for id in "${EXT_IDS[@]}"; do
+            line=$(grep "^ext $id " "$f") || { problem "extensions.list does not list $id"; continue; }
+            read -r _kind _id sha size fsv _ <<<"$line"
+            [[ $sha == $(sha256sum <"$EXT_STAGE/ext-$id.raw" | cut -d' ' -f1) &&
+               $size == $(stat -c %s "$EXT_STAGE/ext-$id.raw") && $fsv == "${EXT_FSVERITY[$id]}" ]] ||
+                problem "extensions.list does not describe ext-$id.raw as built (sha256, size, fsverity)"
+            [[ -s $m/usr/share/vos/extensions/$id.json ]] || problem "/usr/share/vos/extensions/$id.json is missing"
+        done
+    fi
+
     umount "$m"
     if (( ${#problems[@]} )); then
         printf '    - %s\n' "${problems[@]}" >&2
@@ -557,13 +606,16 @@ jq -n --arg version "$VERSION" --argjson rollback_index "$ROLLBACK_INDEX" \
       --argjson root "$(artifact root.erofs)" \
       --argjson kernel_file "$(artifact vmlinuz)" \
       --argjson initrd "$(artifact initramfs.img)" \
+      --slurpfile extensions "$EXT_CATALOG/extensions.json" \
       '{schema: 1, product: "vaporos", version: $version, rollback_index: $rollback_index,
         channel: $channel, git: $git, created: $created, kernel: $kernel, cmdline: $cmdline,
         min_updater: 1,
-        artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd}}' >"$STAGE/vos/manifest.json"
+        artifacts: {root: $root, kernel: $kernel_file, initrd: $initrd}}
+       + if ($extensions[0] | length) > 0 then {extensions: $extensions[0]} else {} end' \
+      >"$STAGE/vos/manifest.json"
 
 step "Writing manifest.json"
-info "version $VERSION, rollback_index $ROLLBACK_INDEX, channel $CHANNEL"
+info "version $VERSION, rollback_index $ROLLBACK_INDEX, channel $CHANNEL, ${#EXT_IDS[@]} extension image(s)"
 
 ISO=""
 if [[ $VOS_PHASE == all ]]; then
@@ -602,14 +654,22 @@ fi
 
 # ------------------------------------------------------------------ out -----
 step "Publishing to out/"
-rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig"
+rm -f "$OUT"/*.iso "$OUT/manifest.env" "$OUT/manifest.json" "$OUT/manifest.json.sig" "$OUT"/ext-*.raw
 for f in root.erofs vmlinuz initramfs.img systemd-bootx64.efi manifest.json manifest.json.sig; do
     if [[ -f $STAGE/vos/$f ]]; then cp "$STAGE/vos/$f" "$OUT/"; fi
+done
+for id in "${EXT_IDS[@]}"; do
+    cp "$EXT_STAGE/ext-$id.raw" "$OUT/"
 done
 # Published files, all public: mkinitcpio makes the initramfs 0600, which
 # the unprivileged CI runner (and the dev loop's HTTP server) cannot read.
 chmod 0644 "$OUT"/*
 info "root.erofs  $(mib "$(stat -c %s "$OUT/root.erofs")") MiB ($COMPRESS)"
+for id in "${EXT_IDS[@]}"; do
+    how=${EXT_MKFS[0]#-z}
+    [[ -z ${EXT_REUSED[$id]:-} ]] || how+=", reused"
+    info "ext-$id.raw  $(mib "$(stat -c %s "$OUT/ext-$id.raw")") MiB ($how)"
+done
 if [[ -n $ISO ]]; then
     mv "$WORK/$ISO" "$OUT/"
     info "$ISO  $(mib "$iso_bytes") MiB (limit $(mib "$ISO_LIMIT") MiB)"
