@@ -14,16 +14,18 @@ const Dispatcher = "/usr/bin/vos ext launch"
 const Command = "%command%"
 
 // WrapLaunchOptions returns an app's launch options with the dispatcher
-// in front of %command%, as the contract's table has it: options without
+// in front of %command%, as the contract's table has it. Every dispatcher
+// token for an app goes first (UnwrapLaunchOptions), wherever it is and
+// whichever app it names, so wrapping is idempotent. Then options without
 // %command% follow "<dispatcher> --app N %command% ", and with one the
-// dispatcher goes just before it, replacing one that is there already
-// (for this app or another). Options with several %command% are left
-// alone and reported with false, as is app 0.
+// token goes right before it. Options with several %command% come back
+// without the tokens and false, as does app 0.
 func WrapLaunchOptions(opts string, app uint32) (string, bool) {
+	opts = UnwrapLaunchOptions(opts)
 	if app == 0 {
 		return opts, false
 	}
-	token := Dispatcher + " --app " + strconv.FormatUint(uint64(app), 10) + " "
+	token := appToken + strconv.FormatUint(uint64(app), 10) + " "
 	switch strings.Count(opts, Command) {
 	case 0:
 		if strings.TrimSpace(opts) == "" {
@@ -32,39 +34,45 @@ func WrapLaunchOptions(opts string, app uint32) (string, bool) {
 		return token + Command + " " + opts, true
 	case 1:
 		prefix, suffix, _ := strings.Cut(opts, Command)
-		return trimAppTokens(prefix) + token + Command + suffix, true
+		return prefix + token + Command + suffix, true
 	}
 	return opts, false
 }
 
-// UnwrapLaunchOptions removes the dispatcher token in front of a single
-// %command% and nothing else, so options the dispatcher was put in front
-// of come back as "%command% <options>", which Steam runs the same way.
-func UnwrapLaunchOptions(opts string) string {
-	if strings.Count(opts, Command) != 1 {
-		return opts
-	}
-	prefix, suffix, _ := strings.Cut(opts, Command)
-	return trimAppTokens(prefix) + Command + suffix
-}
+// appToken starts the dispatcher's token for an app, less its id.
+const appToken = Dispatcher + " --app "
 
-// trimAppTokens removes "<dispatcher> --app N " tokens that end prefix.
-func trimAppTokens(prefix string) string {
+// UnwrapLaunchOptions removes every "<dispatcher> --app N" token and the
+// spaces and tabs after it, so options the dispatcher was put in front of
+// come back as "%command% <options>", which Steam runs the same way. A
+// token is only ours when its digits end the string, or are followed by
+// a space, a tab or %command%.
+func UnwrapLaunchOptions(opts string) string {
+	var b strings.Builder
 	for {
-		rest, ok := strings.CutSuffix(prefix, " ")
-		if !ok {
-			return prefix
+		i := strings.Index(opts, appToken)
+		if i < 0 {
+			break
 		}
-		i := len(rest)
-		for i > 0 && rest[i-1] >= '0' && rest[i-1] <= '9' {
-			i--
+		digits := i + len(appToken)
+		end := digits
+		for end < len(opts) && opts[end] >= '0' && opts[end] <= '9' {
+			end++
 		}
-		head, ok := strings.CutSuffix(rest[:i], Dispatcher+" --app ")
-		if i == len(rest) || !ok {
-			return prefix
+		ws := end
+		for end < len(opts) && (opts[end] == ' ' || opts[end] == '\t') {
+			end++
 		}
-		prefix = head
+		if ws == digits || (end == ws && ws < len(opts) && !strings.HasPrefix(opts[ws:], Command)) {
+			b.WriteString(opts[:digits]) // not one of ours
+			opts = opts[digits:]
+			continue
+		}
+		b.WriteString(opts[:i])
+		opts = opts[end:]
 	}
+	b.WriteString(opts)
+	return b.String()
 }
 
 // ShortcutLaunchOptions is the launch options of an extension's shortcut:

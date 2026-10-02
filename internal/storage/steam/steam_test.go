@@ -18,6 +18,7 @@ func TestParseVDFBasics(t *testing.T) {
 	"Block"
 	{
 		"inner"	"x" [$WIN32]
+		"inner"	"z" [!$WIN32]
 	}
 	"cond" "y" [$LINUX]
 }`
@@ -38,7 +39,8 @@ func TestParseVDFBasics(t *testing.T) {
 	if got := st.Str("unquoted"); got != "value" {
 		t.Errorf("unquoted = %q", got)
 	}
-	if got := st.Child("Block").Str("inner"); got != "x" {
+	// Steam on Linux does not read an entry for Windows.
+	if got := st.Child("Block").Str("inner"); got != "z" {
 		t.Errorf("inner = %q", got)
 	}
 	if got := st.Str("cond"); got != "y" {
@@ -46,6 +48,19 @@ func TestParseVDFBasics(t *testing.T) {
 	}
 	if st.Str("Block") != "" {
 		t.Error("Str on a block must be empty")
+	}
+}
+
+func TestLinuxConditionals(t *testing.T) {
+	for cond, want := range map[string]bool{
+		"": true, "$LINUX": true, "$POSIX": true, "!$WIN32": true, "$win32||$linux": true,
+		"!$OSX && !$WINDOWS": true, "$SOMETHINGNEW": true, "!$SOMETHINGNEW": true,
+		"$WIN32": false, "$WINDOWS": false, "$OSX": false, "$X360": false, "$PS3": false,
+		"!$LINUX": false, "!$POSIX": false, "$WIN32||$OSX": false, "$LINUX&&$WIN32": false,
+	} {
+		if got := linuxCond(cond); got != want {
+			t.Errorf("[%s] = %v", cond, got)
+		}
 	}
 }
 
@@ -271,6 +286,9 @@ func TestIsTool(t *testing.T) {
 		{ID: 1, Name: "Proton 12.0"},
 		{ID: 1, Name: "Steam Linux Runtime 5.0 (future)"},
 		{ID: 228980, Name: "whatever"},
+		// Proton versions, by id alone (not installed yet).
+		{ID: 2805730}, {ID: 2348590}, {ID: 1887720}, {ID: 1580130}, {ID: 1420170},
+		{ID: 1245040}, {ID: 1113280}, {ID: 3658110}, {ID: 1493710}, {ID: 2180100},
 	} {
 		if !a.IsTool() {
 			t.Errorf("%+v should be a tool", a)

@@ -20,14 +20,45 @@ type Desired struct {
 	Apps              []AppWant    `json:"apps"`
 	Shortcuts         []Shortcut   `json:"shortcuts"`
 	Release           []AppRelease `json:"release"`
+
+	// owners are the extensions steam.json names anywhere, entries not
+	// well formed included: a VaporOS shortcut goes only once its
+	// extension is in none of them.
+	owners map[string]bool
 }
 
 // AppWant is what extensions ask for one Steam app.
 type AppWant struct {
-	App        uint32   `json:"app"`
-	CompatTool string   `json:"compat_tool"`
-	Hooks      []string `json:"hooks"`
-	Beta       *string  `json:"beta"`
+	App        uint32    `json:"app"`
+	CompatTool string    `json:"compat_tool"`
+	Hooks      []string  `json:"hooks"`
+	Beta       *BetaWant `json:"beta"`
+
+	// keepBranch: Beta was not well formed, so the app's branch and the
+	// record of it are left as they are.
+	keepBranch bool
+}
+
+// BetaWant is a request for an app's branch ("" the public one). vosd
+// gives every request its own id; prepare applies each one once, so a
+// branch the user picks in Steam afterwards stays.
+type BetaWant struct {
+	Branch  string `json:"branch"`
+	Request string `json:"request"`
+	bad     bool
+}
+
+// UnmarshalJSON keeps a beta that is not such an object from failing all
+// of steam.json: parseDesired then drops it alone.
+func (b *BetaWant) UnmarshalJSON(data []byte) error {
+	type plain BetaWant
+	var p plain
+	if json.Unmarshal(data, &p) != nil {
+		*b = BetaWant{bad: true}
+		return nil
+	}
+	*b = BetaWant(p)
+	return nil
 }
 
 // Shortcut is a non-Steam game an extension adds.
@@ -73,6 +104,19 @@ func parseDesired(data []byte, logf func(string, ...any)) (*Desired, error) {
 		logf("steam.json: default compatibility tool %q is not a tool name; ignored", d.DefaultCompatTool)
 		d.DefaultCompatTool = ""
 	}
+	d.owners = map[string]bool{}
+	for _, a := range d.Apps {
+		for _, h := range a.Hooks {
+			if nameRe.MatchString(h) {
+				d.owners[h] = true
+			}
+		}
+	}
+	for _, s := range d.Shortcuts {
+		if nameRe.MatchString(s.Owner) {
+			d.owners[s.Owner] = true
+		}
+	}
 	apps := d.Apps[:0]
 	seen := map[uint32]bool{}
 	for _, a := range d.Apps {
@@ -83,9 +127,9 @@ func parseDesired(data []byte, logf func(string, ...any)) (*Desired, error) {
 		case a.CompatTool != "" && !toolRe.MatchString(a.CompatTool):
 			logf("steam.json: app %d: %q is not a tool name; ignored", a.App, a.CompatTool)
 			continue
-		case a.Beta != nil && !betaRe.MatchString(*a.Beta):
-			logf("steam.json: app %d: %q is not a branch name; ignored", a.App, *a.Beta)
-			continue
+		case a.Beta != nil && (a.Beta.bad || !betaRe.MatchString(a.Beta.Branch) || !requestOK(a.Beta.Request)):
+			logf("steam.json: app %d: the branch asked for is not {\"branch\",\"request\"}; its branch is left as it is", a.App)
+			a.Beta, a.keepBranch = nil, true
 		}
 		hooks := a.Hooks[:0]
 		for _, h := range a.Hooks {
@@ -132,11 +176,20 @@ func checkShortcut(s Shortcut) error {
 	return nil
 }
 
+// requestOK accepts a branch request's id: opaque, but short and
+// printable, since it goes into prepare's record.
+func requestOK(id string) bool {
+	return id != "" && len(id) <= 128 && !strings.ContainsFunc(id, unicode.IsControl)
+}
+
 // cleanAbs accepts an absolute, clean path that Steam can keep in quotes.
 func cleanAbs(p string) bool {
 	return filepath.IsAbs(p) && filepath.Clean(p) == p && len(p) <= 1024 &&
 		!strings.ContainsFunc(p, func(r rune) bool { return r == '"' || unicode.IsControl(r) })
 }
+
+// names reports whether steam.json names extension id anywhere.
+func (d *Desired) names(id string) bool { return d.owners[id] }
 
 // releases returns the apps steam.json hands to the user.
 func (d *Desired) releases() map[uint32]bool {

@@ -13,13 +13,15 @@ func TestParseDesired(t *testing.T) {
 	art := filepath.Join(config.ExtMountedLibDir, "star-citizen", "art")
 	data := `{"set":"4","dispatcher":true,"default_compat_tool":"proton-cachyos-slr",
 	"apps":[
-		{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp","Bad Hook"],"beta":"temporary_1_61"},
-		{"app":227300,"compat_tool":"twice"},
+		{"app":227300,"compat_tool":"proton-cachyos-slr","hooks":["truckersmp","Bad Hook"],"beta":{"branch":"temporary_1_61","request":"7"}},
+		{"app":227300,"compat_tool":"twice","hooks":["twice-hook"]},
 		{"app":0},
 		{"app":270880,"compat_tool":"../../etc"},
-		{"app":1,"beta":"x\"y"},
-		{"app":2,"beta":""},
-		{"app":3,"beta":null}
+		{"app":1,"beta":{"branch":"x\"y","request":"8"}},
+		{"app":2,"beta":{"branch":"","request":"9"}},
+		{"app":3,"beta":null},
+		{"app":4,"beta":"temporary_1_61"},
+		{"app":5,"beta":{"branch":"b"}}
 	],
 	"shortcuts":[
 		{"owner":"star-citizen","key":"launcher","name":"Star Citizen","exe":"/var/mnt/g/setup.exe","start_dir":"/var/mnt/g","compat_tool":"","art":"` + art + `"},
@@ -36,9 +38,26 @@ func TestParseDesired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Apps) != 3 || d.Apps[0].App != 227300 || d.Apps[1].App != 2 || d.Apps[2].App != 3 ||
-		strings.Join(d.Apps[0].Hooks, ",") != "truckersmp" || *d.Apps[0].Beta != "temporary_1_61" || *d.Apps[1].Beta != "" {
+	// A branch request that is not well formed goes alone, and the app's
+	// branch is then left as it is.
+	if len(d.Apps) != 6 || d.Apps[0].App != 227300 || d.Apps[1].App != 1 || d.Apps[2].App != 2 || d.Apps[3].App != 3 ||
+		strings.Join(d.Apps[0].Hooks, ",") != "truckersmp" || *d.Apps[0].Beta != (BetaWant{Branch: "temporary_1_61", Request: "7"}) ||
+		*d.Apps[2].Beta != (BetaWant{Request: "9"}) || d.Apps[3].Beta != nil || d.Apps[3].keepBranch {
 		t.Errorf("apps %+v", d.Apps)
+	}
+	for _, a := range []AppWant{d.Apps[1], d.Apps[4], d.Apps[5]} {
+		if a.Beta != nil || !a.keepBranch {
+			t.Errorf("app %d: %+v", a.App, a)
+		}
+	}
+	// Every extension named counts, in entries left out too.
+	for _, id := range []string{"truckersmp", "twice-hook", "star-citizen", "x"} {
+		if !d.names(id) {
+			t.Errorf("%s not named", id)
+		}
+	}
+	if d.names("X") || d.names("Bad Hook") || d.names("nobody") {
+		t.Error("names what is not an extension id")
 	}
 	if len(d.Shortcuts) != 1 || d.Shortcuts[0].Name != "Star Citizen" {
 		t.Errorf("shortcuts %+v", d.Shortcuts)
@@ -46,7 +65,7 @@ func TestParseDesired(t *testing.T) {
 	if r := d.releases(); len(r) != 1 || !r[270880] {
 		t.Errorf("release %v", r)
 	}
-	if len(logs) != 10 {
+	if len(logs) != 12 {
 		t.Errorf("%d log lines: %q", len(logs), logs)
 	}
 	if _, err := parseDesired([]byte(`{"set":`), func(string, ...any) {}); err == nil {

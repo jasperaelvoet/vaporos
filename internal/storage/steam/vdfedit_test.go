@@ -2,6 +2,7 @@ package steam
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -127,23 +128,37 @@ func TestSetVDFOddLayouts(t *testing.T) {
 }
 
 func TestSetVDFConditional(t *testing.T) {
-	// The first copy is the one that counts; its conditional stays.
+	// The copy Steam reads on Linux is the one that counts; the one for
+	// Windows before it stays as it is, and so do the conditionals.
 	orig := readFixture(t, "localconfig.vdf")
-	out, changed, err := SetVDF([]byte(orig), LocalConfigMax, steamPath, "ShowFriendsListOnStartup", "1")
+	out, changed, err := SetVDF([]byte(orig), LocalConfigMax, steamPath, "ShowFriendsListOnStartup", "0")
 	if err != nil || !changed {
 		t.Fatalf("changed %v, %v", changed, err)
 	}
-	want := replaceOnce(t, orig, "\"0\" [$WIN32]", "\"1\" [$WIN32]")
+	want := replaceOnce(t, orig, "\"1\" [$LINUX]", "\"0\" [$LINUX]")
 	if string(out) != want {
 		t.Errorf("got:\n%s", out)
 	}
+	if v, ok, _ := GetVDF([]byte(orig), LocalConfigMax, steamPath, "ShowFriendsListOnStartup"); !ok || v != "1" {
+		t.Errorf("read %q %v", v, ok)
+	}
 	// An entry after a conditional one is found and edited as usual.
-	out, _, err = SetVDF([]byte(orig), LocalConfigMax, []string{"UserLocalConfigStore", "system"}, "InGameOverlayScreenshotSaveUncompressedPath", `D:\Shots`)
+	system := []string{"UserLocalConfigStore", "system"}
+	out, _, err = SetVDF([]byte(orig), LocalConfigMax, system, "InGameOverlayScreenshotSaveUncompressedPath", `D:\Shots`)
 	if err != nil || string(out) != replaceOnce(t, orig, `"C:\\Screenshots"`, `"D:\\Shots"`) {
 		t.Errorf("after a conditional: %v\n%s", err, out)
 	}
-	if v, ok, _ := GetVDF([]byte(orig), LocalConfigMax, []string{"UserLocalConfigStore", "system"}, "InGameOverlayShortcutKey"); !ok || v != "Shift\tKEY_TAB" {
-		t.Errorf("escaped tab = %q", v)
+	// One only Windows reads is not there on Linux: a copy is added.
+	if v, ok, _ := GetVDF([]byte(orig), LocalConfigMax, system, "InGameOverlayShortcutKey"); ok {
+		t.Errorf("Windows entry read: %q", v)
+	}
+	out, _, err = SetVDF([]byte(orig), LocalConfigMax, system, "InGameOverlayShortcutKey", "F12")
+	anchor := "\"C:\\\\Screenshots\"\n"
+	if err != nil || string(out) != replaceOnce(t, orig, anchor, anchor+"\t\t\"InGameOverlayShortcutKey\"\t\t\"F12\"\n") {
+		t.Errorf("Windows entry: %v\n%s", err, out)
+	}
+	if v, ok, _ := GetVDF(out, LocalConfigMax, system, "InGameOverlayShortcutKey"); !ok || v != "F12" {
+		t.Errorf("read back %q %v", v, ok)
 	}
 }
 
@@ -206,8 +221,12 @@ func TestDeleteVDF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := replaceOnce(t, orig, "\t\t\t\t\"ShowFriendsListOnStartup\"\t\t\"0\" [$WIN32]\n\t\t\t\t\"ShowFriendsListOnStartup\"\t\t\"1\" [$LINUX]\n", ""); string(out) != want {
-		t.Errorf("repeated:\n%s", out)
+	if want := replaceOnce(t, orig, "\t\t\t\t\"ShowFriendsListOnStartup\"\t\t\"1\" [$LINUX]\n", ""); string(out) != want {
+		t.Errorf("repeated, Linux copy:\n%s", out)
+	}
+	twice := `"a" { "b" "1" "b" "2" "b" "3" [$OSX] }`
+	if out, _, err := DeleteVDF([]byte(twice), VDFMax, []string{"a"}, "b"); err != nil || string(out) != `"a" { "b" "3" [$OSX] }` {
+		t.Errorf("repeated: %q %v", out, err)
 	}
 
 	// Missing key, missing block: nothing to do.
@@ -261,5 +280,125 @@ func TestEditLargeLocalConfig(t *testing.T) {
 	huge := make([]byte, LocalConfigMax+1)
 	if _, _, err := SetLaunchOptions(huge, 227300, "x"); err == nil {
 		t.Error("over 64 MiB accepted")
+	}
+}
+
+func TestEditsKeepTheFileParsing(t *testing.T) {
+	// Taking out an entry between two unquoted tokens leaves a space
+	// between them, so they stay two.
+	for _, c := range []struct{ in, want string }{
+		{`"a" { b c"d" "e"f g }`, `"a" { b c f g }`},
+		{`"a" { b c"d" "e""d" "f"g h }`, `"a" { b c g h }`},
+		{"\"a\" { b c\"d\" \"e\"// note\n}", "\"a\" { b c // note\n}"},
+	} {
+		out, changed, err := DeleteVDF([]byte(c.in), VDFMax, []string{"a"}, "d")
+		if err != nil || !changed || string(out) != c.want {
+			t.Errorf("%q: %q %v %v, want %q", c.in, out, changed, err, c.want)
+		}
+	}
+
+	// A result over the limit is refused like a file over it.
+	data := []byte(`"a" { "b" "c" }`)
+	if out, changed, err := SetVDF(data, len(data)+3, []string{"a"}, "b", "longer"); err == nil || changed || out != nil {
+		t.Errorf("over the limit: %q %v %v", out, changed, err)
+	}
+	if _, _, err := SetVDF(data, len(data)+3, []string{"a"}, "b", "cde"); err != nil {
+		t.Errorf("within the limit: %v", err)
+	}
+
+	// No NUL anywhere, the path included.
+	for _, path := range [][]string{{"a\x00"}, {"a", "x\x00y"}} {
+		if _, _, err := SetVDF(data, VDFMax, path, "k", "v"); err == nil {
+			t.Errorf("set %q accepted", path)
+		}
+		if _, _, err := DeleteVDF(data, VDFMax, path, "k"); err == nil {
+			t.Errorf("delete %q accepted", path)
+		}
+	}
+	if _, _, err := DeleteVDF(data, VDFMax, []string{"a"}, "b\x00"); err == nil {
+		t.Error("delete of a NUL key accepted")
+	}
+}
+
+func TestLocalConfigBatch(t *testing.T) {
+	orig := readFixture(t, "localconfig.vdf")
+	lc, err := ParseLocalConfig([]byte(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lc.LaunchOptions(); len(got) != 2 || got[227300] != "-nointro -64bit" {
+		t.Errorf("read %q", got)
+	}
+	for _, err := range []error{
+		lc.SetLaunchOptions(227300, "-x"),
+		lc.SetLaunchOptions(2483190, "-dx11"),
+		lc.SetLaunchOptions(270880, "a"),
+		lc.SetLaunchOptions(270880, "b"), // the last one counts
+		lc.DeleteLaunchOptions(1091500),
+		lc.DeleteLaunchOptions(949230), // has none: nothing
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, changed, err := lc.Bytes()
+	if err != nil || !changed {
+		t.Fatalf("changed %v, %v", changed, err)
+	}
+
+	// The same, one edit at a time.
+	want := []byte(orig)
+	for _, step := range []func([]byte) ([]byte, bool, error){
+		func(d []byte) ([]byte, bool, error) { return SetLaunchOptions(d, 227300, "-x") },
+		func(d []byte) ([]byte, bool, error) { return SetLaunchOptions(d, 2483190, "-dx11") },
+		func(d []byte) ([]byte, bool, error) { return SetLaunchOptions(d, 270880, "b") },
+		func(d []byte) ([]byte, bool, error) { return DeleteLaunchOptions(d, 1091500) },
+	} {
+		if want, _, err = step(want); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(out) != string(want) {
+		t.Errorf("batch:\n%s\nwant:\n%s", out, want)
+	}
+
+	// Launch options added and taken out again leave no trace; an app
+	// block with anything else in it stays.
+	lc, err = ParseLocalConfig(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, app := range []uint32{2483190, 270880, 227300} {
+		if err := lc.DeleteLaunchOptions(app); err != nil {
+			t.Fatal(err)
+		}
+	}
+	back, _, err := lc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, _, err := DeleteLaunchOptions([]byte(orig), 227300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone, _, err = DeleteLaunchOptions(gone, 1091500); err != nil || string(back) != string(gone) {
+		t.Errorf("taken out again:\n%s", back)
+	}
+
+	// Apps added where there is no "apps" block yet share a new one.
+	fresh := "\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t}\n\t\t}\n\t}\n}\n"
+	lc, err = ParseLocalConfig([]byte(fresh))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(lc.SetLaunchOptions(1, "a"), lc.SetLaunchOptions(2, "b")); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = lc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := AppLaunchOptions(out); err != nil || len(got) != 2 || got[1] != "a" || got[2] != "b" || strings.Count(string(out), `"apps"`) != 1 {
+		t.Errorf("new apps: %q %v\n%s", got, err, out)
 	}
 }
