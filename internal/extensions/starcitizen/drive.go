@@ -2,7 +2,6 @@ package starcitizen
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
@@ -37,20 +37,6 @@ var (
 	safeRe = regexp.MustCompile(`^/[A-Za-z0-9/._-]+$`)
 )
 
-// Why Star Citizen's files cannot be used: its game drive is not mounted
-// where VaporOS mounts it (or another filesystem is), or the drive is
-// there and the files are not.
-var (
-	errNotConnected = errors.New("not connected")
-	errMissing      = errors.New("files missing")
-)
-
-// What Install says about the disk setting itself.
-var (
-	errNoDrive      = errors.New("Pick a game drive for Star Citizen on its card, then select Try again.")
-	errUnknownDrive = errors.New("VaporOS doesn't know the drive picked for Star Citizen. Pick another one on its card, then select Try again.")
-)
-
 // place is where Star Citizen's prefix goes on one drive: Rel beneath
 // Base, a directory root may write through gamerfs (a game drive's mount
 // point, or vapor's home on the system drive).
@@ -63,15 +49,6 @@ type place struct {
 }
 
 func (p place) Prefix() string { return filepath.Join(p.Base, p.Rel) }
-
-// problem is the one sentence for why the files at p cannot be used, the
-// same on the card, in the journal and on fetch-installer's last line.
-func (p place) problem(err error) string {
-	if errors.Is(err, errNotConnected) && !p.System {
-		return fmt.Sprintf("Star Citizen's drive, %s, isn't connected. Connect it, then try again.", p.Name)
-	}
-	return fmt.Sprintf("Star Citizen's files on %s are missing. Remove Star Citizen and add it again.", p.Name)
-}
 
 // systemPrefix is the prefix on the system drive: the home data area.
 func systemPrefix() string { return filepath.Join(config.GamerHome, config.ExtGamerDataSubdir, ID) }
@@ -94,13 +71,13 @@ func normalizeDisk(disk string) string {
 func placeFor(disk string) (place, error) {
 	switch disk = normalizeDisk(disk); disk {
 	case "":
-		return place{}, errNoDrive
+		return place{}, refuse(codeNoDrive, "no drive picked")
 	case systemDisk:
 		return place{Disk: systemDisk, Base: config.GamerHome, Rel: path.Join(config.ExtGamerDataSubdir, ID), Name: "the system drive", System: true}, nil
 	}
 	name, ok := strings.CutPrefix(disk, mntBase+"/")
 	if !ok || !nameRe.MatchString(name) || name == "." || name == ".." {
-		return place{}, errUnknownDrive
+		return place{}, refuse(codeUnknownDrive, "the disk setting %q names no drive", disk)
 	}
 	return place{Disk: disk, Base: disk, Rel: "VaporOS/" + ID, Name: name}, nil
 }
@@ -210,6 +187,34 @@ func within(p, dir string) bool {
 	return dir == "/" || p == dir || strings.HasPrefix(p, dir+"/")
 }
 
+// locate is the one judgement of whether Star Citizen's files at p can
+// be used, for the card's status, Install, fetch-installer and the launch
+// hook alike: the mount of p's drive, or a refusal with codeNotConnected
+// or codeFilesMissing. uuid is the filesystem Install recorded
+// (state.json): the drive must be mounted at its folder and hold that
+// filesystem (onDrive) before its marker, read through gamerfs, is looked
+// at, so another drive with the same name is one that isn't connected,
+// never one whose files are gone. Install, which records the filesystem,
+// passes "": whatever is mounted at p's folder is the drive picked, and
+// nothing in it is looked at.
+func locate(ms []mount, p place, uuid string) (mount, error) {
+	if uuid == "" {
+		return driveMount(ms, p)
+	}
+	m, err := onDrive(ms, p, uuid)
+	if err != nil {
+		return mount{}, err
+	}
+	b, err := gamerfs.ReadFile(p.Base, path.Join(p.Rel, markerName), maxMarker)
+	if err != nil {
+		return mount{}, extensions.Refuse(codeFilesMissing, err)
+	}
+	if got := strings.TrimSpace(string(b)); !strings.EqualFold(got, uuid) {
+		return mount{}, refuse(codeFilesMissing, "the marker in %s holds %q, not %s", p.Prefix(), got, uuid)
+	}
+	return m, nil
+}
+
 // driveMount is the mount Star Citizen's prefix is on. A game drive must
 // be mounted exactly at its folder, with nothing mounted between it and
 // the prefix: an empty mount point holds the system drive, where 100 GB
@@ -217,10 +222,10 @@ func within(p, dir string) bool {
 func driveMount(ms []mount, p place) (mount, error) {
 	m, ok := mountOf(ms, p.Prefix())
 	switch {
-	case !ok && p.System:
-		return mount{}, errMissing
-	case !ok || (!p.System && m.Point != p.Base):
-		return mount{}, errNotConnected
+	case !ok:
+		return mount{}, notThere(p, "nothing is mounted above %s", p.Prefix())
+	case !p.System && m.Point != p.Base:
+		return mount{}, notThere(p, "%s is on %s, not on a drive mounted at %s", p.Prefix(), m.Point, p.Base)
 	}
 	return m, nil
 }
@@ -232,34 +237,24 @@ func onDrive(ms []mount, p place, uuid string) (mount, error) {
 	if err != nil {
 		return mount{}, err
 	}
-	if got, err := fsUUID(m.Source); err != nil || uuid == "" || !strings.EqualFold(got, uuid) {
-		return mount{}, notThere(p)
-	}
-	return m, nil
-}
-
-// reach checks, as root, that Star Citizen's files are at p on the
-// filesystem uuid names: its drive (onDrive), and its marker, read through
-// gamerfs.
-func reach(ms []mount, p place, uuid string) (mount, error) {
-	m, err := onDrive(ms, p, uuid)
+	got, err := fsUUID(m.Source)
 	if err != nil {
-		return mount{}, err
+		return mount{}, notThere(p, "%v", err)
 	}
-	b, err := gamerfs.ReadFile(p.Base, path.Join(p.Rel, markerName), maxMarker)
-	if err != nil || !strings.EqualFold(strings.TrimSpace(string(b)), uuid) {
-		return mount{}, errMissing
+	if uuid == "" || !strings.EqualFold(got, uuid) {
+		return mount{}, notThere(p, "%s holds filesystem %s, not %q", m.Point, got, uuid)
 	}
 	return m, nil
 }
 
-// notThere is the error for p's drive holding another filesystem: the
-// game drive isn't connected, or the system drive lost the files.
-func notThere(p place) error {
+// notThere is the refusal for p's drive missing or holding another
+// filesystem: the game drive isn't connected, or the system drive lost
+// the files.
+func notThere(p place, format string, args ...any) error {
 	if p.System {
-		return errMissing
+		return refuse(codeFilesMissing, format, args...)
 	}
-	return errNotConnected
+	return refuse(codeNotConnected, format, args...)
 }
 
 // fsUUID is the UUID of the filesystem on source: the name of the
@@ -283,37 +278,4 @@ func resolve(p string) string {
 		return r
 	}
 	return filepath.Clean(p)
-}
-
-// checkPrefix makes sure p's prefix is where Install put it: on its drive,
-// the real directory without a symlink on the way, with a marker that
-// holds the UUID of the filesystem it is on. It runs as vapor, in vapor's
-// own tree, and returns errNotConnected or errMissing.
-func checkPrefix(p place) error {
-	ms, err := readMounts()
-	if err != nil {
-		return notThere(p)
-	}
-	m, err := driveMount(ms, p)
-	if err != nil {
-		return err
-	}
-	prefix := p.Prefix()
-	if r, err := filepath.EvalSymlinks(prefix); err != nil || r != prefix {
-		return errMissing
-	}
-	f, err := os.Open(filepath.Join(prefix, markerName))
-	if err != nil {
-		return errMissing
-	}
-	b, err := io.ReadAll(io.LimitReader(f, maxMarker))
-	f.Close()
-	want := strings.TrimSpace(string(b))
-	if err != nil || want == "" {
-		return errMissing
-	}
-	if got, err := fsUUID(m.Source); err != nil || !strings.EqualFold(got, want) {
-		return notThere(p)
-	}
-	return nil
 }

@@ -2,7 +2,6 @@ package starcitizen
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -40,16 +39,13 @@ const regText = "REGEDIT4\r\n\r\n" +
 	`[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer]` + "\r\n" +
 	`"NoTrayItemsDisplay"=dword:00000001` + "\r\n"
 
-var (
-	errStray       = errors.New("Star Citizen's files aren't where VaporOS put them. Remove Star Citizen and add it again.")
-	errNoInstaller = errors.New("Star Citizen's installer is missing. Remove Star Citizen and add it again.")
-)
-
 // LaunchHook turns the Star Citizen shortcut, whose target is the RSI
-// Launcher's installer (a file that is always there), into a start of the
+// Launcher's installer Install recorded (gone, when a newer download
+// replaced it before Steam picked up the new target), into a start of the
 // launcher: the installed launcher, or on the first start a batch file
 // that installs it silently and then starts it, all in one Proton run.
-// It runs as vapor, in front of Steam's command line:
+// It refuses with a code its helper words (MessageText), so the person
+// reads that sentence. It runs as vapor, in front of Steam's command line:
 //
 //	…/_v2-entry-point --verb=waitforexitandrun -- …/proton waitforexitandrun <prefix>/installer/RSI Launcher-Setup-<v>.exe
 func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
@@ -60,12 +56,8 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 	if i < 0 {
 		return nil // not the installer: Steam starts what it was asked to
 	}
-	p, ok := placeOf(prefix)
-	if !ok {
-		return errStray
-	}
-	if err := checkPrefix(p); err != nil {
-		return errors.New(p.problem(err))
+	if err := recorded(prefix); err != nil {
+		return err
 	}
 	dir := filepath.Join(prefix, installerDir)
 	named := filepath.Base(l.Argv[i])
@@ -78,11 +70,10 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 	} else {
 		setup := pickInstaller(dir, named)
 		if setup == "" {
-			return errNoInstaller
+			return refuse(codeInstallerMissing, "no installer in %s", dir)
 		}
 		if err := writeFirstStart(prefix, setup); err != nil {
-			log.Printf("star-citizen: %v", err)
-			return fmt.Errorf("VaporOS couldn't write to %s. Check that it has space, then try again.", p.Name)
+			return extensions.Refuse(codeCantWrite, err)
 		}
 		with = []string{cmdExe, "/c", dosPath(filepath.Join(dir, firstStart))}
 	}
