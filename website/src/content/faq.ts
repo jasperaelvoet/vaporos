@@ -190,9 +190,12 @@ export const faq: QA[] = [
     a: [
       // The root is a read-only erofs image (build/build.sh); pacman is in it
       // (base pulls it in) but has nothing it could write to.
-      'No. The system is one read-only image: nothing can be installed on it, which is what makes updates and rollback reliable. Games come from Steam, as usual.',
+      'Not with a package manager. The system is one read-only image, which is what makes updates and rollback reliable. Games come from Steam, as usual.',
+      // extensions/: curated, built with each release, sealed with fs-verity
+      // (docs/CONTRACTS.md "Extensions").
+      'VaporOS has a few extensions it builds and checks itself: CachyOS Proton, which is always on, and CoolerControl, TruckersMP and the Star Citizen launcher, which you add under [[System]] › [[Extensions]]. Each one is a sealed, read-only package that updates and rolls back together with VaporOS.',
     ],
-    short: 'No. The system is one read-only image: nothing can be installed on it.',
+    short: 'Not with a package manager: the system is one read-only image. A few extensions VaporOS checks itself can be added under [[System]] › [[Extensions]].',
   },
   {
     id: 'verify',
