@@ -2,6 +2,7 @@ package truckersmp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,9 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions"
 	"github.com/jasperaelvoet/vaporos/internal/gameproc"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 	"github.com/jasperaelvoet/vaporos/internal/session"
+	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
 // `vos ext truckersmp mp ets2|ats` starts multiplayer, from the extension's
@@ -59,6 +63,7 @@ const (
 	msgNoFiles      = "no-files-"      // and the game's key
 	msgLinux        = "linux-"         // and the game's key: the hook, for the Linux build
 	msgNeedsUpdate  = "needs-update-"  // and the game's key: no launch options carry the dispatcher
+	msgSteamPending = "steam-pending"  // they will, but prepare has not written them for Steam yet
 	msgStarting     = "starting"
 	msgUpdating     = "updating"
 	msgHandOff      = "handoff-failed"
@@ -72,6 +77,8 @@ func messageText(code string) (string, bool) {
 	switch code {
 	case msgStarting:
 		return "TruckersMP is already starting. Wait for the game to open.", true
+	case msgSteamPending:
+		return "TruckersMP didn't start because Steam hasn't picked up its settings yet. Restart VaporOS, then try again.", true
 	case msgUpdating:
 		return "TruckersMP didn't start because its files are updating. Try again in a few minutes.", true
 	case msgHandOff:
@@ -126,6 +133,10 @@ func (m *mp) run(ctx context.Context, g game) error {
 		}
 		return told(m.tell, msgNeedsUpdate+g.key)
 	}
+	if err := launchWrapped(g); err != nil {
+		fmt.Fprintln(os.Stderr, "truckersmp:", err)
+		return told(m.tell, msgSteamPending)
+	}
 	if running := m.runningGame(); running != "" {
 		return told(m.tell, msgRunning+running)
 	}
@@ -149,6 +160,53 @@ func (m *mp) run(ctx context.Context, g game) error {
 		fmt.Fprintln(os.Stderr, "truckersmp:", err)
 		dropFlag(m.flag, f.Nonce)
 		return told(m.tell, msgHandOff)
+	}
+	return nil
+}
+
+// loginUsersRel is Steam's list of the accounts that signed in, in the
+// gaming user's home.
+const loginUsersRel = ".local/share/Steam/config/loginusers.vdf"
+
+// launchWrapped returns why Steam may start g without its launch hook
+// although steam.json's dispatcher is on, nil when it would not: vosd
+// turns the dispatcher on, but only `vos steam prepare` writes it into
+// the game's launch options, as Steam starts or stops, and a Steam restart
+// vosd asks for waits for a quiet moment. So prepare's record must show
+// it in front of the game's %command% for every account in
+// loginusers.vdf, whichever of them Steam signs in.
+func launchWrapped(g game) error {
+	b, err := gamerfs.ReadFile(config.GamerHome, loginUsersRel, steam.VDFMax)
+	if err != nil {
+		return fmt.Errorf("Steam's accounts: %w", err)
+	}
+	accounts, err := steam.Accounts(b)
+	if err != nil {
+		return fmt.Errorf("Steam's accounts: %w", err)
+	}
+	if len(accounts) == 0 {
+		return errors.New("no Steam account has signed in yet")
+	}
+	if b, err = gamerfs.ReadFile(config.GamerHome, config.ExtGamerStateFile, maxPrepareRecord); err != nil {
+		return fmt.Errorf("Steam's prepare record: %w", err)
+	}
+	var rec struct {
+		Apps map[string]struct {
+			Launch map[string]struct {
+				Wrote string `json:"wrote"`
+			} `json:"launch"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return fmt.Errorf("Steam's prepare record: %w", err)
+	}
+	app := strconv.FormatUint(uint64(g.app), 10)
+	wrapped := steam.Dispatcher + " --app " + app + " " + steam.Command
+	for _, a := range accounts {
+		id := strconv.FormatUint(uint64(a.AccountID), 10)
+		if !strings.Contains(rec.Apps[app].Launch[id].Wrote, wrapped) {
+			return fmt.Errorf("prepare has not put the dispatcher into the launch options of app %s for Steam account %s yet", app, id)
+		}
 	}
 	return nil
 }
