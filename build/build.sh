@@ -243,7 +243,7 @@ info "kernel $KVER"
 # checkout, so drop them: everything is root's.
 cp -a --no-preserve=ownership,xattr "$SRC/rootfs/." "$ROOT/"
 # The SteamOS helpers Steam calls (docs/CONTRACTS.md "SteamOS helpers").
-steamos_helpers=(usr/bin/steamos-update usr/bin/steamos-select-branch usr/bin/jupiter-initial-firmware-update
+steamos_helpers=(usr/bin/steamos-update usr/bin/steamos-select-branch usr/bin/steamos-session-select usr/bin/jupiter-initial-firmware-update
     usr/bin/steamos-polkit-helpers/{steamos-update,steamos-set-timezone,steamos-devkit-mode,jupiter-biosupdate,jupiter-dock-updater})
 chmod 0755 "$ROOT/usr/lib/vos/vos-firewall" "$ROOT/usr/lib/vos/fail-reboot" "${steamos_helpers[@]/#/$ROOT/}"
 sed -i "s/@VERSION@/$VERSION/g" "$ROOT/usr/lib/os-release"

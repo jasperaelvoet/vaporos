@@ -198,8 +198,9 @@ check_network() {
 7 /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check
 0 /usr/bin/jupiter-initial-firmware-update check
 0 /usr/bin/steamos-polkit-helpers/steamos-devkit-mode --disable
+1 /usr/bin/steamos-session-select plasma
 HELPERS
-    if [[ -z $wrong ]]; then ok steamos-helpers "firmware and devkit helpers have nothing to do"; else bad steamos-helpers "$wrong"; fi
+    if [[ -z $wrong ]]; then ok steamos-helpers "firmware, devkit and session helpers have nothing to do"; else bad steamos-helpers "$wrong"; fi
 }
 
 # The monitor must never show a console: no getty or shell may own tty1.

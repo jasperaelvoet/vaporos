@@ -1,0 +1,8 @@
+#!/bin/sh
+# Steam (-steamos3) runs "steamos-session-select plasma" for Switch to Desktop.
+# VaporOS has no desktop session, so Steam stays in gaming mode.
+case $1 in
+    "" | gamescope) exit 0 ;;
+esac
+echo "steamos-session-select: VaporOS has no desktop session" >&2
+exit 1
