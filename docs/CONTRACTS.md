@@ -759,7 +759,8 @@ anyway. A file that cannot be read or parsed counts as changed.
   `/usr/share/steam/compatibilitytools.d/<tool>/compatibilitytool.vdf`
   exists, and is `""` otherwise.
 - `default_compat_tool`: the `steam.default_compat_tool` of the first
-  mounted core extension that has one.
+  mounted core extension that has one. prepare sets it as `"0"` and copies
+  it onto the games where Valve's own pick would beat `"0"` (step 5.1).
 - `apps`: one entry per app id. `compat_tool` is `steam.compat_tool` of the
   extension whose `steam.force_compat_tool` lists the app; `hooks` are the
   extensions whose `steam.hooks` name it, in catalog order; `beta` is the
@@ -854,7 +855,9 @@ TruckersMP):
  "default":{"wrote":"proton-cachyos-slr","before":null,"suspended":false},
  "apps":{"227300":{"mapping":{"wrote":"proton-cachyos-slr","before":{"name":"proton_9","config":"","priority":"250"},"suspended":false},
                    "launch":{"<accountid>":{"wrote":"<launch options VaporOS wrote>","before":"<the user's>"}},
-                   "beta":{"wrote":"temporary_1_61","before":"temporary_1_53","request":"<id>"}}},
+                   "beta":{"wrote":"temporary_1_61","before":"temporary_1_53","request":"<id>"}},
+         "2483190":{"mapping":{"wrote":"proton-cachyos-slr","before":null,"suspended":false,"follows_default":true}},
+         "1091500":{"mapping":{"wrote":"","before":null,"suspended":false,"follows_default":true,"declined":true}}},
  "shortcuts":{"<accountid>":{"star-citizen/launcher":{"appid":3799105208,"gameid":"16317032622456832000","deleted":false,
                                                      "art":{"3799105208p.png":{"size":123456,"mtime":1759400000000000000}}}}},
  "skipped":"","error":""}
@@ -862,7 +865,9 @@ TruckersMP):
 - A mapping's `wrote` is the tool VaporOS wrote (`""`: it owns no entry),
   `before` the entry before it (`null`: none), and `suspended` that VaporOS
   put `before` back for now and still owns the entry (below). `apps` also
-  holds the mappings of shortcut app ids.
+  holds the mappings of shortcut app ids. `follows_default` (omitted when
+  false) marks a game's copy of the default, and `declined` (omitted when
+  false, with `wrote` `""`) one the user removed in Steam (step 5.1).
 - `launch.<accountid>` may instead be
   `{"wrote":"","before":"<the user's>","conflict":true}`: the user's
   options have several `%command%`, so they only lost any dispatcher
@@ -934,7 +939,8 @@ vosd's `--unwrap` in *Going back*):
    `--unwrap`, whether the boot report's mode is `off` (step 5.3),
    whether each tool `steam.json` names or VaporOS owns an entry
    for is installed, loginusers.vdf's bytes, and the size, mtime and mode of
-   config.vdf, both libraryfolders.vdf (`steamapps/` and `config/`), each account's localconfig.vdf
+   config.vdf, both libraryfolders.vdf (`steamapps/` and `config/`), appinfo.vdf, each
+   library's `steamapps` directory (games come and go there), each account's localconfig.vdf
    and shortcuts.vdf and, in every library, the appmanifests of the apps a
    branch is asked or recorded for, and whether each library's `steamapps`
    is there (with such apps only). When it
@@ -966,6 +972,39 @@ vosd's `--unwrap` in *Going back*):
         written only where `"0"` is missing or still holds the tool VaporOS
         last wrote. Any other value is the user's choice, and VaporOS stops
         owning it.
+      - Each game's copy of the default, at 250 (`follows_default`), while
+        `"0"` holds VaporOS's `default_compat_tool` once it is decided.
+        Steam ranks Valve's own pick for a game above `"0"` (the runtime
+        its Deck profile recommends, at 85, and the Steam Play manifest's
+        per-game mappings), so `"0"` alone reaches only games Valve never
+        tested. An installed app (an `appmanifest_<app>.acf` in a library)
+        gets one when `appcache/appinfo.vdf` (versions 28 and 29) has its
+        entry with `common/type` `game`, `demo`, `application` or `beta`
+        and `common/steam_deck_compatibility/configuration/recommended_runtime`
+        `proton-stable` or `proton-experimental` (both in any case), and
+        the Steam Play manifest (app 891390, `extended/app_mappings`) maps
+        no tool to it. A game Valve pins to one Proton (`proton-7.0-6`),
+        maps in that manifest, runs natively or recommends nothing for
+        keeps Valve's pick, or `"0"`; Steam passes the Deck profile's
+        `proton_compat_config` whichever tool runs. Without appinfo.vdf,
+        app 891390 in it or a game's entry, Valve's pick is not known:
+        nothing new is written and the copies VaporOS has stay (a file of
+        another version, or cut short, is logged and goes into no `error`).
+        - A copy is written only where the game has no entry. Any entry is
+          the user's, a forced none (`"name" ""`) and one that held the tool
+          already included, as is whatever a copy becomes in Steam. A copy
+          removed in Steam (Force unticked) while config.vdf has `"0"` is
+          `declined` and not written again; one gone along with `"0"`
+          (Steam's files reset) is written again.
+        - A copy gets `before` back (none, in practice) once Valve's pick
+          for its game no longer calls for one, and every copy does once
+          `"0"` is the user's, which also forgets the declined ones. A
+          game that is no longer installed keeps its copy, since its drive
+          may only be away. While `"0"` is VaporOS's but not asked for, or
+          its tool is missing, the copies are kept or suspended like any
+          entry VaporOS owns (below). Apps `apps` forces a tool on,
+          shortcuts and Steam's tool apps never get one, and an app whose
+          forced mapping VaporOS owns keeps it.
       - Each app's `compat_tool` at 250, forced: written whatever the entry
         holds, its first value kept as `before`.
       - Each VaporOS shortcut's `compat_tool` at 250, under the app id it has
@@ -1097,8 +1136,8 @@ vosd's `--unwrap` in *Going back*):
    every dispatcher token out of every app's launch options (as above) and
    out of the VaporOS shortcuts' `LaunchOptions` (the shortcuts stay, with
    `%command%` and their `args`). Every CompatToolMapping entry VaporOS owns gets `before`
-   back and is `suspended`; one the user changed is theirs for `"0"` and
-   stays as it is otherwise. Branches and art are left alone. The next run
+   back and is `suspended`; one the user changed is theirs for `"0"` and the
+   games' copies of it, and stays as it is otherwise. Branches and art are left alone. The next run
    without `--unwrap` applies everything again.
 
 *Going back* (`extensions.Service.GoingDown`): an image built before

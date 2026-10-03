@@ -371,8 +371,13 @@ func (p *prep) fingerprint(desired []byte) string {
 	statLine(h, steam.ConfigVDFPath(p.root))
 	statLine(h, filepath.Join(p.root, "steamapps", "libraryfolders.vdf"))
 	statLine(h, filepath.Join(p.root, "config", "libraryfolders.vdf"))
+	// Which games are installed, and what Valve picks for them (valve.go).
+	statLine(h, steam.AppInfoPath(p.root))
+	libs := p.libraries()
+	for _, lib := range libs {
+		statLine(h, filepath.Join(lib, "steamapps"))
+	}
 	if apps := p.betaApps(); len(apps) > 0 {
-		libs := p.libraries()
 		for _, lib := range libs {
 			fmt.Fprintf(h, "library %q %v\n", lib, dirExists(filepath.Join(lib, "steamapps")))
 		}

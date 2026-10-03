@@ -24,6 +24,12 @@ type mapInput struct {
 	release  bool // a removed extension hands the app to the user
 	shortcut bool // a VaporOS shortcut's app id
 	unwrap   bool
+
+	// A game's copy of the default (decideFollow): follow marks one, drop
+	// says VaporOS gives it back, and defaultThere that config.vdf had a
+	// default when the run began, so a copy that is gone was removed in
+	// Steam rather than lost with Steam's files.
+	follow, drop, defaultThere bool
 }
 
 // mapAction is what to do to the entry: nothing, set it, or delete it.
@@ -128,6 +134,84 @@ func decideMapping(in mapInput) (mapAction, Mapping) {
 	return setTo(in.key, in.want), Mapping{Wrote: in.want, Before: clone(in.cur)}
 }
 
+// decideFollow decides a game's copy of the default: written only where
+// the game has no entry, the user's once it holds anything else, given
+// back (drop) when Valve's pick or the default no longer calls for it,
+// and declined for good when the user removes it in Steam (unticks
+// Force). Like every entry VaporOS owns, it steps aside while its tool is
+// missing and for --unwrap.
+func decideFollow(in mapInput) (mapAction, Mapping) {
+	m := in.m
+	m.FollowsDefault = true
+	owned := m.Wrote != ""
+	held := owned && !m.Suspended && in.cur != nil && in.cur.Name == m.Wrote
+	restore := func(forMissing bool) mapAction {
+		if forMissing && m.Before != nil && !in.toolOK(m.Before.Name) &&
+			(m.Before.Name == m.Wrote || m.Before.Name == in.want) {
+			return mapAction{del: true}
+		}
+		return restoreTo(m.Before)
+	}
+	switch {
+	case m.Declined:
+		if in.drop || in.cur != nil {
+			return mapAction{}, Mapping{} // not called for, or the user's own pick now
+		}
+		return mapAction{}, m
+
+	case in.unwrap:
+		switch {
+		case !owned || m.Suspended:
+			return mapAction{}, m
+		case !held:
+			return mapAction{}, Mapping{}
+		}
+		m.Suspended = true
+		return restore(false), m
+
+	case owned && m.Suspended:
+		switch {
+		case in.drop:
+			return mapAction{}, Mapping{}
+		case in.want == "" || !in.toolOK(in.want):
+			return mapAction{}, m
+		case in.cur != nil && in.cur.Name == in.want:
+			return mapAction{}, Mapping{Wrote: in.want, FollowsDefault: true}
+		}
+		return setTo(in.key, in.want), Mapping{Wrote: in.want, Before: clone(in.cur), FollowsDefault: true}
+
+	case owned && !held:
+		switch {
+		case in.cur != nil || in.drop:
+			return mapAction{}, Mapping{}
+		case in.defaultThere:
+			return mapAction{}, Mapping{Declined: true, FollowsDefault: true}
+		case in.want != "" && in.toolOK(in.want):
+			// Steam's files were reset: the copy goes back with the default.
+			return setTo(in.key, in.want), Mapping{Wrote: in.want, FollowsDefault: true}
+		}
+		return mapAction{}, Mapping{}
+
+	case owned:
+		switch {
+		case in.drop:
+			return restore(false), Mapping{}
+		case in.want == "" && !in.toolOK(m.Wrote), in.want != "" && !in.toolOK(in.want):
+			m.Suspended = true
+			return restore(true), m
+		case in.want == "" || in.cur.Name == in.want:
+			return mapAction{}, m // what Valve picks is not known now: kept
+		}
+		m.Wrote = in.want
+		return setTo(in.key, in.want), m
+	}
+
+	if in.want == "" || in.cur != nil || !in.toolOK(in.want) {
+		return mapAction{}, Mapping{}
+	}
+	return setTo(in.key, in.want), Mapping{Wrote: in.want, FollowsDefault: true}
+}
+
 func setTo(key uint32, tool string) mapAction {
 	prio := appPriority
 	if key == 0 {
@@ -174,11 +258,52 @@ func (p *prep) compatTools() {
 		m   Mapping
 	}
 	var results []result
-	for _, in := range p.mapInputs() {
+	ins := p.mapInputs()
+	// The games' copies of the default follow what the default ("0", the
+	// first entry decided) ends up as: VaporOS's, the user's, or VaporOS's
+	// but not asked for or suspended, which keeps them as they are.
+	var (
+		follow       = followKeep
+		defaultTool  string
+		defaultThere bool
+		picks        map[uint32]pick
+	)
+	for _, in := range ins {
 		if cur, ok := cfg.CompatToolMapping(in.key); ok {
 			in.cur = &cur
 		}
-		act, m := decideMapping(in)
+		var act mapAction
+		var m Mapping
+		if in.follow {
+			in.defaultThere = defaultThere
+			switch follow {
+			case followOurs:
+				if picks == nil {
+					picks = p.valvePicks(followed(ins))
+				}
+				switch picks[in.key] {
+				case pickProton:
+					in.want = defaultTool
+				case pickValve:
+					in.drop = true
+				}
+			case followDrop:
+				in.drop = true
+			}
+			act, m = decideFollow(in)
+		} else {
+			act, m = decideMapping(in)
+			m.FollowsDefault, m.Declined = false, false
+		}
+		if in.key == 0 {
+			defaultThere = in.cur != nil
+			switch {
+			case m.owned() && !m.Suspended && in.want != "" && m.Wrote == in.want:
+				follow, defaultTool = followOurs, m.Wrote
+			case !m.owned():
+				follow = followDrop
+			}
+		}
 		switch {
 		case act.del:
 			err = cfg.DeleteCompatToolMapping(in.key)
@@ -214,7 +339,7 @@ func (p *prep) compatTools() {
 			p.st.Default = r.m
 			continue
 		}
-		if r.m.owned() {
+		if r.m.owned() || r.m.Declined {
 			m := r.m
 			p.st.app(r.key).Mapping = &m
 		} else if a := p.st.peekApp(r.key); a != nil {
@@ -222,6 +347,23 @@ func (p *prep) compatTools() {
 		}
 	}
 	p.commit()
+}
+
+// What the games' copies of the default do, by what the default is.
+const (
+	followKeep = iota // VaporOS's, but not asked for or its tool missing
+	followOurs        // VaporOS's: each game gets a copy where Valve's pick would beat it
+	followDrop        // the user's: VaporOS gives its copies back
+)
+
+func followed(ins []mapInput) []uint32 {
+	var ids []uint32
+	for _, in := range ins {
+		if in.follow {
+			ids = append(ids, in.key)
+		}
+	}
+	return ids
 }
 
 // mapInputs lists every entry to decide: the default, the apps and
@@ -247,9 +389,16 @@ func (p *prep) mapInputs() []mapInput {
 	}
 	add(0)
 	for k, a := range p.st.Apps {
-		if a.Mapping.owned() {
+		if m := a.Mapping; m.owned() || m != nil && m.Declined {
 			if id, err := parseAppID(k); err == nil {
-				add(id)
+				add(id).follow = m.FollowsDefault
+			}
+		}
+	}
+	if !unwrap {
+		for _, id := range p.installedApps() {
+			if in := add(id); in.m.Wrote == "" || in.m.FollowsDefault {
+				in.follow = true
 			}
 		}
 	}
@@ -277,6 +426,9 @@ func (p *prep) mapInputs() []mapInput {
 	out := make([]mapInput, 0, len(keys))
 	for _, k := range keys {
 		in := ins[k]
+		// What an extension forces, or a shortcut, is never a copy of the
+		// default.
+		in.follow = in.follow && k != 0 && !in.shortcut && in.want == ""
 		if in.shortcut && in.want == "" && !unwrap {
 			if p.shortcutsUnread {
 				continue // its shortcut may still be there

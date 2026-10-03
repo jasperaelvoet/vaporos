@@ -40,11 +40,15 @@ const (
 
 // Mapping is one CompatToolMapping entry VaporOS owns: the tool it wrote
 // (empty: it owns none), the entry before it (nil: there was none), and
-// whether it put that back for now (Suspended).
+// whether it put that back for now (Suspended). FollowsDefault marks a
+// game's copy of the default (valve.go); Declined, such a copy the user
+// removed in Steam, which VaporOS does not write again.
 type Mapping struct {
-	Wrote     string            `json:"wrote"`
-	Before    *steam.CompatTool `json:"before"`
-	Suspended bool              `json:"suspended"`
+	Wrote          string            `json:"wrote"`
+	Before         *steam.CompatTool `json:"before"`
+	Suspended      bool              `json:"suspended"`
+	FollowsDefault bool              `json:"follows_default,omitempty"`
+	Declined       bool              `json:"declined,omitempty"`
 }
 
 func (m *Mapping) owned() bool { return m != nil && m.Wrote != "" }
