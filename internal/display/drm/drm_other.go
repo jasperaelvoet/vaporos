@@ -19,6 +19,7 @@ func (c *Card) Encoder(id uint32) (*Encoder, error)                 { return nil
 func (c *Card) CRTC(id uint32) (*CRTC, error)                       { return nil, ErrUnsupported }
 func (c *Card) PlaneIDs() ([]uint32, error)                         { return nil, ErrUnsupported }
 func (c *Card) Plane(id uint32) (*Plane, error)                     { return nil, ErrUnsupported }
+func (c *Card) PlaneType(id uint32) (uint64, error)                 { return 0, ErrUnsupported }
 func (c *Card) RmFB(id uint32) error                                { return ErrUnsupported }
 func (c *Card) DirtyFB(fb uint32) error                             { return ErrUnsupported }
 

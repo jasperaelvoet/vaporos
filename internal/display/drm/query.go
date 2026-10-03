@@ -79,3 +79,32 @@ func (c *Card) PlanesOn(crtc uint32) (int, error) {
 	}
 	return n, nil
 }
+
+// LitPlanes lists the planes that scan a framebuffer out, cursor planes
+// left out, in the kernel's plane order: the planes stock Sunshine's KMS
+// capture numbers its monitors by. It needs the universal-planes client
+// cap.
+func (c *Card) LitPlanes() ([]Plane, error) {
+	ids, err := c.PlaneIDs()
+	if err != nil {
+		return nil, err
+	}
+	var lit []Plane
+	for _, id := range ids {
+		p, err := c.Plane(id)
+		if err != nil {
+			return nil, err
+		}
+		if p.FBID == 0 {
+			continue
+		}
+		t, err := c.PlaneType(id)
+		if err != nil {
+			return nil, err
+		}
+		if t != PlaneTypeCursor {
+			lit = append(lit, *p)
+		}
+	}
+	return lit, nil
+}

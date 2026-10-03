@@ -41,9 +41,10 @@ type sharedAddrs interface {
 // The display manager offers all of it; an optional method that drifted
 // would otherwise just go unused.
 var (
-	_ Screens      = (*display.Manager)(nil)
-	_ browserKinds = (*display.Manager)(nil)
-	_ sharedAddrs  = (*display.Manager)(nil)
+	_ Screens        = (*display.Manager)(nil)
+	_ browserKinds   = (*display.Manager)(nil)
+	_ sharedAddrs    = (*display.Manager)(nil)
+	_ captureIndexer = (*display.Manager)(nil)
 )
 
 // SetScreens connects the display manager; until then (and with nil)

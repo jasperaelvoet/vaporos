@@ -25,6 +25,8 @@ func TestStructSizes(t *testing.T) {
 		{"drm_mode_get_connector", unsafe.Sizeof(modeGetConnector{}), 80},
 		{"drm_mode_get_plane_res", unsafe.Sizeof(modeGetPlaneRes{}), 16},
 		{"drm_mode_get_plane", unsafe.Sizeof(modeGetPlane{}), 32},
+		{"drm_mode_obj_get_properties", unsafe.Sizeof(modeObjGetProperties{}), 32},
+		{"drm_mode_get_property", unsafe.Sizeof(modeGetProperty{}), 64},
 		{"drm_mode_fb_cmd", unsafe.Sizeof(modeFBCmd{}), 28},
 		{"drm_mode_fb_cmd2", unsafe.Sizeof(modeFBCmd2{}), 104},
 		{"drm_mode_create_dumb", unsafe.Sizeof(modeCreateDumb{}), 32},
@@ -51,10 +53,12 @@ func TestStructSizes(t *testing.T) {
 	}
 	// Further offsets cross-checked with gcc against linux-libc-dev's headers.
 	for name, c := range map[string]struct{ got, want uintptr }{
-		"get_connector.connection":  {unsafe.Offsetof(modeGetConnector{}.Connection), 60},
-		"modeinfo.vrefresh":         {unsafe.Offsetof(ModeInfo{}.VRefresh), 24},
-		"create_dumb.size":          {unsafe.Offsetof(modeCreateDumb{}.Size), 24},
-		"get_plane.format_type_ptr": {unsafe.Offsetof(modeGetPlane{}.FormatTypePtr), 24},
+		"get_connector.connection":    {unsafe.Offsetof(modeGetConnector{}.Connection), 60},
+		"modeinfo.vrefresh":           {unsafe.Offsetof(ModeInfo{}.VRefresh), 24},
+		"create_dumb.size":            {unsafe.Offsetof(modeCreateDumb{}.Size), 24},
+		"get_plane.format_type_ptr":   {unsafe.Offsetof(modeGetPlane{}.FormatTypePtr), 24},
+		"obj_get_properties.obj_type": {unsafe.Offsetof(modeObjGetProperties{}.ObjType), 24},
+		"get_property.count_values":   {unsafe.Offsetof(modeGetProperty{}.CountValues), 56},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s at %d, want %d", name, c.got, c.want)
@@ -83,6 +87,8 @@ func TestIoctlNumbers(t *testing.T) {
 		"MODE_DESTROY_DUMB":      {ioctlModeDestroyDumb, 0xc00464b4},
 		"MODE_GETPLANERESOURCES": {ioctlModeGetPlaneRes, 0xc01064b5},
 		"MODE_GETPLANE":          {ioctlModeGetPlane, 0xc02064b6},
+		"MODE_GETPROPERTY":       {ioctlModeGetProperty, 0xc04064aa},
+		"MODE_OBJ_GETPROPERTIES": {ioctlModeObjGetProps, 0xc02064b9},
 		"MODE_ADDFB2":            {ioctlModeAddFB2, 0xc06864b8},
 		"MODE_DIRTYFB":           {ioctlModeDirtyFB, 0xc01864b1},
 	} {

@@ -44,6 +44,16 @@ const FormatXRGB8888 = 'X' | 'R'<<8 | '2'<<16 | '4'<<24
 // Client capabilities (DRM_CLIENT_CAP_*).
 const CapUniversalPlanes = 2
 
+// Plane types, the values of a plane's "type" property (enum
+// drm_plane_type), and the object type that reads a plane's properties.
+const (
+	PlaneTypeOverlay = 0
+	PlaneTypePrimary = 1
+	PlaneTypeCursor  = 2
+
+	objectPlane = 0xeeeeeeee
+)
+
 // ModeInfo is struct drm_mode_modeinfo (68 bytes).
 type ModeInfo struct {
 	Clock      uint32 // kHz
@@ -175,6 +185,27 @@ type modeGetPlane struct {
 	FormatTypePtr    uint64
 }
 
+// modeObjGetProperties is struct drm_mode_obj_get_properties (32 bytes
+// with tail padding).
+type modeObjGetProperties struct {
+	PropsPtr      uint64
+	PropValuesPtr uint64
+	CountProps    uint32
+	ObjID         uint32
+	ObjType       uint32
+}
+
+// modeGetProperty is struct drm_mode_get_property (64 bytes).
+type modeGetProperty struct {
+	ValuesPtr      uint64
+	EnumBlobPtr    uint64
+	PropID         uint32
+	Flags          uint32
+	Name           [32]byte
+	CountValues    uint32
+	CountEnumBlobs uint32
+}
+
 // modeFBCmd is struct drm_mode_fb_cmd (28 bytes), the legacy ADDFB argument.
 type modeFBCmd struct {
 	FBID   uint32
@@ -272,6 +303,8 @@ var (
 	ioctlModeDestroyDumb  = iowr(0xB4, unsafe.Sizeof(modeDestroyDumb{}))
 	ioctlModeGetPlaneRes  = iowr(0xB5, unsafe.Sizeof(modeGetPlaneRes{}))
 	ioctlModeGetPlane     = iowr(0xB6, unsafe.Sizeof(modeGetPlane{}))
+	ioctlModeGetProperty  = iowr(0xAA, unsafe.Sizeof(modeGetProperty{}))
+	ioctlModeObjGetProps  = iowr(0xB9, unsafe.Sizeof(modeObjGetProperties{}))
 	ioctlModeAddFB2       = iowr(0xB8, unsafe.Sizeof(modeFBCmd2{}))
 	ioctlModeDirtyFB      = iowr(0xB1, unsafe.Sizeof(modeFBDirtyCmd{}))
 )

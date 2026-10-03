@@ -3,6 +3,7 @@
 package drm
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -252,6 +253,49 @@ func (c *Card) Plane(id uint32) (*Plane, error) {
 		return nil, fmt.Errorf("drm: get plane %d: %w", id, err)
 	}
 	return &Plane{ID: p.PlaneID, CRTCID: p.CRTCID, FBID: p.FBID, PossibleCRTCs: p.PossibleCRTCs}, nil
+}
+
+// PlaneType reads a plane's "type" property (PlaneTypeOverlay, Primary or
+// Cursor). It needs the universal-planes client cap.
+func (c *Card) PlaneType(id uint32) (uint64, error) {
+	ids, vals, err := c.objectProps(id, objectPlane)
+	if err != nil {
+		return 0, err
+	}
+	for i, pid := range ids {
+		p := modeGetProperty{PropID: pid}
+		if err := c.ioctl(ioctlModeGetProperty, unsafe.Pointer(&p)); err != nil {
+			continue
+		}
+		if n := bytes.IndexByte(p.Name[:], 0); n >= 0 && string(p.Name[:n]) == "type" {
+			return vals[i], nil
+		}
+	}
+	return 0, fmt.Errorf("drm: plane %d has no type property", id)
+}
+
+// objectProps lists an object's property ids and their values.
+func (c *Card) objectProps(id, objType uint32) ([]uint32, []uint64, error) {
+	for range 10 {
+		op := modeObjGetProperties{ObjID: id, ObjType: objType}
+		if err := c.ioctl(ioctlModeObjGetProps, unsafe.Pointer(&op)); err != nil {
+			return nil, nil, fmt.Errorf("drm: get properties of %d: %w", id, err)
+		}
+		want := op.CountProps
+		ids, vals := alloc[uint32](int(want)), alloc[uint64](int(want))
+		op.PropsPtr, op.PropValuesPtr = ptr(ids), ptr(vals)
+		err := c.ioctl(ioctlModeObjGetProps, unsafe.Pointer(&op))
+		runtime.KeepAlive(ids)
+		runtime.KeepAlive(vals)
+		if err != nil {
+			return nil, nil, fmt.Errorf("drm: get properties of %d: %w", id, err)
+		}
+		if op.CountProps > want {
+			continue
+		}
+		return ids[:op.CountProps], vals[:op.CountProps], nil
+	}
+	return nil, nil, fmt.Errorf("drm: get properties of %d: count kept changing", id)
 }
 
 // RmFB removes a framebuffer. The kernel switches off any CRTC still

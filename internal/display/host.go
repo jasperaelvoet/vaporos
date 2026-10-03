@@ -50,6 +50,10 @@ type host interface {
 	// Planes counts the planes that scan a framebuffer out on the CRTC
 	// driving a connector (0 when no CRTC drives it).
 	Planes(card, name string) (int, error)
+	// KMSGrabIndex is the monitor index stock Sunshine's KMS capture would
+	// give the connector now (see kmsgrabIndex); ok is false when that is
+	// ambiguous, unsettled or unobservable.
+	KMSGrabIndex(card, name string) (int, bool)
 	// ApplyEDID hands the kernel a new EDID for a connector of card
 	// ("card1") and re-probes it, without a reboot where the kernel allows.
 	ApplyEDID(card, name string, edid []byte) error
@@ -240,6 +244,37 @@ func (h *realHost) Planes(card, name string) (int, error) {
 		return 0, nil
 	}
 	return c.PlanesOn(s.CRTC)
+}
+
+func (h *realHost) KMSGrabIndex(card, name string) (int, bool) {
+	c, err := h.observer(card)
+	if err != nil {
+		return 0, false
+	}
+	s, err := c.ScanoutOf(name)
+	if err != nil || !s.Active {
+		return 0, false
+	}
+	lit, err := c.LitPlanes()
+	if err != nil {
+		return 0, false
+	}
+	others := false
+	cards, _ := drm.Cards()
+	for _, o := range cards {
+		if o.Dev == c.Path {
+			continue
+		}
+		oc, err := h.observer(o.Name)
+		if err != nil {
+			continue // Sunshine cannot open it either
+		}
+		olit, err := oc.LitPlanes()
+		if err != nil || len(olit) > 0 {
+			others = true
+		}
+	}
+	return kmsgrabIndex(lit, s.CRTC, others)
 }
 
 func (h *realHost) ApplyEDID(card, name string, edid []byte) error {

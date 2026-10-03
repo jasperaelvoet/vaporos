@@ -38,6 +38,8 @@ type fakeHost struct {
 	scan       edid.Mode
 	scanOK     bool
 	scanErr    error
+	kmsIndex   int // KMSGrabIndex's answer
+	kmsOK      bool
 	gsKey      string // display key the fake gamescope uses
 	gsReport   string // key gamescopectl reports ("" = same as gsKey)
 	gsHDR      bool   // --hdr-enabled flag the fake gamescope started with
@@ -254,6 +256,12 @@ func (f *fakeHost) Planes(card, name string) (int, error) {
 		return 1, nil
 	}
 	return max(f.direct, 1), nil
+}
+
+func (f *fakeHost) KMSGrabIndex(card, name string) (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.kmsIndex, f.kmsOK
 }
 
 // ApplyEDID is the kernel taking a new EDID: the connector's sysfs edid

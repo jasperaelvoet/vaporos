@@ -103,7 +103,11 @@ type Service struct {
 	verifyRun      bool // the run vosd last started has not been seen to set up capture
 	nextCaptureFix time.Time
 	captureBackoff time.Duration
-	scr            Screens // the display manager, once SetScreens connected it
+	nextIndexCheck time.Time
+	nextIndexFix   time.Time     // the earliest next restart for a stale KMS index
+	indexBackoff   time.Duration // the last wait between those restarts
+	indexStale     bool          // the last index check found a mismatch
+	scr            Screens       // the display manager, once SetScreens connected it
 
 	pkgVersionOnce sync.Once
 	pkgVersion     string
@@ -552,6 +556,7 @@ func (s *Service) maintain(ctx context.Context) {
 	}
 	s.ensureRunning(ctx)
 	s.checkCapture(ctx)
+	s.checkIndex(ctx)
 }
 
 // refreshPairings tracks clients waiting for a PIN and announces new ones
