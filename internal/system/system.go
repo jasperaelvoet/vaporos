@@ -38,6 +38,7 @@ type Service struct {
 	reboot       func(ctx context.Context) error
 	poweroff     func(ctx context.Context) error
 	powerDelay   time.Duration
+	goingDown    func(act func() error) error
 	uid, gid     int // owner of ~vapor/.ssh
 	probeGPU     func() display.GPUInfo
 	localIPs     func() []string
@@ -59,6 +60,7 @@ func NewService(cfg *config.Config) *Service {
 		reboot:       sysd.Reboot,
 		poweroff:     sysd.Poweroff,
 		powerDelay:   time.Second,
+		goingDown:    func(act func() error) error { return act() },
 		uid:          config.GamerUID,
 		gid:          config.GamerUID, // vapor's primary group has the same id
 		probeGPU:     display.Probe,
@@ -181,18 +183,34 @@ func mdnsName(hostname string) string {
 
 // ---- reboot / poweroff
 
+// powerWait bounds asking systemd for a reboot or power off.
+const powerWait = 30 * time.Second
+
+// SetGoingDown sets f, which runs every reboot and power off this service
+// performs: it does what must happen first, within bounds of its own, then
+// runs act, which asks systemd within powerWait, and returns act's error
+// (extensions.Service.GoingDown). Set it before vosd serves requests.
+func (s *Service) SetGoingDown(f func(act func() error) error) { s.goingDown = f }
+
 // Reboot restarts the PC now for a reason of vosd's own (the extensions'
 // auto-restart), behind the guard POST /system/reboot and /system/poweroff
 // share: while one of them is on its way it does nothing and reports
-// false. message goes out as a system.message first. A reboot that fails
-// clears the guard.
+// false. message goes out as a system.message first. The ask, under ctx,
+// gets powerWait once what goes before it is done (SetGoingDown), which
+// bounds itself: a deadline of ctx's would cut that short. A reboot that
+// fails clears the guard.
 func (s *Service) Reboot(ctx context.Context, message string) (bool, error) {
 	if !s.powerPending.CompareAndSwap(false, true) {
 		return false, nil
 	}
 	log.Printf("system: reboot: %s", message)
 	s.publishEvent("system.message", map[string]string{"level": "info", "text": message})
-	if err := s.reboot(ctx); err != nil {
+	err := s.goingDown(func() error {
+		ctx, cancel := context.WithTimeout(ctx, powerWait)
+		defer cancel()
+		return s.reboot(ctx)
+	})
+	if err != nil {
 		s.powerPending.Store(false)
 		return true, err
 	}
@@ -213,9 +231,12 @@ func (s *Service) handlePower(what, message string, act func(ctx context.Context
 		_ = http.NewResponseController(w).Flush()
 		go func() {
 			time.Sleep(s.powerDelay)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := act(ctx); err != nil {
+			err := s.goingDown(func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), powerWait)
+				defer cancel()
+				return act(ctx)
+			})
+			if err != nil {
 				log.Printf("system: %s: %v", what, err)
 				s.powerPending.Store(false)
 				s.publishEvent("system.message", map[string]string{"level": "error", "text": fmt.Sprintf("%s failed: %v", what, err)})

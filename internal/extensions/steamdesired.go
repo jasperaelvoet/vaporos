@@ -409,13 +409,18 @@ func (s *Service) otherSlotReady(other string, current bool) bool {
 		log.Printf("extensions: slot %s's boot entry (%d in a row): %v", other, c.errs, err)
 		return c.errs < 2 && current
 	}
-	ready := e == nil
-	if e != nil {
-		sl, err := store.ReadSlot(other)
-		ready = err == nil && sl != nil && sl.Version == e.Version && len(sl.Extensions) > 0
-	}
+	ready := e == nil || hasDispatcher(other, e)
 	*c = slotCheck{slot: other, key: key, at: now(), ready: ready, known: true}
 	return ready
+}
+
+// hasDispatcher reports whether the image e boots in slot has `vos ext
+// launch`: only updaters that know extensions write slots/<slot>.json,
+// images built before extensions list none, and every image built with
+// them has the dispatcher.
+func hasDispatcher(slot string, e *boot.Entry) bool {
+	sl, err := store.ReadSlot(slot)
+	return err == nil && sl != nil && sl.Version == e.Version && len(sl.Extensions) > 0
 }
 
 // forgetSlots makes the next check read the ESP again. Under steamMu.

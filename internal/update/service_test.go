@@ -49,8 +49,11 @@ func TestServiceStageAndActivate(t *testing.T) {
 	e := setup(t)
 	img := e.makeImage(newVersion, 200, 200<<10, nil)
 	s := NewService(e.cfg(e.srcDir(img)))
-	rebooted := make(chan struct{}, 1)
-	s.reboot = func(context.Context) error { rebooted <- struct{}{}; return nil }
+	// The restart goes down through goingDown, which does what must come
+	// first (the extensions' GoingDown).
+	steps := make(chan string, 2)
+	s.reboot = func(context.Context) error { steps <- "reboot"; return nil }
+	s.SetGoingDown(func(act func() error) error { steps <- "first"; return act() })
 	oldDelay := rebootDelay
 	rebootDelay = 0
 	defer func() { rebootDelay = oldDelay }()
@@ -96,10 +99,15 @@ func TestServiceStageAndActivate(t *testing.T) {
 	if code, out := call(t, s.handleActivate, "POST", ""); code != 200 {
 		t.Fatalf("activate: %d %v", code, out)
 	}
-	select {
-	case <-rebooted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("activate did not reboot")
+	for _, want := range []string{"first", "reboot"} {
+		select {
+		case got := <-steps:
+			if got != want {
+				t.Fatalf("activate: %s where %s was due", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("activate did not reboot (waiting for %s)", want)
+		}
 	}
 }
 

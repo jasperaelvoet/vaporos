@@ -79,6 +79,9 @@ type Service struct {
 	steamRestart    func(reason string)
 	publish         func(topic string, data any)
 	missingAccounts string
+	// holdDisplay (under mu) keeps the display policy from starting or
+	// stopping units while GoingDown takes Steam down.
+	holdDisplay func(ctx context.Context) (release func(), err error)
 
 	cc  ccState  // the control center's side (routes.go)
 	web webState // the extensions' ports and web UIs (ports.go, proxy.go)

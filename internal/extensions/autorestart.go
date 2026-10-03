@@ -36,12 +36,12 @@ const (
 )
 
 // The auto-restart runs in the idle policy's pass, which must go on: the
-// wait for each lock, asking systemd whether `vos health` passed and
-// asking for the reboot each get their own bound. Variables for tests.
+// wait for each lock and asking systemd whether `vos health` passed each
+// get their own bound, and the reboot bounds itself (system.Service.Reboot,
+// GoingDown). Variables for tests.
 var (
 	autoLockWait   = 5 * time.Second
 	autoHealthWait = 5 * time.Second
-	autoRebootWait = 30 * time.Second
 )
 
 // healthUnit is `vos health`'s unit; RemainAfterExit keeps it active once
@@ -270,9 +270,7 @@ func (s *Service) autoRestart(ctx context.Context, a autoState) error {
 	}
 	msg := s.restartMessage(rep, pending, next)
 	log.Printf("extensions: idle for %v with set %s pending: %s", autoIdle, pending.Name, msg)
-	rctx, cancel := context.WithTimeout(ctx, autoRebootWait)
-	defer cancel()
-	ok, err := a.reboot(rctx, msg)
+	ok, err := a.reboot(ctx, msg)
 	if !ok || err != nil {
 		// Not restarted: the record must not hold the next try back.
 		if serr := saveAuto(f); serr != nil {

@@ -64,6 +64,7 @@ type Service struct {
 	haveIO      bool
 	poweringOff bool // poweroff requested; never ask twice
 	onTick      func(context.Context, Tick)
+	goingDown   func(act func() error) error // SetGoingDown
 
 	// Seams for tests. The defaults read the real system.
 	now          func() time.Time
@@ -266,6 +267,15 @@ func (s *Service) OnTick(f func(context.Context, Tick)) {
 	s.mu.Unlock()
 }
 
+// SetGoingDown sets f, which runs the idle shutdown's power off (act)
+// after what must happen first, within bounds of its own, and returns
+// act's error (extensions.Service.GoingDown).
+func (s *Service) SetGoingDown(f func(act func() error) error) {
+	s.mu.Lock()
+	s.goingDown = f
+	s.mu.Unlock()
+}
+
 func (s *Service) ticked(ctx context.Context, t Tick) {
 	s.mu.Lock()
 	t.PoweringOff = s.poweringOff
@@ -327,8 +337,12 @@ func (s *Service) tick(ctx context.Context) {
 	})
 	s.mu.Lock()
 	s.poweringOff = true
+	down := s.goingDown
 	s.mu.Unlock()
-	if err := s.poweroff(ctx); err != nil {
+	if down == nil {
+		down = func(act func() error) error { return act() }
+	}
+	if err := down(func() error { return s.poweroff(ctx) }); err != nil {
 		log.Printf("power: poweroff: %v", err)
 		s.publish("system.message", map[string]string{"level": "error", "text": "Automatic power-off failed: " + err.Error()})
 		s.mu.Lock()

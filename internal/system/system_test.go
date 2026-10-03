@@ -257,6 +257,77 @@ func TestRebootSharesTheGuard(t *testing.T) {
 	}
 }
 
+// Every reboot and power off goes down through goingDown, which does what
+// must come first; asking systemd gets its own bound once that is done,
+// however long it took, and a failure it passes on clears the guard.
+func TestPowerGoesDownFirst(t *testing.T) {
+	f := newFixture(t)
+	f.svc.powerDelay = 0
+	var mu sync.Mutex
+	var calls []string
+	var began time.Time
+	record := func(c string) {
+		mu.Lock()
+		calls = append(calls, c)
+		mu.Unlock()
+	}
+	var failing atomic.Bool
+	boom := errors.New("boom")
+	const first = 50 * time.Millisecond
+	f.svc.SetGoingDown(func(act func() error) error {
+		mu.Lock()
+		began = time.Now()
+		mu.Unlock()
+		record("first")
+		time.Sleep(first)
+		if err := act(); err != nil {
+			return err
+		}
+		if failing.Load() {
+			return boom
+		}
+		return nil
+	})
+	ask := func(what string) func(context.Context) error {
+		return func(ctx context.Context) error {
+			d, ok := ctx.Deadline()
+			mu.Lock()
+			bound := d.Sub(began)
+			mu.Unlock()
+			if !ok || bound < powerWait+first {
+				t.Errorf("%s asked with a bound of %v from the start of going down", what, bound)
+			}
+			record(what)
+			return nil
+		}
+	}
+	f.svc.reboot = ask("reboot")
+	if ok, err := f.svc.Reboot(context.Background(), "Restarting"); !ok || err != nil {
+		t.Fatalf("Reboot = %v, %v", ok, err)
+	}
+	f.svc.powerPending.Store(false)
+	call(f.svc.handlePower("poweroff", "Shutting down…", ask("poweroff")), "POST", "")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		got := strings.Join(calls, " ")
+		mu.Unlock()
+		if got == "first reboot first poweroff" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("calls %q", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	f.svc.powerPending.Store(false)
+	failing.Store(true)
+	if ok, err := f.svc.Reboot(context.Background(), "x"); !ok || err != boom || f.svc.powerPending.Load() {
+		t.Fatalf("failed Reboot = %v, %v, pending %v", ok, err, f.svc.powerPending.Load())
+	}
+}
+
 func TestInfo(t *testing.T) {
 	f := newFixture(t)
 	f.write(config.HostnamePath, "vapor\n")

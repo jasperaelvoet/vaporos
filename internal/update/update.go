@@ -46,8 +46,10 @@ type Service struct {
 	stages   sync.WaitGroup          // stages StartStage runs
 	reboot   func(context.Context) error
 	// slotsChanged runs whenever what the other slot boots may have
-	// changed (SetSlotsChanged).
+	// changed (SetSlotsChanged); goingDown runs an activation's restart
+	// (SetGoingDown).
 	slotsChanged func()
+	goingDown    func(act func() error) error
 }
 
 var (
@@ -75,6 +77,15 @@ func (s *Service) SetSlotsChanged(f func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.slotsChanged = f
+}
+
+// SetGoingDown sets f, which runs an activation's restart (act) after
+// what must happen first, within bounds of its own, and returns act's
+// error (extensions.Service.GoingDown).
+func (s *Service) SetGoingDown(f func(act func() error) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goingDown = f
 }
 
 func (s *Service) notifySlots() {
@@ -483,9 +494,15 @@ func (s *Service) handleActivate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notifySlots()
 	api.OK(w)
+	s.mu.Lock()
+	down := s.goingDown
+	s.mu.Unlock()
+	if down == nil {
+		down = func(act func() error) error { return act() }
+	}
 	go func() {
 		time.Sleep(rebootDelay)
-		if err := s.reboot(context.Background()); err != nil {
+		if err := down(func() error { return s.reboot(context.Background()) }); err != nil {
 			log.Printf("update: reboot: %v", err)
 		}
 	}()
