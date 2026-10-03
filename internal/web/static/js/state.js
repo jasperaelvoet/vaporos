@@ -93,8 +93,16 @@ export function isStreaming(snap) {
   return d.state === 'streaming' || !!s.streaming || !!snap.stream || !!(snap.live && snap.live.session);
 }
 
+// session is the session playing now. session.begin (live.session) goes
+// before a /status that may predate it, but once /status has the same
+// session (client and since) that wins: it follows the screen (resolved
+// again, or display.ui_scaling turned off or on), and session.begin is
+// never sent again for that, nor is its replay any newer.
 export function session(snap) {
-  return (snap.live && snap.live.session) || snap.stream || (snap.sunshine && snap.sunshine.session) || null;
+  const ls = snap.live && snap.live.session;
+  const st = snap.stream;
+  if (ls && st && st.client === ls.client && st.since === ls.since) return st;
+  return ls || st || (snap.sunshine && snap.sunshine.session) || null;
 }
 
 export function pairings(snap) {

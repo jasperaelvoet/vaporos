@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -102,6 +103,7 @@ type Service struct {
 	verifyRun      bool // the run vosd last started has not been seen to set up capture
 	nextCaptureFix time.Time
 	captureBackoff time.Duration
+	scr            Screens // the display manager, once SetScreens connected it
 
 	pkgVersionOnce sync.Once
 	pkgVersion     string
@@ -126,6 +128,7 @@ type Service struct {
 	journalTail   func(ctx context.Context, n int) (string, error)
 	games         func() []steam.App
 	extApps       func() []extensions.SunshineApp
+	neighbourMAC  func(netip.Addr) string
 }
 
 func NewService(cfg *config.Config) *Service {
@@ -153,6 +156,7 @@ func NewService(cfg *config.Config) *Service {
 		journalTail:   journalTail,
 		games:         func() []steam.App { return installedGames(config.GamerHome) },
 		extApps:       extensions.SunshineApps,
+		neighbourMAC:  display.NeighbourMAC,
 	}
 }
 

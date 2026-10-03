@@ -5,7 +5,10 @@
       "events": [
         [
           "session.begin",
-          {"client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@now"}
+          {
+            "client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@now",
+            "screen": {"id": "27eddd2e84ba", "name": "Living room TV", "kind": "tv", "kind_from": "name", "ui_scale": 2.55, "game_dpi": 192}
+          }
         ]
       ]
     },

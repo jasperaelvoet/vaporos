@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
@@ -146,27 +147,58 @@ func TestPortsFile(t *testing.T) {
 	}
 }
 
-func TestExposedPortsSkipsSunshineAdmin(t *testing.T) {
+// A shipped descriptor naming a reserved port, as a port or an upstream,
+// is invalid: none of its ports opens, and why is logged.
+func TestExposedPortsSkipsReservedPorts(t *testing.T) {
 	r := newRig(t)
 	locked(t, func() error { return store.WriteWanted([]string{"coolercontrol"}) })
 	r.report(bootWith(r, "proton", "coolercontrol"))
-	// Apart: a descriptor whose upstream is one of its own ports is invalid.
-	for _, ports := range []string{
-		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"},{"proto":"tcp","port":47990,"mode":"lan"},` +
-			`{"proto":"udp","port":5000,"mode":"lan"}]`,
-		`[{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"},` +
-			`{"proto":"tcp","port":12000,"mode":"proxied","upstream":"127.0.0.1:47990"},{"proto":"udp","port":5000,"mode":"lan"}]`,
+	l := captureLogs(t)
+	const ours = `{"proto":"tcp","port":11987,"mode":"proxied","upstream":"127.0.0.1:11985"},`
+	for _, c := range []struct{ port, why string }{
+		{`{"proto":"tcp","port":47990,"mode":"lan"}`, "network.ports[1].port 47990 is reserved"},
+		{`{"proto":"udp","port":31911,"mode":"lan"}`, "network.ports[1].port 31911 is reserved"},
+		{`{"proto":"tcp","port":12000,"mode":"proxied","upstream":"127.0.0.1:47990"}`, "network.ports[1]'s upstream port 47990 is reserved"},
+		{`{"proto":"tcp","port":12000,"mode":"proxied","upstream":"127.0.0.1:031911"}`, "network.ports[1]'s upstream port 31911 is reserved"},
 	} {
-		writeFile(t, filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json"), withPorts(t, shipped["coolercontrol"], ports))
+		writeFile(t, filepath.Join(config.ExtDescriptorsDir, "coolercontrol.json"),
+			withPorts(t, shipped["coolercontrol"], `[`+ours+c.port+`,{"proto":"udp","port":5000,"mode":"lan"}]`))
 		ps, err := exposedPorts()
 		must(t, err)
-		var got []int
-		for _, p := range ps {
-			got = append(got, p.port)
+		if len(ps) != 0 {
+			t.Errorf("%s: exposed %+v", c.port, ps)
 		}
-		if !slices.Equal(got, []int{11987, 5000}) {
-			t.Fatalf("%s: exposed ports %v", ports, got)
+		if l.count(c.why) != 1 {
+			t.Errorf("%s: not logged as %q:\n%s", c.port, c.why, l.buf.String())
 		}
+	}
+}
+
+// Should a descriptor with a reserved port get past Validate, the reserved
+// port stays shut and the rest open.
+func TestPortsOfSkipsReservedPorts(t *testing.T) {
+	d := &descriptor.Descriptor{Name: "X", Network: &descriptor.Network{Ports: []descriptor.Port{
+		{Proto: "tcp", Port: 11987, Mode: "proxied", Upstream: "127.0.0.1:11985"},
+		{Proto: "tcp", Port: 47990, Mode: "lan"},
+		{Proto: "udp", Port: 31911, Mode: "lan"},
+		{Proto: "tcp", Port: 31911, Mode: "proxied", Upstream: "127.0.0.1:11986"},
+		{Proto: "tcp", Port: 12000, Mode: "proxied", Upstream: "127.0.0.1:47990"},
+		{Proto: "tcp", Port: 12001, Mode: "proxied", Upstream: "127.0.0.1:031911"},
+		{Proto: "tcp", Port: 80, Mode: "lan"},
+		{Proto: "udp", Port: 5000, Mode: "lan"},
+	}}}
+	var got []int
+	for _, p := range portsOf("x", d) {
+		got = append(got, p.port)
+		if p.id != "x" || p.name != "X" {
+			t.Errorf("port %d: id %q, name %q", p.port, p.id, p.name)
+		}
+	}
+	if !slices.Equal(got, []int{11987, 5000}) {
+		t.Fatalf("exposed ports %v", got)
+	}
+	if ps := portsOf("x", &descriptor.Descriptor{}); ps != nil {
+		t.Fatalf("no network: %+v", ps)
 	}
 }
 

@@ -50,6 +50,7 @@ func AuthPath() string           { return filepath.Join(StateDir, "auth.json") }
 func SessionsPath() string       { return filepath.Join(StateDir, "sessions.json") }
 func UpdateStatePath() string    { return filepath.Join(StateDir, "update-state.json") }
 func ClientsPath() string        { return filepath.Join(StateDir, "clients.json") }
+func ScreensPath() string        { return filepath.Join(StateDir, "screens.json") }
 func SunshineAPIPath() string    { return filepath.Join(StateDir, "sunshine-api.json") }
 func MachineCmdlinePath() string { return filepath.Join(StateDir, "cmdline") }
 func FirmwareDir() string        { return filepath.Join(StateDir, "firmware") }
@@ -119,6 +120,9 @@ type DisplayConfig struct {
 	VirtualConnector string   `json:"virtual_connector"`
 	HDR              bool     `json:"hdr"`
 	ExtraModes       []string `json:"extra_modes"`
+	// UIScaling: vosd sizes Steam's interface and the games' DPI for each
+	// streaming device (docs/CONTRACTS.md, Display policy, Scaling).
+	UIScaling bool `json:"ui_scaling"`
 }
 
 type StorageConfig struct {
@@ -152,7 +156,7 @@ func Defaults() *Config {
 		Schema:  1,
 		Update:  UpdateConfig{Source: DefaultUpdateSrc, Channel: ch, Auto: "stage"},
 		Power:   PowerConfig{IdleShutdown: false, IdleMinutes: 15}, // the installer turns it on when Wake-on-LAN can wake the PC again
-		Display: DisplayConfig{HDR: true},
+		Display: DisplayConfig{HDR: true, UIScaling: true},
 		Storage: StorageConfig{Libraries: []Library{}},
 		SSH:     SSHConfig{Keys: []string{}},
 	}

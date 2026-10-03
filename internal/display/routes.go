@@ -1,8 +1,10 @@
 package display
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -19,6 +21,9 @@ func (m *Manager) Routes(srv *api.Server) {
 	srv.Handle(http.MethodPost, "/display/modes", api.Authed, m.handleAddMode)
 	srv.Handle(http.MethodDelete, "/display/modes/{mode}", api.Authed, m.handleRemoveMode)
 	srv.Handle(http.MethodPut, "/display/settings", api.Authed, m.handleSettings)
+	srv.Handle(http.MethodPut, "/display/screens/{id}", api.Authed, m.handleScreenPut)
+	srv.Handle(http.MethodDelete, "/display/screens/{id}", api.Authed, m.handleScreenDelete)
+	srv.Handle(http.MethodPost, "/display/hint", api.Authed, m.handleHint)
 	srv.Handle(http.MethodGet, "/welcome", api.Local, m.handleWelcome)
 }
 
@@ -52,6 +57,12 @@ type Info struct {
 	Devices      []deviceMode `json:"devices"`
 	RebootNeeded bool         `json:"reboot_needed"`
 	State        string       `json:"state"`
+	// UIScaling is display.ui_scaling; SteamUI how sizing Steam stands
+	// (ok, idle, starting, no-debugger, unsupported or off); Screens the
+	// devices' screens, most recently seen first (scale.go).
+	UIScaling bool         `json:"ui_scaling"`
+	SteamUI   string       `json:"steam_ui"`
+	Screens   []ScreenView `json:"screens"`
 }
 
 // Info builds GET /display, which GET /status shares. It reads sysfs,
@@ -81,6 +92,9 @@ func (m *Manager) Info() Info {
 		Devices:             clients.devices(),
 		RebootNeeded:        m.rebootNeededNow(),
 		State:               state,
+		UIScaling:           dc.UIScaling,
+		SteamUI:             m.steamUIView(dc.UIScaling),
+		Screens:             m.screenViews(),
 	}
 	if p := gpu.Profile(); p != nil && p.Supported() {
 		d.Profile = p.Name()
@@ -256,45 +270,240 @@ func (m *Manager) removeMode(md edid.Mode) (bool, error) {
 	return true, nil
 }
 
-// handleSettings changes HDR and, optionally, the virtual connector (which
-// rewrites the machine kernel cmdline and needs a reboot).
+// handleSettings changes HDR, interface scaling and, optionally, the
+// virtual connector (which rewrites the machine kernel cmdline and needs a
+// reboot).
 func (m *Manager) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		HDR              *bool   `json:"hdr"`
 		VirtualConnector *string `json:"virtual_connector"`
+		UIScaling        *bool   `json:"ui_scaling"`
 	}
 	if err := api.ReadJSON(r, &req); err != nil {
 		api.Error(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	setHDR := func(c *config.Config) {
+	set := func(c *config.Config) {
 		if req.HDR != nil {
 			c.Display.HDR = *req.HDR
 		}
+		if req.UIScaling != nil {
+			c.Display.UIScaling = *req.UIScaling
+		}
 	}
+	was := m.displayConfig().UIScaling
+	status, msg := m.applySettings(req.VirtualConnector, req.HDR != nil || req.UIScaling != nil, set)
+	if now := m.displayConfig().UIScaling; now != was {
+		m.scalingChanged(now)
+	}
+	if status != 0 {
+		api.Error(w, status, "%s", msg)
+		return
+	}
+	m.hub.Publish("display.changed", struct{}{})
+	api.OK(w)
+}
+
+// applySettings saves the settings (set) and a new virtual connector conn,
+// under the display lock. It returns an HTTP status and message when it
+// refused or failed (0 when all went well).
+func (m *Manager) applySettings(conn *string, change bool, set func(*config.Config)) (int, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if req.VirtualConnector != nil && *req.VirtualConnector != m.virtual() {
-		c := *req.VirtualConnector
+	if conn != nil && *conn != m.virtual() {
+		c := *conn
 		if !m.gpu.Supported {
-			api.Error(w, http.StatusConflict, "no supported GPU for a virtual display")
-			return
+			return http.StatusConflict, "no supported GPU for a virtual display"
 		}
 		if !m.connectorUsableLocked(c) {
-			api.Error(w, http.StatusBadRequest, "%q is not a DP or HDMI connector of %s", c, m.gpu.Name)
-			return
+			return http.StatusBadRequest, fmt.Sprintf("%q is not a DP or HDMI connector of %s", c, m.gpu.Name)
 		}
-		if err := m.setVirtualLocked(c, setHDR); err != nil {
-			api.Error(w, http.StatusInternalServerError, "%v", err)
-			return
+		if err := m.setVirtualLocked(c, set); err != nil {
+			return http.StatusInternalServerError, err.Error()
 		}
-	} else if req.HDR != nil {
-		if err := m.cfg.Mutate(setHDR); err != nil {
-			api.Error(w, http.StatusInternalServerError, "saving config: %v", err)
-			return
+	} else if change {
+		if err := m.cfg.Mutate(set); err != nil {
+			return http.StatusInternalServerError, "saving config: " + err.Error()
+		}
+	}
+	return 0, ""
+}
+
+// screenViews lists the screens for GET /display: screens.json's, with the
+// session's own in place of its stored one (or first, when the device
+// cannot be told apart).
+func (m *Manager) screenViews() []ScreenView {
+	m.mu.Lock()
+	var live *ScreenView
+	if s := m.session; s != nil && s.plan != nil {
+		v := s.screenView()
+		live = &v
+	}
+	m.mu.Unlock()
+	m.screensMu.Lock()
+	defer m.screensMu.Unlock()
+	return m.screensLocked().Views(live, m.now())
+}
+
+// streamingScreen is the session streaming to screen id, and a copy of its
+// screen; nil, nil when that screen does not stream.
+func (m *Manager) streamingScreen(id string) (*sessionInfo, *screenPlan) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.session
+	if id == "" || s == nil || s.plan == nil || s.plan.id != id {
+		return nil, nil
+	}
+	p := *s.plan
+	return s, &p
+}
+
+// replan gives the session streaming now a changed screen, which the
+// scaler then applies. It returns the screen as GET /display lists it.
+func (m *Manager) replan(sess *sessionInfo, p screenPlan) (ScreenView, bool) {
+	m.mu.Lock()
+	if m.session != sess {
+		m.mu.Unlock()
+		return ScreenView{}, false
+	}
+	sess.plan = &p
+	v := sess.screenView()
+	if m.want != nil && m.want.sess == sess {
+		m.renewWantLocked()
+	}
+	m.mu.Unlock()
+	m.kickScale()
+	return v, true
+}
+
+// handleScreenPut is PUT /display/screens/{id}: the user's kind, size and
+// steam_auto for a screen. It answers once screens.json has them; while
+// the screen streams, the scaler applies them right away.
+func (m *Manager) handleScreenPut(w http.ResponseWriter, r *http.Request) {
+	var e ScreenEdit
+	if err := api.ReadJSON(r, &e); err != nil {
+		api.Error(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	id := r.PathValue("id")
+	sess, plan := m.streamingScreen(id)
+	var inEffect Kind
+	vetoed := false
+	if plan != nil {
+		inEffect, vetoed = plan.kind, plan.vetoed
+	}
+	m.screensMu.Lock()
+	sc, err := m.screensLocked().Edit(id, e, inEffect, vetoed)
+	if err == nil {
+		if serr := m.saveScreensLocked(); serr != nil {
+			err = fmt.Errorf("saving screens: %w", serr)
+		}
+	}
+	m.screensMu.Unlock()
+	switch {
+	case errors.Is(err, ErrNoScreen):
+		api.Error(w, http.StatusNotFound, "%v", err)
+		return
+	case errors.Is(err, ErrBadKind), errors.Is(err, ErrBadSize):
+		api.Error(w, http.StatusBadRequest, "%v", err)
+		return
+	case err != nil:
+		api.Error(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	view := sc.View(id)
+	if plan != nil {
+		np := *plan
+		np.size, np.steamAuto = normSize(sc.Size), sc.SteamAuto
+		np.infer(sc.Kind)
+		if v, ok := m.replan(sess, np); ok {
+			view = v
 		}
 	}
 	m.hub.Publish("display.changed", struct{}{})
+	api.WriteJSON(w, http.StatusOK, view)
+}
+
+// handleScreenDelete is DELETE /display/screens/{id}: it forgets a screen;
+// the device's browser hints stay. A device streaming now starts afresh
+// right away, as its next session would.
+func (m *Manager) handleScreenDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess, plan := m.streamingScreen(id)
+	m.screensMu.Lock()
+	s := m.screensLocked()
+	found := s.Delete(id)
+	var np screenPlan
+	var err error
+	if found {
+		if plan != nil {
+			np = *plan
+			np.size, np.steamAuto, np.savedScale, np.savedDPI = 1, false, 0, 0
+			np.sig.History = nil
+			np.panel = PanelFor(np.sig.Hint, np.asked, nil)
+			np.infer("")
+			s.Touch(id, np.name, np.mac, np.ip, np.asked, np.lastSeen)
+			s.Update(id, func(sc *Screen) { sc.Guess, sc.GuessFrom = np.guess, np.guessFrom })
+		}
+		err = m.saveScreensLocked()
+	}
+	m.screensMu.Unlock()
+	switch {
+	case !found:
+		api.Error(w, http.StatusNotFound, "%v", ErrNoScreen)
+		return
+	case err != nil:
+		api.Error(w, http.StatusInternalServerError, "saving screens: %v", err)
+		return
+	}
+	if plan != nil {
+		m.replan(sess, np)
+	}
+	m.hub.Publish("display.changed", struct{}{})
+	api.OK(w)
+}
+
+// handleHint is POST /display/hint: what a browser says about its own
+// screen, kept as a hint for the device it runs on (its MAC, else its
+// IPv4 address) with the kind its User-Agent gives; the User-Agent itself
+// is not kept. From loopback, or an address several devices share, it
+// keeps nothing.
+func (m *Manager) handleHint(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		W     int     `json:"w"`
+		H     int     `json:"h"`
+		DPR   float64 `json:"dpr"`
+		Touch int     `json:"touch"`
+	}
+	if err := api.ReadJSON(r, &req); err != nil {
+		api.Error(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	switch {
+	case req.W < 1 || req.W > maxPanelDim || req.H < 1 || req.H > maxPanelDim:
+		api.Error(w, http.StatusBadRequest, "w and h must be between 1 and 20000")
+		return
+	case !(req.DPR >= 0.5 && req.DPR <= 8):
+		api.Error(w, http.StatusBadRequest, "dpr must be between 0.5 and 8")
+		return
+	case req.Touch < 0 || req.Touch > 20:
+		api.Error(w, http.StatusBadRequest, "touch must be between 0 and 20")
+		return
+	}
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		if a := ap.Addr().WithZone("").Unmap(); !a.IsLoopback() && !a.IsUnspecified() {
+			h := Hint{
+				Kind: ClassifyBrowser(r.UserAgent(), req.W, req.H, req.DPR, req.Touch),
+				W:    req.W, H: req.H, DPR: req.DPR, Touch: req.Touch, At: m.now().UTC(),
+			}
+			mac := m.h.NeighbourMAC(a)
+			m.screensMu.Lock()
+			if m.screensLocked().PutHint(mac, a.String(), h) {
+				m.saveScreensLocked()
+			}
+			m.screensMu.Unlock()
+		}
+	}
 	api.OK(w)
 }
 

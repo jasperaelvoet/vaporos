@@ -151,6 +151,37 @@ func TestValidateRejectsUpstreamOnADeclaredPort(t *testing.T) {
 	}
 }
 
+func TestReservedPort(t *testing.T) {
+	for p, want := range map[int]bool{47990: true, 31911: true, 47989: false, 47984: false, 31910: false, 31912: false, 11987: false, 0: false} {
+		if ReservedPort(p) != want {
+			t.Errorf("ReservedPort(%d) = %v", p, !want)
+		}
+	}
+}
+
+// Sunshine's admin UI and Steam's debugger are never an extension's port
+// or upstream, whatever the mode or proto.
+func TestValidateRejectsReservedPorts(t *testing.T) {
+	for name, c := range map[string]struct {
+		port Port
+		want string
+	}{
+		"sunshine lan":           {Port{Proto: "tcp", Port: 47990, Mode: "lan"}, "network.ports[1].port 47990 is reserved for Sunshine's admin UI and API"},
+		"debugger lan udp":       {Port{Proto: "udp", Port: 31911, Mode: "lan"}, "network.ports[1].port 31911 is reserved for Steam's debugger"},
+		"debugger proxied":       {Port{Proto: "tcp", Port: 31911, Mode: "proxied", Upstream: "127.0.0.1:11986"}, "network.ports[1].port 31911 is reserved"},
+		"upstream sunshine":      {Port{Proto: "tcp", Port: 11988, Mode: "proxied", Upstream: "127.0.0.1:47990"}, "network.ports[1]'s upstream port 47990 is reserved for Sunshine's admin UI and API"},
+		"upstream debugger":      {Port{Proto: "tcp", Port: 11988, Mode: "proxied", Upstream: "127.0.0.1:31911"}, "network.ports[1]'s upstream port 31911 is reserved for Steam's debugger"},
+		"upstream leading zero":  {Port{Proto: "tcp", Port: 11988, Mode: "proxied", Upstream: "127.0.0.1:031911"}, "upstream port 31911 is reserved"},
+		"upstream on a udp port": {Port{Proto: "udp", Port: 11988, Mode: "proxied", Upstream: "127.0.0.1:31911"}, "upstream port 31911 is reserved"},
+	} {
+		d := valid()
+		d.Network.Ports = append(d.Network.Ports, c.port)
+		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // Only a disk setting may be required: the drive an extension needs.
 func TestRequiredDisk(t *testing.T) {
 	d := valid()

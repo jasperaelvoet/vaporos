@@ -15,11 +15,12 @@
 #
 # and the ports of the extensions this boot runs, which vosd lists in
 # /var/lib/vos/ext/ports (one "tcp PORT", "udp PORT" or "tcp PORT upstream
-# UPSTREAM" line each, both 1024-65535 and never Sunshine's admin port
-# 47990). Those are opened to the local network only, whatever
-# web.allow_public says; one line that is not exactly that, or more than
-# 64, and the file opens nothing. An UPSTREAM is the loopback port vosd
-# proxies PORT to: only root (vosd) may connect to it.
+# UPSTREAM" line each, both 1024-65535 and never a reserved port: 47990,
+# Sunshine's admin port, or 31911, Steam's debugger). Those are opened to
+# the local network only, whatever web.allow_public says; one line that is
+# not exactly that, or more than 64, and the file opens nothing. An
+# UPSTREAM is the loopback port vosd proxies PORT to: only root (vosd) may
+# connect to it.
 #
 # VOS_NFT_RULES, VOS_CONFIG and VOS_EXT_PORTS override the three input
 # paths (the build uses them to check the rules against test files).
@@ -57,6 +58,11 @@ allow_lan() { # allow_lan PROTO PORT COMMENT: from the LAN sets only, always
 
 upstream=()
 
+# Never an extension's port or upstream (descriptor.ReservedPort in vosd):
+# Sunshine's admin UI and API, and Steam's debugger, which vosd would hand
+# to the LAN as a proxied upstream.
+reserved() { (( $1 == 47990 || $1 == 31911 )); }
+
 # The extensions' ports, all or nothing: a damaged or hand-edited file
 # never opens a port it did not mean to.
 ext_ports() {
@@ -66,8 +72,8 @@ ext_ports() {
         [[ $line =~ ^(tcp|udp)\ ([1-9][0-9]{3,4})$ || $line =~ ^(tcp)\ ([1-9][0-9]{3,4})\ upstream\ ([1-9][0-9]{3,4})$ ]] ||
             return 0
         port=${BASH_REMATCH[2]} up=${BASH_REMATCH[3]:-}
-        (( port >= 1024 && port <= 65535 && port != 47990 && ++n <= 64 )) || return 0
-        [[ -z $up ]] || (( up >= 1024 && up <= 65535 && up != 47990 )) || return 0
+        (( port >= 1024 && port <= 65535 && ++n <= 64 )) && ! reserved "$port" || return 0
+        [[ -z $up ]] || { (( up >= 1024 && up <= 65535 )) && ! reserved "$up"; } || return 0
         found+=("${BASH_REMATCH[1]} $port $up")
     done <"$ports"
     (( n )) || return 0

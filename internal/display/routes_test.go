@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/display/drm"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
 	"github.com/jasperaelvoet/vaporos/internal/display/welcome"
+	"github.com/jasperaelvoet/vaporos/internal/session"
 )
 
 func call(t *testing.T, h http.HandlerFunc, method, body string) (*httptest.ResponseRecorder, map[string]any) {
@@ -454,5 +456,198 @@ func TestLearnKeepsEveryDevicesMode(t *testing.T) {
 	}
 	if l := m.learnedModes(); len(l) != 2 {
 		t.Errorf("learned = %v", l)
+	}
+}
+
+// callID calls the handler of a route with an {id}.
+func callID(t *testing.T, h http.HandlerFunc, method, id, body string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	r := httptest.NewRequest(method, "/api/v1/x", strings.NewReader(body))
+	r.SetPathValue("id", id)
+	w := httptest.NewRecorder()
+	h(w, r)
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	return w, out
+}
+
+// TestGetDisplayScaling: GET /display's scaling fields, screens never null.
+func TestGetDisplayScaling(t *testing.T) {
+	m, _, _, _ := newTestManager(t, false)
+	m.init(context.Background())
+	w, _ := call(t, m.handleGet, http.MethodGet, "")
+	for _, k := range []string{`"ui_scaling":true`, `"steam_ui":"idle"`, `"screens":[]`} {
+		if !strings.Contains(w.Body.String(), k) {
+			t.Errorf("GET /display lacks %s: %s", k, w.Body)
+		}
+	}
+	if w, _ := call(t, m.handleSettings, http.MethodPut, `{"ui_scaling":false}`); w.Code != 200 {
+		t.Fatalf("PUT = %d", w.Code)
+	}
+	if d := m.Info(); d.UIScaling || d.SteamUI != steamUIOff {
+		t.Errorf("off: %v %q", d.UIScaling, d.SteamUI)
+	}
+	if w, _ := call(t, m.handleSettings, http.MethodPut, `{"ui_scaling":"no"}`); w.Code != 400 {
+		t.Errorf("bad ui_scaling: %d", w.Code)
+	}
+}
+
+func TestScreenRoutes(t *testing.T) {
+	m, h, _, hub := newScaleTest(t)
+	ctx := context.Background()
+	m.Begin(ctx, iPhone) // a screen seen before, not streaming now
+	m.End(ctx)
+	id := ScreenID("iPhone")
+	evs, cancel := hub.Subscribe()
+	defer cancel()
+	put := func(id, body string) (*httptest.ResponseRecorder, map[string]any) {
+		return callID(t, m.handleScreenPut, http.MethodPut, id, body)
+	}
+	const badKind, badSize = "kind must be auto, phone, handheld, tablet, laptop, monitor or tv", "size must be between 0.4 and 2.5"
+	for _, c := range []struct {
+		id, body string
+		code     int
+		msg      string
+	}{
+		{id, `{"kind":"watch"}`, 400, badKind},
+		{id, `{"kind":"unknown"}`, 400, badKind},
+		{id, `{"size":3}`, 400, badSize},
+		{id, `{"size":0.3}`, 400, badSize},
+		{"000000000000", `{"size":1.2}`, 404, "no such screen"},
+		{"000000000000", `{"kind":"watch"}`, 400, badKind}, // the body before the id
+		{id, `{"size":"big"}`, 400, "bad request body"},
+	} {
+		w, out := put(c.id, c.body)
+		if msg, _ := out["error"].(string); w.Code != c.code || !strings.HasPrefix(msg, c.msg) {
+			t.Errorf("%s %s = %d %v", c.id, c.body, w.Code, out)
+		}
+	}
+	if sc, _ := storedScreen(t, id); sc.Kind != "" || sc.Size != 1 {
+		t.Fatalf("a refused PUT changed the screen: %+v", sc)
+	}
+
+	for _, c := range []struct {
+		body, kind, from string
+		size             float64
+	}{
+		{`{"size":1.2}`, "phone", "you", 1.2},                  // a size alone pins the kind in effect
+		{`{"kind":"tablet"}`, "tablet", "you", 1},              // a new kind resets the size
+		{`{"kind":"laptop","size":0.8}`, "laptop", "you", 0.8}, // unless the body has one
+		{`{"kind":"laptop"}`, "laptop", "you", 0.8},            // the same kind keeps it
+		{`{"kind":"auto"}`, "phone", "name", 1},                // automatic again
+	} {
+		w, out := put(id, c.body)
+		if w.Code != 200 || out["id"] != id || out["kind"] != c.kind || out["kind_from"] != c.from || out["size"] != c.size || out["savable"] != true {
+			t.Errorf("PUT %s = %d %v", c.body, w.Code, out)
+		}
+		if drain(evs, "display.changed") == nil {
+			t.Errorf("PUT %s: no display.changed", c.body)
+		}
+	}
+
+	// While it streams: the session's kind, applied at once.
+	m.Begin(ctx, iPhone)
+	m.scaleRound(ctx)
+	gen := wantGen(m)
+	w, out := put(id, `{"size":0.5}`)
+	if w.Code != 200 || out["kind"] != "phone" || out["kind_from"] != "you" || out["size"] != 0.5 || out["mode"] != "2796x1290@120" {
+		t.Errorf("PUT while streaming = %d %v", w.Code, out)
+	}
+	if wantGen(m) == gen {
+		t.Error("PUT while streaming did not start a new generation")
+	}
+	m.scaleRound(ctx)
+	if want := ScaleFor(KindPhone, iPhoneM, 0.5, Panel{2796, 1290}); h.ui.snapshot().current != want {
+		t.Errorf("Steam = %.2f, want %.2f", h.ui.snapshot().current, want)
+	}
+
+	// DELETE: an unknown id; the streaming screen starts afresh.
+	if w, out := callID(t, m.handleScreenDelete, http.MethodDelete, "000000000000", ""); w.Code != 404 || out["error"] != "no such screen" {
+		t.Errorf("DELETE unknown = %d %v", w.Code, out)
+	}
+	if w, _ := callID(t, m.handleScreenDelete, http.MethodDelete, id, ""); w.Code != 200 || strings.TrimSpace(w.Body.String()) != "{}" {
+		t.Errorf("DELETE = %d %s", w.Code, w.Body)
+	}
+	if sc, ok := storedScreen(t, id); !ok || sc.Kind != "" || sc.Size != 1 || len(sc.Modes) != 1 {
+		t.Errorf("after DELETE while streaming: %+v %v", sc, ok)
+	}
+	m.scaleRound(ctx)
+	if v := m.Info().Screens[0]; v.KindFrom != FromName || v.Size != 1 || h.ui.snapshot().current != 2.7 {
+		t.Errorf("after DELETE: %+v, Steam %.2f", v, h.ui.snapshot().current)
+	}
+	// Not streaming: gone.
+	m.End(ctx)
+	callID(t, m.handleScreenDelete, http.MethodDelete, id, "")
+	if _, ok := storedScreen(t, id); ok {
+		t.Error("DELETE kept the screen")
+	}
+	if w, _ := call(t, m.handleGet, http.MethodGet, ""); !strings.Contains(w.Body.String(), `"screens":[]`) {
+		t.Errorf("screens after DELETE: %s", w.Body)
+	}
+}
+
+func TestHintRoute(t *testing.T) {
+	m, h, _, _ := newScaleTest(t)
+	ctx := context.Background()
+	post := func(remote, ua, body string) (*httptest.ResponseRecorder, map[string]any) {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/display/hint", strings.NewReader(body))
+		r.RemoteAddr = remote
+		r.Header.Set("User-Agent", ua)
+		w := httptest.NewRecorder()
+		m.handleHint(w, r)
+		var out map[string]any
+		json.Unmarshal(w.Body.Bytes(), &out)
+		return w, out
+	}
+	const ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
+	const good = `{"w":430,"h":932,"dpr":3,"touch":5}`
+	from := phoneAddr.String() + ":50123"
+	const wh, dpr, touch = "w and h must be between 1 and 20000", "dpr must be between 0.5 and 8", "touch must be between 0 and 20"
+	for _, c := range []struct{ body, msg string }{
+		{`{"w":0,"h":932,"dpr":3,"touch":5}`, wh},
+		{`{"w":430,"h":20001,"dpr":3,"touch":5}`, wh},
+		{`{"w":-1,"h":0,"dpr":0,"touch":-1}`, wh}, // checked in order
+		{`{"h":932,"dpr":3,"touch":5}`, wh},
+		{`{"w":430,"h":932,"dpr":0,"touch":5}`, dpr},
+		{`{"w":430,"h":932,"dpr":8.5,"touch":5}`, dpr},
+		{`{"w":430,"h":932,"dpr":3,"touch":21}`, touch},
+		{`{"w":430,"h":932,"dpr":3,"touch":-1}`, touch},
+		{`{"w":430.5,"h":932,"dpr":3,"touch":5}`, "bad request body"},
+	} {
+		w, out := post(from, ua, c.body)
+		if msg, _ := out["error"].(string); w.Code != 400 || !strings.HasPrefix(msg, c.msg) {
+			t.Errorf("%s = %d %v", c.body, w.Code, out)
+		}
+	}
+	// Nothing kept from loopback, or from IPv6 without a MAC.
+	for _, remote := range []string{"127.0.0.1:5000", "[::1]:5000", "[fd00::5]:5000"} {
+		if w, _ := post(remote, ua, good); w.Code != 200 || len(m.screensSnapshot().Hints) != 0 {
+			t.Errorf("%s: %d, hints %v", remote, w.Code, m.screensSnapshot().Hints)
+		}
+	}
+	// The phone's browser: kept under its MAC, with the kind its User-Agent
+	// gives and nothing of the User-Agent itself.
+	if w, out := post(from, ua, good); w.Code != 200 || len(out) != 0 {
+		t.Fatalf("POST = %d %v", w.Code, out)
+	}
+	if hint := m.screensSnapshot().Hints[phoneMAC]; hint.Kind != KindPhone || hint.W != 430 || hint.H != 932 || hint.DPR != 3 || hint.Touch != 5 || hint.IP != phoneAddr.String() || hint.You {
+		t.Errorf("hint = %+v", hint)
+	}
+	if b, _ := os.ReadFile(config.ScreensPath()); strings.Contains(string(b), "iPhone OS") || !strings.Contains(string(b), phoneMAC) {
+		t.Errorf("screens.json = %s", b)
+	}
+	// Over IPv6, the same MAC is the same device.
+	v6 := netip.MustParseAddr("fe80::1")
+	h.mu.Lock()
+	h.macs[v6] = otherMAC
+	h.mu.Unlock()
+	post("[fe80::1%en0]:5000", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)", `{"w":1512,"h":982,"dpr":2,"touch":0}`)
+	if hint := m.screensSnapshot().Hints[otherMAC]; hint.Kind != KindLaptop || hint.IP != "" {
+		t.Errorf("IPv6 hint = %+v", hint)
+	}
+	// The phone's next session knows it by its browser.
+	m.Begin(ctx, session.Request{Op: "begin", Client: "roth", Width: 1920, Height: 1080, FPS: 60})
+	if s := m.CurrentSession(); s.Screen == nil || s.Screen.Kind != KindPhone || s.Screen.KindFrom != FromBrowser {
+		t.Errorf("screen = %+v", s.Screen)
 	}
 }

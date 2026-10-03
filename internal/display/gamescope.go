@@ -73,6 +73,71 @@ func parseXpropCardinal(out, name string) (int64, bool) {
 	return 0, false
 }
 
+// parseXpropString reads `xprop -root NAME` output for a STRING property:
+// `NAME(STRING) = "…"`, escaped the way xprop's Format_String writes it
+// (\\, \", \n, \t and \ooo for other bytes). set is false for
+// "NAME:  not found."; ok is false when the value is anything but one
+// string of type STRING (another type, several strings, output this does
+// not know), which a caller then leaves alone.
+func parseXpropString(out, name string) (value string, set, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		rest, found := strings.CutPrefix(strings.TrimSpace(line), name)
+		switch {
+		case !found || rest == "":
+		case rest[0] == ':':
+			return "", false, true
+		case rest[0] == '(':
+			v, isString := strings.CutPrefix(rest, "(STRING) = ")
+			if !isString {
+				return "", true, false
+			}
+			s, tail, ok := unquoteXprop(v)
+			return s, true, ok && tail == ""
+		}
+	}
+	return "", true, false
+}
+
+// unquoteXprop reads one string quoted as xprop prints it and returns it
+// with what follows the closing quote.
+func unquoteXprop(v string) (string, string, bool) {
+	if !strings.HasPrefix(v, `"`) {
+		return "", "", false
+	}
+	var b strings.Builder
+	for i := 1; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '"':
+			return b.String(), v[i+1:], true
+		case c != '\\':
+			b.WriteByte(c)
+		case i+1 >= len(v):
+			return "", "", false
+		default:
+			i++
+			switch e := v[i]; {
+			case e == 'n':
+				b.WriteByte('\n')
+			case e == 't':
+				b.WriteByte('\t')
+			case e == '\\' || e == '"':
+				b.WriteByte(e)
+			case e >= '0' && e <= '7' && i+2 < len(v):
+				n, err := strconv.ParseUint(v[i:i+3], 8, 8)
+				if err != nil {
+					return "", "", false
+				}
+				b.WriteByte(byte(n))
+				i += 2
+			default:
+				return "", "", false
+			}
+		}
+	}
+	return "", "", false
+}
+
 // The files vosd keeps for gamescope live in the gaming user's tree, which
 // Steam and every game can change. They are read and written through
 // gamerfs (never following a planted symlink, never blocking on a FIFO),

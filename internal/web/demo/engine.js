@@ -314,6 +314,43 @@ function learnedModes(d) {
 
 const listsEqual = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
+// ---------- screens (display/screens.go) ----------
+
+// USER_KINDS are the kinds a person picks (display.UserKind).
+const USER_KINDS = ['phone', 'handheld', 'tablet', 'laptop', 'monitor', 'tv'];
+const ERR_NO_SCREEN = 'no such screen';
+const ERR_BAD_KIND = 'kind must be auto, phone, handheld, tablet, laptop, monitor or tv';
+const ERR_BAD_SIZE = 'size must be between 0.4 and 2.5';
+const ERR_PAIR_KIND = 'kind must be phone, handheld, tablet, laptop, monitor or tv';
+
+// screensAtRest is the list without the session's screen: no screen that
+// cannot be told apart, and no size_min or size_max.
+function screensAtRest(list) {
+  const out = [];
+  for (const v of list) {
+    const sc = asObj(v);
+    if (asStr(sc.id) === '') continue;
+    delete sc.size_min;
+    delete sc.size_max;
+    out.push(v);
+  }
+  return out;
+}
+
+// screensStreamEnded is the display once no session runs: a screen that
+// could not be told apart is gone, none has size bounds, and sizing Steam
+// is idle (or off).
+function screensStreamEnded(disp) {
+  if (Array.isArray(disp.screens)) disp.screens = screensAtRest(disp.screens);
+  if (typeof disp.steam_ui === 'string' && disp.steam_ui !== 'off') disp.steam_ui = 'idle';
+}
+
+// screenByID is the listed screen with id, null when there is none.
+function screenByID(d, id) {
+  if (id === '') return null;
+  return asList(d.screens).find((v) => isObj(v) && asStr(v.id) === id) || null;
+}
+
 // ---------- SSH keys (system.NormalizeKeys over x/crypto/ssh) ----------
 
 function b64decode(s) {
@@ -551,7 +588,7 @@ export function normalizeKeys(input) {
 
 // ---------- request bodies (api.ReadJSON) ----------
 
-const GO_TYPES = { string: 'string', bool: 'bool', int: 'int', strings: '[]string', object: 'map[string]interface {}' };
+const GO_TYPES = { string: 'string', bool: 'bool', int: 'int', float: 'float64', strings: '[]string', object: 'map[string]interface {}' };
 
 function jsonKind(v) {
   if (Array.isArray(v)) return 'array';
@@ -560,7 +597,7 @@ function jsonKind(v) {
 }
 
 // readJSON decodes body into the fields of spec ({name: 'string' | 'bool' |
-// 'int' | 'strings' | 'object'}) the way encoding/json fills a struct: names match
+// 'int' | 'float' | 'strings' | 'object'}) the way encoding/json fills a struct: names match
 // case-insensitively, null leaves a field alone, and a value of the wrong
 // type fails. Absent fields are undefined. {v} or {error, eof}.
 function readJSON(body, spec) {
@@ -585,6 +622,7 @@ function readJSON(body, spec) {
       (t === 'string' && typeof val === 'string') ||
       (t === 'bool' && typeof val === 'boolean') ||
       (t === 'int' && Number.isInteger(val)) ||
+      (t === 'float' && typeof val === 'number' && Number.isFinite(val)) ||
       (t === 'strings' && Array.isArray(val) && val.every((x) => x === null || typeof x === 'string')) ||
       (t === 'object' && isObj(val));
     if (!ok) {
@@ -870,6 +908,10 @@ export class Engine {
       idleSince: now - asNum(asObj(p.sim).idle_seconds) * 1000,
       powerSent: '',
       restMode: clone(asObj(docs.display).current ?? null),
+      stream: null, // the running session's session.begin, screen and all (GET /status stream)
+      guessFrom: {}, // screen id → the kind_from of its guess (autoScreen)
+      sizeRanges: clone(asObj(asObj(p.sim).size_ranges)), // screen id → [size_min, size_max] while it streams
+      resumed: false, // steam_ui was resumed when display.ui_scaling went off (scaling)
       stage: null,
       installing: false,
       installed: null,
@@ -955,6 +997,7 @@ export class Engine {
       sun.session = null;
       disp.state = 'welcome';
       disp.current = clone(w.restMode);
+      screensStreamEnded(disp);
     }
     disp.reboot_needed = false;
     sun.pairings = [];
@@ -1068,29 +1111,39 @@ export class Engine {
     return docs[name];
   }
 
-  // follow is what the real services do when an event is published.
+  // follow is what the real services do when an event is published. A
+  // session.begin's screen is the display's alone: GET /status stream keeps
+  // the whole payload, Sunshine's session never has it, and GET /display
+  // screens takes it as the display's scaler would (screenBegin).
   follow(topic, data) {
     const m = asObj(data);
     const sun = this.doc('sunshine');
     const disp = this.doc('display');
     switch (topic) {
       case 'session.begin': {
-        const sess = clone(m);
-        if (!asStr(sess.since)) sess.since = rfc3339(this.now());
+        const stream = clone(m);
+        if (!asStr(stream.since)) stream.since = rfc3339(this.now());
+        const sess = { ...stream };
+        delete sess.screen;
         if (disp.state !== 'streaming') this.w.restMode = clone(disp.current ?? null);
+        this.w.stream = stream;
         sun.streaming = true;
         sun.session = sess;
         disp.state = 'streaming';
         if (asStr(m.mode)) disp.current = m.mode;
         this.rememberDevice(asStr(m.client), asStr(m.mode), m.hdr === true);
+        this.screenBegin(stream);
         this.powerCheck(this.now(), false);
         break;
       }
       case 'session.end':
+        this.w.stream = null;
+        this.w.resumed = false;
         sun.streaming = false;
         sun.session = null;
         disp.state = asList(disp.connectors).some((c) => asObj(c).physical === true) ? 'welcome' : 'none';
         disp.current = clone(this.w.restMode);
+        screensStreamEnded(disp);
         this.powerCheck(this.now(), false);
         break;
       case 'pairing.state': {
@@ -1430,6 +1483,122 @@ export class Engine {
       d.reboot_needed = true;
     }
     return d;
+  }
+
+  // ---------- screens (devserver_display_test.go) ----------
+  //
+  // GET /display screens is the document's list. The fake never infers and
+  // never derives an id: a session.begin's screen is taken as it is, as if
+  // the scaler had applied it at once, and a screen's kind is the user's
+  // pick when its kind_from is "you", else automatic. Nor does it work out
+  // a streaming screen's size_min and size_max: they are the preset's
+  // sim.size_ranges for that screen, whatever its kind.
+  //
+  // steam_ui "resumed" comes only from a patch (the fake has no resume): it
+  // stays through a PUT of the screen, goes off and comes back with
+  // display.ui_scaling, and the next session.begin or session.end ends it.
+
+  // scaling follows display.ui_scaling: steam_ui is off while it is false,
+  // and once it is true again Steam is sized (ok, or resumed when it was)
+  // while a session runs, else idle.
+  scaling(on) {
+    const d = this.doc('display');
+    d.ui_scaling = on;
+    if (!on) {
+      if (d.steam_ui === 'resumed') this.w.resumed = true;
+      d.steam_ui = 'off';
+    } else if (d.steam_ui === 'off') {
+      d.steam_ui = this.doc('sunshine').streaming !== true ? 'idle' : this.w.resumed ? 'resumed' : 'ok';
+    }
+  }
+
+  // screenBegin is the display's side of a session.begin: the screen the
+  // payload names comes first, keeping the user's size and steam_auto; one
+  // that cannot be told apart (id "") is listed only while it streams. Its
+  // guess is its kind unless the user picked that. A begin ends a resume.
+  screenBegin(stream) {
+    const disp = this.doc('display');
+    this.w.resumed = false;
+    if (disp.ui_scaling !== false && (disp.steam_ui === 'idle' || disp.steam_ui === 'resumed')) disp.steam_ui = 'ok';
+    if (Array.isArray(disp.screens)) disp.screens = screensAtRest(disp.screens);
+    const ref = stream.screen;
+    if (!isObj(ref)) return;
+    const id = asStr(ref.id);
+    const kind = asStr(ref.kind);
+    const from = asStr(ref.kind_from);
+    let prev = null;
+    const rest = [];
+    for (const v of asList(disp.screens)) {
+      if (id !== '' && asStr(asObj(v).id) === id) prev = asObj(v);
+      else rest.push(v);
+    }
+    const sc = {
+      id, name: asStr(ref.name), kind, kind_from: from, guess: kind, size: 1, steam_auto: false,
+      mode: asStr(stream.mode), last_seen: stream.since, ui_scale: asNum(ref.ui_scale), game_dpi: asNum(ref.game_dpi), savable: id !== '',
+    };
+    if (prev && typeof prev.size === 'number') {
+      sc.size = prev.size;
+      sc.steam_auto = prev.steam_auto === true;
+    }
+    const range = asObj(this.w.sizeRanges)[id];
+    if (Array.isArray(range)) {
+      sc.size_min = range[0];
+      sc.size_max = range[1];
+    }
+    if (from === 'you') sc.guess = asStr(asObj(prev).guess) || 'unknown';
+    else if (id !== '') this.guesses()[id] = from;
+    disp.screens = [sc, ...rest];
+  }
+
+  guesses() {
+    if (!isObj(this.w.guessFrom)) this.w.guessFrom = {};
+    return this.w.guessFrom;
+  }
+
+  // streamingScreen is the id of the screen streaming now ('' none).
+  streamingScreen() {
+    if (this.doc('sunshine').streaming !== true) return '';
+    return asStr(asObj(asObj(this.w.stream).screen).id);
+  }
+
+  // editScreen is display.Screens.Edit on a listed screen: a kind (pick ''
+  // is automatic) resets the size to 1.0 when it changes it, a size alone
+  // pins the kind in effect as the user's unless it is the session's veto
+  // (kind_from stream with a kind other than the guess), and a kind or size
+  // without steam_auto turns steam_auto off.
+  editScreen(id, sc, kindSet, pick, size, steamAuto) {
+    let stored = '';
+    if (sc.kind_from === 'you') stored = asStr(sc.kind);
+    else this.guesses()[id] = asStr(sc.kind_from);
+    if (kindSet) {
+      if (pick !== stored) sc.size = 1;
+      stored = pick;
+    }
+    if (size !== undefined) {
+      sc.size = size;
+      const vetoed = sc.kind_from === 'stream' && asStr(sc.guess) !== '' && sc.kind !== sc.guess;
+      if (!kindSet && stored === '' && !vetoed) stored = asStr(sc.kind);
+    }
+    if (steamAuto !== undefined) sc.steam_auto = steamAuto;
+    else if (kindSet || size !== undefined) sc.steam_auto = false;
+    if (stored !== '') {
+      sc.kind = stored;
+      sc.kind_from = 'you';
+    } else if (sc.kind_from === 'you') {
+      this.autoScreen(id, sc);
+    }
+  }
+
+  // autoScreen makes a picked screen automatic again: its guess, for the
+  // reason the fake last saw for its kind. A screen the fake has only ever
+  // seen picked says "resolution" ("default" when the guess is unknown).
+  autoScreen(id, sc) {
+    const guess = asStr(sc.guess) || 'unknown';
+    const g = this.guesses();
+    let from = has(g, id) ? asStr(g[id]) : '';
+    if (!from) from = guess === 'unknown' ? 'default' : 'resolution';
+    sc.kind = guess;
+    sc.kind_from = from;
   }
 
   // ---------- power (devserver_power_test.go) ----------
@@ -2058,7 +2227,7 @@ const DISPLAY = [
     return { reboot_needed: d.reboot_needed === true };
   }],
   ['PUT', '/display/settings', AUTHED, function (r) {
-    const b = readJSON(r.body, { hdr: 'bool', virtual_connector: 'string' });
+    const b = readJSON(r.body, { hdr: 'bool', virtual_connector: 'string', ui_scaling: 'bool' });
     if (b.error) return fail(400, b.error);
     const d = this.doc('display');
     const c = b.v.virtual_connector;
@@ -2077,7 +2246,53 @@ const DISPLAY = [
       d.reboot_needed = true;
     }
     if (b.v.hdr !== undefined) d.hdr = b.v.hdr;
+    if (b.v.ui_scaling !== undefined) this.scaling(b.v.ui_scaling);
     this.emit('display.changed', {});
+    return {};
+  }],
+  ['PUT', '/display/screens/{id}', AUTHED, function (r) {
+    const b = readJSON(r.body, { kind: 'string', size: 'float', steam_auto: 'bool' });
+    if (b.error) return fail(400, b.error);
+    const { kind, size, steam_auto: steamAuto } = b.v;
+    let pick = '';
+    if (kind !== undefined && kind !== 'auto') {
+      if (!USER_KINDS.includes(kind)) return fail(400, ERR_BAD_KIND);
+      pick = kind;
+    }
+    if (size !== undefined && !(size >= 0.4 && size <= 2.5)) return fail(400, ERR_BAD_SIZE);
+    const id = r.params.id;
+    const sc = screenByID(this.doc('display'), id);
+    if (!sc) return fail(404, ERR_NO_SCREEN);
+    this.editScreen(id, sc, kind !== undefined, pick, size, steamAuto);
+    this.emit('display.changed', {});
+    return sc;
+  }],
+  ['DELETE', '/display/screens/{id}', AUTHED, function (r) {
+    const id = r.params.id;
+    const d = this.doc('display');
+    const sc = screenByID(d, id);
+    if (!sc) return fail(404, ERR_NO_SCREEN);
+    if (this.streamingScreen() === id) {
+      // The device streaming now starts afresh at once, as its next
+      // session would, and stays listed.
+      if (sc.kind_from === 'you') this.autoScreen(id, sc);
+      sc.size = 1;
+      sc.steam_auto = false;
+    } else {
+      d.screens = asList(d.screens).filter((v) => asStr(asObj(v).id) !== id);
+      delete this.guesses()[id];
+    }
+    this.emit('display.changed', {});
+    return {};
+  }],
+  // The fake keeps no hint: it checks the body as the real route does.
+  ['POST', '/display/hint', AUTHED, function (r) {
+    const b = readJSON(r.body, { w: 'int', h: 'int', dpr: 'float', touch: 'int' });
+    if (b.error) return fail(400, b.error);
+    const { w = 0, h = 0, dpr = 0, touch = 0 } = b.v;
+    if (w < 1 || w > 20000 || h < 1 || h > 20000) return fail(400, 'w and h must be between 1 and 20000');
+    if (!(dpr >= 0.5 && dpr <= 8)) return fail(400, 'dpr must be between 0.5 and 8');
+    if (touch < 0 || touch > 20) return fail(400, 'touch must be between 0 and 20');
     return {};
   }],
 ];
@@ -2152,14 +2367,16 @@ const SUNSHINE = [
     return this.sunshineAnswer();
   }],
   ['POST', '/sunshine/pair', AUTHED, function (r) {
-    const b = readJSON(r.body, { pin: 'string', name: 'string', pairing_id: 'string' });
+    const b = readJSON(r.body, { pin: 'string', name: 'string', pairing_id: 'string', kind: 'string' });
     if (b.error) return fail(400, b.error);
     const pin = goTrim(b.v.pin ?? '');
     let name = goTrim(b.v.name ?? '');
     const pid = b.v.pairing_id ?? '';
+    const kind = b.v.kind ?? '';
     if (!/^[0-9]{4}$/.test(pin)) return fail(400, 'the PIN is the 4 digits Moonlight shows');
     if (utf8Len(name) > 128 || /[\0\r\n]/.test(name)) return fail(400, 'the device name must be at most 128 characters on one line');
     if (pid !== '' && !/^[0-9A-Fa-f]{32}$/.test(pid)) return fail(400, 'invalid pairing_id');
+    if (kind !== '' && !USER_KINDS.includes(kind)) return fail(400, ERR_PAIR_KIND);
     const s = this.doc('sunshine');
     const ps = asList(s.pairings);
     let id = pid;
@@ -2177,6 +2394,8 @@ const SUNSHINE = [
     // Sunshine answers false for a wrong PIN and for a device that stopped
     // waiting alike.
     if (!waiting || pin !== DEV_PIN) return fail(400, 'pairing failed: check the PIN and try again');
+    // The browser is never the waiting device here, so no name comes from
+    // its User-Agent; a picked kind is a hint nothing the fake answers shows.
     if (name === '') name = goTrim(asStr(waiting.name));
     if (name === '') name = 'Moonlight';
     const c = this.doc('sunshine-clients');
@@ -2337,7 +2556,7 @@ const POWER = [
 const STATUS = [
   ['GET', '/status', AUTHED, function () {
     const sun = this.sunshineAnswer();
-    const stream = sun.streaming === true ? sun.session : null;
+    const stream = sun.streaming === true ? streamAnswer(this.w.stream, sun.session, this.doc('display')) : null;
     delete sun.session;
     const pw = this.powerState(this.now());
     delete pw.wol;
@@ -2765,6 +2984,19 @@ const ROUTES_OS = [
   ...[...SYSTEM, ...DISPLAY, ...UPDATE, ...SUNSHINE, ...STORAGE, ...POWER, ...STATUS, ...EXTENSIONS].map(route(true)),
 ];
 const ROUTES_INSTALLER = [...CORE.map(route(false)), ...[...SYSTEM, ...DISPLAY, ...INSTALL].map(route(true))];
+
+// streamAnswer is GET /status stream: the display's session, which is the
+// session.begin payload with its screen (Sunshine's session when no
+// session.begin came), without the screen while display.ui_scaling is false.
+function streamAnswer(begin, sunSession, disp) {
+  if (!isObj(begin)) return sunSession;
+  if (has(begin, 'screen') && disp.ui_scaling === false) {
+    const s = { ...begin };
+    delete s.screen;
+    return s;
+  }
+  return begin;
+}
 
 // restartReasons is daemon.restartFor.
 function restartReasons(up, disp) {

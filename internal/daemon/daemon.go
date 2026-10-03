@@ -87,6 +87,9 @@ func Main(args []string) int {
 		// which includes whether the other slot can start games through
 		// `vos ext launch`.
 		ext.SetSteamRestarter(func(reason string) { disp.RestartSteam(reason, false) })
+		// Interface scaling learns from Sunshine's side what only it sees:
+		// a resumed stream, and the device that pairs.
+		sun.SetScreens(disp)
 		up.SetSlotsChanged(ext.SlotsChanged)
 		// The display's session only counts while Sunshine agrees a client is
 		// (or may soon be) connected: a stream abandoned without quitting,

@@ -151,6 +151,12 @@ function renderVirtual(d) {
   const hdr = byId('hdr');
   if (!hdr.hasAttribute('aria-disabled')) hdr.checked = !!d.hdr;
   hdr.disabled = noGPU;
+  // Sizing Steam (display.ui_scaling) needs no GPU to be stored; an older
+  // VaporOS has no such setting.
+  const scaling = byId('ui-scaling');
+  byId('scaling-row').hidden = typeof d.ui_scaling !== 'boolean';
+  if (!scaling.hasAttribute('aria-disabled')) scaling.checked = d.ui_scaling === true;
+  scaling.disabled = false;
   const free = d.available_connectors;
   const sel = byId('port');
   byId('port-field').hidden = !Array.isArray(free);
@@ -190,26 +196,31 @@ async function move(btn) {
   loadDisplay();
 }
 
-function initVirtual() {
-  const hdr = byId('hdr');
-  // Applies at once, reverts on failure (R4); busy taps are undone.
-  hdr.addEventListener('change', async () => {
-    if (hdr.hasAttribute('aria-disabled')) {
-      hdr.checked = !hdr.checked;
+// liveSwitch applies a display setting at once and reverts on failure
+// (R4); busy taps are undone.
+function liveSwitch(el, key, said) {
+  el.addEventListener('change', async () => {
+    if (el.hasAttribute('aria-disabled')) {
+      el.checked = !el.checked;
       return;
     }
-    const want = hdr.checked;
-    hdr.setAttribute('aria-disabled', 'true');
+    const want = el.checked;
+    el.setAttribute('aria-disabled', 'true');
     try {
-      await api('PUT', '/display/settings', { hdr: want });
-      if (S.display) S.display.hdr = want;
-      announce(`HDR ${want ? 'on' : 'off'}`);
+      await api('PUT', '/display/settings', { [key]: want });
+      if (S.display) S.display[key] = want;
+      announce(`${said} ${want ? 'on' : 'off'}`);
     } catch (err) {
-      hdr.checked = !want;
+      el.checked = !want;
       oops(err);
     }
-    hdr.removeAttribute('aria-disabled');
+    el.removeAttribute('aria-disabled');
   });
+}
+
+function initVirtual() {
+  liveSwitch(byId('hdr'), 'hdr', 'HDR');
+  liveSwitch(byId('ui-scaling'), 'ui_scaling', 'Sizing Steam for each device');
   byId('port').addEventListener('change', portNote);
   byId('port-move').addEventListener('click', (e) => move(e.currentTarget));
 }

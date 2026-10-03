@@ -26,7 +26,7 @@ func (h *realHost) SteamPID() int {
 func (h *realHost) ShutdownSteam(ctx context.Context, pid int) error {
 	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
 	defer cancel()
-	env := gamerProbe().Environ(pid, steamEnvKeys...)
+	env := h.SteamEnv(pid, steamEnvKeys...)
 	args := make([]string, 0, len(env)+2)
 	for _, k := range steamEnvKeys {
 		if v, ok := env[k]; ok {
@@ -35,6 +35,10 @@ func (h *realHost) ShutdownSteam(ctx context.Context, pid int) error {
 	}
 	_, err := sysd.AsGamer(ctx, "env", append(args, "steam", "-shutdown")...)
 	return err
+}
+
+func (h *realHost) SteamEnv(pid int, keys ...string) map[string]string {
+	return gamerProbe().Environ(pid, keys...)
 }
 
 func (h *realHost) UnitStarted(ctx context.Context, unit string, user bool) (job, main time.Time) {

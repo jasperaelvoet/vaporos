@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/drm"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
+	"github.com/jasperaelvoet/vaporos/internal/display/steamui"
 	"github.com/jasperaelvoet/vaporos/internal/events"
 )
 
@@ -55,6 +57,7 @@ type fakeHost struct {
 	direct    int           // planes scanned out without composition (0: 1)
 	xErr      error         // xprop fails (no X server)
 	ctlDelay  time.Duration // gamescopectl takes this long
+	ctlGate   chan struct{} // gamescopectl waits for it to close
 	busy      string
 	game      bool   // a Steam game runs (GameRunning)
 	sunApp    string // Sunshine's serverinfo: "busy", "free" or "" (no answer)
@@ -79,6 +82,19 @@ type fakeHost struct {
 	gsJob, gsMain   time.Time
 	gsStarts        int
 	clock           func() time.Time
+	// Scaling: who is connected to Sunshine (Peers takes peerSamples in
+	// turn, then peers; rtsp, the remote ends of the connections on its
+	// RTSP port), the neighbour table (macs), Steam's environment
+	// (steamEnv, for the pid steamPID is), the STRING properties of the X
+	// displays XpropOn reaches (xstr, gone when gamescope starts) and
+	// Steam's interface behind its debugger (ui).
+	peers       []netip.Addr
+	peerSamples [][]netip.Addr
+	rtsp        []netip.AddrPort
+	macs        map[netip.Addr]string
+	steamEnv    map[string]string
+	xstr        map[string]map[string]string
+	ui          *fakeSteamUI
 }
 
 func unitKey(unit string, user bool) string {
@@ -179,7 +195,7 @@ func (f *fakeHost) gamescopeStartedLocked() {
 	if f.steamPID != 0 {
 		f.steamPID += 100
 	}
-	f.composite, f.hdr, f.props = false, f.gsHDR, nil
+	f.composite, f.hdr, f.props, f.xstr = false, f.gsHDR, nil, nil
 	f.applySavedModeLocked()
 }
 
@@ -285,10 +301,17 @@ func (f *fakeHost) ApplyEDID(card, name string, b []byte) error {
 
 func (f *fakeHost) Gamescopectl(ctx context.Context, args ...string) (string, error) {
 	f.mu.Lock()
-	delay := f.ctlDelay
+	delay, gate := f.ctlDelay, f.ctlGate
 	f.mu.Unlock()
 	if delay > 0 && !sleepCtx(ctx, delay) {
 		return "", ctx.Err()
+	}
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -342,6 +365,335 @@ func (f *fakeHost) Xprop(ctx context.Context, args ...string) (string, error) {
 		return args[1] + ":  not found.", nil
 	}
 	return "", fmt.Errorf("fake xprop: unexpected %v", args)
+}
+
+// XpropOn understands, for the STRING properties of display,
+// `-root NAME`, `-root -f NAME 8s -set NAME VALUE` and
+// `-root -remove NAME`, printing values as xprop does.
+func (f *fakeHost) XpropOn(ctx context.Context, display string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("xprop@%s %s", display, strings.Join(args, " "))
+	if f.xErr != nil {
+		return "", f.xErr
+	}
+	if !f.active[unitKey(GamescopeUnit, true)] {
+		return "", fmt.Errorf("xprop:  unable to open display '%s'", display)
+	}
+	props := f.xstr[display]
+	switch {
+	case len(args) == 2 && args[0] == "-root":
+		if v, ok := props[args[1]]; ok {
+			return fmt.Sprintf("%s(STRING) = %s\n", args[1], xpropQuote(v)), nil
+		}
+		return args[1] + ":  not found.\n", nil
+	case len(args) == 7 && args[0] == "-root" && args[1] == "-f" && args[3] == "8s" && args[4] == "-set" && args[2] == args[5]:
+		if f.xstr == nil {
+			f.xstr = map[string]map[string]string{}
+		}
+		if props == nil {
+			props = map[string]string{}
+			f.xstr[display] = props
+		}
+		props[args[5]] = args[6]
+		return "", nil
+	case len(args) == 3 && args[0] == "-root" && args[1] == "-remove":
+		delete(props, args[2])
+		return "", nil
+	}
+	return "", fmt.Errorf("fake xprop: unexpected %q", args)
+}
+
+// xpropQuote quotes a STRING the way xprop prints it (Format_String, in
+// the C locale).
+func xpropQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\\' || c == '"':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case c == '\n':
+			b.WriteString(`\n`)
+		case c == '\t':
+			b.WriteString(`\t`)
+		case c < 0x20 || c >= 0x7f:
+			fmt.Fprintf(&b, "\\%03o", c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// xstrProp is a STRING property of an X display ("" and false when unset).
+func (f *fakeHost) xstrProp(display, name string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.xstr[display][name]
+	return v, ok
+}
+
+func (f *fakeHost) setXstrProp(display, name, value string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.xstr == nil {
+		f.xstr = map[string]map[string]string{}
+	}
+	if f.xstr[display] == nil {
+		f.xstr[display] = map[string]string{}
+	}
+	f.xstr[display][name] = value
+}
+
+func (f *fakeHost) SteamEnv(pid int, keys ...string) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]string{}
+	if pid == 0 || pid != f.steamPID {
+		return out
+	}
+	for _, k := range keys {
+		if v, ok := f.steamEnv[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func (f *fakeHost) SteamUI() steamUI { return f.ui }
+
+func (f *fakeHost) Peers() (peerSet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	list := f.peers
+	if len(f.peerSamples) > 0 {
+		list, f.peerSamples = f.peerSamples[0], f.peerSamples[1:]
+	}
+	out := peerSet{}
+	for _, a := range list {
+		out[a] = struct{}{}
+	}
+	return out, nil
+}
+
+func (f *fakeHost) RTSPConns() (connSet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := connSet{}
+	for _, c := range f.rtsp {
+		out[c] = struct{}{}
+	}
+	return out, nil
+}
+
+func (f *fakeHost) NeighbourMAC(addr netip.Addr) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.macs[addr]
+}
+
+// fakeSteamUI is Steam's display scale behind its debugger as steamui
+// sees it: Steam's automatic scale, its manual factor (clamped to its
+// bounds), VaporOS's marker, which a newer generation guards, and the
+// late views, laid out ones following every change of the scale, vosd's
+// or the user's.
+type fakeSteamUI struct {
+	mu        sync.Mutex
+	down      error // every call fails with it: no debugger
+	notReady  bool
+	name      string
+	auto      bool
+	current   float64
+	autoValue float64
+	min, max  float64
+	gen       uint64
+	value     float64
+	views     []steamui.View
+	stuck     map[string]bool // views that never follow (a page that only takes the title)
+	ignore    int             // Steam ignores this many sets
+	calls     []string
+	reads     int
+	readDelay time.Duration // every read takes this long
+	onRead    func(n int)   // runs before the n-th read answers
+	onViews   func()        // runs before Views answers
+	closed    int
+}
+
+// jsMaxGen is the largest generation steamui sends (JavaScript's largest
+// exact integer).
+const jsMaxGen = 1<<53 - 1
+
+// genLocked refuses a generation steamui would not send.
+func (f *fakeSteamUI) genLocked(gen uint64) error {
+	if gen == 0 || gen > jsMaxGen {
+		return fmt.Errorf("steamui: generation %d out of range", gen)
+	}
+	if f.gen > gen {
+		return fmt.Errorf("%w (%d)", steamui.ErrStale, f.gen)
+	}
+	return nil
+}
+
+// layOutLocked is Steam laying its shown views out at its scale now.
+func (f *fakeSteamUI) layOutLocked() {
+	for i, v := range f.views {
+		if v.Height > 1 && !f.stuck[v.ID] {
+			f.views[i].DPR = f.current
+		}
+	}
+}
+
+func newFakeSteamUI() *fakeSteamUI {
+	return &fakeSteamUI{down: steamui.ErrNoDebugger, name: `External: VaporOS 27"|||Windowed`,
+		auto: true, current: 1.55, autoValue: 1.55, min: 0.5, max: 4}
+}
+
+func (f *fakeSteamUI) failLocked() error {
+	if f.down != nil {
+		return f.down
+	}
+	if f.notReady {
+		return steamui.ErrNotReady
+	}
+	return nil
+}
+
+func (f *fakeSteamUI) Read(ctx context.Context) (steamui.State, error) {
+	f.mu.Lock()
+	f.reads++
+	n, hook, delay := f.reads, f.onRead, f.readDelay
+	f.mu.Unlock()
+	if delay > 0 && !sleepCtx(ctx, delay) {
+		return steamui.State{}, ctx.Err()
+	}
+	if hook != nil {
+		hook(n)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "read")
+	if f.down != nil {
+		return steamui.State{}, f.down
+	}
+	st := steamui.State{Name: f.name, External: true, Auto: f.auto, Current: f.current, AutoValue: f.autoValue,
+		Min: f.min, Max: f.max, Gen: f.gen, Value: f.value}
+	if f.notReady {
+		return st, steamui.ErrNotReady
+	}
+	return st, nil
+}
+
+func (f *fakeSteamUI) Set(ctx context.Context, gen uint64, s float64) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("set %d %.2f", gen, s))
+	if err := f.failLocked(); err != nil {
+		return 0, err
+	}
+	if err := f.genLocked(gen); err != nil {
+		return 0, err
+	}
+	s = min(max(s, f.min), f.max)
+	if f.ignore > 0 {
+		f.ignore--
+		return s, nil
+	}
+	f.auto, f.current, f.gen, f.value = false, s, gen, s
+	f.layOutLocked()
+	return s, nil
+}
+
+func (f *fakeSteamUI) Auto(ctx context.Context, gen uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("auto %d", gen))
+	if err := f.failLocked(); err != nil {
+		return err
+	}
+	if err := f.genLocked(gen); err != nil {
+		return err
+	}
+	f.auto, f.current, f.gen, f.value = true, f.autoValue, gen, 0
+	f.layOutLocked()
+	return nil
+}
+
+func (f *fakeSteamUI) Views(ctx context.Context) ([]steamui.View, error) {
+	f.mu.Lock()
+	hook := f.onViews
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "views")
+	if f.down != nil {
+		return nil, f.down
+	}
+	return slices.Clone(f.views), nil
+}
+
+func (f *fakeSteamUI) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed++
+}
+
+// userSets is the user moving Steam's own setting: its automatic scale,
+// or a factor. Steam lays its shown views out again, as for vosd's set.
+func (f *fakeSteamUI) userSets(auto bool, v float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auto = auto
+	f.current = v
+	if auto {
+		f.current = f.autoValue
+	}
+	f.layOutLocked()
+}
+
+// restart is Steam starting again: VaporOS's marker is gone, and Steam
+// comes back with what it stored.
+func (f *fakeSteamUI) restart(auto bool, v float64) {
+	f.mu.Lock()
+	f.gen, f.value = 0, 0
+	f.mu.Unlock()
+	f.userSets(auto, v)
+}
+
+func (f *fakeSteamUI) set(fn func(f *fakeSteamUI)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+func (f *fakeSteamUI) snapshot() fakeSteamUI {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return fakeSteamUI{auto: f.auto, current: f.current, gen: f.gen, value: f.value, calls: slices.Clone(f.calls)}
+}
+
+// count is how many calls of Steam's start with prefix.
+func (f *fakeSteamUI) count(prefix string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeSteamUI) resetCalls() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = nil
 }
 
 func (f *fakeHost) setPropLocked(name, value string) {
@@ -603,6 +955,7 @@ func newTestManager(t *testing.T, monitor bool) (*Manager, *fakeHost, *clock, *e
 		ips:        []string{"192.168.1.50"},
 		direct:     2, // the spike: a primary plus a scaled overlay
 		hotplug:    nil,
+		ui:         newFakeSteamUI(),
 	}
 	h.conns = []drm.SysConnector{
 		{Card: "card1", Name: "DP-1", Type: "DP", Status: "connected", Dir: env.edidDir},

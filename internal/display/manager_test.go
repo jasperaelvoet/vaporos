@@ -178,7 +178,9 @@ func TestSessionWithMonitor(t *testing.T) {
 	if !strings.Contains(string(cfg), "VOS VaporOS:2560x1600@60\n") {
 		t.Errorf("modes.cfg = %q", cfg)
 	}
-	want := `{"client":"MacBook","app":"Steam","mode":"2560x1600@60","hdr":false,"since":"2026-09-29T12:00:00Z"}`
+	// The screen: a laptop by its name, 1600 lines at 1000 CSS lines each.
+	want := `{"client":"MacBook","app":"Steam","mode":"2560x1600@60","hdr":false,"since":"2026-09-29T12:00:00Z",` +
+		`"screen":{"id":"` + ScreenID("MacBook") + `","name":"MacBook","kind":"laptop","kind_from":"name","ui_scale":1.6,"game_dpi":120}}`
 	if got := drain(evs, "session.begin"); got == nil || string(got.Data) != want {
 		t.Errorf("session.begin event = %+v, want %s", got, want)
 	}
@@ -683,6 +685,9 @@ func TestStaleSessionEnds(t *testing.T) {
 	}
 	if drain(evs, "session.end") == nil {
 		t.Error("no session.end event")
+	}
+	if wantGen(m) != 0 {
+		t.Error("the scaler still holds the dropped session's scale")
 	}
 	// The monitor gets the welcome screen back after the grace period.
 	m.reconcile(ctx, false)

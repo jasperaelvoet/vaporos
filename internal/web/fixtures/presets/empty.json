@@ -90,7 +90,7 @@
         }
       ]
     },
-    "display": {"devices": [], "learned": []}
+    "display": {"devices": [], "learned": [], "screens": []}
   },
   "expect": {"hero": "ready", "restart": [], "cards": []}
 }

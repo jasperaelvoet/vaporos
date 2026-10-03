@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jasperaelvoet/vaporos/internal/display"
 )
 
 // The dev server's data lives in internal/web/fixtures as JSON. It is read
@@ -42,7 +44,9 @@ import (
 //	             the real box), idle_seconds (idle time at start), stage
 //	             ({phase, percent}: a download in progress), trial (a
 //	             download stops with the on-trial refusal), install_fail
-//	             (the install stops at the write step with this error)
+//	             (the install stops at the write step with this error),
+//	             size_ranges ({screen id: [size_min, size_max]}: what GET
+//	             /display lists for that screen while it streams)
 //	expect       what the pages should derive: hero (SCN §3.2 state: ready,
 //	             streaming, updating, fault-no-gpu, starting, fault-stopped,
 //	             fault-not-answering, fault-unknown, restart-needed; null
@@ -142,11 +146,12 @@ func (e *fakeEvent) UnmarshalJSON(b []byte) error {
 }
 
 type fakeSim struct {
-	WebActivity *bool           `json:"web_activity"`
-	IdleSeconds int             `json:"idle_seconds"`
-	Stage       *fakeStagePoint `json:"stage"`
-	Trial       bool            `json:"trial"`
-	InstallFail string          `json:"install_fail"`
+	WebActivity *bool                 `json:"web_activity"`
+	IdleSeconds int                   `json:"idle_seconds"`
+	Stage       *fakeStagePoint       `json:"stage"`
+	Trial       bool                  `json:"trial"`
+	InstallFail string                `json:"install_fail"`
+	SizeRanges  map[string][2]float64 `json:"size_ranges"`
 }
 
 type fakeStagePoint struct {
@@ -291,6 +296,11 @@ func (p *fakePreset) check() error {
 	}
 	if p.Sim.Stage != nil && !slices.Contains([]string{"download", "write", "verify", "install"}, p.Sim.Stage.Phase) {
 		return fmt.Errorf("sim.stage.phase %q", p.Sim.Stage.Phase)
+	}
+	for id, r := range p.Sim.SizeRanges {
+		if !(r[0] >= display.SizeMin && r[0] <= r[1] && r[1] <= display.SizeMax) {
+			return fmt.Errorf("sim.size_ranges[%q] %v is not within 0.4-2.5, lowest first", id, r)
+		}
 	}
 	return checkPatch(p.Patch)
 }

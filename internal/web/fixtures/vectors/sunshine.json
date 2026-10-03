@@ -18,6 +18,23 @@
       ]
     },
     {
+      "name": "sunshine-pair-kind",
+      "preset": "pairing-1",
+      "steps": [
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "kind": "auto"}, "expect": {"status": 400, "body": {"error": "kind must be phone, handheld, tablet, laptop, monitor or tv"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "kind": "unknown"}, "expect": {"status": 400, "body": {"error": "kind must be phone, handheld, tablet, laptop, monitor or tv"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "kind": "TV"}, "expect": {"status": 400}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "kind": " tv"}, "expect": {"status": 400}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "12a4", "kind": "auto"}, "expect": {"status": 400, "body": {"error": "the PIN is the 4 digits Moonlight shows"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "pairing_id": "xyz", "kind": "auto"}, "expect": {"status": 400, "body": {"error": "invalid pairing_id"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "kind": 7}, "expect": {"status": 400}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "0000", "kind": ""}, "expect": {"status": 400, "body": {"error": "pairing failed: check the PIN and try again"}}},
+        {"req": "POST /sunshine/pair", "body": {"pin": "1234", "kind": "handheld"}, "expect": {"status": 200, "events": [["pairing.state", {"pairings": []}]]}},
+        {"req": "GET /sunshine/clients", "passive": true, "expect": {"body": {"clients": [{}, {}, {}, {"name": "Steam Deck"}]}}},
+        {"req": "GET /display", "passive": true, "expect": {"body": {"screens": [{}, {}, {}, {}]}}}
+      ]
+    },
+    {
       "name": "sunshine-pair-two",
       "preset": "pairing-2",
       "steps": [

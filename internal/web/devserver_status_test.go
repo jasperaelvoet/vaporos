@@ -17,7 +17,7 @@ func (f *devFake) statusRoutes(add fakeAdder) {
 		sun := f.sunshineAnswerLocked()
 		var stream any
 		if sun["streaming"] == true {
-			stream = sun["session"]
+			stream = streamAnswer(f.stream, sun["session"], f.doc("display"))
 		}
 		delete(sun, "session")
 		pw := f.powerStateLocked(time.Now())
@@ -28,6 +28,21 @@ func (f *devFake) statusRoutes(add fakeAdder) {
 			"update": up, "power": pw, "restart": restartReasons(up, disp, f.doc("extensions")),
 		}
 	})
+}
+
+// streamAnswer is GET /status stream: the display's session, which is the
+// session.begin payload with its screen (Sunshine's session when no
+// session.begin came), without the screen while display.ui_scaling is
+// false.
+func streamAnswer(begin map[string]any, sunSession any, disp map[string]any) any {
+	if begin == nil {
+		return sunSession
+	}
+	if _, ok := begin["screen"]; ok && disp["ui_scaling"] == false {
+		begin = cloneDoc(begin)
+		delete(begin, "screen")
+	}
+	return begin
 }
 
 // restartReasons is daemon.restartFor: the entry a restart starts when it

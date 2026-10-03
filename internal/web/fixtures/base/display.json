@@ -26,5 +26,13 @@
     {"name": "MacBook Pro", "mode": "2560x1600@120", "hdr": false, "last_seen": "@-72h"}
   ],
   "reboot_needed": false,
-  "state": "welcome"
+  "state": "welcome",
+  "ui_scaling": true,
+  "steam_ui": "idle",
+  "screens": [
+    {"id": "4bb2226e22c8", "name": "Sam's iPhone", "kind": "phone", "kind_from": "name", "guess": "phone", "size": 1.0, "steam_auto": false, "mode": "2796x1290@120", "last_seen": "@-2h", "ui_scale": 2.7, "game_dpi": 168, "savable": true},
+    {"id": "27eddd2e84ba", "name": "Living room TV", "kind": "tv", "kind_from": "name", "guess": "tv", "size": 1.0, "steam_auto": false, "mode": "3840x2160@60", "last_seen": "@-26h", "ui_scale": 2.55, "game_dpi": 192, "savable": true},
+    {"id": "15797c6a4669", "name": "Sam's iPad", "kind": "tablet", "kind_from": "you", "guess": "tablet", "size": 1.1, "steam_auto": false, "mode": "2360x1640@120", "last_seen": "@-50h", "ui_scale": 2.05, "game_dpi": 144, "savable": true},
+    {"id": "bd3439a0145e", "name": "MacBook Pro", "kind": "laptop", "kind_from": "name", "guess": "laptop", "size": 1.0, "steam_auto": true, "mode": "2560x1600@120", "last_seen": "@-72h", "ui_scale": 0, "game_dpi": 144, "savable": true}
+  ]
 }

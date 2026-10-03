@@ -6,7 +6,8 @@ package display
 // until the virtual connector really scans it out and sets the client's
 // HDR (hdr.go). An unknown client mode is learned into the EDID, which the
 // running kernel takes at once where it can (debugfs EDID override) and the
-// next boot takes in any case.
+// next boot takes in any case. Begin also works out the device's screen,
+// which the scaler sizes Steam for (scale.go).
 
 import (
 	"bytes"
@@ -34,6 +35,18 @@ import (
 // within m.beginBudget whatever happens; what is left undone by then the
 // policy loop and the composite watchdog finish.
 func (m *Manager) Begin(ctx context.Context, req session.Request) session.Response {
+	// Moonlight's /launch is in flight for as long as Begin runs: the one
+	// address connected to Sunshine's HTTPS port now and still at the end
+	// is the client (scale.go). The scaler drops what it does for an older
+	// session, and is woken once Begin let go of op (defers run last first).
+	peers := m.samplePeers(nil)
+	m.mu.Lock()
+	m.beginSeq++
+	seq := m.beginSeq
+	m.dropWantLocked()
+	m.mu.Unlock()
+	defer m.kickScale()
+
 	ctx, cancel := context.WithTimeout(ctx, m.beginBudget)
 	defer cancel()
 
@@ -55,6 +68,8 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 		m.holdUntil = time.Time{}
 		m.mu.Unlock()
 		log.Printf("display: session begin: %s wants %s, but the display stayed busy: %v", client, asked, err)
+		plan := m.beginScreen(sess, req, asked, asked, &peers)
+		m.handOver(seq, sess, req, plan, asked, peers)
 		m.publishBegin(sess)
 		return session.Response{OK: false, Mode: asked.String(), Message: "display busy; streaming as is"}
 	}
@@ -72,6 +87,8 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	log.Printf("display: session begin: %s wants %s hdr=%v (%s)", client, asked, req.HDR, req.App)
 
 	if !canGame {
+		plan := m.beginScreen(sess, req, asked, asked, &peers)
+		m.handOver(seq, sess, req, plan, asked, peers)
 		m.publishBegin(sess)
 		m.poke()
 		return session.Response{OK: true, Message: "no supported GPU or virtual display: streaming as is"}
@@ -86,6 +103,7 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 			fallback, mode, exact = mode, md, true
 		}
 	}
+	plan := m.beginScreen(sess, req, asked, mode, &peers)
 	hdr := req.HDR && hdrAllowed
 	if p := gpu.Profile(); p == nil || !p.VirtualHDR() {
 		hdr = false
@@ -131,6 +149,7 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	}
 	if err != nil {
 		log.Printf("display: gamescope: %v", err)
+		m.handOver(seq, sess, req, plan, mode, peers)
 		m.publishBegin(sess)
 		return session.Response{OK: false, Mode: mode.String(), HDR: hdr, Message: "gamescope: " + err.Error()}
 	}
@@ -176,6 +195,7 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	if ok {
 		m.noteCompositeMode(mode)
 	}
+	m.handOver(seq, sess, req, plan, mode, peers)
 	m.publishBegin(sess)
 	if ok {
 		log.Printf("display: %s ready at %s hdr=%v", virtual, mode, hdr)
@@ -221,6 +241,7 @@ func (m *Manager) End(ctx context.Context) {
 	was := m.session
 	m.session = nil
 	m.holdUntil = m.now().Add(m.returnDelay)
+	m.dropWantLocked()
 	m.mu.Unlock()
 	if was != nil {
 		log.Printf("display: session end: %s after %s", was.Client, m.now().Sub(was.Since).Round(time.Second))
@@ -228,6 +249,7 @@ func (m *Manager) End(ctx context.Context) {
 	m.hub.Publish("session.end", struct{}{})
 	m.syncEDID()
 	m.poke()
+	m.kickScale()
 }
 
 // clientMode turns a session request into a mode, defaulting what Sunshine

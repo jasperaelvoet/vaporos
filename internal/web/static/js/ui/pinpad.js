@@ -1,8 +1,12 @@
 // ui/pinpad.js: the PIN pad takeover (ARCH §6.7, spec-cc-screens §2.9),
 // driven by the replayed pairing.state: it closes when Moonlight stops
 // waiting. REDLINE: each digit heats the field one step; a wrong PIN is cold.
+// Its optional What is it? goes with the PIN as kind; opening it tells
+// VaporOS this browser's screen (core/boot.js), for when it is the device
+// that pairs.
 
 import { api, errorText } from '../core/api.js';
+import { sendHint } from '../core/boot.js';
 import { byId, cloneTpl, part, parts, reducedMotion } from '../core/dom.js';
 import { pairPrompt } from '../copy.js';
 import { cleanDeviceName } from '../validate.js';
@@ -15,6 +19,13 @@ let submitting = false;
 let succeeded = false;
 let noticeOn = true;
 const KEYPAD = '(pointer: coarse) and (min-height: 480px)';
+// A name Moonlight gives every device: left empty, VaporOS names the
+// device after the browser when that is the one pairing (POST /sunshine/pair).
+const generic = (name) => /^(roth|moonlight|unknown)?$/i.test(String(name ?? '').trim());
+const HINT = {
+  own: "How this device shows in Devices. Leave it for Moonlight's name.",
+  generic: 'How this device shows in Devices. Leave it empty to name it after this device, when you pair from it.',
+};
 
 const pad = () => byId('pinpad');
 const input = () => byId('pin');
@@ -127,7 +138,7 @@ function renderWho() {
     r.checked = p.id === chosen;
     r.addEventListener('change', () => {
       chosen = p.id;
-      byId('pin-device-name').value = p.name || '';
+      nameField();
       renderTitle();
       // The PIN may already be complete: choosing the device pairs it.
       if (input().value.length === 4) submit();
@@ -148,13 +159,17 @@ async function submit() {
   submitting = true;
   pad().dataset.phase = 'submitting';
   byId('pin-status').textContent = 'Pairing…';
-  const body = { pin: input().value, name: cleanDeviceName(byId('pin-device-name').value || d?.name || '') };
+  const own = generic(d?.name) ? '' : d?.name;
+  const body = { pin: input().value, name: cleanDeviceName(byId('pin-device-name').value || own || '') };
   if (d?.id && waiting.length > 1) body.pairing_id = d.id;
+  const kind = pad().querySelector('input[name="pin-kind"]:checked')?.value;
+  if (kind) body.kind = kind;
   try {
     await api('POST', '/sunshine/pair', body);
     succeeded = true;
     pad().dataset.phase = 'success';
-    const name = body.name || d?.name || 'The device';
+    // An empty name VaporOS may have chosen itself: the list shows it.
+    const name = body.name || 'The device';
     // Said once, by the takeover's status line; the notice only shows it.
     byId('pin-status').textContent = `${name} is paired. Pick Steam in Moonlight to play.`;
     setTimeout(() => closePinpad(), 900);
@@ -191,15 +206,27 @@ export function openPinpad({ id = '', from = document.activeElement } = {}) {
   byId('pin-error').textContent = '';
   byId('pin-status').textContent = '';
   input().removeAttribute('aria-invalid');
-  byId('pin-device-name').value = device()?.name || '';
+  nameField();
+  pad().querySelector('input[name="pin-kind"][value=""]').checked = true;
   dlg.dataset.phase = 'idle';
   paint();
   pickedFor = '';
   renderWho();
-  if (!dlg.open) dlg.showModal();
+  if (!dlg.open) {
+    dlg.showModal();
+    sendHint(true);
+  }
   // With a mouse the PIN takes focus; on touch the heading does, so the
   // system keyboard does not cover the keypad.
   (matchMedia('(pointer: fine)').matches ? input() : byId('pin-title')).focus({ preventScroll: true });
+}
+
+// nameField starts as the device's own name, empty for Moonlight's
+// generic one, which VaporOS may replace.
+function nameField() {
+  const name = device()?.name || '';
+  byId('pin-device-name').value = generic(name) ? '' : name;
+  byId('pin-device-hint').textContent = generic(name) ? HINT.generic : HINT.own;
 }
 
 export function closePinpad() {

@@ -598,6 +598,26 @@ has "firewall: ... resets anyone but root on 11985" \
 lacks "firewall: ... never opens the upstream" 'dport 11985 accept'
 has "firewall: ... from loopback's output" 'oif lo jump upstream'
 
+# Steam's debugger (31911, vos-gamescope.service): the upstream chain's own
+# rule in nftables.nft, so it holds whatever config.json and the ports file
+# say, and never comes from vos-firewall.
+upstream_chain() { # upstream_chain CONFIG_JSON PORTS: chain upstream's body as written
+    render_ports "$1" "$2" | awk '/^[[:space:]]*chain upstream \{/ { on = 1; next }
+        on && /^[[:space:]]*\}/ { exit } on'
+}
+for c in 'the default config={}=' \
+            'everything open={"ssh":{"enabled":true},"web":{"https":true,"allow_public":true}}=tcp 11987 upstream 11985\nudp 27015\n' \
+            'a ports file that opens nothing={}=tcp 11987\ntcp 22\n'; do
+    IFS='=' read -r name cfg ports <<<"$c"
+    expect pass "firewall: Steam's debugger with $name" upstream_chain "$cfg" "$ports"
+    has "firewall: ... resets anyone but root on 31911" \
+        'tcp dport 31911 meta skuid != 0 reject with tcp reset comment "steam devtools"'
+done
+expect pass "firewall: the whole ruleset, everything open" \
+    render_ports '{"ssh":{"enabled":true},"web":{"https":true,"allow_public":true}}' 'tcp 11987 upstream 11985\n'
+lacks "firewall: ... never accepts 31911" 'dport 31911 accept'
+lacks "firewall: ... and adds no rule of its own for it" 'add rule inet vos upstream tcp dport 31911'
+
 for bad in 'a line that is not a port=tcp 11987 upstream 11985\nhttp 8080\n' \
            'Sunshine'"'"'s admin port=tcp 11987 upstream 11985\ntcp 47990\n' \
            'a port below 1024=tcp 11987 upstream 11985\ntcp 22\n' \
@@ -609,6 +629,8 @@ for bad in 'a line that is not a port=tcp 11987 upstream 11985\nhttp 8080\n' \
            'an empty line=tcp 11987\n\n' \
            'an upstream on udp=tcp 11987 upstream 11985\nudp 27015 upstream 27016\n' \
            'Sunshine'"'"'s admin port as an upstream=tcp 11987 upstream 47990\n' \
+           'Steam'"'"'s debugger port=tcp 11987 upstream 11985\ntcp 31911\n' \
+           'Steam'"'"'s debugger port as an upstream=tcp 11987 upstream 31911\n' \
            'an upstream below 1024=tcp 11987 upstream 80\n' \
            'an upstream above 65535=tcp 11987 upstream 65536\n' \
            'an upstream with a leading zero=tcp 11987 upstream 011985\n' \

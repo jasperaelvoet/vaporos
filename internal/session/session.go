@@ -51,6 +51,7 @@ type Request struct {
 	Height int    `json:"height,omitempty"`
 	FPS    int    `json:"fps,omitempty"`
 	HDR    bool   `json:"hdr,omitempty"`
+	Audio  string `json:"audio,omitempty"` // "2.0" | "5.1" | "7.1"; "" when unknown
 }
 
 type Response struct {
@@ -200,6 +201,8 @@ func readRequest(r io.Reader) (Request, error) {
 	if err := json.Unmarshal(line, &req); err != nil {
 		return req, err
 	}
+	// Screen inference trusts it: the handler sees a known layout or "".
+	req.Audio = audioConfig(req.Audio)
 	return req, nil
 }
 
@@ -254,7 +257,8 @@ func Call(ctx context.Context, path string, req Request) (Response, error) {
 
 // RequestFromEnv builds a begin request from the environment Sunshine
 // gives its prep commands (SUNSHINE_CLIENT_WIDTH/HEIGHT/FPS/HDR,
-// SUNSHINE_CLIENT_NAME, SUNSHINE_APP_NAME).
+// SUNSHINE_CLIENT_AUDIO_CONFIGURATION, SUNSHINE_CLIENT_NAME,
+// SUNSHINE_APP_NAME).
 func RequestFromEnv(getenv func(string) string) Request {
 	num := func(k string) int {
 		f, err := strconv.ParseFloat(strings.TrimSpace(getenv(k)), 64)
@@ -277,7 +281,18 @@ func RequestFromEnv(getenv func(string) string) Request {
 		Height: num("SUNSHINE_CLIENT_HEIGHT"),
 		FPS:    fps,
 		HDR:    hdr,
+		Audio:  audioConfig(getenv("SUNSHINE_CLIENT_AUDIO_CONFIGURATION")),
 	}
+}
+
+// audioConfig keeps the speaker layouts Sunshine names for 2, 6 and 8
+// channels; anything else is no signal.
+func audioConfig(s string) string {
+	switch s = strings.TrimSpace(s); s {
+	case "2.0", "5.1", "7.1":
+		return s
+	}
+	return ""
 }
 
 // CLI implements `vos session begin|end` and `vos session launch
@@ -303,8 +318,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer, sock strin
 	req := Request{Op: args[0]}
 	if req.Op == "begin" {
 		req = RequestFromEnv(getenv)
-		logger.Printf("begin: client %q app %q wants %dx%d@%d hdr=%v",
-			req.Client, req.App, req.Width, req.Height, req.FPS, req.HDR)
+		logger.Printf("begin: client %q app %q wants %dx%d@%d hdr=%v audio=%q",
+			req.Client, req.App, req.Width, req.Height, req.FPS, req.HDR, req.Audio)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

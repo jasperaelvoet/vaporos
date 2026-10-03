@@ -410,6 +410,73 @@ check_hardening() {
     fi
 }
 
+# Steam's CEF debugger (docs/CONTRACTS.md "Units", "Firewall"): Steam
+# listens on 127.0.0.1:31911, owned by vapor's steamwebhelper, where root
+# (vosd) gets JSON and vapor, every game included, gets a reset. The dev VM
+# has no GPU, so Steam never runs there and only the unit and the rule are
+# checked; the rest warns.
+check_steam_devtools() {
+    local unit=/usr/lib/systemd/user/vos-gamescope.service rules hex listeners line inode pid owner root vapor rc i
+    line=$(grep '^ExecStart=' "$unit" 2>/dev/null)
+    if [[ $line == *" /usr/bin/steam "*" -cef-enable-debugging -devtools-port 31911" ]]; then
+        ok steam-devtools-flags "vos-gamescope.service starts Steam with -cef-enable-debugging -devtools-port 31911"
+    else
+        bad steam-devtools-flags "$unit: '${line:-no ExecStart}'"
+    fi
+
+    rules=$(nft list chain inet vos upstream 2>/dev/null | grep 'dport 31911')
+    line=$(nft list ruleset 2>/dev/null | grep 'dport 31911' | grep accept | head -n1)
+    if [[ -n $line ]]; then
+        bad steam-devtools-rule "a rule accepts 31911: $line"
+    elif [[ $rules == *skuid* && $rules == *reject* ]]; then
+        ok steam-devtools-rule "loopback 31911 resets everyone but root"
+    else
+        bad steam-devtools-rule "31911 in the upstream chain: '${rules:-none}'"
+    fi
+
+    if ! pgrep -u vapor -x steamwebhelper >/dev/null 2>&1; then
+        warn steam-devtools "Steam (steamwebhelper) is not running, as without a GPU: its debugger is not checked"
+        return
+    fi
+    # steamwebhelper opens the port as it starts; /proc/net shows it in hex.
+    printf -v hex ':%04X' 31911
+    for ((i = 0; i < 30; i++)); do
+        listeners=$(awk -v p="$hex" '$4 == "0A" && substr($2, length($2) - 4) == p { print $2, $10 }' \
+            /proc/net/tcp /proc/net/tcp6 2>/dev/null)
+        [[ -n $listeners ]] && break
+        sleep 1
+    done
+    line=$(grep -v "^0100007F$hex " <<<"$listeners" | head -n1)
+    if [[ -z $listeners ]]; then
+        bad steam-devtools-listen "steamwebhelper runs, but nothing listens on 31911 after 30 s"
+    elif [[ -n $line ]]; then
+        bad steam-devtools-listen "31911 listens beyond 127.0.0.1: ${line% *}"
+    else
+        # The owner vosd insists on before it talks to the port.
+        inode=$(head -n1 <<<"$listeners" | cut -d' ' -f2)
+        pid=$(find /proc/[0-9]*/fd -lname "socket:\[$inode\]" -print -quit 2>/dev/null | cut -d/ -f3)
+        owner="$(cat "/proc/$pid/comm" 2>/dev/null) uid $(awk '/^Uid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
+        if [[ $owner == "steamwebhelper uid 1000" ]]; then
+            ok steam-devtools-listen "31911 listens on 127.0.0.1 only, owned by vapor's steamwebhelper"
+        else
+            bad steam-devtools-listen "127.0.0.1:31911 belongs to '$owner' (pid ${pid:-?}), not vapor's steamwebhelper"
+        fi
+    fi
+
+    # A reset is curl's exit 7 (connection refused); a drop would time out.
+    root=$(curl -sS -m 5 -o "$tmp/body" -w '%{http_code}' http://127.0.0.1:31911/json/list 2>/dev/null) || true
+    vapor=$(setpriv --reuid=1000 --regid=1000 --clear-groups curl -sS -m 5 -o /dev/null -w '%{http_code}' \
+        http://127.0.0.1:31911/json/list 2>/dev/null)
+    rc=$?
+    if [[ $vapor != 000 || $rc != 7 ]]; then
+        bad steam-devtools "vapor on 127.0.0.1:31911: HTTP '${vapor:-none}', curl exit $rc (expected a reset: 000, exit 7)"
+    elif [[ $root == 200 ]] && grep -q '^[[:space:]]*\[' "$tmp/body"; then
+        ok steam-devtools "root gets Steam's target list (JSON) from 127.0.0.1:31911, vapor gets a reset"
+    else
+        bad steam-devtools "root gets $root from 127.0.0.1:31911: $(head -c 200 "$tmp/body" | tr '\n' ' ')"
+    fi
+}
+
 # No keypress, on a local keyboard or a Moonlight client's (Sunshine's
 # virtual keyboard), reboots or suspends the box.
 check_no_reboot_keys() {
@@ -736,6 +803,7 @@ case $group in
         check_api "$password"
         check_web
         check_hardening
+        check_steam_devtools
         check_no_reboot_keys
         ;;
     booted)

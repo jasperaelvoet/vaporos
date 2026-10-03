@@ -1,6 +1,7 @@
 {{- /*
-  Devices (spec-cc-screens §4): pair a Moonlight device, see who is playing,
-  and the paired list with each device's last mode (GET /display devices[]).
+  Devices (spec-cc-screens §4): pair a Moonlight device, see who is playing
+  and at what interface size, and the paired list with each device's last
+  mode (GET /display devices[]).
   The pair card is the three steps while nobody waits and turns into the
   pairing prompt when Moonlight waits for a PIN; the PIN pad itself is the
   shell's takeover (partials/overlays.html, ui/pinpad.js). REDLINE: a
@@ -76,8 +77,10 @@
         <div class="fact" id="dev-play-app-row" hidden><dt>Game</dt><dd id="dev-play-app"></dd></div>
         <div class="fact"><dt>Resolution</dt><dd class="mono" id="dev-play-mode"></dd></div>
         <div class="fact"><dt>HDR</dt><dd id="dev-play-hdr"></dd></div>
+        <div class="fact dev-size-fact" id="dev-play-size-row" hidden><dt>Interface size</dt><dd><span id="dev-play-size"></span><button class="btn ghost small" id="dev-size-adjust" type="button" aria-haspopup="dialog" aria-controls="size-sheet" hidden>Adjust<span class="sr-only"> the interface size</span></button></dd></div>
         <div class="fact" id="dev-play-since-row" hidden><dt>Since</dt><dd class="mono" id="dev-play-since"></dd></div>
       </dl>
+      <p class="dev-note" id="dev-size-note" hidden></p>
       <p class="dev-note" id="dev-resume-hint">Switching devices or changing the resolution? Quit the game in Moonlight, then start it on the other device.</p>
       <div class="dev-actions"><button class="btn ghost" id="dev-end-stream" type="button">End stream</button></div>
     </section>
@@ -102,6 +105,55 @@
     </section>
   </div>
 </div>
+{{- /* Adjust's sheet: what the device playing is and its size, each
+   applied at once and put back if VaporOS refuses (R4);
+   pages/devices-size.js. */}}
+<dialog class="sheet" id="size-sheet" aria-labelledby="size-title" aria-describedby="size-for" data-snap="medium">
+  <div class="sheet-handle" data-part="handle" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <h2 class="sheet-title" id="size-title" tabindex="-1">Interface size</h2>
+    <button class="sheet-close" type="button" data-close aria-label="Close">{{icon "close"}}</button>
+  </header>
+  <div class="sheet-body">
+    <p class="sheet-note" id="size-for"></p>
+    <p class="dev-size-steam" id="size-steam" data-tone="" hidden></p>
+    <fieldset class="dev-size-group" id="size-kinds" aria-describedby="size-auto">
+      <legend class="field-label dev-size-legend">What it is</legend>
+      <div class="pick-list dev-size-kinds">
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="auto"><span class="pick-name">Automatic</span></label>
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="phone"><span class="pick-name">Phone</span></label>
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="handheld"><span class="pick-name">Handheld</span></label>
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="tablet"><span class="pick-name">Tablet</span></label>
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="laptop"><span class="pick-name">Laptop</span></label>
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="monitor"><span class="pick-name">Monitor</span></label>
+        <label class="pick"><input class="pick-radio" type="radio" name="size-kind" value="tv"><span class="pick-name">TV</span></label>
+      </div>
+      <p class="field-hint" id="size-auto"></p>
+    </fieldset>
+    <div class="dev-size-group" id="size-steps" role="group" aria-labelledby="size-label" aria-describedby="size-hint">
+      <span class="field-label" id="size-label">Size</span>
+      <div class="dev-size-dial">
+        <button class="dev-size-key" id="size-down" type="button" aria-label="Smaller" aria-controls="size-pct"><span class="dev-size-sign" aria-hidden="true"></span></button>
+        <output class="dev-size-pct" id="size-pct" aria-live="polite">100%</output>
+        <span class="dev-size-ramp" id="size-ramp" aria-hidden="true"></span>
+        <button class="dev-size-key" id="size-up" type="button" aria-label="Larger" aria-controls="size-pct"><span class="dev-size-sign" data-sign="plus" aria-hidden="true"></span></button>
+      </div>
+      <p class="field-hint" id="size-hint">Steam's menus, in 10% steps.</p>
+    </div>
+    <div class="dev-switch-row">
+      <div class="dev-switch-text">
+        <label class="dev-switch-label" for="size-steam-auto">Use Steam's own size</label>
+        <p class="field-hint" id="size-steam-hint">Steam's automatic size, made for TVs.</p>
+      </div>
+      <input class="dev-switch-input" type="checkbox" role="switch" id="size-steam-auto" aria-describedby="size-steam-hint">
+      <span class="dev-switch" aria-hidden="true"></span>
+    </div>
+  </div>
+  <footer class="sheet-actions">
+    <button class="btn ghost" id="size-reset" type="button">Reset</button>
+    <button class="btn primary" type="button" data-close>Done</button>
+  </footer>
+</dialog>
 <template id="tpl-dev-row"><li class="dev-row" data-playing="false"><span class="dev-glyph" data-part="glyph" aria-hidden="true"></span><span class="row-main"><span class="row-name" data-part="name"></span><span class="row-sub" data-part="sub" hidden></span></span><span class="dev-badge" data-part="playing" data-tone="hot" hidden>Playing</span><span class="dev-badge" data-part="disabled" hidden>Disabled</span><button class="btn ghost small" type="button" data-part="unpair">Unpair<span class="sr-only" data-part="unpair-name"></span></button></li></template>
 <template id="tpl-dev-seen"><li class="dev-row"><span class="dev-glyph" data-part="glyph" aria-hidden="true"></span><span class="row-main"><span class="row-name" data-part="name"></span><span class="row-sub" data-part="sub"></span></span></li></template>
 <template id="tpl-dev-waiting"><li class="dev-pair-dev"><span class="dev-pair-dev-name" data-part="name"></span><span class="dev-pair-dev-addr mono" data-part="addr"></span></li></template>

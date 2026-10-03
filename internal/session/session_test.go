@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -84,7 +85,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	req := Request{Op: "begin", Client: "Jasper's iPhone", App: "Steam", Width: 2556, Height: 1179, FPS: 120, HDR: true}
+	req := Request{Op: "begin", Client: "Jasper's iPhone", App: "Steam", Width: 2556, Height: 1179, FPS: 120, HDR: true, Audio: "5.1"}
 	resp, err := Call(ctx, path, req)
 	if err != nil || !resp.OK || resp.Mode != "2560x1440@120" || !resp.HDR || resp.Message != "ready" {
 		t.Fatalf("begin = %+v, %v", resp, err)
@@ -111,6 +112,17 @@ func TestRoundTrip(t *testing.T) {
 	c.Close()
 	if !strings.HasPrefix(line, `{"ok":false,"message":"bad request`) {
 		t.Errorf("junk reply = %q", line)
+	}
+	// The handler only ever sees a known audio layout.
+	c, _ = net.Dial("unix", path)
+	c.Write([]byte(`{"op":"begin","width":1920,"height":1080,"audio":"9.9"}` + "\n"))
+	bufio.NewReader(c).ReadString('\n')
+	c.Close()
+	h.mu.Lock()
+	got := h.begins[len(h.begins)-1]
+	h.mu.Unlock()
+	if got.Audio != "" || got.Width != 1920 {
+		t.Errorf("raw begin reached the handler as %+v", got)
 	}
 	// A request without a trailing newline still works.
 	c, _ = net.Dial("unix", path)
@@ -241,15 +253,16 @@ func TestCallTimeout(t *testing.T) {
 
 func TestRequestFromEnv(t *testing.T) {
 	env := map[string]string{
-		"SUNSHINE_CLIENT_NAME":   " Jasper's MacBook ",
-		"SUNSHINE_APP_NAME":      "Steam Big Picture",
-		"SUNSHINE_CLIENT_WIDTH":  "2560",
-		"SUNSHINE_CLIENT_HEIGHT": "1600",
-		"SUNSHINE_CLIENT_FPS":    "59.94",
-		"SUNSHINE_CLIENT_HDR":    "true",
+		"SUNSHINE_CLIENT_NAME":                " Jasper's MacBook ",
+		"SUNSHINE_APP_NAME":                   "Steam Big Picture",
+		"SUNSHINE_CLIENT_WIDTH":               "2560",
+		"SUNSHINE_CLIENT_HEIGHT":              "1600",
+		"SUNSHINE_CLIENT_FPS":                 "59.94",
+		"SUNSHINE_CLIENT_HDR":                 "true",
+		"SUNSHINE_CLIENT_AUDIO_CONFIGURATION": "7.1",
 	}
 	req := RequestFromEnv(func(k string) string { return env[k] })
-	want := Request{Op: "begin", Client: "Jasper's MacBook", App: "Steam Big Picture", Width: 2560, Height: 1600, FPS: 60, HDR: true}
+	want := Request{Op: "begin", Client: "Jasper's MacBook", App: "Steam Big Picture", Width: 2560, Height: 1600, FPS: 60, HDR: true, Audio: "7.1"}
 	if req != want {
 		t.Errorf("req = %+v", req)
 	}
@@ -263,16 +276,37 @@ func TestRequestFromEnv(t *testing.T) {
 	if req := RequestFromEnv(func(string) string { return "" }); req != (Request{Op: "begin"}) {
 		t.Errorf("empty env = %+v", req)
 	}
+	for in, want := range map[string]string{
+		"2.0": "2.0", " 5.1\n": "5.1", "7.1": "7.1",
+		"": "", "stereo": "", "6": "", "7.1.4": "", "5.1 ": "5.1", "2,0": "",
+	} {
+		env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = in
+		if got := RequestFromEnv(func(k string) string { return env[k] }).Audio; got != want {
+			t.Errorf("audio %q = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAudioOnTheWire(t *testing.T) {
+	b, _ := json.Marshal(Request{Op: "begin", Width: 1280, Height: 800})
+	if strings.Contains(string(b), "audio") {
+		t.Errorf("unset audio is sent: %s", b)
+	}
+	b, _ = json.Marshal(Request{Op: "begin", Audio: "5.1"})
+	if !strings.Contains(string(b), `"audio":"5.1"`) {
+		t.Errorf("audio missing: %s", b)
+	}
 }
 
 func TestCLIRun(t *testing.T) {
 	h := &fakeHandler{}
 	path, cancel, _ := serve(t, h)
 	defer cancel()
-	env := map[string]string{"SUNSHINE_CLIENT_WIDTH": "1920", "SUNSHINE_CLIENT_HEIGHT": "1080", "SUNSHINE_CLIENT_FPS": "120"}
+	env := map[string]string{"SUNSHINE_CLIENT_WIDTH": "1920", "SUNSHINE_CLIENT_HEIGHT": "1080", "SUNSHINE_CLIENT_FPS": "120", "SUNSHINE_CLIENT_AUDIO_CONFIGURATION": "5.1"}
 	var log bytes.Buffer
 	run([]string{"begin"}, func(k string) string { return env[k] }, &log, path, time.Second)
-	if len(h.begins) != 1 || h.begins[0].FPS != 120 || !strings.Contains(log.String(), "begin: ok=true mode=2560x1440@120") {
+	if len(h.begins) != 1 || h.begins[0].FPS != 120 || h.begins[0].Audio != "5.1" ||
+		!strings.Contains(log.String(), `audio="5.1"`) || !strings.Contains(log.String(), "begin: ok=true mode=2560x1440@120") {
 		t.Errorf("begin: %+v %q", h.begins, log.String())
 	}
 	log.Reset()

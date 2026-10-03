@@ -1,7 +1,8 @@
 // pages/devices-list.js: the rest of Devices, loaded beside devices.js
 // (spec-cc-screens §4.2, §4.5, §4.6): the addresses to add this PC by,
-// Playing now, and the paired list (GET /sunshine/clients) with each
-// device's last mode from /display devices[], joined by name.
+// Playing now with its interface size (Adjust is devices-size.js), and the
+// paired list (GET /sunshine/clients) with each device's last mode from
+// /display devices[], joined by name.
 
 import { api, errorText, serverNow } from '../core/api.js';
 import { announce } from '../core/announce.js';
@@ -11,8 +12,12 @@ import { ago, clock, modeLabel, plural } from '../fmt.js';
 import { isStreaming, session } from '../state.js';
 import { region } from '../ui/region.js';
 import { notify } from '../ui/shell.js';
+import { kindGlyph, liveScreen, sizeWords, steamNote } from './devices-scale.js';
 
 const dialog = () => import('../ui/dialog.js');
+let sizeSheet = null; // devices-size.js, once Adjust loaded it
+const sizer = () => import('./devices-size.js').then((m) => (sizeSheet = m));
+const NO_KEY = "Can't tell this device apart from others, so its size can't be saved.";
 const copy = (el) => import('../ui/clipboard.js').then((m) => m.bindCopy(el));
 
 let snap = {};
@@ -25,6 +30,8 @@ let listKey = '';
 let seenKey = '';
 let addrKey = '';
 let known = null; // uuids shown so far: a new one arrives hot
+let local = null; // {sc, until}: the size sheet's screen, ahead of /status
+let localEnd = 0;
 
 // clients is what the pair card needs to know of the list; null before.
 export const clients = () => (paired || err ? { list: paired, err } : null);
@@ -33,6 +40,11 @@ export function init(opts) {
   hooks = opts;
   reg = region(byId('dev-paired'));
   byId('dev-end-stream').addEventListener('click', endStream);
+  byId('dev-size-adjust').addEventListener('click', (e) => {
+    // currentTarget is null once the import resolves; the sheet gives focus back to it.
+    const btn = e.currentTarget;
+    sizer().then((m) => m.openSize(btn));
+  });
   byId('dev-refresh').addEventListener('click', userRefresh);
   byId('dev-refresh').disabled = false;
   copy(byId('dev-addrs'));
@@ -83,6 +95,7 @@ function playing() {
   if (!isStreaming(snap)) {
     if (!box.hidden && box.contains(document.activeElement)) byId('dev-paired-title').focus();
     box.hidden = true;
+    if (sizeSheet) sizeSheet.refreshSize();
     return;
   }
   const ss = session(snap) || {};
@@ -95,7 +108,45 @@ function playing() {
   byId('dev-play-hdr').textContent = ss.hdr ? 'On' : 'Off';
   byId('dev-play-since').textContent = since;
   byId('dev-play-since-row').hidden = !since;
+  size();
   box.hidden = false;
+}
+
+// screen is the screen playing now; the size sheet's own edit wins while
+// its answer and the /status after it are on their way. With sizing off
+// there is none, whatever a replayed session.begin still carries.
+export function screen() {
+  const ss = isStreaming(snap) && display().ui_scaling !== false ? session(snap) : null;
+  const sc = liveScreen(snap.display, ss);
+  if (sc && local && local.sc.id === sc.id && Date.now() < local.until) return local.sc;
+  return sc;
+}
+
+export function showLocal(sc, ms) {
+  local = sc ? { sc, until: Date.now() + ms } : null;
+  // When it ends, a change /status brought meanwhile (another tab's) shows.
+  clearTimeout(localEnd);
+  if (sc) localEnd = setTimeout(() => isStreaming(snap) && size(), ms + 50);
+  if (isStreaming(snap)) size();
+}
+
+export const display = () => snap.display || {};
+
+// Interface size: with VaporOS sizing, the screen's size and Adjust, or
+// why it can't change; with sizing off, Steam's own.
+function size() {
+  const d = snap.display || {};
+  const sc = screen();
+  byId('dev-play-size-row').hidden = !sc && d.ui_scaling !== false;
+  byId('dev-play-size').textContent = sc ? sizeWords(sc) : "Steam's own size";
+  byId('dev-size-adjust').hidden = !(sc && sc.savable);
+  const steam = steamNote(sc ? d.steam_ui : '');
+  const p = byId('dev-size-note');
+  // A fault, or a resumed stream, which keeps its size whatever Adjust does.
+  p.textContent = !sc ? '' : !sc.savable ? NO_KEY : steam.error || d.steam_ui === 'resumed' ? steam.text : '';
+  p.dataset.tone = sc && sc.savable && steam.error ? 'error' : '';
+  p.hidden = !p.textContent;
+  if (sizeSheet) sizeSheet.refreshSize();
 }
 
 // busy keeps a button focusable, which disabled would not (ARCH §6.10).
@@ -164,13 +215,14 @@ function rows() {
   const seen = new Map(devices().map((d) => [d.name, d]).reverse()); // one per mode, newest first
   const ss = isStreaming(snap) ? session(snap) : null;
   const now = serverNow();
+  const screens = snap.display && snap.display.screens;
   return paired
     .map((c) => {
       const name = String(c.name || '').trim();
       const d = (name && seen.get(name)) || null;
       const on = !!(ss && ss.client && ss.client === name);
       const sub = on ? (ss.mode ? mode(ss.mode, ss.hdr) : '') : d ? used(d, now) : '';
-      return { uuid: c.uuid, name, label: name || 'Unnamed device', enabled: c.enabled !== false, on, at: (d && Date.parse(d.last_seen)) || 0, sub };
+      return { uuid: c.uuid, name, label: name || 'Unnamed device', enabled: c.enabled !== false, on, at: (d && Date.parse(d.last_seen)) || 0, sub, kind: kindGlyph(name, screens) };
     })
     .sort((a, b) => b.on - a.on || b.at - a.at || a.label.localeCompare(b.label));
 }
@@ -179,7 +231,7 @@ function render() {
   const all = rows();
   byId('dev-paired-count').textContent = ` · ${plural(all.length, 'device')}`;
   seenBefore(all);
-  const key = JSON.stringify(all.map((r) => [r.uuid, r.label, r.enabled, r.on, r.sub]));
+  const key = JSON.stringify(all.map((r) => [r.uuid, r.label, r.enabled, r.on, r.sub, r.kind]));
   if (key === listKey) return;
   listKey = key;
   const fresh = known ? all.filter((r) => !known.has(r.uuid)) : [];
@@ -243,7 +295,7 @@ function seenBefore(all) {
   const extra = devices().filter((d) => d.name && !names.has(d.name));
   byId('dev-seen').hidden = !extra.length;
   byId('dev-seen-count').textContent = extra.length ? ` · ${extra.length}` : '';
-  const key = JSON.stringify(extra);
+  const key = JSON.stringify([extra, extra.map((d) => kindGlyph(d.name, (snap.display || {}).screens))]);
   if (key === seenKey) return;
   seenKey = key;
   const now = serverNow();
@@ -256,7 +308,8 @@ function seenBefore(all) {
   }));
 }
 
-// ⟦cc-device-glyph⟧: a kind guessed from the name; the name says the rest.
+// ⟦cc-device-glyph⟧: the kind its screens agree on (GET /display
+// screens), else a kind guessed from the name; the name says the rest.
 const GLYPHS = [
   [/\b(tv|shield|chromecast|bravia|fire ?stick|living ?room|bedroom)\b/i, () => icon('tv')],
   [/\b(deck|ally|legion go|switch|handheld)\b/i, () => icon('gamepad')],
@@ -266,6 +319,8 @@ const GLYPHS = [
 ];
 
 function glyph(name) {
+  const kind = kindGlyph(name, snap.display && snap.display.screens);
+  if (kind) return icon(kind);
   const hit = GLYPHS.find(([re]) => re.test(name || ''));
   return hit ? hit[1]() : icon('devices');
 }

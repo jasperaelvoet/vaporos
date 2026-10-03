@@ -3,11 +3,13 @@
 // pad driven by pairing.state (one device, two, and the same phone coming
 // back from Moonlight), the paired list with each device's last mode,
 // Refresh and Unpair, and Playing now with End stream. Each ID is a row of
-// tools/web/e2e/parity.json (owner C2). See legacy.spec.mjs for the format.
+// tools/web/e2e/parity.json (owner C2). The DEV-scale-* flows are each
+// device's interface size (CONTRACTS Display policy, Scaling), which the
+// eight-page UI never had (BEYOND_PARITY). See legacy.spec.mjs for the format.
 
 import assert from 'node:assert/strict';
 
-import { closed, dev } from '../lib/dev.mjs';
+import { armed, closed, dev, write } from '../lib/dev.mjs';
 
 const text = async (page, sel) => (await page.textContent(sel))?.trim() ?? '';
 const focused = (page) => page.evaluate(() => document.activeElement?.id || document.activeElement?.dataset?.part || document.activeElement?.tagName || '');
@@ -42,6 +44,48 @@ const CLIENTS = [
 ];
 
 const unpairIn = (page, name) => page.locator('#dev-paired li', { hasText: name }).locator('[data-part="unpair"]');
+
+// The streaming preset's TV (internal/web/fixtures/base/display.json).
+const TV_SCREEN = '27eddd2e84ba';
+const PHONE_SCREEN = '4bb2226e22c8'; // Sam's iPhone
+// The streaming preset's sim.size_ranges: below this a 4K TV's scale is
+// Steam's minimum, and above PHONE_MAX a 2796x1290 phone's its maximum.
+const TV_MIN = 0.5548518518518518;
+const PHONE_MAX = 1.6744186046511629;
+const RESUMED = "This stream was resumed. Changes apply from this device's next start.";
+const nbsp = (t) => t.replace(/\u00a0/g, ' ');
+const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 5000 });
+const glyphOf = (li) => li.locator('[data-part="glyph"] use').getAttribute('href');
+
+// adjust opens the size sheet from Playing now.
+async function adjust(page) {
+  await page.locator('#dev-size-adjust').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await page.click('#dev-size-adjust');
+  await page.locator('#size-sheet[open]').waitFor();
+  // Done sliding in: a trial click waits for it to hold still.
+  await page.locator('#size-title').click({ trial: true });
+}
+
+// putAs sends a PUT as another tab would.
+const putAs = (page, path, body) =>
+  page.evaluate(async ([p, b]) => {
+    const me = await (await fetch('/api/v1/auth/me')).json();
+    const r = await fetch(`/api/v1${p}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-VOS-CSRF': me.csrf }, body: JSON.stringify(b) });
+    return r.status;
+  }, [path, body]);
+const putScreen = (page, id, body) => putAs(page, `/display/screens/${id}`, body);
+
+// patchStatus answers GET /status with the real answer changed by fn.
+async function patchStatus(page, fn) {
+  await page.route('**/api/v1/status', async (route) => {
+    try {
+      const res = await route.fetch({ url: route.request().url().replace('//vapor.local:', '//127.0.0.1:') });
+      await route.fulfill({ status: res.status(), contentType: 'application/json', body: JSON.stringify(fn(await res.json())) });
+    } catch {
+      // The page went on while this answer was in flight.
+    }
+  });
+}
 
 export default [
   {
@@ -445,6 +489,348 @@ export default [
         await page.locator('#pinpad[open]').waitFor({ timeout: 1000 });
         assert.equal(await text(page, '#pin-title'), 'Steam Deck wants to pair');
         assert.deepEqual(passive, ['1']);
+      });
+    },
+  },
+  // ------------------------------------------- interface size (DEV-scale)
+  {
+    id: 'DEV-scale-fact',
+    ui: ['next'],
+    preset: 'streaming',
+    async run({ page, url, ready, server, step }) {
+      await page.goto(url('/devices'));
+      await ready();
+      await step('Playing now says the interface size and offers Adjust', async () => {
+        await page.locator('#dev-playing:not([hidden])').waitFor();
+        assert.equal(await text(page, '#dev-play-size-row dt'), 'Interface size');
+        assert.equal(nbsp(await text(page, '#dev-play-size')), 'Automatic · looks like a TV');
+        assert.equal(await page.isVisible('#dev-size-adjust'), true);
+        assert.equal(await page.getAttribute('#dev-size-adjust', 'aria-haspopup'), 'dialog');
+        assert.equal(await page.isVisible('#dev-size-note'), false);
+      });
+      await step('a size changed elsewhere shows once GET /display has it', async () => {
+        assert.equal(await putScreen(page, TV_SCREEN, { kind: 'monitor', size: 1.2 }), 200);
+        await page.locator('#dev-play-size', { hasText: 'Monitor · 120%' }).waitFor();
+      });
+      await step('a device the box cannot tell apart says why its size cannot be saved, without Adjust', async () => {
+        await dev(server, 'event', { topic: 'session.end', data: {} });
+        await dev(server, 'event', {
+          topic: 'session.begin',
+          data: { client: 'roth', mode: '2796x1290@120', hdr: false, app: 'Steam', since: '@now', screen: { id: '', name: 'roth', kind: 'phone', kind_from: 'resolution', ui_scale: 2.7, game_dpi: 168 } },
+        });
+        await page.locator('#dev-play-by', { hasText: 'roth' }).waitFor();
+        await page.locator('#dev-size-note:not([hidden])').waitFor();
+        assert.equal(await text(page, '#dev-size-note'), "Can't tell this device apart from others, so its size can't be saved.");
+        assert.equal(nbsp(await text(page, '#dev-play-size')), 'Automatic · looks like a phone');
+        assert.equal(await page.isVisible('#dev-size-adjust'), false);
+      });
+      await step('a row takes the kind its screens agree on; a name with no screens keeps its own glyph', async () => {
+        await page.locator('#dev-seen-list [data-part="name"]', { hasText: 'roth' }).waitFor({ state: 'attached' });
+        assert.equal(await glyphOf(page.locator('#dev-seen-list li', { hasText: 'roth' })), '#i-phone');
+        assert.equal(await glyphOf(page.locator('#dev-paired li', { hasText: 'Living room TV' })), '#i-monitor');
+        assert.equal(await glyphOf(page.locator('#dev-paired li', { hasText: 'MacBook Pro' })), '#i-laptop');
+      });
+    },
+  },
+  {
+    id: 'DEV-scale-adjust',
+    ui: ['next'],
+    preset: 'streaming',
+    async run({ page, url, ready, step }) {
+      await page.goto(url('/devices'));
+      await ready();
+      const path = `/display/screens/${TV_SCREEN}`;
+      await step('Adjust opens the sheet for the device playing, automatic, with why', async () => {
+        await adjust(page);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'size-title');
+        assert.equal(nbsp(await text(page, '#size-for')), 'Living room TV · 3840 × 2160 · 60 Hz');
+        assert.equal(await page.isChecked('#size-kinds input[value="auto"]'), true);
+        assert.equal(await text(page, '#size-auto'), 'Automatic: looks like a TV, from its name.');
+        assert.equal(await text(page, '#size-pct'), '100%');
+        assert.equal(await page.getAttribute('#size-reset', 'aria-disabled'), 'true');
+        assert.equal(await page.isChecked('#size-steam-auto'), false);
+        assert.equal(await page.isVisible('#size-steam'), false);
+        // Only Steam's menus: games' text follows only some Linux games, and few steps.
+        assert.equal(await text(page, '#size-hint'), "Steam's menus, in 10% steps.");
+      });
+      await step('+ makes it 10% bigger at once and pins the kind in effect', async () => {
+        const body = write(page, 'PUT', path);
+        await page.click('#size-up');
+        assert.equal(await text(page, '#size-pct'), '110%');
+        assert.deepEqual(await body, { size: 1.1 });
+        assert.equal(await page.isChecked('#size-kinds input[value="tv"]'), true);
+        await page.locator('#dev-play-size', { hasText: 'TV · 110%' }).waitFor();
+        assert.equal(await page.getAttribute('#size-reset', 'aria-disabled'), null);
+      });
+      await step('quick taps go out in order and the last one stays', async () => {
+        const bodies = [];
+        const seen = (r) => r.method() === 'PUT' && r.url().endsWith(path) && bodies.push(r.postDataJSON());
+        page.on('request', seen);
+        const last = armed(page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().endsWith(path) && r.request().postDataJSON()?.size === 0.8));
+        await page.click('#size-down');
+        await page.click('#size-down');
+        await page.click('#size-down');
+        await until(page, () => document.getElementById('size-pct').textContent === '80%');
+        await last;
+        page.off('request', seen);
+        assert.deepEqual(bodies, [{ size: 1 }, { size: 0.9 }, { size: 0.8 }]);
+        await page.locator('#dev-play-size', { hasText: 'TV · 80%' }).waitFor();
+      });
+      await step('another kind starts at 100%', async () => {
+        const body = write(page, 'PUT', path);
+        await page.click('#size-kinds .pick:has-text("Monitor")');
+        assert.deepEqual(await body, { kind: 'monitor' });
+        assert.equal(await text(page, '#size-pct'), '100%');
+        await page.locator('#dev-play-size', { hasText: 'Monitor · 100%' }).waitFor();
+        assert.equal(await text(page, '#size-auto'), 'Automatic: looks like a TV.');
+      });
+      await step("Steam's own size hands sizing to Steam, and the kind and size wait", async () => {
+        const body = write(page, 'PUT', path);
+        await page.click('#size-steam-auto');
+        assert.deepEqual(await body, { steam_auto: true });
+        assert.equal(await page.isChecked('#size-steam-auto'), true);
+        assert.equal(await page.isDisabled('#size-kinds input[value="tv"]'), true);
+        assert.equal(await page.getAttribute('#size-up', 'aria-disabled'), 'true');
+        await page.locator('#dev-play-size', { hasText: "Steam's own size" }).waitFor();
+      });
+      await step('Reset is automatic at 100%, sized by VaporOS', async () => {
+        const body = write(page, 'PUT', path);
+        await page.click('#size-reset');
+        assert.deepEqual(await body, { kind: 'auto', size: 1 });
+        assert.equal(await page.isChecked('#size-kinds input[value="auto"]'), true);
+        assert.equal(await page.isChecked('#size-steam-auto'), false);
+        await page.locator('#dev-play-size', { hasText: 'Automatic · looks like a TV' }).waitFor();
+        await until(page, () => document.getElementById('size-reset').getAttribute('aria-disabled') === 'true');
+      });
+      await step('Done closes it and gives focus back to Adjust', async () => {
+        await page.click('#size-sheet .sheet-actions .btn.primary');
+        await closed(page, 'size-sheet');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'dev-size-adjust');
+      });
+      await step('a click that does not focus Adjust (Safari) still gets focus back to it', async () => {
+        await page.$eval('#dev-size-adjust', (b) => {
+          b.blur();
+          b.click();
+        });
+        await page.locator('#size-sheet[open]').waitFor();
+        await page.keyboard.press('Escape');
+        await closed(page, 'size-sheet');
+        await page.waitForTimeout(50); // the sheet's own fallback runs a task later
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'dev-size-adjust');
+      });
+    },
+  },
+  {
+    id: 'DEV-scale-limits',
+    ui: ['next'],
+    preset: 'streaming',
+    allow: [/status of 500/, /500 PUT .*\/api\/v1\/display\/screens\//],
+    async run({ page, url, ready, server, step }) {
+      await page.goto(url('/devices'));
+      await ready();
+      await step('at 250% + rests, and − still works', async () => {
+        assert.equal(await putScreen(page, TV_SCREEN, { size: 2.5 }), 200);
+        await page.locator('#dev-play-size', { hasText: 'TV · 250%' }).waitFor();
+        await adjust(page);
+        assert.equal(await text(page, '#size-pct'), '250%');
+        assert.equal(await page.getAttribute('#size-up', 'aria-disabled'), 'true');
+        assert.equal(await page.getAttribute('#size-down', 'aria-disabled'), null);
+        const asked = [];
+        const seen = (r) => r.method() === 'PUT' && asked.push(r.url());
+        page.on('request', seen);
+        // aria-disabled keeps it focusable: a press is taken and does nothing.
+        await page.click('#size-up', { force: true });
+        await page.waitForTimeout(300);
+        page.off('request', seen);
+        assert.deepEqual(asked, []);
+      });
+      await step('a change VaporOS refuses goes back, and says why', async () => {
+        await page.route('**/api/v1/display/screens/*', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"saving screens: disk full"}' }));
+        await page.click('#size-down');
+        await page.locator('.notice', { hasText: 'Saving screens: disk full' }).waitFor();
+        await until(page, () => document.getElementById('size-pct').textContent === '250%');
+        assert.equal(await page.isChecked('#size-kinds input[value="tv"]'), true);
+        await page.unroute('**/api/v1/display/screens/*');
+      });
+      await step('a fault in sizing Steam is one quiet line, here and in Playing now', async () => {
+        await page.keyboard.press('Escape');
+        await closed(page, 'size-sheet');
+        await patchStatus(page, (st) => ({ ...st, display: { ...st.display, steam_ui: 'no-debugger' } }));
+        await dev(server, 'event', { topic: 'display.changed', data: {} });
+        await page.locator('#dev-size-note:not([hidden])').waitFor();
+        assert.equal(await text(page, '#dev-size-note'), "Can't size Steam right now. Steam's own setting still works.");
+        assert.equal(await page.getAttribute('#dev-size-note', 'data-tone'), 'error');
+        await adjust(page);
+        assert.equal(await text(page, '#size-steam'), "Can't size Steam right now. Steam's own setting still works.");
+        assert.equal(await page.getAttribute('#size-up', 'aria-disabled'), 'true');
+      });
+      await step("− rests where Steam's own minimum holds a 4K TV's scale", async () => {
+        assert.equal(await putScreen(page, TV_SCREEN, { size: 0.6 }), 200);
+        await until(page, () => document.getElementById('size-pct').textContent === '60%');
+        assert.equal(await page.getAttribute('#size-down', 'aria-disabled'), null);
+        const body = write(page, 'PUT', `/display/screens/${TV_SCREEN}`);
+        await page.click('#size-down');
+        assert.deepEqual(await body, { size: TV_MIN });
+        assert.equal(await text(page, '#size-pct'), '55%');
+        assert.equal(await page.getAttribute('#size-down', 'aria-disabled'), 'true');
+        assert.equal(await page.getAttribute('#size-up', 'aria-disabled'), null);
+      });
+      await step('the sheet goes with the stream, and focus lands on the list', async () => {
+        await dev(server, 'event', { topic: 'session.end', data: {} });
+        await closed(page, 'size-sheet');
+        await page.locator('#dev-playing[hidden]').waitFor({ state: 'attached' });
+        await until(page, () => document.activeElement.id === 'dev-paired-title');
+      });
+      await step("+ rests where Steam's maximum holds a phone's, and a size beyond it steps down from there", async () => {
+        await page.unroute('**/api/v1/status');
+        await dev(server, 'event', {
+          topic: 'session.begin',
+          data: { client: "Sam's iPhone", mode: '2796x1290@120', hdr: false, app: 'Steam', since: '@now', screen: { id: PHONE_SCREEN, name: "Sam's iPhone", kind: 'phone', kind_from: 'name', ui_scale: 2.7, game_dpi: 168 } },
+        });
+        await page.locator('#dev-play-by', { hasText: "Sam's iPhone" }).waitFor();
+        assert.equal(await putScreen(page, PHONE_SCREEN, { size: 1.6 }), 200);
+        await page.locator('#dev-play-size', { hasText: 'Phone · 160%' }).waitFor();
+        await adjust(page);
+        const up = write(page, 'PUT', `/display/screens/${PHONE_SCREEN}`);
+        await page.click('#size-up');
+        assert.deepEqual(await up, { size: PHONE_MAX });
+        assert.equal(await text(page, '#size-pct'), '167%');
+        assert.equal(await page.getAttribute('#size-up', 'aria-disabled'), 'true');
+        assert.equal(await putScreen(page, PHONE_SCREEN, { size: 2.5 }), 200);
+        await until(page, () => document.getElementById('size-pct').textContent === '250%');
+        assert.equal(await page.getAttribute('#size-up', 'aria-disabled'), 'true');
+        const down = write(page, 'PUT', `/display/screens/${PHONE_SCREEN}`);
+        await page.click('#size-down');
+        assert.deepEqual(await down, { size: 1.6 });
+        assert.equal(await text(page, '#size-pct'), '160%');
+      });
+    },
+  },
+  {
+    id: 'DEV-scale-follow',
+    ui: ['next'],
+    preset: 'streaming',
+    async run({ page, url, ready, server, step }) {
+      await page.goto(url('/devices'));
+      await ready();
+      await step("sizing turned off elsewhere is Steam's own size, without Adjust", async () => {
+        await page.locator('#dev-play-size', { hasText: 'Automatic · looks like a TV' }).waitFor();
+        assert.equal(await putAs(page, '/display/settings', { ui_scaling: false }), 200);
+        await page.locator('#dev-play-size', { hasText: "Steam's own size" }).waitFor();
+        assert.equal(await page.isVisible('#dev-size-adjust'), false);
+        assert.equal(await page.isVisible('#dev-size-note'), false);
+      });
+      await step('a reload keeps it, though the event stream replays the session.begin that had a size', async () => {
+        await page.reload();
+        await ready();
+        await page.locator('#dev-playing:not([hidden])').waitFor();
+        await page.waitForTimeout(1000); // the replay, and the /status after it
+        assert.equal(nbsp(await text(page, '#dev-play-size')), "Steam's own size");
+        assert.equal(await page.isVisible('#dev-size-adjust'), false);
+      });
+      await step('turned on again, the size and Adjust come back', async () => {
+        assert.equal(await putAs(page, '/display/settings', { ui_scaling: true }), 200);
+        await page.locator('#dev-play-size', { hasText: 'Automatic · looks like a TV' }).waitFor();
+        assert.equal(await page.isVisible('#dev-size-adjust'), true);
+      });
+      await step('a device told apart after it began gets its size and Adjust, also after a reload', async () => {
+        await dev(server, 'event', { topic: 'session.end', data: {} });
+        await dev(server, 'event', {
+          topic: 'session.begin',
+          data: { client: 'roth', mode: '2400x1080@120', hdr: false, app: 'Steam', since: '@now', screen: { id: '', name: 'roth', kind: 'phone', kind_from: 'resolution', ui_scale: 2.25, game_dpi: 144 } },
+        });
+        await page.locator('#dev-size-note', { hasText: "Can't tell this device apart" }).waitFor();
+        // The scaler found it by RTSP: /status's stream and the screens have its id; session.begin is not sent again.
+        const id = 'd96f2aa20204';
+        await patchStatus(page, (st) => {
+          if (!st.stream || !st.stream.screen) return st;
+          const screens = (st.display.screens || []).map((sc) => (sc.id === '' ? { ...sc, id, savable: true } : sc));
+          return { ...st, stream: { ...st.stream, screen: { ...st.stream.screen, id } }, display: { ...st.display, screens } };
+        });
+        await dev(server, 'event', { topic: 'display.changed', data: {} });
+        await page.locator('#dev-size-adjust:not([hidden])').waitFor();
+        assert.equal(await page.isVisible('#dev-size-note'), false);
+        assert.equal(nbsp(await text(page, '#dev-play-size')), 'Automatic · looks like a phone');
+        await page.reload();
+        await ready();
+        await page.locator('#dev-size-adjust:not([hidden])').waitFor();
+        await page.waitForTimeout(1000);
+        assert.equal(await page.isVisible('#dev-size-adjust'), true);
+        assert.equal(await page.isVisible('#dev-size-note'), false);
+      });
+    },
+  },
+  {
+    id: 'DEV-scale-resumed',
+    ui: ['next'],
+    preset: 'streaming',
+    async run({ page, url, ready, server, step }) {
+      await page.goto(url('/devices'));
+      await ready();
+      await step('a resumed stream says, calmly, that a change applies from the next start', async () => {
+        await page.locator('#dev-play-size', { hasText: 'Automatic · looks like a TV' }).waitFor();
+        await patchStatus(page, (st) => ({ ...st, display: { ...st.display, steam_ui: 'resumed' } }));
+        await dev(server, 'event', { topic: 'display.changed', data: {} });
+        await page.locator('#dev-size-note:not([hidden])').waitFor();
+        assert.equal(await text(page, '#dev-size-note'), RESUMED);
+        assert.equal(await page.getAttribute('#dev-size-note', 'data-tone'), '');
+        assert.equal(await page.isVisible('#dev-size-adjust'), true);
+      });
+      await step('the sheet says so too, and still stores a size', async () => {
+        await adjust(page);
+        assert.equal(await text(page, '#size-steam'), RESUMED);
+        assert.equal(await page.getAttribute('#size-steam', 'data-tone'), '');
+        const body = write(page, 'PUT', `/display/screens/${TV_SCREEN}`);
+        await page.click('#size-up');
+        assert.deepEqual(await body, { size: 1.1 });
+        assert.equal(await text(page, '#size-pct'), '110%');
+      });
+    },
+  },
+  {
+    id: 'DEV-scale-pin-kind',
+    ui: ['next'],
+    async run({ page, url, ready, server, step }) {
+      const bodies = pairBodies(page);
+      const hints = [];
+      page.on('request', (r) => r.method() === 'POST' && r.url().endsWith('/api/v1/display/hint') && hints.push({ body: r.postDataJSON(), passive: r.headers()['x-vos-passive'] ?? '' }));
+      const first = armed(page.waitForRequest((r) => r.url().endsWith('/api/v1/display/hint')));
+      await page.goto(url('/devices'));
+      await ready();
+      await page.locator('#link[data-link="live"]').waitFor();
+      await step('signed in, the page tells VaporOS its screen once, passive', async () => {
+        await first;
+        assert.equal(hints.length, 1);
+        assert.equal(hints[0].passive, '1');
+        assert.deepEqual(Object.keys(hints[0].body).sort(), ['dpr', 'h', 'touch', 'w']);
+        assert.ok(Number.isInteger(hints[0].body.w) && hints[0].body.w > 0);
+      });
+      await step('a reload within 12 h does not tell it again', async () => {
+        await page.reload();
+        await ready();
+        await page.waitForTimeout(300);
+        assert.equal(hints.length, 1);
+      });
+      await step("a device Moonlight calls roth leaves the name empty, so VaporOS can name it; the pad tells its screen again", async () => {
+        await page.locator('#link[data-link="live"]').waitFor();
+        const again = armed(page.waitForRequest((r) => r.url().endsWith('/api/v1/display/hint')));
+        await dev(server, 'event', { topic: 'pairing.state', data: { pairings: [{ id: 'aa11bb22cc33dd44ee55ff6677889900', name: 'roth', address: '192.168.1.52' }] } });
+        await page.locator('#pinpad[open]').waitFor({ timeout: 3000 });
+        await again;
+        assert.equal(hints.length, 2);
+        await page.click('#pinpad .pin-more summary');
+        assert.equal(await page.inputValue('#pin-device-name'), '');
+        assert.equal(await text(page, '#pin-device-hint'), 'How this device shows in Devices. Leave it empty to name it after this device, when you pair from it.');
+      });
+      await step('What is it? starts on Automatic and its pick goes with the PIN as kind', async () => {
+        assert.equal(await page.isChecked('#pin-kinds input[value=""]'), true);
+        await page.click('#pin-kinds .pick:has-text("TV")');
+        assert.equal(await page.isChecked('#pin-kinds input[value="tv"]'), true);
+        await page.focus('#pin');
+        await typePIN(page, '1234');
+        await page.locator('#pinpad[data-phase="success"]').waitFor({ state: 'attached' });
+        assert.deepEqual(bodies, [{ pin: '1234', name: '', kind: 'tv' }]);
+        assert.equal(await text(page, '#pin-status'), 'The device is paired. Pick Steam in Moonlight to play.');
       });
     },
   },

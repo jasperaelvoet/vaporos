@@ -1,7 +1,8 @@
 // Flows over Screen (spec-cc-screens §5): Right now, stream quality, the
 // virtual screen, resolutions, the stream server, ports and layers. Each ID
-// is a row of tools/web/e2e/parity.json (owner C3). See legacy.spec.mjs for
-// the flow format.
+// is a row of tools/web/e2e/parity.json (owner C3); SCR-scale-* are sizing
+// Steam for each device, which the eight-page UI never had (BEYOND_PARITY).
+// See legacy.spec.mjs for the flow format.
 
 import assert from 'node:assert/strict';
 
@@ -304,6 +305,43 @@ export default [
         await page.click('#hdr');
         await notice(page, 'Saving config: disk full');
         await until(page, () => !document.getElementById('hdr').checked);
+      });
+    },
+  },
+  {
+    id: 'SCR-scale-switch',
+    ui: ['next'],
+    allow: [/status of 500/, /500 PUT .*\/api\/v1\/display\/settings$/],
+    async run(t) {
+      const { page, step } = t;
+      await step('Size Steam for each device is on, and the switch applies at once', async () => {
+        await open(t);
+        assert.equal(await page.getAttribute('#ui-scaling', 'role'), 'switch');
+        assert.equal(await page.isChecked('#ui-scaling'), true);
+        assert.equal(await text(page, 'label[for="ui-scaling"]'), 'Size Steam for each device');
+        assert.equal(await text(page, '#ui-scaling-hint'), "Fits Steam's menus, and some Linux games, to each device's screen.");
+        const body = write(page, 'PUT', '/display/settings');
+        await press(page, '#ui-scaling');
+        assert.deepEqual(await body, { ui_scaling: false });
+        await page.locator('#announce-polite', { hasText: 'Sizing Steam for each device off' }).waitFor({ state: 'attached' });
+        await open(t);
+        assert.equal(await page.isChecked('#ui-scaling'), false);
+      });
+      await step('a failed save flips it back and says why', async () => {
+        await page.route('**/api/v1/display/settings', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"saving config: disk full"}' }));
+        await press(page, '#ui-scaling');
+        await notice(page, 'Saving config: disk full');
+        await until(page, () => !document.getElementById('ui-scaling').checked);
+        await page.unroute('**/api/v1/display/settings');
+      });
+      await step('an older VaporOS without the setting shows no switch', async () => {
+        await patchJSON(page, '/status', (st) => {
+          delete st.display.ui_scaling;
+          return st;
+        });
+        await open(t);
+        assert.equal(await page.isVisible('#scaling-row'), false);
+        assert.equal(await page.isVisible('#hdr'), true);
       });
     },
   },

@@ -5,13 +5,19 @@
       "streaming": true,
       "session": {"client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@-25m"}
     },
-    "display": {"state": "streaming", "current": "3840x2160@60"}
+    "display": {"state": "streaming", "current": "3840x2160@60", "steam_ui": "ok"}
   },
   "events": [
     [
       "session.begin",
-      {"client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@-25m"}
+      {
+        "client": "Living room TV", "mode": "3840x2160@60", "hdr": true, "app": "Steam", "since": "@-25m",
+        "screen": {"id": "27eddd2e84ba", "name": "Living room TV", "kind": "tv", "kind_from": "name", "ui_scale": 2.55, "game_dpi": 192}
+      }
     ]
   ],
+  "sim": {
+    "size_ranges": {"27eddd2e84ba": [0.5548518518518518, 2.5], "4bb2226e22c8": [0.4, 1.6744186046511629]}
+  },
   "expect": {"hero": "streaming", "restart": [], "cards": []}
 }

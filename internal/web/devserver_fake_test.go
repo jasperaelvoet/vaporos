@@ -31,12 +31,15 @@ type devFake struct {
 	booted     time.Time
 	lastTouch  time.Time // the viewer's last request (web activity)
 	idleSince  time.Time
-	powerSent  string          // what the last power.idle said: "" none yet, "idle", or the busy reason
-	restMode   any             // display.current before a stream
-	stage      *fakeStageRun   // the running update stage
-	installing bool            // an install job runs
-	installed  *devBoot        // what the ISO boots once the install is done
-	ctx        context.Context // the world's lifetime
+	powerSent  string            // what the last power.idle said: "" none yet, "idle", or the busy reason
+	restMode   any               // display.current before a stream
+	stream     map[string]any    // the running session's session.begin, screen and all (GET /status stream)
+	guessFrom  map[string]string // screen id → the kind_from of its guess (autoScreenLocked)
+	resumed    bool              // steam_ui was resumed when display.ui_scaling went off (scalingLocked)
+	stage      *fakeStageRun     // the running update stage
+	installing bool              // an install job runs
+	installed  *devBoot          // what the ISO boots once the install is done
+	ctx        context.Context   // the world's lifetime
 	routes     []fakeRoute
 }
 
@@ -64,7 +67,7 @@ func newDevFake(d *devServer, w *devWorld, p *fakePreset, docs map[string]any, i
 	now := time.Now()
 	f := &devFake{
 		d: d, preset: p, installer: installer, docs: docs, ctx: context.Background(),
-		errs: map[string]fakeError{}, lat: map[string]time.Duration{},
+		errs: map[string]fakeError{}, lat: map[string]time.Duration{}, guessFrom: map[string]string{},
 		booted:    now.Add(-time.Duration(asNum(asObj(docs["system"])["uptime_s"])) * time.Second),
 		idleSince: now.Add(-time.Duration(p.Sim.IdleSeconds) * time.Second),
 		restMode:  asObj(docs["display"])["current"],
@@ -223,26 +226,35 @@ func (f *devFake) emitLocked(topic string, data any) {
 // Sunshine and the display follow a session (sunshine.go onEvent,
 // display/modeswitch.go), Sunshine's pairings follow pairing.state and
 // whether it runs sunshine.state, and the update state follows update.state.
+//
+// A session.begin's screen is the display's alone: GET /status stream
+// keeps the whole payload, Sunshine's session never has it, and GET
+// /display screens takes it as the display's scaler would (screenBeginLocked).
 func (f *devFake) followLocked(topic string, data any) {
 	m := asObj(data)
 	sun, disp := f.doc("sunshine"), f.doc("display")
 	switch topic {
 	case "session.begin":
-		sess := asObj(deepCopyJSON(m))
-		if asStr(sess["since"]) == "" {
-			sess["since"] = time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+		stream := asObj(deepCopyJSON(m))
+		if asStr(stream["since"]) == "" {
+			stream["since"] = time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
 		}
+		sess := cloneDoc(stream)
+		delete(sess, "screen")
 		if disp["state"] != "streaming" {
 			f.restMode = disp["current"]
 		}
+		f.stream = stream
 		sun["streaming"], sun["session"] = true, sess
 		disp["state"] = "streaming"
 		if mode := asStr(m["mode"]); mode != "" {
 			disp["current"] = mode
 		}
 		f.rememberDeviceLocked(asStr(m["client"]), asStr(m["mode"]), m["hdr"] == true)
+		f.screenBeginLocked(stream)
 		f.powerCheckLocked(time.Now(), false)
 	case "session.end":
+		f.stream, f.resumed = nil, false
 		sun["streaming"], sun["session"] = false, nil
 		disp["state"] = "none"
 		for _, c := range asList(disp["connectors"]) {
@@ -251,6 +263,7 @@ func (f *devFake) followLocked(topic string, data any) {
 			}
 		}
 		disp["current"] = f.restMode
+		screensStreamEnded(disp)
 		f.powerCheckLocked(time.Now(), false)
 	case "pairing.state":
 		ps := asList(m["pairings"])
@@ -315,6 +328,7 @@ func (f *devFake) bootState(change func(docs map[string]any)) *devBoot {
 	if sun["streaming"] == true {
 		sun["streaming"], sun["session"] = false, nil
 		disp["state"], disp["current"] = "welcome", f.restMode
+		screensStreamEnded(disp)
 	}
 	disp["reboot_needed"] = false
 	sun["pairings"], sun["pending_pairing"] = []any{}, false

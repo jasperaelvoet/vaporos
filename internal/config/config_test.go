@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -45,4 +46,31 @@ func TestConcurrentUpdates(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestUIScalingDefaultsOn(t *testing.T) {
+	StateDir = t.TempDir()
+	if !Defaults().Display.UIScaling {
+		t.Fatal("Defaults: ui_scaling off")
+	}
+	// A config.json from before the setting keeps the default.
+	if err := WriteFileAtomic(ConfigPath(), []byte(`{"schema":1,"display":{"virtual_connector":"DP-1","hdr":false}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Display.UIScaling || c.Display.HDR || c.Display.VirtualConnector != "DP-1" {
+		t.Errorf("old file: display = %+v", c.Display)
+	}
+	if err := c.Mutate(func(c *Config) { c.Display.UIScaling = false }); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Load(); err != nil || c.Display.UIScaling {
+		t.Errorf("saved false: ui_scaling = %v, %v", c.Display.UIScaling, err)
+	}
+	if ScreensPath() != filepath.Join(StateDir, "screens.json") {
+		t.Errorf("ScreensPath = %s", ScreensPath())
+	}
 }

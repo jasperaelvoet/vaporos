@@ -370,17 +370,26 @@ func TestStatusFallsBackToThePackageVersion(t *testing.T) {
 
 // A client that connects to an app no launch started since the last client
 // left has resumed it. Sunshine runs no prep command on a resume, so the
-// display keeps the launch's mode; the web UI is told why.
+// display keeps the launch's mode and interface size; the web UI is told
+// why, and the display manager that it no longer knows who watches.
 func TestResumeIsExplained(t *testing.T) {
 	h := newHarness(t)
 	clock := &fakeClock{t: time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)}
 	h.s.now = clock.now
+	fs := &fakeScreens{}
+	h.s.SetScreens(fs)
 	resumes := func() int {
 		n := 0
 		for _, e := range h.rec.events {
 			if e.Topic == "system.message" && strings.Contains(string(e.Data), "resumed") {
 				n++
+				if !strings.Contains(string(e.Data), "interface size") {
+					t.Errorf("the resume message leaves out the interface size: %s", e.Data)
+				}
 			}
+		}
+		if r := fs.resumed(); r != n {
+			t.Errorf("display manager told of %d resumes, the web UI of %d", r, n)
 		}
 		return n
 	}
@@ -416,5 +425,13 @@ func TestResumeIsExplained(t *testing.T) {
 	step(lineConnected, false)
 	if resumes() != 1 {
 		t.Error("replayed history counted as a resume")
+	}
+
+	// Without a display manager the web UI is still told.
+	h.s.SetScreens(nil)
+	step(lineDisconnected, true)
+	step(lineConnected, true)
+	if fs.resumed() != 1 || len(h.rec.messages()) != 2 {
+		t.Errorf("resume without a display manager: %d resumes, %v", fs.resumed(), h.rec.messages())
 	}
 }

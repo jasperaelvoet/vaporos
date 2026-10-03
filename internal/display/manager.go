@@ -42,6 +42,14 @@ type sessionInfo struct {
 	// freeSince is when Sunshine was first seen running no app during
 	// this session (zero while it runs one); see dropStaleSession.
 	freeSince time.Time
+	// plan is the device's screen (scale.go), nil until Begin resolved it;
+	// screen is that screen as session.begin carries it (nil while
+	// display.ui_scaling is false); uiScale and gameDPI are what the scaler
+	// applied during this session (0 until it did).
+	plan    *screenPlan
+	screen  *ScreenRef
+	uiScale float64
+	gameDPI int
 }
 
 // staleSessionAfter is how long Sunshine must run no app before a session
@@ -115,6 +123,19 @@ type Manager struct {
 	// edidMu serialises the read-modify-writes of display.extra_modes,
 	// clients.json and the learned EDID. Never take it while holding mu.
 	edidMu sync.Mutex
+	// screensMu guards screens, screens.json in memory (loaded on first
+	// use and written through). Never take it while holding mu.
+	screensMu sync.Mutex
+	screens   *Screens
+	// The scaler (scale.go): scaleKick wakes it, scaleEvery is its tick,
+	// scaleCall bounds one call to Steam, and after a set it reads Steam
+	// back every scaleStep for scaleReadback, setting once more after
+	// scaleResend. scaleMu serialises its rounds; sc is their memory.
+	scaleKick                                       chan struct{}
+	scaleEvery, scaleCall, scaleStep, scaleReadback time.Duration
+	scaleResend                                     time.Duration
+	scaleMu                                         sync.Mutex
+	sc                                              scaleState
 
 	mu           sync.Mutex // guards everything below
 	code         string
@@ -145,6 +166,14 @@ type Manager struct {
 	steamBusy bool
 	steamLast time.Time
 	steamDown chan struct{}
+	// beginSeq counts Begins. scaleGen is the scaler's generation: every
+	// change of what it should hold starts a new one, and what it learns
+	// for an older one is dropped. want is what it should hold (nil for
+	// nothing), steamUI how sizing Steam went last (GET /display steam_ui).
+	beginSeq uint64
+	scaleGen uint64
+	want     *scaleWant
+	steamUI  string
 }
 
 // opLock is a mutex whose Lock can give up when a context ends.
@@ -219,6 +248,16 @@ func newManager(cfg *config.Config, h host, hub *events.Hub) *Manager {
 		state:             StateNone,
 		lastStart:         map[string]time.Time{},
 		kick:              make(chan struct{}, 1),
+		scaleKick:         make(chan struct{}, 1),
+		scaleEvery:        5 * time.Second,
+		scaleCall:         1500 * time.Millisecond,
+		scaleStep:         50 * time.Millisecond,
+		scaleReadback:     3 * time.Second,
+		scaleResend:       time.Second,
+		// Steam keeps VaporOS's marker for as long as it runs, across
+		// restarts of vosd: generations start above any an earlier vosd
+		// can have reached.
+		scaleGen: uint64(time.Now().UnixMilli()),
 	}
 	m.rescan()
 	return m
@@ -326,6 +365,7 @@ func (m *Manager) start(ctx context.Context) {
 		}
 	}()
 	go m.watchGamescope(ctx)
+	go m.watchScale(ctx)
 	m.hot = m.h.Hotplug(ctx)
 	m.syncEDID()
 }
@@ -765,8 +805,10 @@ func (m *Manager) dropStaleSession(ctx context.Context) {
 	}
 	m.session = nil
 	m.holdUntil = now.Add(m.returnDelay)
+	m.dropWantLocked()
 	m.mu.Unlock()
 	log.Printf("display: Sunshine has run no app for %s; ending %s's session (its undo never came)", staleSessionAfter, s.Client)
 	m.hub.Publish("session.end", struct{}{})
 	m.poke()
+	m.kickScale()
 }

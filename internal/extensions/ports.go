@@ -21,10 +21,6 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
-// sunshineAdminPort is never opened, whatever an extension asks: Sunshine's
-// admin UI and API (docs/CONTRACTS.md "Firewall").
-const sunshineAdminPort = 47990
-
 // firewallUnit loads the ports file with the rest of the firewall.
 const firewallUnit = "vos-firewall.service"
 
@@ -73,19 +69,28 @@ func exposedPorts() ([]exposed, error) {
 			continue
 		}
 		shippedErr(m.ID, nil)
-		if d.Network == nil {
-			continue
-		}
-		for _, p := range d.Network.Ports {
-			e := exposed{id: m.ID, name: d.Name, proto: p.Proto, port: p.Port, mode: p.Mode,
-				upstream: p.Upstream, services: d.Services}
-			if p.Port < 1024 || p.Port > 65535 || p.Port == sunshineAdminPort || e.upstreamPort() == sunshineAdminPort {
-				continue
-			}
-			out = append(out, e)
-		}
+		out = append(out, portsOf(m.ID, d)...)
 	}
 	return out, nil
+}
+
+// portsOf is d's network ports, never one outside 1024-65535 or reserved,
+// also not as an upstream. Validate refuses those already; this keeps the
+// firewall and vosd's listeners shut should one ever get past it.
+func portsOf(id string, d *descriptor.Descriptor) []exposed {
+	if d.Network == nil {
+		return nil
+	}
+	var out []exposed
+	for _, p := range d.Network.Ports {
+		e := exposed{id: id, name: d.Name, proto: p.Proto, port: p.Port, mode: p.Mode,
+			upstream: p.Upstream, services: d.Services}
+		if p.Port < 1024 || p.Port > 65535 || descriptor.ReservedPort(p.Port) || descriptor.ReservedPort(e.upstreamPort()) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // upstreamPort is the loopback port vosd proxies e to, 0 for none.

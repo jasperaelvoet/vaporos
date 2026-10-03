@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,6 +262,7 @@ func newHarness(t *testing.T) *harness {
 	s.games = func() []steam.App { return nil }
 	s.follow = func(context.Context) (<-chan string, error) { return nil, fmt.Errorf("no journal in tests") }
 	s.journalTail = func(context.Context, int) (string, error) { return "", fmt.Errorf("no journal in tests") }
+	s.neighbourMAC = func(netip.Addr) string { return "" }
 	s.setCreds(apiCreds{User: f.user, Password: f.pass})
 	return &harness{s: s, f: f, rec: rec, api: apiSrv}
 }

@@ -614,9 +614,12 @@ const (
 	// System › Extensions came: its page, dialog, words (ext.js) and
 	// stylesheet are about 40 kB raw (12 kB gzipped), only on that page.
 	// Total took 2 kB more, 1.2 kB from full, when its install dialog began
-	// to ask for the drive an extension needs.
-	budgetTotalRaw = 752_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
-	budgetNextRaw  = 510_000 // the next set's own files (static/app.css, static/pages/, static/js/)
+	// to ask for the drive an extension needs. Both took 22 kB more, 2.5 kB
+	// from full, when each device's interface size came: the Adjust sheet
+	// (loaded only when it opens), the PIN pad's "What is it?" and the
+	// screen hint.
+	budgetTotalRaw = 774_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
+	budgetNextRaw  = 532_000 // the next set's own files (static/app.css, static/pages/, static/js/)
 
 	// The next set (ARCH §3.3): what one page needs before it can paint and
 	// work, as served. Re-baselined when the page stylesheets and the web
@@ -1163,7 +1166,7 @@ func TestHeadScript(t *testing.T) {
 
 // pureModules touch no DOM, storage, location or network, and import only
 // each other, so jstest runs them under Node.
-var pureModules = []string{"js/fmt.js", "js/validate.js", "js/state.js", "js/summary.js", "js/copy.js", "js/confirms.js", "js/messages.js", "js/heatmap.js", "js/ext.js"}
+var pureModules = []string{"js/fmt.js", "js/validate.js", "js/state.js", "js/summary.js", "js/copy.js", "js/confirms.js", "js/messages.js", "js/heatmap.js", "js/ext.js", "js/pages/devices-scale.js"}
 
 func TestPureModules(t *testing.T) {
 	impure := regexp.MustCompile(`\b(?:document|window|localStorage|sessionStorage|location|navigator|EventSource)\b|\bfetch\(`)

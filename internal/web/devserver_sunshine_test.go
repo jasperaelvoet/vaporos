@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/display"
 	"github.com/jasperaelvoet/vaporos/internal/sunshine"
 )
 
@@ -45,11 +46,13 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 			PIN       string `json:"pin"`
 			Name      string `json:"name"`
 			PairingID string `json:"pairing_id"`
+			Kind      string `json:"kind"`
 		}
 		if !strictBody(w, r, &req) {
 			return nil
 		}
 		pin, name := strings.TrimSpace(req.PIN), strings.TrimSpace(req.Name)
+		_, pick := display.UserKind(req.Kind)
 		switch {
 		case !fakePINRe.MatchString(pin):
 			api.Error(w, http.StatusBadRequest, "the PIN is the 4 digits Moonlight shows")
@@ -59,6 +62,9 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 			return nil
 		case req.PairingID != "" && !fakePairingIDRe.MatchString(req.PairingID):
 			api.Error(w, http.StatusBadRequest, "invalid pairing_id")
+			return nil
+		case req.Kind != "" && !pick:
+			api.Error(w, http.StatusBadRequest, "kind must be phone, handheld, tablet, laptop, monitor or tv")
 			return nil
 		}
 		s := f.doc("sunshine")
@@ -91,6 +97,9 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 			api.Error(w, http.StatusBadRequest, "pairing failed: check the PIN and try again")
 			return nil
 		}
+		// The browser is never the waiting device here (loopback never
+		// counts), so no name comes from its User-Agent; a picked kind is
+		// a hint in screens.json, which nothing the fake answers shows.
 		if name == "" {
 			name = strings.TrimSpace(asStr(waiting["name"]))
 		}

@@ -10,10 +10,19 @@ type Session struct {
 	Mode   string    `json:"mode"`
 	HDR    bool      `json:"hdr"`
 	Since  time.Time `json:"since"` // UTC, whole seconds
+	// Screen is the device's screen as Begin resolved it, nil while
+	// display.ui_scaling is false (docs/CONTRACTS.md, Display policy,
+	// Scaling).
+	Screen *ScreenRef `json:"screen,omitempty"`
 }
 
 func (s *sessionInfo) public() Session {
-	return Session{Client: s.Client, App: s.App, Mode: s.Mode, HDR: s.HDR, Since: s.Since.UTC().Truncate(time.Second)}
+	p := Session{Client: s.Client, App: s.App, Mode: s.Mode, HDR: s.HDR, Since: s.Since.UTC().Truncate(time.Second)}
+	if s.screen != nil {
+		ref := *s.screen
+		p.Screen = &ref
+	}
+	return p
 }
 
 // CurrentSession is the session in progress, nil without one.

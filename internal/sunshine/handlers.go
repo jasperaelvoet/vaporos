@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/api"
+	"github.com/jasperaelvoet/vaporos/internal/display"
 )
 
 // Routes registers /sunshine/*.
@@ -95,6 +98,7 @@ func (s *Service) handlePair(w http.ResponseWriter, r *http.Request) {
 		PIN       string `json:"pin"`
 		Name      string `json:"name"`
 		PairingID string `json:"pairing_id"`
+		Kind      string `json:"kind"`
 	}
 	if err := api.ReadJSON(r, &req); err != nil {
 		api.Error(w, http.StatusBadRequest, "%v", err)
@@ -112,6 +116,9 @@ func (s *Service) handlePair(w http.ResponseWriter, r *http.Request) {
 	case req.PairingID != "" && !pairingIDRe.MatchString(req.PairingID):
 		api.Error(w, http.StatusBadRequest, "invalid pairing_id")
 		return
+	case req.Kind != "" && !validPick(req.Kind):
+		api.Error(w, http.StatusBadRequest, "kind must be phone, handheld, tablet, laptop, monitor or tv")
+		return
 	}
 	cl := s.requireAPI(w)
 	if cl == nil {
@@ -119,8 +126,9 @@ func (s *Service) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	id := req.PairingID
+	var waiting *Pairing // the device this PIN is for, when Sunshine lists it
+	ps, err := cl.PendingPairings(ctx)
 	if id == "" {
-		ps, err := cl.PendingPairings(ctx)
 		switch {
 		case errors.Is(err, errNotSupported):
 			// Sunshine from before pairing ids: the PIN alone pairs.
@@ -134,9 +142,28 @@ func (s *Service) handlePair(w http.ResponseWriter, r *http.Request) {
 			api.Error(w, http.StatusConflict, "%d devices are waiting to pair; choose which one this PIN is for", len(ps))
 			return
 		default:
-			id = ps[0].ID
-			if name == "" {
-				name = strings.TrimSpace(ps[0].Name)
+			id, waiting = ps[0].ID, &ps[0]
+		}
+	} else if err == nil {
+		// The id alone pairs; the list only adds the device's name and address.
+		for i := range ps {
+			if strings.EqualFold(ps[i].ID, id) {
+				waiting = &ps[i]
+			}
+		}
+	}
+	from, at := peerAddr(r), netip.Addr{}
+	if waiting != nil {
+		at = parseAddr(waiting.Address)
+	}
+	same := s.sameDevice(from, at)
+	if name == "" && waiting != nil {
+		name = strings.TrimSpace(waiting.Name)
+		// Moonlight pairs as "roth"; the PIN typed on the device itself
+		// knows better.
+		if same && display.GenericName(name) {
+			if label := display.DeviceLabel(s.labelKind(from, req.Kind), r.UserAgent()); label != "" {
+				name = s.freeName(ctx, cl, label)
 			}
 		}
 	}
@@ -154,7 +181,31 @@ func (s *Service) handlePair(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, "pairing failed: check the PIN and try again")
 		return
 	}
+	ua := ""
+	if same {
+		ua = r.UserAgent()
+	}
+	if sc := s.screens(); sc != nil && at.IsValid() && (req.Kind != "" || ua != "") {
+		sc.PairHint(net.IP(at.AsSlice()), req.Kind, ua)
+	}
 	api.OK(w)
+}
+
+// validPick reports a kind the user may pick at pairing.
+func validPick(kind string) bool {
+	_, ok := display.UserKind(kind)
+	return ok
+}
+
+// freeName is label made unique among the paired devices. Without the
+// list it is label as it is: a duplicate name is better than no pairing.
+func (s *Service) freeName(ctx context.Context, cl *Client, label string) string {
+	paired, err := cl.Clients(ctx)
+	if err != nil {
+		log.Printf("sunshine: listing paired devices to name a new one: %v", err)
+		return label
+	}
+	return uniqueName(label, paired)
 }
 
 func (s *Service) handleClients(w http.ResponseWriter, r *http.Request) {

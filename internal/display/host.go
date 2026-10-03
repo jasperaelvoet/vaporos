@@ -3,6 +3,7 @@ package display
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/display/drm"
 	"github.com/jasperaelvoet/vaporos/internal/display/edid"
+	"github.com/jasperaelvoet/vaporos/internal/display/steamui"
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
 )
 
@@ -53,8 +55,11 @@ type host interface {
 	ApplyEDID(card, name string, edid []byte) error
 
 	Gamescopectl(ctx context.Context, args ...string) (string, error)
-	// Xprop runs xprop against gamescope's X server and returns its output.
+	// Xprop runs xprop against the X display of gamescope that Steam runs
+	// on and returns its output.
 	Xprop(ctx context.Context, args ...string) (string, error)
+	// XpropOn runs xprop against one of gamescope's X displays (":1").
+	XpropOn(ctx context.Context, display string, args ...string) (string, error)
 	Busy(ctx context.Context) (bool, string)
 	// GameRunning reports whether a Steam game runs as the gaming user.
 	GameRunning() bool
@@ -64,6 +69,20 @@ type host interface {
 	// ShutdownSteam asks that Steam client to exit: `steam -shutdown` as
 	// the gaming user, in its display and session environment.
 	ShutdownSteam(ctx context.Context, pid int) error
+	// SteamEnv returns those of keys that are set in the environment of
+	// Steam's process pid.
+	SteamEnv(pid int, keys ...string) map[string]string
+	// SteamUI is vosd's client of Steam's debugger (scale.go).
+	SteamUI() steamUI
+	// Peers lists the clients in Moonlight's /launch: the addresses of the
+	// established connections on Sunshine's HTTPS port.
+	Peers() (peerSet, error)
+	// RTSPConns lists the remote ends (address and port) of every
+	// connection on Sunshine's RTSP port, in any state.
+	RTSPConns() (connSet, error)
+	// NeighbourMAC is the MAC address the kernel's neighbour tables have
+	// for addr, "" when none.
+	NeighbourMAC(addr netip.Addr) string
 	// SunshineApp asks Sunshine whether it runs an app; ok is false when
 	// Sunshine gave no clear answer.
 	SunshineApp(ctx context.Context) (busy, ok bool)
@@ -82,9 +101,13 @@ type realHost struct {
 
 	idOnce   sync.Once
 	uid, gid int
+
+	ui *steamui.Client
 }
 
-func newRealHost() *realHost { return &realHost{cards: map[string]*drm.Card{}} }
+func newRealHost() *realHost {
+	return &realHost{cards: map[string]*drm.Card{}, ui: &steamui.Client{ProcDir: ProcDir}}
+}
 
 // cmdTimeout bounds every systemctl/gamescopectl/xprop call.
 const cmdTimeout = 30 * time.Second
@@ -239,9 +262,16 @@ func (h *realHost) Gamescopectl(ctx context.Context, args ...string) (string, er
 // Xprop runs xprop as the gaming user against gamescope's first Xwayland
 // (DISPLAY=:0, the one Steam runs on) and returns its output.
 func (h *realHost) Xprop(ctx context.Context, args ...string) (string, error) {
+	return h.XpropOn(ctx, xDisplay(), args...)
+}
+
+// XpropOn runs xprop as the gaming user against display. The arguments
+// reach xprop as they are (no shell), so a value may hold tabs and
+// newlines.
+func (h *realHost) XpropOn(ctx context.Context, display string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	full := append([]string{"DISPLAY=" + xDisplay(), "xprop"}, args...)
+	full := append([]string{"DISPLAY=" + display, "xprop"}, args...)
 	return sysd.AsGamer(ctx, "env", full...)
 }
 
@@ -252,6 +282,14 @@ func (h *realHost) GameRunning() bool { return steamGameRunning() }
 func (h *realHost) SunshineApp(ctx context.Context) (bool, bool) { return sunshineState(ctx) }
 
 func (h *realHost) LocalIPs() []string { return sysd.LocalIPs() }
+
+func (h *realHost) SteamUI() steamUI { return h.ui }
+
+func (h *realHost) Peers() (peerSet, error) { return sunshineClients() }
+
+func (h *realHost) RTSPConns() (connSet, error) { return rtspConns() }
+
+func (h *realHost) NeighbourMAC(addr netip.Addr) string { return NeighbourMAC(addr) }
 
 func (h *realHost) Hotplug(ctx context.Context) <-chan struct{} {
 	ch, err := drm.WatchHotplug(ctx)

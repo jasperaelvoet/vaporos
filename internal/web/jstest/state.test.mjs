@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { presets } from './lib/fixtures.mjs';
 import {
-  canWake, pendingReasons, powerPlan, restartReasons, restartRow, snapshotFromStatus, stagedVersion, stripModel, updateProgress, wakeTarget,
+  canWake, pendingReasons, powerPlan, restartReasons, restartRow, session, snapshotFromStatus, stagedVersion, stripModel, updateProgress, wakeTarget,
 } from '../static/js/state.js';
 import { contextCards, heroModel, idleSoon, powerLine, statusLine } from '../static/js/summary.js';
 
@@ -123,6 +123,25 @@ test('snapshotFromStatus keeps the stream as the session', () => {
   assert.equal(s.sinceText, '38 min');
   assert.equal(s.name, 'Now streaming: TV, 3840 by 2160 at 60 hertz, HDR. Show details.');
   assert.equal(stripModel({ display: { state: 'welcome' } }).show, false);
+});
+
+test("the session is /status stream once it is session.begin's, which it follows", () => {
+  const since = '2026-09-29T11:22:00Z';
+  // session.begin (also as replayed) still has the screen begin resolved.
+  const begin = { client: 'roth', since, mode: '2400x1080@120', screen: { id: '' } };
+  // The scaler told the device apart since: /status has its screen's id.
+  const now = { client: 'roth', since, mode: '2400x1080@120', screen: { id: 'abc123abc123' } };
+  assert.equal(session({ stream: now, live: { session: begin } }), now);
+  // Sizing turned off: /status drops the screen.
+  const off = { client: 'roth', since, mode: '2400x1080@120' };
+  assert.equal(session({ stream: off, live: { session: begin } }), off);
+  // A /status from before this session (another, or none) does not hide it.
+  assert.equal(session({ stream: { ...now, since: '2026-09-29T10:00:00Z' }, live: { session: begin } }), begin);
+  assert.equal(session({ stream: { ...now, client: 'TV' }, live: { session: begin } }), begin);
+  assert.equal(session({ stream: null, live: { session: begin } }), begin);
+  assert.equal(session({ stream: now, live: {} }), now);
+  assert.equal(session({ sunshine: { session: off } }), off);
+  assert.equal(session({}), null);
 });
 
 test('status line uses the top-level checked time (B2)', () => {

@@ -165,15 +165,20 @@ func (s *Service) observeClients(line string, at time.Time, live bool) {
 // noteResume explains a resumed stream. Sunshine runs the prep command
 // (`vos session begin`, which sets the virtual display's mode) when an app
 // is launched, never on a resume, and nothing it logs tells vosd the mode
-// the resuming client wants. So the display keeps the mode, refresh rate
-// and HDR of the launch, which is wrong when another device (or the same
-// one with other settings) takes over.
+// the resuming client wants. So the display keeps the mode, refresh rate,
+// HDR and Steam's interface size of the launch, which is wrong when another
+// device (or the same one with other settings) takes over. The display
+// manager is told, so the scaler stops holding the launching device's
+// size and never saves a change made on this one as that device's.
 func (s *Service) noteResume() {
-	log.Printf("sunshine: a Moonlight client resumed the running app; the display keeps the mode it was launched with")
+	log.Printf("sunshine: a Moonlight client resumed the running app; the display keeps the mode and interface size it was launched with")
+	if sc := s.screens(); sc != nil {
+		sc.NoteResume()
+	}
 	s.publish("system.message", map[string]string{
 		"level": "info",
-		"text": "A Moonlight device resumed the stream that was already running, so the screen keeps the resolution, refresh rate and HDR " +
-			"it was started with. If this device wants other settings, choose Quit in Moonlight and start it again.",
+		"text": "A Moonlight device resumed the stream that was already running, so the screen keeps the resolution, refresh rate, HDR " +
+			"and interface size it was started with. If this device wants other settings, choose Quit in Moonlight and start it again.",
 	})
 }
 

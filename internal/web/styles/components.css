@@ -420,6 +420,10 @@
   .pin-more[open] summary .icon { rotate: 90deg; }
   .pin-more[open] { display: grid; gap: 0.5rem; padding-bottom: 0.75rem; }
   .pin-more .field-label, .pin-more .input, .pin-more .field-hint { margin: 0 0.75rem; }
+  .pin-more .input { width: calc(100% - 1.5rem); }
+  .pin-kind { display: grid; gap: 0.5rem; min-width: 0; margin: 0.5rem 0.75rem 0; padding: 0; border: 0; }
+  .pin-kind .field-label { margin: 0 0 0.5rem; padding: 0; }
+  .pin-kind .field-hint { margin: 0; }
   .keypad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; margin-top: auto; padding-top: 0.5rem; }
   .key {
     display: grid; place-items: center; height: 3.875rem; border: 0; border-radius: var(--radius-2xl);

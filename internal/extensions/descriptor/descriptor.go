@@ -451,12 +451,17 @@ func (d *Descriptor) Validate() error {
 			}
 			if p.Port < 1024 || p.Port > 65535 {
 				bad("network.ports[%d].port must be 1024-65535", i)
+			} else if ReservedPort(p.Port) {
+				bad("network.ports[%d].port %d is reserved for %s", i, p.Port, reservedFor(p.Port))
 			}
 			switch p.Mode {
 			case "proxied":
 				up := upstreamPort(p.Upstream)
 				if p.Proto != "tcp" || up == 0 {
 					bad("network.ports[%d] is proxied, so it is tcp with an upstream on 127.0.0.1", i)
+				}
+				if ReservedPort(up) {
+					bad("network.ports[%d]'s upstream port %d is reserved for %s", i, up, reservedFor(up))
 				}
 				// vosd or the extension's service listens on each declared
 				// port on every address: an upstream there takes it away.
@@ -614,6 +619,27 @@ func httpsURL(s string) bool {
 
 func cleanRel(p string) bool {
 	return p != "" && !path.IsAbs(p) && path.Clean(p) == p && p != "." && !strings.HasPrefix(p, "../") && p != ".."
+}
+
+// ReservedPort reports whether p is a port no extension may open or proxy
+// to (docs/CONTRACTS.md "Firewall"). The firewall's ports file and vosd's
+// web UI listeners refuse it too, should a descriptor ever get past Validate.
+func ReservedPort(p int) bool { return reservedFor(p) != "" }
+
+// reservedFor names what holds the reserved port p, "" when p is not one.
+func reservedFor(p int) string {
+	switch p {
+	case 47990:
+		return "Sunshine's admin UI and API"
+	case 31911:
+		// Steam's CEF debugger (vos-gamescope.service starts Steam with
+		// -devtools-port 31911) drives all of Steam's client API, so the
+		// firewall lets only root connect. As a proxied upstream, vosd
+		// (root) would hand it to the LAN; an extension's service
+		// listening there first would take it from Steam.
+		return "Steam's debugger"
+	}
+	return ""
 }
 
 // upstreamPort is the port of a proxied upstream, "127.0.0.1:<1024-65535>",
