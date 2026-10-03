@@ -97,6 +97,11 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 	pruneInstallers(dir, named)
 	l.Env = setEnv(l.Env, "STEAM_COMPAT_DATA_PATH", prefix)
 	l.Env = setEnv(l.Env, "UMU_ID", umuID) // protonfixes add what the launcher needs
+	// Mid-resize, gamescope's WSI layer would put the Vulkan renderer's new
+	// swapchain on the Xwayland fallback, which lacks the R8G8B8A8 format
+	// the game asks for, and refuse it: the game stops when its resolution
+	// changes.
+	l.Env = setEnv(l.Env, "GAMESCOPE_WSI_FORCE_BYPASS", "1")
 	l.Argv = slices.Concat(l.Argv[:i], with, l.Argv[i+1:])
 	return nil
 }

@@ -1927,10 +1927,16 @@ already 1048576.
   on another drive, and Steam's shortcut names its old target until Steam
   picks up the new one), the hook goes on with the recorded prefix as
   `<prefix>` below, so nothing is written where Star Citizen was. Then it
-  sets `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's prefix is `<prefix>/pfx`) and
+  sets `STEAM_COMPAT_DATA_PATH=<prefix>` (Proton's prefix is `<prefix>/pfx`),
   `UMU_ID=umu-starcitizen` (protonfixes then add PowerShell and the Visual
-  C++ runtime on the first start) in the game's environment, and replaces
-  that argument:
+  C++ runtime on the first start) and `GAMESCOPE_WSI_FORCE_BYPASS=1` in the
+  game's environment, and replaces that argument. The last keeps gamescope's
+  WSI layer from refusing the Vulkan renderer's swapchain when the game
+  recreates it while its window is mid-resize (a change of resolution):
+  without it the layer falls back to the Xwayland surface, which offers
+  only B8G8R8A8 formats, and the game, which asks for R8G8B8A8_UNORM, stops
+  with "Failed to create swapchain" (gamescope 3.16.31; Wine's offscreen
+  windows are still never flipped):
   - when `<prefix>/pfx/drive_c/Program Files/Roberts Space Industries/RSI Launcher/RSI Launcher.exe`
     is a file, with that path and `--in-process-gpu --disable-gpu` (the
     launcher's Electron window can stay blank under gamescope otherwise; it

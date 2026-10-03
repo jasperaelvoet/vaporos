@@ -88,6 +88,9 @@ func TestLaunchFirstStart(t *testing.T) {
 		if got := envOf(l.Env, "UMU_ID"); !slices.Equal(got, []string{"umu-starcitizen"}) {
 			t.Errorf("UMU_ID %q", got)
 		}
+		if got := envOf(l.Env, "GAMESCOPE_WSI_FORCE_BYPASS"); !slices.Equal(got, []string{"1"}) {
+			t.Errorf("GAMESCOPE_WSI_FORCE_BYPASS %q", got)
+		}
 		if got := envOf(l.Env, "LD_PRELOAD"); len(got) != 1 {
 			t.Error("the game lost Steam's environment")
 		}
@@ -138,6 +141,9 @@ func TestLaunchLaterStart(t *testing.T) {
 	}
 	if got := envOf(l.Env, "STEAM_COMPAT_DATA_PATH"); !slices.Equal(got, []string{prefix}) {
 		t.Errorf("STEAM_COMPAT_DATA_PATH %q", got)
+	}
+	if got := envOf(l.Env, "GAMESCOPE_WSI_FORCE_BYPASS"); !slices.Equal(got, []string{"1"}) {
+		t.Errorf("GAMESCOPE_WSI_FORCE_BYPASS %q", got)
 	}
 	live := prefix + "/pfx/drive_c/Program Files/Roberts Space Industries/StarCitizen/LIVE"
 	if cfg := readFile(t, live+"/USER.cfg"); cfg != "pl_pit.forceSoftwareCursor = 1\r\n" {
