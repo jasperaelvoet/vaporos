@@ -174,27 +174,27 @@ func TestAutoRestartSkipOnce(t *testing.T) {
 	}
 }
 
-// The health check and the reboot each run within their own bound, and
-// a lock held elsewhere is waited for a bounded time, each lock its own.
+// The health check runs within its own bound, and a lock held elsewhere is
+// waited for a bounded time, each lock its own. The reboot bounds itself
+// (system.Service.Reboot), after what goes before it (GoingDown), which a
+// bound of the auto-restart's would cut short.
 func TestAutoRestartBounds(t *testing.T) {
 	a := newAutoRig(t)
-	var healthLeft, rebootLeft time.Duration
+	var healthLeft time.Duration
+	rebootBound := true
 	a.s.cc.auto.healthDone = func(ctx context.Context) bool {
 		d, _ := ctx.Deadline()
 		healthLeft = time.Until(d)
 		return true
 	}
 	a.s.SetAutoRestart(func(ctx context.Context, msg string) (bool, error) {
-		d, ok := ctx.Deadline()
-		if ok {
-			rebootLeft = time.Until(d)
-		}
+		_, rebootBound = ctx.Deadline()
 		a.reboots = append(a.reboots, msg)
 		return true, nil
 	}, nil)
 	a.idle(autoIdle)
-	if len(a.reboots) != 1 || healthLeft <= 0 || healthLeft > autoHealthWait || rebootLeft <= 0 || rebootLeft > autoRebootWait {
-		t.Fatalf("reboots %q, health had %v, reboot had %v", a.reboots, healthLeft, rebootLeft)
+	if len(a.reboots) != 1 || healthLeft <= 0 || healthLeft > autoHealthWait || rebootBound {
+		t.Fatalf("reboots %q, health had %v, reboot bounded %v", a.reboots, healthLeft, rebootBound)
 	}
 }
 

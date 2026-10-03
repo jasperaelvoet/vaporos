@@ -390,6 +390,34 @@ func TestEntryForSlotPrefersBootable(t *testing.T) {
 	}
 }
 
+// NextEntry is the entry a restart starts: bootable first, then the
+// newest version, and on a tie the running slot's.
+func TestNextEntry(t *testing.T) {
+	e := func(name, slot string) Entry {
+		base, counting, left, done := splitName(name)
+		return Entry{Path: name, Version: base[len(entryPrefix):], Slot: slot, Counting: counting, Left: left, Done: done}
+	}
+	for _, c := range []struct {
+		es   []Entry
+		want string
+	}{
+		{nil, ""},
+		{[]Entry{e("vos-9+2-1.conf", "a"), e("vos-8.conf", "b")}, "vos-9+2-1.conf"}, // first boot after an update
+		{[]Entry{e("vos-9+0-3.conf", "a"), e("vos-8.conf", "b")}, "vos-8.conf"},     // its last try, not blessed
+		{[]Entry{e("vos-9+0-1.conf", "a"), e("vos-8.conf", "b")}, "vos-8.conf"},     // a rollback
+		{[]Entry{e("vos-9.conf", "a"), e("vos-10+3.conf", "b")}, "vos-10+3.conf"},   // a staged update
+		{[]Entry{e("vos-9.conf", "b"), e("vos-9.conf", "a")}, "vos-9.conf"},         // the same version twice
+	} {
+		got := NextEntry(c.es, "a")
+		switch {
+		case c.want == "" && got != nil:
+			t.Errorf("%v: got %s", c.es, got.Path)
+		case c.want != "" && (got == nil || got.Path != c.want || (c.want == "vos-9.conf" && got.Slot != "a")):
+			t.Errorf("%v: got %+v, want %s", c.es, got, c.want)
+		}
+	}
+}
+
 func TestLoaderConfAndEnsureESP(t *testing.T) {
 	esp := filepath.Join(t.TempDir(), "esp")
 	os.MkdirAll(esp, 0o755)

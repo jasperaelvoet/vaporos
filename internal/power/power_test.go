@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +116,33 @@ func TestIdlePowersOffAfterLimit(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.events, ","), "system.message") {
 		t.Errorf("no system.message before poweroff: %v", r.events)
+	}
+}
+
+// The idle shutdown's power off goes down through goingDown, which does
+// what must come first (the extensions' GoingDown); a failure it passes on
+// lets the next idle period try again.
+func TestIdlePowerOffGoesDownFirst(t *testing.T) {
+	r := newRig(t, 1, true)
+	var steps []string
+	r.SetGoingDown(func(act func() error) error {
+		steps = append(steps, fmt.Sprintf("first after %d", r.poweroffs))
+		return act()
+	})
+	r.steps(4)
+	if r.poweroffs != 1 || !slices.Equal(steps, []string{"first after 0"}) {
+		t.Fatalf("poweroffs %d, steps %q", r.poweroffs, steps)
+	}
+
+	r = newRig(t, 1, true)
+	r.SetGoingDown(func(act func() error) error { act(); return errors.New("boom") })
+	r.steps(4)
+	if r.poweroffs != 1 || r.poweringOff {
+		t.Fatalf("poweroffs %d, powering off %v after a failure", r.poweroffs, r.poweringOff)
+	}
+	r.steps(4)
+	if r.poweroffs != 2 {
+		t.Fatalf("poweroffs %d: no second try a full idle period later", r.poweroffs)
 	}
 }
 

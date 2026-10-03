@@ -101,6 +101,13 @@ func Main(args []string) int {
 		// Someone using the web UI keeps the machine from idling off.
 		srv.OnActivity(pow.Touch)
 		wireAutoRestart(ext, sys.Reboot, up.View, pow.OnTick)
+		// Every restart and power off of vosd's own first takes out what
+		// VaporOS set in Steam when the next start goes back to a VaporOS
+		// built before extensions, holding the display's units meanwhile.
+		ext.SetDisplayHold(disp.HoldUnits)
+		sys.SetGoingDown(ext.GoingDown)
+		up.SetGoingDown(ext.GoingDown)
+		pow.SetGoingDown(ext.GoingDown)
 		for _, r := range []interface{ Routes(*api.Server) }{up, sun, sto, pow, ext} {
 			r.Routes(srv)
 		}
