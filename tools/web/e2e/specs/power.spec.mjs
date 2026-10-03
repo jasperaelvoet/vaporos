@@ -13,7 +13,9 @@ const text = async (page, sel) => (await page.textContent(sel))?.trim() ?? '';
 const until = (page, fn, arg, timeout = 5000) => page.waitForFunction(fn, arg, { timeout });
 const title = (page, want) => until(page, (w) => document.getElementById('pwr-title').textContent === w, want);
 const notice = (page, words) => page.locator('#notices .notice', { hasText: words }).first().waitFor();
-const CLOCK = /^\d{1,2}:\d{2}(\s?[AP]M)?$/;
+// fmt.js clock(): a time today, with the short weekday on another day
+// (a run late in the UTC day sees keep-awake end after midnight).
+const CLOCK = /^(\S+ )?\d{1,2}:\d{2}(\s?[AP]M)?$/;
 
 async function open(t, preset) {
   if (preset) await dev(t.server, 'preset', { name: preset });

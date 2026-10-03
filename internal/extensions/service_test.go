@@ -3,6 +3,7 @@ package extensions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -123,62 +124,64 @@ func TestPassKeepsWhatBootedWhileAnImageIsMissing(t *testing.T) {
 // mount, is only removed, also when the download brings the image.
 func TestPassFailsAStalePendingFirst(t *testing.T) {
 	for _, missing := range []bool{false, true} {
-		e := newEnv(t)
-		proton := newImage(t, "proton", "", 5000, true)
-		cc := newImage(t, "coolercontrol", "", 2000, false)
-		tool := newImage(t, "tool", "", 1000, false)
-		cat := e.catalog(proton, cc, tool)
-		e.seal(proton)
-		e.cfg.Update.Source = "oci://"
-		if missing {
-			e.cfg.Update.Source = e.src
-			e.serve(cc)
-		} else {
-			e.seal(cc)
-		}
-		var enabled *store.Set
-		locked(t, func() (err error) {
-			if enabled, err = store.WriteEnabled([]string{"proton"}, nil); err != nil {
-				return err
+		t.Run(fmt.Sprintf("missing=%v", missing), func(t *testing.T) {
+			e := newEnv(t)
+			proton := newImage(t, "proton", "", 5000, true)
+			cc := newImage(t, "coolercontrol", "", 2000, false)
+			tool := newImage(t, "tool", "", 1000, false)
+			cat := e.catalog(proton, cc, tool)
+			e.seal(proton)
+			e.cfg.Update.Source = "oci://"
+			if missing {
+				e.cfg.Update.Source = e.src
+				e.serve(cc)
+			} else {
+				e.seal(cc)
 			}
-			if err = store.WriteWanted([]string{"coolercontrol", "tool"}); err != nil {
-				return err
-			}
-			set, err := store.WriteSet([]string{"proton", "coolercontrol"}, nil, 0)
-			if err != nil {
-				return err
-			}
-			return os.Symlink("sets/"+set.Name, config.ExtPendingLink())
-		})
-		e.report(store.BootReport{Mode: store.ModeEnabled, Set: enabled.Name, Reason: store.ReasonTriesUsed, Mounted: mountedAs(proton)})
+			var enabled *store.Set
+			locked(t, func() (err error) {
+				if enabled, err = store.WriteEnabled([]string{"proton"}, nil); err != nil {
+					return err
+				}
+				if err = store.WriteWanted([]string{"coolercontrol", "tool"}); err != nil {
+					return err
+				}
+				set, err := store.WriteSet([]string{"proton", "coolercontrol"}, nil, 0)
+				if err != nil {
+					return err
+				}
+				return os.Symlink("sets/"+set.Name, config.ExtPendingLink())
+			})
+			e.report(store.BootReport{Mode: store.ModeEnabled, Set: enabled.Name, Reason: store.ReasonTriesUsed, Mounted: mountedAs(proton)})
 
-		s, b := e.service()
-		if retry := s.pass(t.Context(), b); !retry {
-			t.Fatal("no retry while tool is missing")
-		}
-		failed, err := store.Failed()
-		must(t, err)
-		fp := store.Fingerprint(store.Pairs(cat, []string{"proton", "coolercontrol"}), nil)
-		if failed[fp] == missing {
-			t.Fatalf("missing %v: failed = %v", missing, failed)
-		}
-		p, _ := store.Pending()
-		if x := e.state(s, "tool"); x.State != StateNeedsAttention || x.Error == "" {
-			t.Fatalf("tool = %+v", x)
-		}
-		if !missing {
-			if p != nil {
+			s, b := e.service()
+			if retry := s.pass(t.Context(), b); !retry {
+				t.Fatal("no retry while tool is missing")
+			}
+			failed, err := store.Failed()
+			must(t, err)
+			fp := store.Fingerprint(store.Pairs(cat, []string{"proton", "coolercontrol"}), nil)
+			if failed[fp] == missing {
+				t.Fatalf("missing %v: failed = %v", missing, failed)
+			}
+			p, _ := store.Pending()
+			if x := e.state(s, "tool"); x.State != StateNeedsAttention || x.Error == "" {
+				t.Fatalf("tool = %+v", x)
+			}
+			if !missing {
+				if p != nil {
+					t.Fatalf("pending = %+v", p)
+				}
+				if x := e.state(s, "coolercontrol"); x.State != StateNeedsAttention {
+					t.Fatalf("coolercontrol = %+v", x)
+				}
+				return
+			}
+			// It is proposed again, now that its image is here.
+			if p == nil || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) || p.Tries != store.ProposeTries {
 				t.Fatalf("pending = %+v", p)
 			}
-			if x := e.state(s, "coolercontrol"); x.State != StateNeedsAttention {
-				t.Fatalf("coolercontrol = %+v", x)
-			}
-			continue
-		}
-		// It is proposed again, now that its image is here.
-		if p == nil || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) || p.Tries != store.ProposeTries {
-			t.Fatalf("pending = %+v", p)
-		}
+		})
 	}
 }
 
