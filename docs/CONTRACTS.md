@@ -1112,7 +1112,10 @@ version, or one that lists no extensions), vosd, in this order:
    within 30 s), so Steam writes its files and exits (its `ExecStopPost`
    prepare runs as usual);
 3. runs `vos steam prepare --unwrap` as `vapor` (`runuser`, within 10 s)
-   and logs its output as for the run when `dispatcher` turns false;
+   and logs its output as for the run when `dispatcher` turns false. It is
+   the last prepare vosd runs: from step 1 on, the run when `dispatcher`
+   turns false starts none, and one already running is waited for (within
+   the same 10 s, else the unwrap is left out and the restart goes on);
 4. restarts or powers off, whatever those steps did (POST `/system/*` and
    the auto-restart ask systemd within 30 s from here). The hold ends when
    that fails, else 2 minutes later should the PC still run; the display
@@ -1122,8 +1125,12 @@ version, or one that lists no extensions), vosd, in this order:
 Nothing changes while the box keeps running, nor when the restart starts
 the running slot again (its first boot after an update too, a counted try
 with tries left) or an image built with extensions. A restart or power off
-from a shell (`vos update --reboot`, `systemctl reboot`) is not covered:
-run `vos steam prepare --unwrap` as `vapor` with Steam stopped first. A
+from a shell (`vos update --reboot`, `systemctl reboot`) is not covered,
+and neither are systemd's own restarts (a failed `vos health` on a counted
+try, `FailureAction=reboot`, or a trial's `JobTimeoutAction=reboot-force`,
+after which systemd-boot falls back to the other slot) or a power loss:
+there, run `vos steam prepare --unwrap` as `vapor` with Steam stopped
+first, or pick another Proton in Steam's settings. A
 later VaporOS with extensions applies everything again at its first
 prepare.
 
@@ -1588,7 +1595,7 @@ saying how often in their `what`.
 - *Multiplayer:* `vos ext truckersmp mp ets2|ats` (as `vapor`: from the
   shortcut, through `vos ext launch --shortcut`, or from Sunshine) refuses,
   with a message (see Dispatcher messages: codes `needs-update-<key>`,
-  `steam-pending`, `running-<key>`, `starting`, `not-installed-<key>`,
+  `steam-pending`, `launch-options-<key>`, `running-<key>`, `starting`, `not-installed-<key>`,
   `no-files-<key>`, `updating`, `handoff-failed` and, from `handoff`,
   `steam-silent`, each with its sentence in the helper; the launch hook's refusals add
   `linux-<key>` and `launcher-failed`, and `Install`'s `setup-failed`, all
@@ -1602,11 +1609,16 @@ saying how often in their `what`.
   only at the next prepare (as Steam starts or stops; the Steam restart
   vosd asks for waits for a quiet moment), while prepare's record does
   not show `/usr/bin/vos ext launch --app <227300|270880> %command%` in the
-  game's `launch.<accountid>.wrote` for every account loginusers.vdf lists (as
-  prepare counts them; none counts as not shown), or either file cannot
-  be read (`steam-pending`, "TruckersMP didn't start because Steam hasn't
-  picked up its settings yet. Restart VaporOS, then try again."; options
-  recorded as `conflict` count as not shown); while a reaper of 227300
+  game's `launch.<accountid>.wrote` for the account Steam signs in
+  (loginusers.vdf's `MostRecent`; every account it lists, as prepare
+  counts them, when none is marked; none at all counts as not shown), or
+  either file cannot be read (`steam-pending`, "TruckersMP didn't start
+  because Steam hasn't picked up its settings yet. Restart VaporOS, then
+  try again."); while that account's options are recorded as `conflict`
+  (several `%command%`, which prepare never wraps and no restart changes:
+  `launch-options-<key>`, "TruckersMP didn't start because ETS2's launch
+  options in Steam have %command% more than once. Keep one, then restart
+  VaporOS.", ATS for `ats`); while a reaper of 227300
   or 270880 runs (`running-`),
   while `vos-ext-handoff.service` is loaded (`starting`),
   when no library has the game (`not-installed-`), or when the game's

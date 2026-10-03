@@ -284,12 +284,11 @@ func TestMPWaitsForSteam(t *testing.T) {
 		{"no record", func() { os.Remove(record) }},
 		{"a record that does not parse", func() { write(t, record, "{") }},
 		{"never wrapped", func() { write(t, record, `{"accounts":["`+acctFan+`","`+acctKid+`"],"apps":{}}`) }},
-		{"an account signed in since", func() { steamPrepared(t, acctFan) }},
+		{"the signed-in account not wrapped yet", func() { steamPrepared(t, acctKid) }},
 		{"only the other game", func() {
 			steamPrepared(t, acctFan, acctKid)
 			write(t, record, strings.ReplaceAll(read(t, record), `"227300"`, `"1"`))
 		}},
-		{"several %command%", func() { write(t, record, conflict) }},
 		{"no loginusers.vdf", func() { steamPrepared(t, acctFan, acctKid); os.Remove(logins) }},
 		{"nobody signed in", func() { write(t, logins, `"users" { }`) }},
 		{"loginusers.vdf does not parse", func() { write(t, logins, `"users" {`) }},
@@ -317,6 +316,31 @@ func TestMPWaitsForSteam(t *testing.T) {
 			t.Fatalf("%s: handed off %q", c.name, *started)
 		}
 	}
+
+	// The signed-in account's options have several %command%: prepare never
+	// wraps them, so it says so instead of asking for a restart.
+	steamPrepared(t, acctFan, acctKid)
+	write(t, record, conflict)
+	if code, text := refused(m.run(ctx, games[0])); code != "launch-options-ets2" ||
+		text != "TruckersMP didn't start because ETS2's launch options in Steam have %command% more than once. Keep one, then restart VaporOS." {
+		t.Fatalf("several %%command%%: %q %q", code, text)
+	}
+	os.RemoveAll(records)
+	// Only the account Steam signs in counts: the other one's conflict, or
+	// its missing entry, does not keep multiplayer from starting.
+	write(t, record, `{"apps":{"227300":{"launch":{"`+acctKid+`":{"wrote":"","before":"a %command% b %command%","conflict":true},`+
+		`"`+acctFan+`":{"wrote":"`+steam.Dispatcher+` --app 227300 %command%","before":""}}}}}`)
+	if err := m.run(ctx, games[0]); err != nil || len(*started) != 1 {
+		t.Fatalf("the other account's conflict: %v %q", err, *started)
+	}
+	os.Remove(flagPath())
+	*started = nil
+	// With no account marked as the one Steam signs in, every one counts.
+	write(t, logins, strings.ReplaceAll(loginUsers, `"MostRecent"		"1"`, `"MostRecent"		"0"`))
+	if code, _ := refused(m.run(ctx, games[0])); code != "launch-options-ets2" {
+		t.Fatalf("no MostRecent: %q", code)
+	}
+	os.RemoveAll(records)
 
 	// The dispatcher off says so first, whatever the record holds.
 	dispatcher(t, false)
@@ -362,7 +386,7 @@ func TestNotReady(t *testing.T) {
 	if got := notReady(homeDir(), ets2); got != "no-files-ets2" {
 		t.Errorf("nothing synced: %q", got)
 	}
-	for _, code := range []string{"not-installed-ets2", "no-files-ats", "running-ets2", "steam-pending"} {
+	for _, code := range []string{"not-installed-ets2", "no-files-ats", "running-ets2", "steam-pending", "launch-options-ats"} {
 		if text, ok := messageText(code); !ok || !strings.HasPrefix(text, "TruckersMP didn't start because ") {
 			t.Errorf("%s: %q", code, text)
 		}
