@@ -366,6 +366,11 @@ func EntryForSlot(esp, slot string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	return SlotEntry(es, slot), nil
+}
+
+// SlotEntry is EntryForSlot over entries already listed.
+func SlotEntry(es []Entry, slot string) *Entry {
 	var best *Entry
 	for i := range es {
 		e := &es[i]
@@ -376,7 +381,23 @@ func EntryForSlot(esp, slot string) (*Entry, error) {
 			best = e
 		}
 	}
-	return best, nil
+	return best
+}
+
+// NextEntry returns the entry of es that a restart starts, nil when there
+// is none. VaporOS entries share one sort-key, and stages and rollbacks
+// clear systemd-boot's saved choices, so it starts the entry that sorts
+// first across both slots: bootable first, then the newest version. On a
+// tie the running slot's (booted) stays.
+func NextEntry(es []Entry, booted string) *Entry {
+	var next *Entry
+	for i := range es {
+		e := &es[i]
+		if next == nil || better(e, next) || (e.Slot == booted && !better(next, e)) {
+			next = e
+		}
+	}
+	return next
 }
 
 func better(a, b *Entry) bool {
