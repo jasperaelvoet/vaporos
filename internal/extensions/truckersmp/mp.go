@@ -58,6 +58,7 @@ const (
 	msgNotInstalled = "not-installed-" // and the game's key
 	msgNoFiles      = "no-files-"      // and the game's key
 	msgLinux        = "linux-"         // and the game's key: the hook, for the Linux build
+	msgNeedsUpdate  = "needs-update-"  // and the game's key: no launch options carry the dispatcher
 	msgStarting     = "starting"
 	msgUpdating     = "updating"
 	msgHandOff      = "handoff-failed"
@@ -87,6 +88,7 @@ func messageText(code string) (string, bool) {
 		{msgNotInstalled, "TruckersMP didn't start because %s isn't installed. Install it in Steam, then try again."},
 		{msgNoFiles, "TruckersMP didn't start because its files for %s aren't downloaded yet. Try again once its card in VaporOS says it's ready."},
 		{msgLinux, "TruckersMP didn't start because %s isn't set to run with Proton. Restart VaporOS and try again."},
+		{msgNeedsUpdate, "TruckersMP didn't start because it needs the next VaporOS update. Until then, %s starts from Steam in single-player."},
 	} {
 		if key, ok := strings.CutPrefix(code, c.prefix); ok {
 			if g, ok := gameByKey(key); ok {
@@ -115,6 +117,15 @@ func told(tell func(string), code string) error {
 
 // run starts multiplayer for g. A refusal is told and is an error.
 func (m *mp) run(ctx context.Context, g game) error {
+	// Only the launch hook makes the game's start multiplayer, and it runs
+	// only while the game's launch options carry the dispatcher: without
+	// it the game would start in single-player as if nothing were wrong.
+	if on, err := extensions.SteamDispatcher(); err != nil || !on {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "truckersmp: steam.json:", err)
+		}
+		return told(m.tell, msgNeedsUpdate+g.key)
+	}
 	if running := m.runningGame(); running != "" {
 		return told(m.tell, msgRunning+running)
 	}

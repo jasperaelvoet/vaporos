@@ -2,6 +2,7 @@ package truckersmp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/gameproc"
 )
 
@@ -78,9 +80,11 @@ func TestProcs(t *testing.T) {
 	}
 }
 
-// testMP is an mp on a box, recording the handoff it starts and what it
-// tells the person.
+// testMP is an mp on a box whose apps' launch options carry the
+// dispatcher, recording the handoff it starts and what it tells the
+// person.
 func testMP(t *testing.T, p *fakeProc) (*mp, *[][]string, *[]string) {
+	dispatcher(t, true)
 	var started [][]string
 	var told []string
 	m := &mp{procs: p.fs(), pid: 40, flag: flagPath(), runtime: os.Getenv("XDG_RUNTIME_DIR"), home: homeDir(), now: now, libs: libraries,
@@ -155,6 +159,65 @@ func TestMPRefuses(t *testing.T) {
 	}
 	if len(*started) != 0 {
 		t.Errorf("started %q", *started)
+	}
+}
+
+// dispatcher writes steam.json with its dispatcher on or off.
+func dispatcher(t *testing.T, on bool) {
+	write(t, config.ExtSteamPath(), `{"set":"1","dispatcher":`+strconv.FormatBool(on)+`,"apps":[{"app":227300,"hooks":["truckersmp"]}]}`)
+}
+
+// While the games' launch options lack the dispatcher (a slot the box can
+// boot was built before extensions), the hook never sees the flag, so mp
+// refuses rather than let the game start in single-player; also when
+// steam.json cannot be read. The person reads its sentence from vosd.
+func TestMPNeedsTheDispatcher(t *testing.T) {
+	b := syncedBox(t, "ets2")
+	b.install(b.disk, games[0])
+	m, started, _ := testMP(t, shortcutProcs(t))
+	m.tell = tell // the record vosd reads
+	ctx := context.Background()
+	records := filepath.Join(config.GamerRuntimeDir, "vos", "ext-messages")
+	for _, c := range []struct{ name, steamJSON string }{
+		{"off", ""}, {"missing", "-"}, {"unreadable", "{"},
+	} {
+		switch c.steamJSON {
+		case "":
+			dispatcher(t, false)
+		case "-":
+			os.Remove(config.ExtSteamPath())
+		default:
+			write(t, config.ExtSteamPath(), c.steamJSON)
+		}
+		err := m.run(ctx, games[0])
+		if code, text := refused(err); code != "needs-update-ets2" ||
+			text != "TruckersMP didn't start because it needs the next VaporOS update. Until then, ETS2 starts from Steam in single-player." {
+			t.Fatalf("%s: %v %q", c.name, err, text)
+		}
+		names, _ := os.ReadDir(records)
+		if len(names) != 1 {
+			t.Fatalf("%s: records %v", c.name, names)
+		}
+		var r struct{ Code, ID string }
+		if err := json.Unmarshal([]byte(read(t, filepath.Join(records, names[0].Name()))), &r); err != nil ||
+			r.Code != "needs-update-ets2" || r.ID != ID {
+			t.Fatalf("%s: record %+v %v", c.name, r, err)
+		}
+		os.RemoveAll(records)
+		if _, err := os.Stat(flagPath()); !os.IsNotExist(err) {
+			t.Fatalf("%s: a flag without the dispatcher", c.name)
+		}
+		if len(*started) != 0 {
+			t.Fatalf("%s: handed off %q", c.name, *started)
+		}
+	}
+
+	dispatcher(t, true)
+	if err := m.run(ctx, games[0]); err != nil || len(*started) != 1 {
+		t.Fatalf("with the dispatcher: %v %q", err, *started)
+	}
+	if _, err := readFlag(flagPath()); err != nil {
+		t.Fatal(err)
 	}
 }
 

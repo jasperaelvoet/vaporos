@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
 )
 
@@ -180,6 +181,61 @@ func TestDocumentNeedsAttention(t *testing.T) {
 	useHelper(t, "proton", h)
 	if x := r.card("proton"); x.State != StateNeedsAttention || !strings.Contains(x.Reason, "deleted its Steam shortcut") {
 		t.Fatalf("status line of tone error = %+v", x)
+	}
+}
+
+// While steam.json's dispatcher is false no app launch hook runs, so the
+// card of a running, wanted extension with hooks says so first, as a
+// warning that needs no attention. Not for one without hooks (Proton sets
+// a default tool), one removed until the restart, or when the dispatcher
+// is on or steam.json cannot be read.
+func TestDocumentHooksOff(t *testing.T) {
+	r := newRig(t)
+	if code, body := r.do("POST", "/extensions/truckersmp", `{}`); code != 200 {
+		t.Fatalf("install: %d %s", code, body)
+	}
+	r.pass()
+	r.boot()
+	steamJSON := func(on bool, hooks ...string) {
+		t.Helper()
+		d := SteamDesired{Dispatcher: on, Apps: []SteamApp{{App: 227300, Hooks: hooks}}}
+		must(t, config.WriteJSONAtomic(config.ExtSteamPath(), d, 0o644))
+	}
+	line := StatusLine{Text: "Starting games with TruckersMP works after the next VaporOS update. Until then, they start without it.", Tone: "warning"}
+	useHelper(t, "truckersmp", &recHelper{status: []StatusLine{{Text: "TruckersMP 0.11 is ready."}}})
+
+	steamJSON(false, "truckersmp")
+	x := r.card("truckersmp")
+	if !slices.Equal(x.Status, []StatusLine{line, {Text: "TruckersMP 0.11 is ready."}}) || x.State != StateInstalled {
+		t.Fatalf("dispatcher off: %s %+v", x.State, x.Status)
+	}
+	if p := r.card("proton"); len(p.Status) != 0 {
+		t.Errorf("proton, without hooks: %+v", p.Status)
+	}
+	// Named in steam.json's hooks alone, as a descriptor without them
+	// cannot be; also then.
+	steamJSON(false, "proton")
+	if p := r.card("proton"); !slices.Equal(p.Status, []StatusLine{{Text: strings.Replace(line.Text, "TruckersMP", "CachyOS Proton", 1), Tone: "warning"}}) {
+		t.Errorf("proton, hooked in steam.json: %+v", p.Status)
+	}
+
+	for name, write := range map[string]func(){
+		"dispatcher on": func() { steamJSON(true, "truckersmp") },
+		"no steam.json": func() { must(t, os.Remove(config.ExtSteamPath())) },
+		"unreadable":    func() { writeFile(t, config.ExtSteamPath(), "{") },
+	} {
+		write()
+		if x := r.card("truckersmp"); slices.Contains(x.Status, line) {
+			t.Errorf("%s: %+v", name, x.Status)
+		}
+	}
+
+	if code, body := r.do("DELETE", "/extensions/truckersmp", ""); code != 200 {
+		t.Fatalf("remove: %d %s", code, body)
+	}
+	steamJSON(false, "truckersmp")
+	if x := r.card("truckersmp"); x.State != StateRestartNeeded || slices.Contains(x.Status, line) {
+		t.Errorf("removed: %s %+v", x.State, x.Status)
 	}
 }
 

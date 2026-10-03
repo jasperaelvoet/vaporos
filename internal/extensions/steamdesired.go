@@ -539,3 +539,14 @@ func readSteamDesired() (*SteamDesired, error) {
 	}
 	return d, nil
 }
+
+// SteamDispatcher is steam.json's dispatcher: whether apps' launch options
+// carry `vos ext launch`, so their launch hooks run. A helper's command
+// reads it as the gaming user before it counts on its hook.
+func SteamDispatcher() (bool, error) {
+	d, err := readSteamDesired()
+	if err != nil {
+		return false, err
+	}
+	return d.Dispatcher, nil
+}
