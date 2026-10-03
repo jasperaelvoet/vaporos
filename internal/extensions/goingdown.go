@@ -3,6 +3,7 @@ package extensions
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/boot"
@@ -59,6 +60,7 @@ func (s *Service) GoingDown(act func() error) error {
 		return act()
 	}
 	log.Printf("extensions: the next start boots VaporOS %s (slot %s), built before extensions; taking what VaporOS set in Steam out first", next.Version, next.Slot)
+	goingDown.Store(true)
 	release := s.holdUnits()
 	ctx, cancel := context.WithTimeout(context.Background(), downStopWait)
 	err := stopGamescope(ctx)
@@ -69,9 +71,15 @@ func (s *Service) GoingDown(act func() error) error {
 		log.Printf("extensions: stopped %s", gamescopeUnit)
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), downPrepareWait)
-	unwrap{prepare: unwrapAsGamer}.runPrepare(ctx)
+	if lockWithin(ctx, &prepMu) {
+		unwrap{prepare: unwrapAsGamer}.runPrepare(ctx)
+		prepMu.Unlock()
+	} else {
+		log.Printf("extensions: another vos steam prepare still ran after %v; restarting without taking VaporOS out of Steam", downPrepareWait)
+	}
 	cancel()
 	if err := act(); err != nil {
+		goingDown.Store(false)
 		release()
 		return err
 	}
@@ -135,4 +143,16 @@ func (s *Service) holdUnits() (release func()) {
 		return func() {}
 	}
 	return release
+}
+
+// lockWithin locks mu unless ctx ends first.
+func lockWithin(ctx context.Context, mu *sync.Mutex) bool {
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	return true
 }

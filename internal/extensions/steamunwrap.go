@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jasperaelvoet/vaporos/internal/sysd"
@@ -32,6 +34,14 @@ const (
 	maxPrepareLines = 10
 )
 
+// GoingDown's unwrap must be the last prepare before the restart: once
+// goingDown is set, run starts no prepare (which would put back what the
+// unwrap took out), and GoingDown takes prepMu to wait for one that runs.
+var (
+	goingDown atomic.Bool
+	prepMu    sync.Mutex
+)
+
 // unwrap runs `vos steam prepare` as vapor after the dispatcher turned
 // off (steam.json's dispatcher went from true to false), with what it
 // asks and runs taken when SyncSteam starts it.
@@ -55,6 +65,12 @@ func (u unwrap) run() {
 		st := u.state(ctx)
 		switch st {
 		case "inactive", "failed":
+			prepMu.Lock()
+			defer prepMu.Unlock()
+			if goingDown.Load() {
+				log.Printf("extensions: VaporOS is restarting into a version without extensions; it took them out of Steam itself")
+				return
+			}
 			u.runPrepare(ctx)
 			return
 		case "active":

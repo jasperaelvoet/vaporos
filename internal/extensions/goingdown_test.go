@@ -40,6 +40,7 @@ func newDownRig(t *testing.T) *downRig {
 		saved[i] = *w
 	}
 	t.Cleanup(func() {
+		goingDown.Store(false) // a restart that went ahead leaves it set
 		config.ESP, readBootEntries, stopGamescope, unwrapAsGamer = esp, read, stop, unwrap
 		for i, w := range waits {
 			*w = saved[i]
@@ -280,5 +281,52 @@ func TestGoingDownRestartsWhateverHappens(t *testing.T) {
 	}
 	if l.count("the ESP did not answer within 20ms; Steam is left as it is") != 1 {
 		t.Errorf("log:\n%s", l.buf.String())
+	}
+}
+
+// The dispatcher-off runner, still waiting for gamescope's unit to settle
+// when a restart into an image without extensions begins, runs no prepare
+// after GoingDown's unwrap; and GoingDown waits for one already running.
+func TestGoingDownIsTheLastPrepare(t *testing.T) {
+	r := newDownRig(t)
+	r.entries("vos-"+bootedVersion+"+0-1.conf", "a", "vos-"+otherVersion+".conf", "b")
+	states := make(chan string)
+	ran := make(chan struct{}, 1)
+	u := unwrap{
+		state:   func(context.Context) string { return <-states },
+		prepare: func(context.Context) (string, error) { r.record("prepare"); ran <- struct{}{}; return "", nil },
+		every:   time.Millisecond, limit: time.Minute,
+	}
+	done := make(chan struct{})
+	go func() { u.run(); close(done) }()
+	states <- "deactivating"
+	if err := r.restart(nil); err != nil {
+		t.Fatal(err)
+	}
+	states <- "inactive"
+	<-done
+	if got := r.taken(); !slices.Equal(got, goingBackCalls) {
+		t.Fatalf("calls %q, want %q (no plain prepare after the unwrap)", got, goingBackCalls)
+	}
+
+	// One already running: the unwrap comes after it.
+	goingDown.Store(false)
+	prepMu.Lock()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		r.record("prepare")
+		prepMu.Unlock()
+	}()
+	if err := r.restart(nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"hold", "stop", "prepare", "prepare --unwrap", "reboot"}
+	if got := r.taken(); !slices.Equal(got, want) {
+		t.Fatalf("calls %q, want %q", got, want)
+	}
+	select {
+	case <-ran:
+		t.Fatal("the runner's prepare ran")
+	default:
 	}
 }
