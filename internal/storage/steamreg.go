@@ -30,7 +30,9 @@ import (
 // edit made while it runs would be lost. The list is only changed while
 // no Steam (and no gamescope, which starts Steam) runs as the gaming user;
 // until then the library waits in steam-libraries.json, and Run adds it
-// the next time it sees Steam stopped, at the latest on the next boot.
+// the next time it sees Steam stopped. A Steam that starts at boot and
+// never stops gives Run no such moment, so `vos steam prepare` adds the
+// waiting libraries too, right before every Steam start.
 // Everything is read and written through gamerfs: the home belongs to the
 // gaming user, who could otherwise plant symlinks for vosd to follow. The
 // lists are edited under the Steam lock (internal/steamlock), which `vos

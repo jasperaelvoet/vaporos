@@ -70,7 +70,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/clients.json` | vosd | learned Moonlight client modes, one entry per client and mode: `{"<name> WxH@R": {name,w,h,fps,hdr,last_seen}}` (a file keyed by name alone, without `name`, is read as that client's one mode), at most 64, the least recently seen dropped first; every entry's mode stays in the learned EDID (newest first, up to the 30 extra modes) until DELETE `/display/modes/{mode}` removes it |
 | `/var/lib/vos/sunshine-api.json` | vosd | `{"user","password"}` for Sunshine's local API, mode 0600 |
 | `/var/lib/vos/cmdline` | installer, vosd | machine-specific kernel args (boot disk, virtual connector + EDID) |
-| `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running (no `steam`, `steam.sh`, `steamwebhelper` or `gamescope*` process of `vapor`, and `vos-gamescope.service` inactive or failed) and only holding the Steam lock (`/run/user/1000/vos-steam.lock`, see Extensions, Steam; a registration that cannot have it within 2 s, or that finds Steam or gamescope's unit up once it has it, waits here for the next round). Without `/run/user/1000` (`vapor`'s manager is not running, so nobody can hold the lock or start Steam) it edits the list without the lock |
+| `/var/lib/vos/steam-libraries.json` | vosd | `{"pending":["/var/mnt/<label>[/SteamLibrary]"]}`: adopted libraries still to be added to Steam's library list, which vosd changes only while Steam is not running (no `steam`, `steam.sh`, `steamwebhelper` or `gamescope*` process of `vapor`, and `vos-gamescope.service` inactive or failed) and only holding the Steam lock (`/run/user/1000/vos-steam.lock`, see Extensions, Steam; a registration that cannot have it within 2 s, or that finds Steam or gamescope's unit up once it has it, waits here for the next round). Without `/run/user/1000` (`vapor`'s manager is not running, so nobody can hold the lock or start Steam) it edits the list without the lock. `vos steam prepare` (Extensions, Steam) also adds every queued library whose `steamapps/` is there, right before each Steam start, since a Steam that starts at boot and keeps running gives vosd no moment to; vosd then finds it listed and drops it |
 | `/var/lib/vos/firmware/edid/vaporos.bin` | vosd | EDID with learned modes; overrides the image one via `firmware_class.path=/var/lib/vos/firmware`. vosd also hands each new version to the running kernel, best effort: it writes `/sys/kernel/debug/dri/<minor or PCI address>/<C>/edid_override`, re-probes the connector by switching its sysfs `status` to `on-digital` and back to `on`, and sends a `change` uevent with `HOTPLUG=1`. It counts only when the connector's sysfs `edid` then matches. vosd skips this during a stream (it applies at `session.end`) and when the new EDID drops the mode on screen. If the kernel refuses, or gamescope does not reach a mode added this way within 15 s, vosd stops trying until the next boot and the mode applies after a reboot |
 | `/var/lib/vos/health-ok` | `vos health` | JSON `{"gpu":bool,"stream":bool,"lan":bool,"lan_mac":"<address>"}` from the last good boot; `lan_mac` is the `address` of the network device that had the LAN, recorded only when it is the hardware's own (`addr_assign_type` 0, not random or set by software; omitted otherwise or when unknown) |
 | `/usr/lib/vos/extensions.list` | build | the image's extension catalog (see Extensions) |
@@ -920,6 +920,16 @@ vosd's `--unwrap` in *Going back*):
    and `accounts` as loginusers.vdf has them (unchanged when it cannot be
    read), the rest as it was. Without the lock another run may be writing
    the record, so that one writes nothing.
+   Once it holds the lock and no Steam runs, before any check on
+   `steam.json` and with `--unwrap` too, it adds each library queued in
+   `/var/lib/vos/steam-libraries.json` (see Paths) whose `steamapps/` is
+   there and that Steam's lists have no library at or inside, to
+   `steamapps/libraryfolders.vdf` and, when it exists,
+   `config/libraryfolders.vdf`, with the label and content id of the
+   library's own `libraryfolder.vdf`, and logs `prepare: added <dir> to
+   Steam's libraries`. Without `steamapps/libraryfolders.vdf` it adds
+   nothing; a list that cannot be read or parsed is logged and left
+   alone, and none of this goes into the record's `error`.
 4. The fingerprint is the sha256 of `steam.json`'s bytes, the vos version,
    `--unwrap`, whether the boot report's mode is `off` (step 5.3),
    whether each tool `steam.json` names or VaporOS owns an entry

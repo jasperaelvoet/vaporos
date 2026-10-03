@@ -84,6 +84,7 @@ func prepare(ctx context.Context, o Options) {
 		p.skip(skipSteamRunning, "Steam is running; its files are left alone")
 		return
 	}
+	p.addQueuedLibraries()
 
 	raw, err := readFile(config.ExtSteamPath(), maxDesired)
 	switch {
