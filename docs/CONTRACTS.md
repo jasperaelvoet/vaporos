@@ -808,7 +808,11 @@ anyway. A file that cannot be read or parsed counts as changed.
   update service changed the slots. An ESP that cannot be read keeps
   `dispatcher` as `steam.json` has it, and a second failed read in a row
   makes it false. While it is false no launch options are wrapped, and
-  those that were are unwrapped. So staging an image built before
+  those that were are unwrapped, so no app's launch hook runs (shortcuts
+  keep the dispatcher and their hooks): the cards of the extensions with
+  hooks say so (see Control center), and TruckersMP's `mp` refuses (see
+  TruckersMP). A box updated from an image built before extensions is in
+  that state until the update after it. So staging an image built before
   extensions (a downgrade) turns it false at once, and the next prepare
   unwraps them before that image can boot: the Steam restart that follows
   (at the next quiet moment), or gamescope's stop
@@ -1117,7 +1121,13 @@ image's (the catalog's); `web` is the descriptor's web UI, listed whether or
 not it runs (vosd serves it only while the extension is mounted, still
 wanted and its services run; see HTTP API, Extension web UIs), and
 `web_running` whether vosd serves its port now; `status`
-is its helper's lines (`tone` `warning` or `error`, or none); `requires` its
+is its helper's lines (`tone` `warning` or `error`, or none), after a line
+of vosd's own while `steam.json` reads and has `dispatcher` false, for an
+extension this boot mounted that is wanted or core (or required by one)
+and hooks an app (its descriptor's `steam.hooks` names one, or
+`steam.json`'s `apps[].hooks` names it): "Starting games with <name> works
+after the next VaporOS update. Until then, they start without it."
+(`warning`; its hooks do not run, see Steam); `requires` its
 direct requirements; `required_by` the wanted or core extensions that
 require it, directly or not; `needs_password` whether adding it takes the
 admin password again (it, or a requirement not wanted or core yet, directly
@@ -1531,13 +1541,19 @@ saying how often in their `what`.
   minutes. `Remove` stops it.
 - *Multiplayer:* `vos ext truckersmp mp ets2|ats` (as `vapor`: from the
   shortcut, through `vos ext launch --shortcut`, or from Sunshine) refuses,
-  with a message (see Dispatcher messages: codes `running-<key>`,
-  `starting`, `not-installed-<key>`, `no-files-<key>`, `updating`,
-  `handoff-failed` and, from `handoff`, `steam-silent`, each with its
-  sentence in the helper; the launch hook's refusals add `linux-<key>` and
-  `launcher-failed`, and `Install`'s `setup-failed`, all returned as
-  `extensions.Refuse` with their code), while a reaper of 227300 or 270880 runs
-  (`running-`), while `vos-ext-handoff.service` is loaded (`starting`),
+  with a message (see Dispatcher messages: codes `needs-update-<key>`,
+  `running-<key>`, `starting`, `not-installed-<key>`, `no-files-<key>`,
+  `updating`, `handoff-failed` and, from `handoff`, `steam-silent`, each
+  with its sentence in the helper; the launch hook's refusals add
+  `linux-<key>` and `launcher-failed`, and `Install`'s `setup-failed`, all
+  returned as `extensions.Refuse` with their code), while
+  `/var/lib/vos/ext/steam.json` cannot be read or has `dispatcher` false
+  (`needs-update-`, "TruckersMP didn't start because it needs the next
+  VaporOS update. Until then, ETS2 starts from Steam in single-player.",
+  ATS for `ats`: the game's launch options lack the dispatcher, so the
+  hook would never take the flag and the game would start in
+  single-player), while a reaper of 227300 or 270880 runs (`running-`),
+  while `vos-ext-handoff.service` is loaded (`starting`),
   when no library has the game (`not-installed-`), or when the game's
   files fail the quick check: `no-files-` when the manifest lacks the
   game, or without a manifest `files/` lacks its core library, else
@@ -1575,9 +1591,10 @@ saying how often in their `what`.
   passes untouched. For its shortcuts it adds
   `ext truckersmp mp <key>` when the command ends in `/usr/bin/vos` (a
   prepare that wrote no `args`).
-- *Card* (no lines while it is not mounted and set up, but for a sync that
-  runs): the game versions the API supports, each installed game's version
-  (the last `init ver.` in `game.log.txt` of its prefix's
+- *Card* (no lines of its helper while it is not mounted and set up, but
+  for a sync that runs; vosd's own line while `dispatcher` is false comes
+  first, see Control center): the game versions the API supports, each
+  installed game's version (the last `init ver.` in `game.log.txt` of its prefix's
   `Documents/<game>`, else of `~/.local/share/<game>`, read through
   gamerfs) against them or the branch it is held on (and, once the API
   supports a newer version than that, whether that one is the game's

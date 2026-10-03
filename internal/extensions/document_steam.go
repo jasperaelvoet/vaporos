@@ -43,6 +43,24 @@ func steamDoc(d *descriptor.Descriptor, names map[uint32]string) *SteamDoc {
 	return out
 }
 
+// hooksOffLine is the card's line of an extension with app launch hooks
+// while steam.json's dispatcher is false: no app's launch options carry
+// `vos ext launch`, so its hooks do not run until every VaporOS the box
+// can boot has it, which the next update brings.
+func hooksOffLine(name string) StatusLine {
+	return StatusLine{Text: "Starting games with " + name + " works after the next VaporOS update. Until then, they start without it.",
+		Tone: "warning"}
+}
+
+// hooksApps reports whether id hooks an app's launch: its descriptor's
+// steam.hooks names one, or steam.json lists it in an app's hooks.
+func hooksApps(id string, d *descriptor.Descriptor, sd *SteamDesired) bool {
+	if d != nil && d.Steam != nil && slices.ContainsFunc(d.Steam.Hooks, func(h descriptor.Hook) bool { return len(h.Apps) > 0 }) {
+		return true
+	}
+	return sd != nil && slices.ContainsFunc(sd.Apps, func(a SteamApp) bool { return slices.Contains(a.Hooks, id) })
+}
+
 // steamApps lists the apps the cards' descriptors force a tool on or hook.
 func (s *Service) steamApps(xs []ExtensionStatus) []uint32 {
 	var apps []uint32

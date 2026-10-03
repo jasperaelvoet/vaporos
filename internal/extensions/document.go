@@ -189,8 +189,9 @@ const helperStatusWait = time.Second
 // Document builds GET /extensions: the booted catalog's extensions (then
 // wanted ones it lacks) with what their shipped descriptors say, their
 // state after the last pass and the changes since, their settings and
-// their helpers' status lines. A web UI is listed whether or not it runs:
-// vosd serves it only while its extension is mounted.
+// their helpers' status lines, after a line of vosd's own while their app
+// launch hooks cannot run (hooksOffLine). A web UI is listed whether or
+// not it runs: vosd serves it only while its extension is mounted.
 func (s *Service) Document(ctx context.Context) Document {
 	st := s.Status()
 	s.mu.Lock()
@@ -211,6 +212,7 @@ func (s *Service) Document(ctx context.Context) Document {
 		byID[x.ID] = x
 	}
 	names := s.appNames(s.steamApps(st.Extensions))
+	sd, _ := readSteamDesired() // without one, nothing says the hooks are off
 	doc := Document{Extensions: []ExtensionDoc{}, SkipOnce: skipOnce()}
 	var adding, removing, changing []string
 	for _, x := range st.Extensions {
@@ -221,7 +223,11 @@ func (s *Service) Document(ctx context.Context) Document {
 		xd.Mounted, xd.Progress = x.Mounted, x.Progress
 		xd.RequiredBy = requiredBy(v.cat, want, x.ID)
 		xd.NeedsPassword = s.needsPassword(v.cat, want, x.ID)
-		f := cardFacts{inWant: want[x.ID] || xd.Wanted, note: notes[x.ID], lines: xd.Status}
+		inWant := want[x.ID] || xd.Wanted
+		if sd != nil && !sd.Dispatcher && x.Mounted && inWant && hooksApps(x.ID, d, sd) {
+			xd.Status = append([]StatusLine{hooksOffLine(xd.Name)}, xd.Status...)
+		}
+		f := cardFacts{inWant: inWant, note: notes[x.ID], lines: xd.Status}
 		// Also after a failed try while another comes by itself.
 		f.settingUp = running[x.ID] || (x.Mounted && f.inWant && d != nil &&
 			tries[x.ID] < maxHelperInstalls && !isInstalled(x.ID))
