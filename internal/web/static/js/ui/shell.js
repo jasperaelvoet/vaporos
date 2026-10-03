@@ -167,12 +167,13 @@ function listen() {
     apply({
       stream: null,
       live: { session: null },
-      sunshine: { ...(snap.sunshine || {}), streaming: false },
+      sunshine: snap.sunshine && { ...snap.sunshine, streaming: false },
       display: { ...d, state: d.state === 'streaming' ? 'gaming' : d.state },
     });
     soon();
   });
-  on('pairing.state', (p) => apply({ sunshine: { ...(snap.sunshine || {}), pairings: (p && p.pairings) || [] } }));
+  // Only a sunshine part /status returned: without one, Home asks GET /sunshine why.
+  on('pairing.state', (p) => snap.sunshine && apply({ sunshine: { ...snap.sunshine, pairings: (p && p.pairings) || [] } }));
   on('pairing.pending', soon);
   on('sunshine.state', soon);
   on('display.changed', soon);

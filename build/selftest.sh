@@ -602,8 +602,9 @@ has "firewall: ... from loopback's output" 'oif lo jump upstream'
 # rule in nftables.nft, so it holds whatever config.json and the ports file
 # say, and never comes from vos-firewall.
 upstream_chain() { # upstream_chain CONFIG_JSON PORTS: chain upstream's body as written
+    # awk reads to the end: exiting early would SIGPIPE vos-firewall.
     render_ports "$1" "$2" | awk '/^[[:space:]]*chain upstream \{/ { on = 1; next }
-        on && /^[[:space:]]*\}/ { exit } on'
+        on && /^[[:space:]]*\}/ { on = 0 } on'
 }
 for c in 'the default config={}=' \
             'everything open={"ssh":{"enabled":true},"web":{"https":true,"allow_public":true}}=tcp 11987 upstream 11985\nudp 27015\n' \

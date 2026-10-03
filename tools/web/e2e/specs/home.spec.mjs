@@ -335,7 +335,7 @@ export default [
     ui: ['next'],
     // The flow answers /status and /sunshine with errors on purpose.
     allow: [/status of (500|502|503)/, /(500|502|503) GET .*\/api\/v1\/(status|sunshine)$/],
-    async run({ page, url, ready, step }) {
+    async run({ page, url, ready, server, step }) {
       const sunshine = async (status) => {
         await page.unroute('**/api/v1/sunshine');
         await page.route('**/api/v1/sunshine', (r) => r.fulfill({ status, json: { error: 'Sunshine is still being set up; try again in a few seconds' } }).catch(() => {}));
@@ -359,6 +359,13 @@ export default [
       await step('anything else is Can’t read the streaming status', async () => {
         await sunshine(500);
         await page.locator('#hero-title', { hasText: "Can't read the streaming status" }).waitFor();
+        await hero(page, 'fault');
+      });
+      await step('a live pairing.state is no answer from Sunshine: the hero keeps its fault', async () => {
+        await live(page);
+        await dev(server, 'event', { topic: 'pairing.state', data: { pairings: [] } });
+        await page.waitForTimeout(300);
+        assert.equal(await text(page, '#hero-title'), "Can't read the streaming status");
         await hero(page, 'fault');
       });
       await step('a failed /status: each part says so in its place, with Try again', async () => {
