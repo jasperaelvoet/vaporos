@@ -27,11 +27,17 @@ type syncJob struct {
 	moved        time.Time // when it started or its bytes last grew
 }
 
-// startLocked starts a sync in the background (h.mu held).
-func (h *Helper) startLocked() {
+// startLocked starts a sync in the background (h.mu held), with gs the
+// games as vosd sees them now.
+func (h *Helper) startLocked(gs []gameState) {
 	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	j := &syncJob{cancel: cancel, done: make(chan struct{}), moved: now()}
-	h.job, h.lastRun = j, now()
+	h.job, h.lastRun, h.lastFor = j, now(), nil
+	for _, s := range gs {
+		if s.lib != "" {
+			h.lastFor = append(h.lastFor, s.g.key)
+		}
+	}
 	log.Printf("truckersmp: syncing the mod's files")
 	go func() {
 		defer close(j.done)

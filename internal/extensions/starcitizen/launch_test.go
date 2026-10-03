@@ -158,6 +158,60 @@ func TestLaunchLaterStart(t *testing.T) {
 	}
 }
 
+// The RSI Launcher starts the game from <prefix>/drive_c (it drops /pfx
+// from the path winepath gives it), so every start links that to Proton's
+// pfx/drive_c: a missing or stray link is made anew, anything else stays,
+// and a refused start makes none.
+func TestLaunchLinksDriveC(t *testing.T) {
+	b := newBox(t)
+	prefix := b.installed()
+	setup := prefix + "/installer/RSI Launcher-Setup-2.17.0.exe"
+	link := prefix + "/drive_c"
+	start := func() error {
+		l := &extensions.Launch{Shortcut: "star-citizen/launcher", Argv: steamLine(setup, false)}
+		return (helper{}).LaunchHook(context.Background(), l)
+	}
+	linked := func(name string) {
+		t.Helper()
+		if target, err := os.Readlink(link); err != nil || target != "pfx/drive_c" {
+			t.Errorf("%s: drive_c %q, %v", name, target, err)
+		}
+	}
+
+	must(t, os.Rename(setup, setup+".gone"))
+	if err := start(); codeOf(err) != codeInstallerMissing {
+		t.Fatalf("no installer: %v", err)
+	}
+	if _, err := os.Lstat(link); err == nil {
+		t.Error("a refused start made the link")
+	}
+	must(t, os.Rename(setup+".gone", setup))
+
+	must(t, start())
+	linked("first start")
+	writeFile(t, prefix+launcherPath, "MZ")
+	must(t, start())
+	linked("later start")
+	if !isFile(link + "/Program Files/Roberts Space Industries/RSI Launcher/RSI Launcher.exe") {
+		t.Error("the launcher isn't reached through the link")
+	}
+
+	must(t, os.Remove(link))
+	must(t, os.Symlink("/elsewhere", link))
+	must(t, start())
+	linked("a stray link")
+	if names := dirNames(t, prefix); slices.ContainsFunc(names, func(n string) bool { return strings.HasSuffix(n, ".tmp") }) {
+		t.Errorf("the prefix holds %v", names)
+	}
+
+	must(t, os.Remove(link))
+	mkdir(t, link)
+	must(t, start())
+	if fi, err := os.Lstat(link); err != nil || !fi.IsDir() {
+		t.Errorf("a folder of the player's own: %v, %v", fi, err)
+	}
+}
+
 func TestLaunchSystemDrive(t *testing.T) {
 	b := newBox(t)
 	p, _ := placeFor("/var")

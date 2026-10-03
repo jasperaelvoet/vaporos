@@ -221,8 +221,10 @@ func (h *Helper) games() []gameState {
 }
 
 // schedule asks the version API when its answer is old and starts a sync
-// when one is due, never two at once nor two within syncGap. Status calls
-// it only while the extension is mounted and set up.
+// when one is due, never two at once nor two within syncGap, unless a game
+// the files lack was installed since the last one started: that sync could
+// not have fetched its files, and multiplayer refuses until they are
+// there. Status calls it only while the extension is mounted and set up.
 func (h *Helper) schedule(m *manifest, gs []gameState) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -234,16 +236,21 @@ func (h *Helper) schedule(m *manifest, gs []gameState) {
 		h.asking = true
 		go h.askAPI()
 	}
-	if h.job != nil || (!h.lastRun.IsZero() && now().Sub(h.lastRun) < syncGap) {
+	if h.job != nil {
 		return
 	}
 	due := m == nil || now().Sub(m.Checked) >= syncEvery || (h.api != nil && h.api.Name != m.Version)
+	added := false
 	for _, s := range gs {
-		due = due || (s.lib != "" && !m.has(s.g))
+		if s.lib != "" && !m.has(s.g) {
+			due = true
+			added = added || !slices.Contains(h.lastFor, s.g.key)
+		}
 	}
-	if due {
-		h.startLocked()
+	if !due || (!added && !h.lastRun.IsZero() && now().Sub(h.lastRun) < syncGap) {
+		return
 	}
+	h.startLocked(gs)
 }
 
 func (h *Helper) askAPI() {

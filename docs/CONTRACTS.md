@@ -1638,7 +1638,10 @@ saying how often in their `what`.
   builds the card and a sync is due: no manifest, the API's `name` (asked at
   most hourly, every 10 minutes while unanswered; 15 s, 64 KiB) other than
   the manifest's `version`, a manifest a day old, or a game installed that
-  it lacks; never two at once, nor two it starts by itself within an hour.
+  it lacks; never two at once, nor two it starts by itself within an hour,
+  unless a game it lacks was installed since the last one started (vosd
+  remembers the games it saw installed then): that sync could not have
+  fetched its files, and `mp` refuses (`no-files-<key>`) until it has.
   A running sync is busy `updating TruckersMP` until no bytes came for 2
   minutes. `Remove` stops it.
 - *Multiplayer:* `vos ext truckersmp mp ets2|ats` (as `vapor`: from the
@@ -1962,6 +1965,14 @@ already 1048576.
   it again." when the setting names another drive than the recorded one
   (not when it is empty), and the memory line (also before it is
   installed). Without a setup (no record, or one marked `removed`) only the
+  A start it does not refuse also makes `<prefix>/drive_c` a symlink to
+  `pfx/drive_c` (relative; a link elsewhere is replaced through a temp link
+  and a rename, anything else there is left and only logged, as is a
+  failure): under Wine the RSI Launcher (2.17) starts the game from what
+  `winepath -u` makes of its `C:` path with `/pfx/drive_` turned into
+  `/drive_`, which suits umu's prefixes (their `pfx` links to the prefix)
+  but without the link names no file in Proton's, and Launch Game fails
+  with "Game Files Not Found" (error 6001).
   memory line shows. <drive> is "the system drive" or the game drive's label,
   exactly as it is (a label is an identifier: its case is kept, so no
   sentence starts with one).

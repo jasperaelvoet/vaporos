@@ -2,7 +2,9 @@ package starcitizen
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -18,6 +20,8 @@ const (
 	rsiDir      = "pfx/drive_c/Program Files/Roberts Space Industries"
 	launcherRel = rsiDir + "/RSI Launcher/RSI Launcher.exe"
 	liveRel     = rsiDir + "/StarCitizen/LIVE"
+	driveCLink  = "drive_c"
+	driveCRel   = "pfx/drive_c"
 	firstStart  = "first-start.bat"
 	regFile     = "vaporos.reg"
 	userCfg     = "USER.cfg"
@@ -86,6 +90,9 @@ func (helper) LaunchHook(ctx context.Context, l *extensions.Launch) error {
 			return extensions.Refuse(codeCantWrite, err)
 		}
 		with = []string{cmdExe, "/c", dosPath(filepath.Join(dir, firstStart))}
+	}
+	if err := linkDriveC(prefix); err != nil {
+		log.Printf("star-citizen: %v", err)
 	}
 	pruneInstallers(dir, named)
 	l.Env = setEnv(l.Env, "STEAM_COMPAT_DATA_PATH", prefix)
@@ -235,6 +242,39 @@ func seedLive(prefix string) error {
 		}
 	}
 	return writeIfChanged(filepath.Join(live, userCfg), userCfgText)
+}
+
+// linkDriveC makes <prefix>/drive_c a link to pfx/drive_c. Under Wine the
+// RSI Launcher starts the game from what `winepath -u` makes of its C:
+// path with "/pfx/drive_" turned into "/drive_", which suits umu's
+// prefixes (their pfx links to the prefix itself) but in Proton's names
+// no file: Launch Game then fails with "Game Files Not Found" (6001). A
+// link elsewhere is replaced; anything else there is left alone.
+func linkDriveC(prefix string) error {
+	p := filepath.Join(prefix, driveCLink)
+	fi, err := os.Lstat(p)
+	switch {
+	case err == nil && fi.Mode()&os.ModeSymlink == 0:
+		return fmt.Errorf("%s is not a link, so the RSI Launcher can't start the game", p)
+	case err == nil:
+		if t, err := os.Readlink(p); err == nil && t == driveCRel {
+			return nil
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	tmp := filepath.Join(prefix, "."+driveCLink+".tmp")
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Symlink(driveCRel, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // writeIfChanged replaces p with text (temp file, rename) unless it holds

@@ -115,7 +115,7 @@ func TestStatusSyncFailures(t *testing.T) {
 	b.log(b.disk, games[0], "1.61.1.1s")
 	h := newStatusHelper(t)
 	h.Helper.mu.Lock()
-	h.lastRun, h.api, h.apiAt = time.Now(), h.answer, time.Now()
+	h.lastRun, h.lastFor, h.api, h.apiAt = time.Now(), []string{"ets2"}, h.answer, time.Now()
 	h.Helper.mu.Unlock()
 	x := testExt()
 	last := func() string {
@@ -352,6 +352,30 @@ func TestSchedule(t *testing.T) {
 		if got := h.count() > n; got != c.want {
 			t.Errorf("%s: synced %v", name, got)
 		}
+	}
+
+	// A game installed after the last sync started is synced at once,
+	// within the gap; the gap holds again for the games that sync saw.
+	both := []gameState{{g: games[0], lib: b.disk}, {g: games[1], lib: b.steam}}
+	h.Helper.mu.Lock()
+	h.lastRun = time.Time{}
+	h.Helper.mu.Unlock()
+	n := h.count()
+	h.schedule(nil, gs) // a sync that sees ETS2 only
+	h.waitIdle(t)
+	if h.count() != n+1 {
+		t.Fatal("no manifest: not synced")
+	}
+	n = h.count()
+	h.schedule(fresh, both)
+	h.waitIdle(t)
+	if h.count() != n+1 {
+		t.Fatal("ATS installed since the last sync: not synced within the gap")
+	}
+	h.schedule(fresh, both)
+	h.waitIdle(t)
+	if h.count() != n+1 {
+		t.Error("ATS, which the last sync saw: synced again within the gap")
 	}
 }
 

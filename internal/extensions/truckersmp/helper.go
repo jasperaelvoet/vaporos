@@ -30,6 +30,7 @@ type Helper struct {
 	mu      sync.Mutex
 	job     *syncJob     // the sync that runs, nil when none
 	lastRun time.Time    // when the last sync started
+	lastFor []string     // the games installed when it started
 	lastErr error        // why the last sync failed, nil when it did not
 	api     *versionInfo // the version API's last answer
 	apiAt   time.Time    // when it was last asked, answer or not
@@ -85,9 +86,10 @@ func (h *Helper) Install(ctx context.Context, x *extensions.Ext) error {
 	if out, err := h.asGamer(ctx, vosBin, "ext", ID, "setup"); err != nil {
 		return extensions.Refuse(msgSetup, fmt.Errorf("copying the injector: %v: %s", err, lastLine(out)))
 	}
+	gs := h.games()
 	h.mu.Lock()
 	if h.job == nil {
-		h.startLocked()
+		h.startLocked(gs)
 	}
 	h.mu.Unlock()
 	return nil
