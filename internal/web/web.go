@@ -282,6 +282,14 @@ type uiHolder struct{ cur atomic.Pointer[ui] }
 func (h *uiHolder) load() *ui   { return h.cur.Load() }
 func (h *uiHolder) store(u *ui) { h.cur.Store(u) }
 
+// withServer is u serving srv, sharing what newUI read and parsed. The dev
+// server's every boot is a new api.Server, and building the UI again takes
+// it seconds under the race detector.
+func (u *ui) withServer(srv *api.Server) *ui {
+	return &ui{srv: srv, set: u.set, assets: u.assets, tmpl: u.tmpl, nav: u.nav, preloads: u.preloads,
+		lazy: u.lazy, styles: u.styles, fonts: u.fonts, base: u.base}
+}
+
 // Register adds the active UI's pages and the static assets to srv.
 func Register(srv *api.Server) {
 	register(srv, activeSet, content)
@@ -296,6 +304,11 @@ func register(srv *api.Server, set uiSet, fsys fs.FS) *uiHolder {
 		// programming error the package tests catch before a release.
 		panic("web: " + err.Error())
 	}
+	return mount(srv, set, u)
+}
+
+// mount adds u's pages and static assets to srv.
+func mount(srv *api.Server, set uiSet, u *ui) *uiHolder {
 	h := &uiHolder{}
 	h.store(u)
 	for _, p := range set.Pages {

@@ -146,6 +146,9 @@ type devServer struct {
 	set  uiSet
 	fsys fs.FS
 	slow atomic.Bool // realistic latency
+	// built is the UI as last read from fsys, which every new world serves
+	// (watch rebuilds it).
+	built atomic.Pointer[ui]
 
 	mu     sync.Mutex
 	preset string
@@ -237,7 +240,7 @@ func (d *devServer) newWorld(p *fakePreset, docs map[string]any, installer, fres
 	if installer && p.Headless {
 		srv.SetSetupWaiver(func() bool { return true })
 	}
-	holder, err := registerUI(srv, d.set, d.fsys)
+	holder, err := d.mountUI(srv)
 	if err != nil {
 		return nil, err
 	}
@@ -257,14 +260,20 @@ func (d *devServer) newWorld(p *fakePreset, docs map[string]any, installer, fres
 	return w, nil
 }
 
-// registerUI is register, with a broken UI as an error instead of a panic.
-func registerUI(srv *api.Server, set uiSet, fsys fs.FS) (h *uiHolder, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("%v", r)
-		}
-	}()
-	return register(srv, set, fsys), nil
+// mountUI is register with the UI the last world served, read again only
+// when there is none yet, and a broken UI as an error instead of a panic.
+// Reading it takes seconds under the race detector, which a world's clock
+// would count against the fixtures' times.
+func (d *devServer) mountUI(srv *api.Server) (*uiHolder, error) {
+	if u := d.built.Load(); u != nil {
+		return mount(srv, d.set, u.withServer(srv)), nil
+	}
+	u, err := newUI(srv, d.set, d.fsys)
+	if err != nil {
+		return nil, err
+	}
+	d.built.Store(u)
+	return mount(srv, d.set, u), nil
 }
 
 func (d *devServer) current() (*devWorld, bool) {
@@ -546,6 +555,7 @@ func (d *devServer) watch(ctx context.Context, every time.Duration) {
 		last = fp
 		world, down := d.current()
 		if down {
+			d.built.Store(nil) // the next boot reads it again
 			continue
 		}
 		u, err := newUI(world.srv, d.set, d.fsys)
@@ -553,6 +563,7 @@ func (d *devServer) watch(ctx context.Context, every time.Duration) {
 			log.Printf("dev server: keeping the old UI: %v", err)
 			continue
 		}
+		d.built.Store(u)
 		world.ui.store(u)
 		log.Printf("dev server: reloaded the UI")
 	}
