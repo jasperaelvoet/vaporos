@@ -34,11 +34,20 @@ var (
 // as 0. vosd therefore sets both, and re-checks the property.
 const compositeForceProp = "GAMESCOPE_COMPOSITE_FORCE"
 
-// xprop arguments that set and read compositeForceProp on the root window.
-var (
-	setCompositeForceArgs = []string{"-root", "-f", compositeForceProp, "32c", "-set", compositeForceProp, "1"}
-	getCompositeForceArgs = []string{"-root", compositeForceProp}
-)
+// hdrEnabledProp is the X root window property behind gamescope's
+// hdr_enabled convar, the one Steam's "Enable HDR" display setting writes.
+// Like compositeForceProp, gamescope copies it into the convar whenever
+// anyone writes it, and Steam writes its own per-display setting there,
+// whatever --hdr-enabled said at start.
+const hdrEnabledProp = "GAMESCOPE_DISPLAY_HDR_ENABLED"
+
+// setRootPropArgs and getRootPropArgs are the xprop arguments that set and
+// read a CARDINAL property on the root window.
+func setRootPropArgs(name, value string) []string {
+	return []string{"-root", "-f", name, "32c", "-set", name, value}
+}
+
+func getRootPropArgs(name string) []string { return []string{"-root", name} }
 
 // parseXpropCardinal reads `xprop -root NAME` output for a CARDINAL
 // property: "NAME(CARDINAL) = 1" gives (1, true); "NAME:  not found." (or

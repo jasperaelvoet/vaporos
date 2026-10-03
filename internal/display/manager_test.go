@@ -204,22 +204,32 @@ func TestSessionWithMonitor(t *testing.T) {
 		t.Errorf("mode switch should nudge, not restart: %v", calls)
 	}
 
-	// HDR client: gamescope restarts with --hdr-enabled.
+	// HDR client: HDR goes on live, both halves, with no restart; the
+	// flag is there for gamescope's next start.
 	h.resetCalls()
 	resp = m.Begin(ctx, session.Request{Op: "begin", Client: "TV", Width: 3840, Height: 2160, FPS: 60, HDR: true})
 	if !resp.OK || !resp.HDR || resp.Mode != "3840x2160@60" {
 		t.Fatalf("HDR Begin = %+v", resp)
 	}
-	if !slices.Contains(h.callLog(), "restart "+GamescopeUnit) || !h.gsHDR {
-		t.Errorf("HDR switch did not restart gamescope with HDR: %v", h.callLog())
+	calls = h.callLog()
+	if slices.Contains(calls, "restart "+GamescopeUnit) || !slices.Contains(calls, "gamescopectl hdr_enabled 1") ||
+		!slices.Contains(calls, "xprop -root -f GAMESCOPE_DISPLAY_HDR_ENABLED 32c -set GAMESCOPE_DISPLAY_HDR_ENABLED 1") {
+		t.Errorf("HDR switch must set HDR, not restart: %v", calls)
+	}
+	// Before the mode switch, so the settle wait covers it, and only once.
+	if iHDR, iNudge := slices.Index(calls, "gamescopectl hdr_enabled 1"), slices.Index(calls, "gamescopectl backend_set_dirty"); iHDR > iNudge ||
+		slices.Index(calls[iHDR+1:], "gamescopectl hdr_enabled 1") >= 0 {
+		t.Errorf("HDR must be set once, before the mode switch: %v", calls)
+	}
+	if on, prop := h.hdrState(); !on || prop != "1" {
+		t.Errorf("hdr = %v, property %q", on, prop)
 	}
 	env, _ := os.ReadFile(GamescopeEnvPath())
 	if !strings.Contains(string(env), "VOS_GS_EXTRA=--hdr-enabled") {
 		t.Errorf("env = %q", env)
 	}
-	// The restarted gamescope forgot composite_force; Begin set it again.
 	if on, prop := h.compositeState(); !on || prop != "1" {
-		t.Errorf("composite after restart = %v, property %q", on, prop)
+		t.Errorf("composite = %v, property %q", on, prop)
 	}
 	if d := m.Info(); d.Planes != 1 {
 		t.Errorf("planes = %d", d.Planes)
@@ -234,11 +244,15 @@ func TestSessionWithMonitor(t *testing.T) {
 	if s := m.CurrentSession(); s != nil {
 		t.Errorf("CurrentSession after end = %+v", s)
 	}
-	// With a monitor and no session, nobody streams: the composite
-	// watchdog leaves gamescope alone.
+	// With a monitor and no session, nobody streams: the watchdog leaves
+	// gamescope alone.
 	h.steamWrites("0")
+	h.steamSetsHDR(false)
 	if why := m.checkComposite(ctx); why != "" {
 		t.Errorf("watchdog acted after the session: %s", why)
+	}
+	if why := m.checkHDR(ctx); why != "" {
+		t.Errorf("HDR watchdog acted after the session: %s", why)
 	}
 	m.reconcile(ctx, false)
 	if !h.isActive(GamescopeUnit, true) {
@@ -534,40 +548,82 @@ func TestVirtualPendingReboot(t *testing.T) {
 	}
 }
 
-// TestHDRKeptWhileGameRuns: an HDR switch restarts gamescope and so kills
-// Steam and its game; with a game running, Begin keeps the running HDR
-// state and only switches the mode.
-func TestHDRKeptWhileGameRuns(t *testing.T) {
+// TestHDRFollowsEachSession: Steam writes its own "Enable HDR" setting into
+// gamescope whatever --hdr-enabled said, so every Begin sets the client's
+// HDR live, under a running game too, and the watchdog puts it back while
+// the session lasts.
+func TestHDRFollowsEachSession(t *testing.T) {
 	m, h, _, _ := newTestManager(t, false)
 	ctx := context.Background()
 	m.init(ctx)
-	m.reconcile(ctx, false) // headless: gamescope runs, SDR
+	m.reconcile(ctx, false) // headless: gamescope runs, started without HDR
+	h.steamSetsHDR(true)    // Steam's saved setting says on
 	h.mu.Lock()
 	h.game = true
 	h.mu.Unlock()
 	h.resetCalls()
-	resp := m.Begin(ctx, session.Request{Op: "begin", Client: "TV", Width: 3840, Height: 2160, FPS: 60, HDR: true})
+
+	resp := m.Begin(ctx, session.Request{Op: "begin", Client: "MacBook", Width: 2560, Height: 1600, FPS: 60})
 	calls := h.callLog()
-	if !resp.OK || resp.HDR || resp.Mode != "3840x2160@60" || !strings.Contains(resp.Message, "game is running") {
-		t.Errorf("Begin = %+v", resp)
+	if !resp.OK || resp.HDR || resp.Message != "" {
+		t.Errorf("SDR Begin = %+v", resp)
 	}
-	if slices.Contains(calls, "restart "+GamescopeUnit) || !slices.Contains(calls, "gamescopectl backend_set_dirty") {
-		t.Errorf("must nudge, not restart, under a game: %v", calls)
+	if slices.Contains(calls, "restart "+GamescopeUnit) || !slices.Contains(calls, "gamescopectl hdr_enabled 0") {
+		t.Errorf("SDR session must set HDR off, not restart: %v", calls)
 	}
-	if env := readGamescopeEnv(); env.HDR || h.gsHDR || m.gsHDR {
-		t.Errorf("HDR changed under a game: env %+v", env)
+	if on, prop := h.hdrState(); on || prop != "0" {
+		t.Errorf("hdr = %v, property %q", on, prop)
 	}
-	if st := m.welcomeState(); st.Detail != "3840 × 2160 · 60 Hz" {
-		t.Errorf("welcome detail = %q", st.Detail)
+	if why := m.checkHDR(ctx); why != "" {
+		t.Errorf("watchdog acted with HDR right: %s", why)
 	}
-	// The game is gone: the next HDR client gets its restart.
-	h.mu.Lock()
-	h.game = false
-	h.mu.Unlock()
+
+	// Steam applies its setting again (its start, a display change): the
+	// watchdog turns HDR back off.
+	h.steamSetsHDR(true)
+	if why := m.checkHDR(ctx); !strings.Contains(why, "is on for a stream with HDR off") {
+		t.Errorf("watchdog = %q", why)
+	}
+	if on, prop := h.hdrState(); on || prop != "0" {
+		t.Errorf("hdr after watchdog = %v, property %q", on, prop)
+	}
+
+	// An HDR client with the game still running: HDR goes on, no restart.
 	h.resetCalls()
 	resp = m.Begin(ctx, session.Request{Op: "begin", Client: "TV", Width: 3840, Height: 2160, FPS: 60, HDR: true})
-	if !resp.OK || !resp.HDR || !slices.Contains(h.callLog(), "restart "+GamescopeUnit) || !m.gsHDR {
-		t.Errorf("idle HDR switch = %+v %v", resp, h.callLog())
+	if !resp.OK || !resp.HDR || slices.Contains(h.callLog(), "restart "+GamescopeUnit) {
+		t.Errorf("HDR Begin = %+v %v", resp, h.callLog())
+	}
+	if on, prop := h.hdrState(); !on || prop != "1" {
+		t.Errorf("hdr = %v, property %q", on, prop)
+	}
+	if st := m.welcomeState(); st.Detail != "3840 × 2160 · 60 Hz · HDR" {
+		t.Errorf("welcome detail = %q", st.Detail)
+	}
+
+	// gamescope came back (Restart=always) with a fresh Xwayland and no
+	// property: it started with the session's flag, and the watchdog sets
+	// the property again before Steam can.
+	h.mu.Lock()
+	h.gamescopeStartedLocked()
+	h.mu.Unlock()
+	if on, _ := h.hdrState(); !on {
+		t.Error("gamescope did not start with the session's HDR flag")
+	}
+	if why := m.checkHDR(ctx); !strings.Contains(why, "unset") {
+		t.Errorf("watchdog = %q", why)
+	}
+	if _, prop := h.hdrState(); prop != "1" {
+		t.Errorf("property after watchdog = %q", prop)
+	}
+
+	// HDR not allowed on the box: an HDR client streams SDR.
+	if err := m.cfg.Mutate(func(c *config.Config) { c.Display.HDR = false }); err != nil {
+		t.Fatal(err)
+	}
+	resp = m.Begin(ctx, session.Request{Op: "begin", Client: "TV", Width: 3840, Height: 2160, FPS: 60, HDR: true})
+	if on, prop := h.hdrState(); resp.HDR || on || prop != "0" {
+		t.Errorf("HDR off on the box: %+v, hdr %v, property %q", resp, on, prop)
 	}
 }
 

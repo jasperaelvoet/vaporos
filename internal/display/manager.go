@@ -93,8 +93,9 @@ type Manager struct {
 	// mode, so the policy loop only ever TryLocks it, and Begin itself
 	// gives up waiting for it when its budget runs out.
 	op opLock
-	// gsHDR is the HDR flag the running gamescope was started with
-	// (guarded by op: only Begin and apply start gamescope).
+	// gsHDR is the HDR of the last session, the --hdr-enabled flag
+	// gamescope starts with (guarded by op: only Begin and apply start
+	// gamescope). Steam overrides the flag; Begin sets HDR live.
 	gsHDR bool
 	// steamGated: vosd's first gamescope start has waited for steam.json
 	// (guarded by op).
@@ -134,6 +135,7 @@ type Manager struct {
 	lastStart   map[string]time.Time
 	lastBusy    string
 	composite   compositeWatch
+	hdr         hdrWatch
 	upSince     time.Time // the first init: when this vosd started
 	// steamReq is a Steam restart waiting for its moment, steamBusy is set
 	// while one is under way, and steamLast is when Steam last restarted.
@@ -323,7 +325,7 @@ func (m *Manager) start(ctx context.Context) {
 			log.Printf("display: session socket: %v", err)
 		}
 	}()
-	go m.watchComposite(ctx)
+	go m.watchGamescope(ctx)
 	m.hot = m.h.Hotplug(ctx)
 	m.syncEDID()
 }

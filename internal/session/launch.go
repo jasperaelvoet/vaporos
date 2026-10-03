@@ -3,7 +3,7 @@ package session
 // `vos session launch <steam-url>` starts a game in the gaming user's
 // Steam, the one gamescope runs. Sunshine runs it as a "detached" app
 // command (as the gaming user), right after `vos session begin` returned.
-// After a cold start or an HDR restart gamescope's Steam is still coming
+// After a cold start or a Steam restart gamescope's Steam is still coming
 // up then, and `steam <url>` without a running client would start a
 // second Steam in Sunshine's session instead of handing the URL over. So
 // this waits until that Steam takes URLs, then runs `steam <url>` in

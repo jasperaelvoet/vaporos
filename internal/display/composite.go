@@ -43,21 +43,27 @@ func (m *Manager) forceComposite(ctx context.Context) error {
 }
 
 // forceCompositeWithin tries both halves until both took or wait passes.
+func (m *Manager) forceCompositeWithin(ctx context.Context, wait time.Duration) error {
+	return m.setConvarWithin(ctx, wait, "composite_force", compositeForceProp, "1")
+}
+
+// setConvarWithin sets a gamescope convar and the X root property that
+// gamescope copies into it, trying both until both took or wait passes.
 // Once one half took, gamescope is up: the other gets about a second more
 // (Xwayland comes up just after the control socket), not the whole wait.
-// It never reads the convar back: `gamescopectl composite_force` without a
-// value prints nothing.
-func (m *Manager) forceCompositeWithin(ctx context.Context, wait time.Duration) error {
+// It never reads the convar back: `gamescopectl <convar>` without a value
+// prints nothing.
+func (m *Manager) setConvarWithin(ctx context.Context, wait time.Duration, convar, prop, value string) error {
 	deadline := m.now().Add(wait)
 	var ctlErr, xErr error
 	ctlDone, xDone, cut := false, false, false
 	for {
 		if !ctlDone {
-			_, ctlErr = m.h.Gamescopectl(ctx, "composite_force", "1")
+			_, ctlErr = m.h.Gamescopectl(ctx, convar, value)
 			ctlDone = ctlErr == nil
 		}
 		if !xDone {
-			_, xErr = m.h.Xprop(ctx, setCompositeForceArgs...)
+			_, xErr = m.h.Xprop(ctx, setRootPropArgs(prop, value)...)
 			xDone = xErr == nil
 		}
 		if ctlDone && xDone {
@@ -76,10 +82,10 @@ func (m *Manager) forceCompositeWithin(ctx context.Context, wait time.Duration) 
 	}
 	var errs []error
 	if !ctlDone {
-		errs = append(errs, fmt.Errorf("gamescopectl composite_force: %w", ctlErr))
+		errs = append(errs, fmt.Errorf("gamescopectl %s: %w", convar, ctlErr))
 	}
 	if !xDone {
-		errs = append(errs, fmt.Errorf("xprop %s: %w", compositeForceProp, xErr))
+		errs = append(errs, fmt.Errorf("xprop %s: %w", prop, xErr))
 	}
 	return errors.Join(errs...)
 }
@@ -93,8 +99,9 @@ func (m *Manager) noteCompositeMode(mode edid.Mode) {
 	m.mu.Unlock()
 }
 
-// watchComposite runs checkComposite every m.compositeEvery until ctx ends.
-func (m *Manager) watchComposite(ctx context.Context) {
+// watchGamescope runs checkComposite and checkHDR every m.compositeEvery
+// until ctx ends.
+func (m *Manager) watchGamescope(ctx context.Context) {
 	if m.compositeEvery <= 0 {
 		return
 	}
@@ -106,6 +113,7 @@ func (m *Manager) watchComposite(ctx context.Context) {
 			return
 		case <-t.C:
 			m.checkComposite(ctx)
+			m.checkHDR(ctx)
 		}
 	}
 }
@@ -184,7 +192,7 @@ func (m *Manager) compositeTrouble(ctx context.Context, card, virtual string) st
 	if n, err := m.h.Planes(card, virtual); err == nil && n > 1 {
 		why = append(why, fmt.Sprintf("%d planes scan out on %s", n, virtual))
 	}
-	if out, err := m.h.Xprop(ctx, getCompositeForceArgs...); err == nil {
+	if out, err := m.h.Xprop(ctx, getRootPropArgs(compositeForceProp)...); err == nil {
 		switch v, set := parseXpropCardinal(out, compositeForceProp); {
 		case !set:
 			why = append(why, compositeForceProp+" is unset")

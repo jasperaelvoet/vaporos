@@ -2,9 +2,9 @@ package display
 
 // Following the Moonlight client: `vos session begin|end` (Sunshine's
 // prep-cmd) reaches Begin and End through the session socket. Begin picks
-// the mode, drives gamescope to it (modes.cfg + backend_set_dirty, or a
-// restart for an HDR change) and waits until the virtual connector really
-// scans it out. An unknown client mode is learned into the EDID, which the
+// the mode, drives gamescope to it (modes.cfg + backend_set_dirty), waits
+// until the virtual connector really scans it out and sets the client's
+// HDR (hdr.go). An unknown client mode is learned into the EDID, which the
 // running kernel takes at once where it can (debugfs EDID override) and the
 // next boot takes in any case.
 
@@ -97,41 +97,30 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 
 	m.awaitSteamBack(ctx)
 	gsUp := m.h.UnitActive(ctx, GamescopeUnit, true)
-	// Switching HDR restarts gamescope, and with it Steam and everything
-	// Steam runs. A game can outlive its Moonlight session (Sunshine's
-	// apps are placebos; quitting one leaves the game running), so never
-	// restart under a game: stream with the HDR state gamescope has.
-	var note string
-	if gsUp && m.gsHDR != hdr && m.h.GameRunning() {
-		log.Printf("display: keeping gamescope at hdr=%v for %s (wants hdr=%v): a Steam game is running", m.gsHDR, client, hdr)
-		note = fmt.Sprintf("a game is running, so HDR stays %s until it exits", onOff(m.gsHDR))
-		hdr = m.gsHDR
-		m.mu.Lock()
-		sess.HDR = hdr
-		m.mu.Unlock()
-	}
 	keys := m.writeModesCfg(ctx, virtual, mode, gsUp)
 	m.ensureStopped(ctx, WelcomeUnit, false)
 
-	var err error
-	switch {
-	case !gsUp:
-		if err = m.writeGamescopeEnv(virtual, hdr); err == nil {
+	// The flag is only where a gamescope that starts from here on begins;
+	// HDR itself is set live, under a running game too.
+	m.gsHDR = hdr
+	err := m.writeGamescopeEnv(virtual, hdr)
+	hdrSet := false
+	if !gsUp {
+		if err == nil {
 			m.awaitSteamJSON(ctx)
 			err = m.h.StartUnit(ctx, GamescopeUnit, true)
 		}
-	case m.gsHDR != hdr:
-		log.Printf("display: restarting gamescope for hdr=%v", hdr)
-		if err = m.writeGamescopeEnv(virtual, hdr); err == nil {
-			err = m.h.RestartUnit(ctx, GamescopeUnit, true)
+	} else {
+		if err != nil {
+			log.Printf("display: %v", err)
+			err = nil
 		}
-	default:
+		// Before the mode wait, whose settling then covers the switch, so
+		// Sunshine finds the connector in the session's HDR.
+		hdrSet = m.setHDRWithin(ctx, hdr, 0) == nil
 		if cur, active, serr := m.h.Scanout(gpu.Card, virtual); serr != nil || !active || cur != mode {
 			m.nudge(ctx)
 		}
-	}
-	if err == nil && (!gsUp || m.gsHDR != hdr) {
-		m.gsHDR = hdr
 	}
 	m.mu.Lock()
 	changed := m.state != StateGaming
@@ -166,11 +155,22 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 		ok, msg = m.waitForMode(ctx, gpu.Card, virtual, mode, keys)
 	}
 	// The modeset (or the fresh gamescope) is done: force composition, both
-	// the convar and the X property, which Steam may have reset.
+	// the convar and the X property, which Steam may have reset, and set
+	// HDR if that did not work before the wait.
+	hdrWait := m.composeWait
 	if cerr := m.forceComposite(ctx); cerr != nil {
 		log.Printf("display: forcing composition: %v", cerr)
 		if msg == "" {
 			msg = "could not force composition: " + cerr.Error()
+		}
+		hdrWait = 0 // gamescope did not answer for the whole wait already
+	}
+	if !hdrSet {
+		if herr := m.setHDRWithin(ctx, hdr, hdrWait); herr != nil {
+			log.Printf("display: setting HDR %s: %v", onOff(hdr), herr)
+			if msg == "" {
+				msg = fmt.Sprintf("could not turn HDR %s: %v", onOff(hdr), herr)
+			}
 		}
 	}
 	if ok {
@@ -184,11 +184,6 @@ func (m *Manager) Begin(ctx context.Context, req session.Request) session.Respon
 	}
 	if msg == "" && !exact {
 		msg = fmt.Sprintf("%s is not offered yet; using %s (learned for the next boot)", asked, mode)
-	}
-	if note != "" && msg != "" {
-		msg = note + "; " + msg
-	} else if note != "" {
-		msg = note
 	}
 	return session.Response{OK: ok, Mode: mode.String(), HDR: hdr, Message: msg}
 }

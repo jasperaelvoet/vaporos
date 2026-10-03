@@ -21,9 +21,9 @@ import (
 // fakeHost stands in for systemd, sysfs/DRM and gamescope. Its gamescope
 // behaves like the real one where it matters: when started, restarted or
 // nudged it looks its display up in modes.cfg by "<Make> <Model>" and
-// scans that mode out; its composite_force convar follows both
-// `gamescopectl composite_force` and the GAMESCOPE_COMPOSITE_FORCE root
-// property, and without it the game scans out on direct planes.
+// scans that mode out; its composite_force and hdr_enabled convars follow
+// both gamescopectl and their root properties, and without composite_force
+// the game scans out on direct planes.
 type fakeHost struct {
 	mu         sync.Mutex
 	active     map[string]bool   // "unit" or "unit@user"
@@ -38,7 +38,7 @@ type fakeHost struct {
 	scanErr    error
 	gsKey      string // display key the fake gamescope uses
 	gsReport   string // key gamescopectl reports ("" = same as gsKey)
-	gsHDR      bool   // HDR flag the fake gamescope runs with
+	gsHDR      bool   // --hdr-enabled flag the fake gamescope started with
 	ignoreMC   bool   // gamescope ignores modes.cfg (to test timeouts)
 	// ApplyEDID: applyErr makes it fail, applyNoop makes the kernel keep
 	// its EDID, gsStale makes gamescope miss the modes it adds.
@@ -46,9 +46,11 @@ type fakeHost struct {
 	applyNoop bool
 	gsStale   bool
 	gsMissing map[edid.Mode]bool // modes gamescope does not know of
-	// composite is gamescope's composite_force convar; props are the X root
-	// window properties of its Xwayland (both reset when gamescope starts).
+	// composite and hdr are gamescope's composite_force and hdr_enabled
+	// convars; props are the X root window properties of its Xwayland (all
+	// reset when gamescope starts, hdr to the flag).
 	composite bool
+	hdr       bool
 	props     map[string]string
 	direct    int           // planes scanned out without composition (0: 1)
 	xErr      error         // xprop fails (no X server)
@@ -161,7 +163,8 @@ func (f *fakeHost) RestartUnit(ctx context.Context, unit string, user bool) erro
 }
 
 // gamescopeStartedLocked reads the env file and modes.cfg like gamescope;
-// the convar starts off and the fresh Xwayland has no properties.
+// composite_force starts off, hdr_enabled at the flag, and the fresh
+// Xwayland has no properties.
 func (f *fakeHost) gamescopeStartedLocked() {
 	if b, err := os.ReadFile(GamescopeEnvPath()); err == nil {
 		f.gsHDR = parseGamescopeEnv(b).HDR
@@ -176,7 +179,7 @@ func (f *fakeHost) gamescopeStartedLocked() {
 	if f.steamPID != 0 {
 		f.steamPID += 100
 	}
-	f.composite, f.props = false, nil
+	f.composite, f.hdr, f.props = false, f.gsHDR, nil
 	f.applySavedModeLocked()
 }
 
@@ -297,6 +300,10 @@ func (f *fakeHost) Gamescopectl(ctx context.Context, args ...string) (string, er
 		f.composite = args[1] != "0"
 		return "", nil // gamescopectl never echoes a convar
 	}
+	if len(args) == 2 && args[0] == "hdr_enabled" {
+		f.hdr = args[1] != "0"
+		return "", nil
+	}
 	if len(args) == 0 {
 		key := f.gsReport
 		if key == "" {
@@ -312,8 +319,8 @@ func (f *fakeHost) Gamescopectl(ctx context.Context, args ...string) (string, er
 }
 
 // Xprop understands `-root -f NAME FMT -set NAME VALUE` and `-root NAME`.
-// Setting GAMESCOPE_COMPOSITE_FORCE sets the convar, as gamescope's
-// PropertyNotify handler does.
+// Setting GAMESCOPE_COMPOSITE_FORCE or GAMESCOPE_DISPLAY_HDR_ENABLED sets
+// its convar, as gamescope's PropertyNotify handler does.
 func (f *fakeHost) Xprop(ctx context.Context, args ...string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -342,8 +349,11 @@ func (f *fakeHost) setPropLocked(name, value string) {
 		f.props = map[string]string{}
 	}
 	f.props[name] = value
-	if name == compositeForceProp {
+	switch name {
+	case compositeForceProp:
 		f.composite = value != "0"
+	case hdrEnabledProp:
+		f.hdr = value != "0"
 	}
 }
 
@@ -352,6 +362,24 @@ func (f *fakeHost) steamWrites(value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setPropLocked(compositeForceProp, value)
+}
+
+// steamSetsHDR is Steam applying its own "Enable HDR" setting.
+func (f *fakeHost) steamSetsHDR(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v := "0"
+	if on {
+		v = "1"
+	}
+	f.setPropLocked(hdrEnabledProp, v)
+}
+
+// hdrState is the hdr_enabled convar and its root property.
+func (f *fakeHost) hdrState() (bool, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hdr, f.props[hdrEnabledProp]
 }
 
 func (f *fakeHost) compositeState() (bool, string) {
