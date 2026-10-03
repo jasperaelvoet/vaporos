@@ -15,6 +15,7 @@ import (
 
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/gameproc"
+	"github.com/jasperaelvoet/vaporos/internal/storage/steam"
 )
 
 // fakeProc is a /proc with processes of the gaming user (1000) and others.
@@ -81,10 +82,11 @@ func TestProcs(t *testing.T) {
 }
 
 // testMP is an mp on a box whose apps' launch options carry the
-// dispatcher, recording the handoff it starts and what it tells the
-// person.
+// dispatcher for both of Steam's accounts, recording the handoff it
+// starts and what it tells the person.
 func testMP(t *testing.T, p *fakeProc) (*mp, *[][]string, *[]string) {
 	dispatcher(t, true)
+	steamPrepared(t, acctFan, acctKid)
 	var started [][]string
 	var told []string
 	m := &mp{procs: p.fs(), pid: 40, flag: flagPath(), runtime: os.Getenv("XDG_RUNTIME_DIR"), home: homeDir(), now: now, libs: libraries,
@@ -167,6 +169,45 @@ func dispatcher(t *testing.T, on bool) {
 	write(t, config.ExtSteamPath(), `{"set":"1","dispatcher":`+strconv.FormatBool(on)+`,"apps":[{"app":227300,"hooks":["truckersmp"]}]}`)
 }
 
+// loginusers.vdf as Steam writes it, with two accounts.
+const loginUsers = `"users"
+{
+	"76561198012345678"
+	{
+		"AccountName"		"vaporfan"
+		"MostRecent"		"1"
+	}
+	"76561198087654321"
+	{
+		"AccountName"		"kid"
+		"MostRecent"		"0"
+	}
+}
+`
+
+// The two accounts' ids (SteamID64 & 0xffffffff).
+const (
+	acctFan = "52079950"
+	acctKid = "127388593"
+)
+
+// steamPrepared writes loginusers.vdf with both accounts and prepare's
+// record of the launch options it wrapped for each game in accounts.
+func steamPrepared(t *testing.T, accounts ...string) {
+	write(t, filepath.Join(config.GamerHome, loginUsersRel), loginUsers)
+	apps := map[string]any{}
+	for _, g := range games {
+		wrote, _ := steam.WrapLaunchOptions("%command% -nointro", g.app)
+		launch := map[string]any{}
+		for _, a := range accounts {
+			launch[a] = map[string]string{"wrote": wrote, "before": "%command% -nointro"}
+		}
+		apps[itoa(g.app)] = map[string]any{"launch": launch}
+	}
+	data, _ := json.Marshal(map[string]any{"accounts": accounts, "apps": apps})
+	write(t, filepath.Join(config.GamerHome, config.ExtGamerStateFile), string(data))
+}
+
 // While the games' launch options lack the dispatcher (a slot the box can
 // boot was built before extensions), the hook never sees the flag, so mp
 // refuses rather than let the game start in single-player; also when
@@ -221,6 +262,81 @@ func TestMPNeedsTheDispatcher(t *testing.T) {
 	}
 }
 
+// With the dispatcher on, the game's launch options carry it only once
+// prepare wrote them, as Steam starts or stops: until its record shows it
+// for every account that signed in to Steam, mp refuses with its own
+// code, and also when the record or loginusers.vdf cannot be read.
+func TestMPWaitsForSteam(t *testing.T) {
+	b := syncedBox(t, "ets2")
+	b.install(b.disk, games[0])
+	m, started, _ := testMP(t, shortcutProcs(t))
+	m.tell = tell
+	ctx := context.Background()
+	records := filepath.Join(config.GamerRuntimeDir, "vos", "ext-messages")
+	record := filepath.Join(config.GamerHome, config.ExtGamerStateFile)
+	logins := filepath.Join(config.GamerHome, loginUsersRel)
+	conflict := `{"apps":{"227300":{"launch":{"` + acctFan + `":{"wrote":"","before":"a %command% b %command%","conflict":true},` +
+		`"` + acctKid + `":{"wrote":"` + steam.Dispatcher + ` --app 227300 %command%","before":""}}}}}`
+	for _, c := range []struct {
+		name  string
+		setup func()
+	}{
+		{"no record", func() { os.Remove(record) }},
+		{"a record that does not parse", func() { write(t, record, "{") }},
+		{"never wrapped", func() { write(t, record, `{"accounts":["`+acctFan+`","`+acctKid+`"],"apps":{}}`) }},
+		{"an account signed in since", func() { steamPrepared(t, acctFan) }},
+		{"only the other game", func() {
+			steamPrepared(t, acctFan, acctKid)
+			write(t, record, strings.ReplaceAll(read(t, record), `"227300"`, `"1"`))
+		}},
+		{"several %command%", func() { write(t, record, conflict) }},
+		{"no loginusers.vdf", func() { steamPrepared(t, acctFan, acctKid); os.Remove(logins) }},
+		{"nobody signed in", func() { write(t, logins, `"users" { }`) }},
+		{"loginusers.vdf does not parse", func() { write(t, logins, `"users" {`) }},
+	} {
+		c.setup()
+		err := m.run(ctx, games[0])
+		if code, text := refused(err); code != "steam-pending" ||
+			text != "TruckersMP didn't start because Steam hasn't picked up its settings yet. Restart VaporOS, then try again." {
+			t.Fatalf("%s: %v %q", c.name, err, text)
+		}
+		names, _ := os.ReadDir(records)
+		if len(names) != 1 {
+			t.Fatalf("%s: records %v", c.name, names)
+		}
+		var r struct{ Code, ID string }
+		if err := json.Unmarshal([]byte(read(t, filepath.Join(records, names[0].Name()))), &r); err != nil ||
+			r.Code != "steam-pending" || r.ID != ID {
+			t.Fatalf("%s: record %+v %v", c.name, r, err)
+		}
+		os.RemoveAll(records)
+		if _, err := os.Stat(flagPath()); !os.IsNotExist(err) {
+			t.Fatalf("%s: a flag while Steam lacks the dispatcher", c.name)
+		}
+		if len(*started) != 0 {
+			t.Fatalf("%s: handed off %q", c.name, *started)
+		}
+	}
+
+	// The dispatcher off says so first, whatever the record holds.
+	dispatcher(t, false)
+	os.Remove(record)
+	if code, _ := refused(m.run(ctx, games[0])); code != "needs-update-ets2" {
+		t.Fatalf("dispatcher off: %q", code)
+	}
+	os.RemoveAll(records)
+
+	// Wrapped for both accounts, around the person's own options.
+	dispatcher(t, true)
+	steamPrepared(t, acctFan, acctKid)
+	if err := m.run(ctx, games[0]); err != nil || len(*started) != 1 {
+		t.Fatalf("wrapped: %v %q", err, *started)
+	}
+	if _, err := readFlag(flagPath()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Files that fail the quick check are either not downloaded for the game
 // yet or updating.
 func TestNotReady(t *testing.T) {
@@ -246,7 +362,7 @@ func TestNotReady(t *testing.T) {
 	if got := notReady(homeDir(), ets2); got != "no-files-ets2" {
 		t.Errorf("nothing synced: %q", got)
 	}
-	for _, code := range []string{"not-installed-ets2", "no-files-ats", "running-ets2"} {
+	for _, code := range []string{"not-installed-ets2", "no-files-ats", "running-ets2", "steam-pending"} {
 		if text, ok := messageText(code); !ok || !strings.HasPrefix(text, "TruckersMP didn't start because ") {
 			t.Errorf("%s: %q", code, text)
 		}

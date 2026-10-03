@@ -80,7 +80,7 @@ The build embeds the version with `-ldflags "-X main.version=… -X main.commit=
 | `/var/lib/vos/ext/steam.json` | vosd | what the mounted extensions want in Steam, which `vos steam prepare` applies (see Extensions, Steam) |
 | `/var/lib/vos/ext/ports` | vosd | the network ports of the running extensions, which `vos-firewall` opens to the local network (see Firewall) |
 | `/run/vos/coolercontrol-fans.json` | `vos ext coolercontrol fans snapshot` | each fan's control mode (and a manual one's duty) and each amdgpu fan curve before CoolerControl took them, this boot (see Extensions, CoolerControl) |
-| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only and TruckersMP's `switch-branch` (see Extensions, Steam) |
+| `~vapor/.local/state/vaporos/steam.json` | `vos steam prepare` | prepare's record of what VaporOS owns in Steam's files; vosd reads it through gamerfs, for display only and TruckersMP's `switch-branch`, and `vos ext truckersmp mp` before it counts on its launch hook (see Extensions, Steam) |
 | `/run/user/1000/vos-steam.lock` | vosd, `vos steam prepare` | the Steam lock (flock) every writer of Steam's files holds (see Extensions, Steam) |
 | `/run/user/1000/vos/ext-messages/` | `vos ext launch`, `vos ext truckersmp mp\|handoff` | the dispatcher's and helper commands' refusals for vosd, which publishes and deletes them (see Extensions, Steam) |
 | `/run/user/1000/vos/truckersmp-mp.json` | `vos ext truckersmp mp` | the multiplayer flag TruckersMP's launch hook takes once (see Extensions, TruckersMP) |
@@ -812,8 +812,10 @@ anyway. A file that cannot be read or parsed counts as changed.
   keep the dispatcher and their hooks): the cards of the extensions with
   hooks say so (see Control center), and TruckersMP's `mp` refuses (see
   TruckersMP). A box updated from an image built before extensions is in
-  that state until the update after it. So staging an image built before
-  extensions (a downgrade) turns it false at once, and the next prepare
+  that state until the update after it; once it turns true, the launch
+  options are wrapped only at the next prepare, and `mp` refuses until
+  prepare's record shows that (see TruckersMP). So staging an image built
+  before extensions (a downgrade) turns it false at once, and the next prepare
   unwraps them before that image can boot: the Steam restart that follows
   (at the next quiet moment), or gamescope's stop
   (`ExecStopPost=-/usr/bin/vos steam prepare`, at shutdown too). When it
@@ -841,7 +843,9 @@ anyway. A file that cannot be read or parsed counts as changed.
 after each of Steam's files it replaces. vosd reads it through gamerfs and
 trusts it for display only (and for TruckersMP's `switch-branch`, whose
 worst outcome from it is asking again, or not, for a branch VaporOS
-already holds a game on):
+already holds a game on). `vos ext truckersmp mp` reads it as `vapor` and
+starts nothing until it shows the game's launch options wrapped (see
+TruckersMP):
 ```json
 {"fingerprint":"<hex>","vos":"<version>","accounts":["<accountid>"],
  "default":{"wrote":"proton-cachyos-slr","before":null,"suspended":false},
@@ -1542,9 +1546,9 @@ saying how often in their `what`.
 - *Multiplayer:* `vos ext truckersmp mp ets2|ats` (as `vapor`: from the
   shortcut, through `vos ext launch --shortcut`, or from Sunshine) refuses,
   with a message (see Dispatcher messages: codes `needs-update-<key>`,
-  `running-<key>`, `starting`, `not-installed-<key>`, `no-files-<key>`,
-  `updating`, `handoff-failed` and, from `handoff`, `steam-silent`, each
-  with its sentence in the helper; the launch hook's refusals add
+  `steam-pending`, `running-<key>`, `starting`, `not-installed-<key>`,
+  `no-files-<key>`, `updating`, `handoff-failed` and, from `handoff`,
+  `steam-silent`, each with its sentence in the helper; the launch hook's refusals add
   `linux-<key>` and `launcher-failed`, and `Install`'s `setup-failed`, all
   returned as `extensions.Refuse` with their code), while
   `/var/lib/vos/ext/steam.json` cannot be read or has `dispatcher` false
@@ -1552,7 +1556,16 @@ saying how often in their `what`.
   VaporOS update. Until then, ETS2 starts from Steam in single-player.",
   ATS for `ats`: the game's launch options lack the dispatcher, so the
   hook would never take the flag and the game would start in
-  single-player), while a reaper of 227300 or 270880 runs (`running-`),
+  single-player); then, as `dispatcher` true reaches the launch options
+  only at the next prepare (as Steam starts or stops; the Steam restart
+  vosd asks for waits for a quiet moment), while prepare's record does
+  not show `/usr/bin/vos ext launch --app <227300|270880> %command%` in the
+  game's `launch.<accountid>.wrote` for every account loginusers.vdf lists (as
+  prepare counts them; none counts as not shown), or either file cannot
+  be read (`steam-pending`, "TruckersMP didn't start because Steam hasn't
+  picked up its settings yet. Restart VaporOS, then try again."; options
+  recorded as `conflict` count as not shown); while a reaper of 227300
+  or 270880 runs (`running-`),
   while `vos-ext-handoff.service` is loaded (`starting`),
   when no library has the game (`not-installed-`), or when the game's
   files fail the quick check: `no-files-` when the manifest lacks the
