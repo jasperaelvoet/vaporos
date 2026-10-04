@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/catalog"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/descriptor"
 	"github.com/jasperaelvoet/vaporos/internal/extensions/store"
@@ -251,10 +250,7 @@ func (s *Service) startUnits(ctx context.Context, id string) {
 // reload), by name.
 func listActiveUnits(ctx context.Context, user bool, patterns ...string) ([]string, error) {
 	args := []string{"list-units", "--plain", "--no-legend", "--full", "--state=active,activating,reloading", "--"}
-	if user {
-		args = append([]string{"--user", "-M", config.GamerUser + "@"}, args...)
-	}
-	out, err := sysd.Run(ctx, "systemctl", append(args, patterns...)...)
+	out, err := sysd.Query(ctx, user, append(args, patterns...)...)
 	if err != nil {
 		return nil, err
 	}

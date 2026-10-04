@@ -44,11 +44,7 @@ func (h *realHost) SteamEnv(pid int, keys ...string) map[string]string {
 func (h *realHost) UnitStarted(ctx context.Context, unit string, user bool) (job, main time.Time) {
 	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
 	defer cancel()
-	args := []string{"show", "--timestamp=us+utc", "-p", "InactiveExitTimestamp", "-p", "ExecMainStartTimestamp", unit}
-	if user {
-		args = append([]string{"--user", "-M", config.GamerUser + "@"}, args...)
-	}
-	out, err := sysd.Run(ctx, "systemctl", args...)
+	out, err := sysd.Query(ctx, user, "show", "--timestamp=us+utc", "-p", "InactiveExitTimestamp", "-p", "ExecMainStartTimestamp", unit)
 	if err != nil {
 		return time.Time{}, time.Time{}
 	}

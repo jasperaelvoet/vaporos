@@ -61,31 +61,54 @@ func Systemctl(ctx context.Context, args ...string) error {
 	return err
 }
 
-// UserSystemctl runs systemctl against the gaming user's manager.
+// UserSystemctl runs systemctl against the gaming user's manager, for what
+// changes it (start, stop, restart). -M opens a PAM login session for every
+// call, which also brings the manager up when it is not running yet; state
+// is read without one (Query).
 func UserSystemctl(ctx context.Context, args ...string) error {
 	_, err := Run(ctx, "systemctl", append([]string{"--user", "-M", config.GamerUser + "@"}, args...)...)
 	return err
 }
 
+// query is a systemctl command that only reads. For the gaming user's
+// manager it runs systemctl as that user, which reaches the manager's
+// private socket ($XDG_RUNTIME_DIR/systemd/private) with no PAM: -M would
+// log a login session in the user journal for every poll and rotate the
+// boot's logs away within hours.
+func query(ctx context.Context, user bool, args ...string) *exec.Cmd {
+	if !user {
+		return exec.CommandContext(ctx, "systemctl", args...)
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+config.GamerRuntimeDir)
+	if os.Geteuid() != config.GamerUID {
+		// The gaming user's primary group has the same id. No supplementary
+		// groups: systemctl needs none.
+		id := uint32(config.GamerUID)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: id, Gid: id}}
+	}
+	return cmd
+}
+
+// Query runs a systemctl command that only reads (show, list-units) against
+// the system or the gaming user's manager and returns its combined, trimmed
+// output. It fails while the user manager is not up.
+func Query(ctx context.Context, user bool, args ...string) (string, error) {
+	return run(query(ctx, user, args...))
+}
+
 // IsActive reports whether a (user) unit is active.
 func IsActive(ctx context.Context, unit string, user bool) bool {
-	args := []string{"is-active", "--quiet", unit}
-	if user {
-		args = append([]string{"--user", "-M", config.GamerUser + "@"}, args...)
-	}
-	return exec.CommandContext(ctx, "systemctl", args...).Run() == nil
+	return query(ctx, user, "is-active", "--quiet", unit).Run() == nil
 }
 
 // ActiveState returns a (user) unit's state as `systemctl is-active` prints
 // it ("active", "activating", "deactivating", "inactive", "failed", ...),
-// or "" when systemctl cannot tell. A unit waiting out RestartSec is
-// "activating": not active, yet about to come back by itself.
+// or "" when systemctl cannot tell (the user manager is not up, say). A
+// unit waiting out RestartSec is "activating": not active, yet about to
+// come back by itself.
 func ActiveState(ctx context.Context, unit string, user bool) string {
-	args := []string{"is-active", unit}
-	if user {
-		args = append([]string{"--user", "-M", config.GamerUser + "@"}, args...)
-	}
-	cmd := exec.CommandContext(ctx, "systemctl", args...)
+	cmd := query(ctx, user, "is-active", unit)
 	cmd.WaitDelay = waitDelay
 	out, _ := cmd.Output() // exits non-zero for every state but active
 	return strings.TrimSpace(string(out))

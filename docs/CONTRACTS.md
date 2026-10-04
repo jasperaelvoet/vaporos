@@ -1352,9 +1352,10 @@ nothing (409).
   for it, and, unless it was added back meanwhile: when this boot mounted
   it, its `services` stop now (`systemctl stop`, or `systemctl --user -M
   vapor@ stop`; every instance of a template), noting first which of them
-  run (`systemctl list-units --state=active,activating,reloading`; when that
-  fails, its units that are not templates); its helper's `Remove` runs (with
-  `purge`, unless it was added back by then) only when this boot mounted it
+  run (`systemctl list-units --state=active,activating,reloading`, for user
+  units without a session, see Units; when that fails, its units that are
+  not templates); its helper's `Remove` runs (with `purge`, unless it was
+  added back by then) only when this boot mounted it
   or `settings/<id>.installed` exists; `settings/<id>.installed` goes; and,
   with `purge`, whether or not the helper ran, its data goes (library areas
   are its helper's to delete), unless it was added back by then. Under the
@@ -2188,6 +2189,8 @@ No keypress, local or from a Moonlight client, reboots or suspends the box: `ctr
 - `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU. After each start or restart vosd reads that run's log until Sunshine's web UI is up: a run that logged `Platform failed to initialize` (its KMS capture found no lit plane, e.g. it came up before gamescope's first modeset) never recovers by itself and fails every stream with error 503, so vosd restarts it while idle, 5 s after the failure and then backing off to 2 min.
 
 Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
+
+vosd starts, stops and restarts user units through `-M vapor@`, which opens a PAM `login` session for `vapor` per call and so also brings its manager up when it is not running yet. It reads their state (`is-active`, `show`, `list-units`) without a session, since its polls (Sunshine's every 3 s, the display's every 15 s) would otherwise log a session close in `vapor`'s journal each time and rotate the boot's logs away: it runs `systemctl --user` as `vapor` (uid and gid 1000, no supplementary groups, no PAM) with `XDG_RUNTIME_DIR=/run/user/1000`, so systemctl reaches the manager's private socket `/run/user/1000/systemd/private`; by hand, `setpriv --reuid=vapor --regid=vapor --clear-groups env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active vos-sunshine.service`. While that manager is not up, `is-active` prints nothing and the units count as not running.
 
 **Display policy (vosd):**
 - **No GPU profile:** no gamescope. Show the welcome screen if any connector is connected.
