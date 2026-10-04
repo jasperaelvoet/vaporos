@@ -5,7 +5,9 @@ package display
 // shows the stream on, the scale and DPI that suit it) and hands it over;
 // one goroutine, watchScale, then holds that scale in Steam through Steam's
 // debugger (internal/display/steamui) and Xft.dpi on the games' X display.
-// It is the only code that does either, and Begin never talks to Steam.
+// It is the only code that does either, or talks to Steam's debugger at all
+// (Steam's sleep, steampower.go, runs in its rounds), and Begin never
+// talks to Steam.
 
 import (
 	"context"
@@ -25,12 +27,16 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/session"
 )
 
-// steamUI is Steam's side of scaling (a *steamui.Client); tests fake it.
+// steamUI is Steam's side of scaling and of Steam's sleep (a
+// *steamui.Client); tests fake it.
 type steamUI interface {
 	Read(ctx context.Context) (steamui.State, error)
 	Set(ctx context.Context, gen uint64, scale float64) (float64, error)
 	Auto(ctx context.Context, gen uint64) error
 	Views(ctx context.Context) ([]steamui.View, error)
+	Sleep(ctx context.Context) (steamui.SleepState, error)
+	NeverSleep(ctx context.Context) error
+	Resume(ctx context.Context) (steamui.ResumeResult, error)
 	Close()
 }
 
@@ -188,6 +194,8 @@ type scaleState struct {
 	// markerLog is the last scale marker in Steam that was not VaporOS's
 	// and was logged.
 	markerLog uint64
+	// sleep is what Steam's sleep check remembers (steampower.go).
+	sleep sleepState
 }
 
 // heldScale is what the scaler holds in Steam for one generation.
@@ -464,7 +472,8 @@ func (m *Manager) watchScale(ctx context.Context) {
 }
 
 // scaleRound is one round of the scaler. It never acts while a Begin (or
-// the policy) switches units; Begin kicks it once it is done.
+// the policy) switches units; Begin kicks it once it is done. Steam's
+// sleep is checked first, whatever the session and the setting.
 func (m *Manager) scaleRound(ctx context.Context) {
 	m.scaleMu.Lock()
 	defer m.scaleMu.Unlock()
@@ -472,6 +481,7 @@ func (m *Manager) scaleRound(ctx context.Context) {
 		return
 	}
 	m.op.Unlock()
+	m.steamSleep(ctx)
 
 	if !m.displayConfig().UIScaling {
 		if m.handbackPending() {

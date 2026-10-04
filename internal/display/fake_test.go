@@ -528,6 +528,20 @@ type fakeSteamUI struct {
 	onRead    func(n int)   // runs before the n-th read answers
 	onViews   func()        // runs before Views answers
 	closed    int
+	// Steam's sleep: what Sleep shows (newFakeSteamUI: awake, its idle
+	// sleep Never, every call there). NeverSleep sets both settings to 0
+	// unless keepsSleep; Resume leaves the suspend screen unless
+	// sleepSticky. sleepErr fails the three (as down does), resumeErr
+	// Resume alone; onSleep runs before Sleep answers. Their calls go to
+	// power, never to calls, reads or onRead, which the scale's tests
+	// count.
+	sleep       steamui.SleepState
+	keepsSleep  bool
+	sleepSticky bool
+	sleepErr    error
+	resumeErr   error
+	onSleep     func()
+	power       []string
 }
 
 // jsMaxGen is the largest generation steamui sends (JavaScript's largest
@@ -556,7 +570,8 @@ func (f *fakeSteamUI) layOutLocked() {
 
 func newFakeSteamUI() *fakeSteamUI {
 	return &fakeSteamUI{down: steamui.ErrNoDebugger, name: `External: VaporOS 27"|||Windowed`,
-		auto: true, current: 1.55, autoValue: 1.55, min: 0.5, max: 4}
+		auto: true, current: 1.55, autoValue: 1.55, min: 0.5, max: 4,
+		sleep: steamui.SleepState{Store: true, CanResume: true, CanSet: true}}
 }
 
 func (f *fakeSteamUI) failLocked() error {
@@ -643,6 +658,92 @@ func (f *fakeSteamUI) Views(ctx context.Context) ([]steamui.View, error) {
 		return nil, f.down
 	}
 	return slices.Clone(f.views), nil
+}
+
+func (f *fakeSteamUI) powerFailLocked(call string) error {
+	f.power = append(f.power, call)
+	if f.down != nil {
+		return f.down
+	}
+	return f.sleepErr
+}
+
+func (f *fakeSteamUI) Sleep(ctx context.Context) (steamui.SleepState, error) {
+	f.mu.Lock()
+	hook := f.onSleep
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.powerFailLocked("sleep"); err != nil {
+		return steamui.SleepState{}, err
+	}
+	return f.sleep, nil
+}
+
+func (f *fakeSteamUI) NeverSleep(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.powerFailLocked("nosleep"); err != nil {
+		return err
+	}
+	if !f.sleep.CanSet {
+		return steamui.ErrNoSleepAPI
+	}
+	if !f.keepsSleep {
+		f.sleep.AC, f.sleep.Battery = 0, 0
+	}
+	return nil
+}
+
+func (f *fakeSteamUI) Resume(ctx context.Context) (steamui.ResumeResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.powerFailLocked("wake"); err != nil {
+		return steamui.Awake, err
+	}
+	if f.resumeErr != nil {
+		return steamui.Awake, f.resumeErr
+	}
+	switch {
+	case !f.sleep.Store || !f.sleep.CanResume:
+		return steamui.Awake, steamui.ErrNoSleepAPI
+	case !f.sleep.Suspending:
+		return steamui.Awake, nil
+	case f.sleepSticky:
+		return steamui.StillSuspending, nil
+	}
+	f.sleep.Suspending, f.sleep.Progress = false, steamui.SuspendInvalid
+	return steamui.Resumed, nil
+}
+
+// powerCount is how many of Steam's sleep calls are call.
+func (f *fakeSteamUI) powerCount(call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.power {
+		if c == call {
+			n++
+		}
+	}
+	return n
+}
+
+// powerCalls is Steam's sleep calls so far.
+func (f *fakeSteamUI) powerCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.power)
+}
+
+// sleepNow is what Steam's sleep shows now.
+func (f *fakeSteamUI) sleepNow() steamui.SleepState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sleep
 }
 
 func (f *fakeSteamUI) Close() {

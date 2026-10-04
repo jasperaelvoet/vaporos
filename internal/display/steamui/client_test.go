@@ -238,6 +238,122 @@ func TestReadSetAuto(t *testing.T) {
 	})
 }
 
+// Steam's sleep goes over the connection the scale keeps: one listing,
+// one connection, nothing but Runtime.evaluate.
+func TestSleepResumeNeverSleep(t *testing.T) {
+	f := newFakeSteam(t)
+	c := f.client()
+	defer c.Close()
+	ui := f.ui()
+
+	if _, err := c.Read(bg); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := c.Sleep(bg); err != nil || st != awakeSleep {
+		t.Fatalf("sleep: %+v, %v", st, err)
+	}
+	if r, err := c.Resume(bg); err != nil || r != Awake {
+		t.Errorf("resume while awake: %v, %v", r, err)
+	}
+	if err := c.NeverSleep(bg); err != nil {
+		t.Errorf("never sleep: %v", err)
+	}
+
+	// Steam asked logind to suspend, which refused: it stays suspending.
+	f.set(func(*fakeSteam) { ui.store.Suspending, ui.store.Progress = true, 1.0 })
+	st, err := c.Sleep(bg)
+	if want := (SleepState{Store: true, Suspending: true, Progress: SuspendComplete, CanResume: true, CanSet: true, AC: 3600, Battery: 3600}); err != nil || st != want {
+		t.Errorf("stuck: %+v, %v", st, err)
+	}
+	if r, err := c.Resume(bg); err != nil || r != Resumed {
+		t.Errorf("resume: %v, %v", r, err)
+	}
+	if r, err := c.Resume(bg); err != nil || r != Awake {
+		t.Errorf("resume again: %v, %v", r, err)
+	}
+	if _, err := c.Read(bg); err != nil {
+		t.Errorf("read after: %v", err)
+	}
+	f.set(func(f *fakeSteam) {
+		want := []string{"setSetting(" + idleSuspendACNever + ")", "setSetting(" + idleSuspendBatteryNever + ")", "resume"}
+		if !slices.Equal(ui.calls, want) {
+			t.Errorf("calls %q, want %q", ui.calls, want)
+		}
+		if f.lists != 1 || f.dials != 1 {
+			t.Errorf("lists %d, dials %d", f.lists, f.dials)
+		}
+		for _, m := range f.methods {
+			if m != "Runtime.evaluate" {
+				t.Errorf("sent %s", m)
+			}
+		}
+	})
+
+	// A dropped connection, then a restarted Steam: each call reconnects
+	// within itself.
+	f.drop()
+	if _, err := c.Sleep(bg); err != nil {
+		t.Fatalf("after a drop: %v", err)
+	}
+	f.boot("2")
+	f.proc.reset()
+	f.proc.process(800, "1000\t1000\t1000\t1000", "steamwebhelper", 52200)
+	f.proc.listen("127.0.0.1", f.port, 52200)
+	f.proc.write()
+	f.drop()
+	if err := c.NeverSleep(bg); err != nil {
+		t.Fatalf("after a restart: %v", err)
+	}
+	ui2 := f.ui()
+	f.set(func(f *fakeSteam) {
+		if f.dials != 3 || f.lists != 3 || len(ui2.calls) != 2 {
+			t.Errorf("dials %d, lists %d, new Steam's calls %q", f.dials, f.lists, ui2.calls)
+		}
+	})
+
+	// A Steam without the store or the setter: the calls say so, and
+	// reading stays fine.
+	f.set(func(*fakeSteam) { ui2.store, ui2.setSetting = nil, "" })
+	if st, err := c.Sleep(bg); err != nil || st != (SleepState{Progress: -1, AC: 3600, Battery: 3600}) {
+		t.Errorf("without the API: %+v, %v", st, err)
+	}
+	if _, err := c.Resume(bg); !errors.Is(err, ErrNoSleepAPI) {
+		t.Errorf("resume without the API: %v", err)
+	}
+	if err := c.NeverSleep(bg); !errors.Is(err, ErrNoSleepAPI) {
+		t.Errorf("never sleep without the API: %v", err)
+	}
+	if _, err := c.Read(bg); err != nil {
+		t.Errorf("read without the sleep API: %v", err)
+	}
+	f.set(func(f *fakeSteam) {
+		if len(ui2.calls) != 2 || f.dials != 3 {
+			t.Errorf("calls %q, dials %d", ui2.calls, f.dials)
+		}
+	})
+}
+
+// An exception inside Steam is an EvalError, as for the scale.
+func TestResumeException(t *testing.T) {
+	f := newFakeSteam(t)
+	c := f.client()
+	defer c.Close()
+	ui := f.ui()
+	f.set(func(*fakeSteam) { ui.store.Suspending, ui.store.Throws = true, true })
+	var ee *EvalError
+	if _, err := c.Resume(bg); !errors.As(err, &ee) {
+		t.Errorf("resume: %v", err)
+	}
+	if st, err := c.Sleep(bg); err != nil || st.Suspending || st.Progress != -1 || !st.CanResume {
+		t.Errorf("sleep: %+v, %v", st, err)
+	}
+	// Without InitiateResume the getter is never asked.
+	f.set(func(*fakeSteam) { ui.store.NoResume = true })
+	if _, err := c.Resume(bg); !errors.Is(err, ErrNoSleepAPI) {
+		t.Errorf("resume without InitiateResume: %v", err)
+	}
+}
+
 func TestSetRefusesBadNumbers(t *testing.T) {
 	f := newFakeSteam(t)
 	c := f.client()
@@ -442,6 +558,9 @@ type scalerUI interface {
 	Set(ctx context.Context, gen uint64, scale float64) (float64, error)
 	Auto(ctx context.Context, gen uint64) error
 	Views(ctx context.Context) ([]View, error)
+	Sleep(ctx context.Context) (SleepState, error)
+	NeverSleep(ctx context.Context) error
+	Resume(ctx context.Context) (ResumeResult, error)
 	Close()
 }
 

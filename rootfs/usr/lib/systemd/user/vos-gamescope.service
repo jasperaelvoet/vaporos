@@ -35,7 +35,8 @@ ExecStartPre=/usr/bin/mkdir -p %h/.config/gamescope
 ExecStopPost=-/usr/bin/vos steam prepare
 # No -W/-H/-r: the output mode comes from the mode save file and the EDID.
 # Steam's CEF debugger on 127.0.0.1:31911 is how vosd sizes Steam's
-# interface for each device; no flag or file sets that scale. Static, and
+# interface for each device and keeps Steam's idle sleep off (VaporOS
+# never suspends); no flag or file sets either. Static, and
 # only root may connect (nftables.nft, chain upstream): it drives all of
 # Steam's client API.
 ExecStart=/usr/bin/gamescope --backend drm --prefer-output ${VOS_OUTPUT} --xwayland-count 2 --force-grab-cursor -e $VOS_GS_EXTRA -- /usr/bin/steam -gamepadui -steamos3 -cef-enable-debugging -devtools-port 31911

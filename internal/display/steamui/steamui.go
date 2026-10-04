@@ -1,13 +1,14 @@
 // Package steamui is vosd's client for Steam's CEF remote debugger, the
-// only way to read and change gamepadui's display scale from outside
-// Steam (docs/CONTRACTS.md, Display policy, "Scaling" and "Steam's
-// debugger"). Steam binds it on 127.0.0.1:DevtoolsPort, and only root can
-// connect (the firewall), but anything of the gaming user could listen
-// there instead, so nothing on the port is trusted: its listener must be
-// a steamwebhelper of the gaming user, redirects are refused, every answer
-// and message is capped, the websocket URL is built here from a checked
-// target id, and every value is decoded typed and clamped. It only ever
-// sends Runtime.evaluate of the fixed expressions in js.go.
+// only way to read and change gamepadui's display scale and Steam's sleep
+// from outside Steam (docs/CONTRACTS.md, Display policy, "Scaling",
+// "Steam's debugger" and "Steam's sleep"). Steam binds it on
+// 127.0.0.1:DevtoolsPort, and only root can connect (the firewall), but
+// anything of the gaming user could listen there instead, so nothing on
+// the port is trusted: its listener must be a steamwebhelper of the
+// gaming user, redirects are refused, every answer and message is capped,
+// the websocket URL is built here from a checked target id, and every
+// value is decoded typed and clamped. It only ever sends Runtime.evaluate
+// of the fixed expressions in js.go.
 package steamui
 
 import (

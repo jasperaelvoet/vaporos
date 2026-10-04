@@ -127,7 +127,31 @@ type fakeUI struct {
 	client   string         // "api", "bare" (SteamClient without the setters) or "none"
 	marker   any            // window.__vosScale, nil when unset
 	dpr, h   any            // a view's devicePixelRatio and innerHeight, nil when undefined
-	calls    []string
+	// Steam's sleep: window.SuspendResumeStore (nil: none),
+	// settingsStore.clientSettings (nil: none) and how
+	// SteamClient.Settings.SetSetting answers: "" when it is missing (also
+	// without a SteamClient), "sync" (nothing) or "reject" (a promise that
+	// rejects). SetSetting only records its call: Steam stores the setting
+	// later.
+	store          *fakeStore
+	clientSettings map[string]any
+	setSetting     string
+	calls          []string
+}
+
+// fakeStore is Steam's SuspendResumeStore: its suspending getter, what
+// GetSuspendResumeState returns, whether it has that method and
+// InitiateResume, which leaves the suspend screen unless sticky and
+// returns nothing (a rejecting promise with reject). With throws, the
+// getter and GetSuspendResumeState throw.
+type fakeStore struct {
+	Suspending any  `json:"suspending"`
+	Progress   any  `json:"progress,omitempty"`
+	NoState    bool `json:"noState,omitempty"`
+	NoResume   bool `json:"noResume,omitempty"`
+	Sticky     bool `json:"sticky,omitempty"`
+	Reject     bool `json:"reject,omitempty"`
+	Throws     bool `json:"throws,omitempty"`
 }
 
 func readyUI() *fakeUI {
@@ -139,16 +163,29 @@ func readyUI() *fakeUI {
 		"flAutoDisplayScaleFactor":    1.71,
 		"flMinDisplayScaleFactor":     0.71,
 		"flMaxDisplayScaleFactor":     3.41,
+	}, store: &fakeStore{Suspending: false, Progress: 0.0}, setSetting: "sync", clientSettings: map[string]any{
+		"system_idle_suspend_ac_sec":      3600.0,
+		"system_idle_suspend_battery_sec": 3600.0,
 	}}
 }
 
-// eval answers one of the expressions; false for any other.
+// eval answers one of the expressions; false for any other, and for one
+// that throws in Steam.
 func (u *fakeUI) eval(expr string) (any, bool) {
 	switch expr {
 	case readJS:
 		return u.read(), true
 	case viewJS:
 		return map[string]any{"dpr": numOr(u.dpr, 0), "h": numOr(u.h, 0)}, true
+	case sleepJS:
+		return u.sleep(), true
+	case neverSleepJS:
+		return u.neverSleep(), true
+	case resumeJS:
+		if s := u.store; s != nil && !s.NoResume && s.Throws {
+			return nil, false // Steam throws: the getter does, past the check for InitiateResume
+		}
+		return u.resume(), true
 	}
 	if a, ok := callArgs(expr, setJS); ok && len(a) == 2 {
 		return u.set(a[0], a[1]), true
@@ -270,6 +307,49 @@ func (u *fakeUI) auto(gen float64) map[string]any {
 	u.settings["flCurrentDisplayScaleFactor"] = u.settings["flAutoDisplayScaleFactor"]
 	u.marker = map[string]any{"gen": gen, "value": 0.0}
 	return map[string]any{"status": "ok", "value": 0.0}
+}
+
+func (u *fakeUI) sleep() map[string]any {
+	out := map[string]any{"store": u.store != nil, "suspending": false, "progress": nil, "resume": false,
+		"set":     u.client != "none" && u.setSetting != "",
+		"ac":      num(u.clientSettings["system_idle_suspend_ac_sec"]),
+		"battery": num(u.clientSettings["system_idle_suspend_battery_sec"])}
+	if s := u.store; s != nil {
+		out["resume"] = !s.NoResume
+		if !s.Throws {
+			out["suspending"] = s.Suspending == true
+			if !s.NoState {
+				out["progress"] = num(s.Progress)
+			}
+		}
+	}
+	return out
+}
+
+func (u *fakeUI) neverSleep() map[string]any {
+	if u.client == "none" || u.setSetting == "" {
+		return map[string]any{"status": "unsupported"}
+	}
+	u.calls = append(u.calls, "setSetting("+idleSuspendACNever+")", "setSetting("+idleSuspendBatteryNever+")")
+	return map[string]any{"status": "ok"}
+}
+
+func (u *fakeUI) resume() map[string]any {
+	s := u.store
+	switch {
+	case s == nil || s.NoResume:
+		return map[string]any{"status": "unsupported"}
+	case s.Suspending != true:
+		return map[string]any{"status": "awake"}
+	}
+	u.calls = append(u.calls, "resume")
+	if !s.Sticky {
+		s.Suspending = false
+	}
+	if s.Suspending == true {
+		return map[string]any{"status": "suspending"}
+	}
+	return map[string]any{"status": "resumed"}
 }
 
 // ---- Steam's debugger
