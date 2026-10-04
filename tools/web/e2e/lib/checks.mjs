@@ -296,9 +296,26 @@ export async function settleHeat(page, { finish = false, timeout = 3000 } = {}) 
 // when its 5th-percentile pixel is under 4.5:1 (3:1 for large text), so a
 // few anti-aliased edge pixels do not, and a text run that sits on the
 // heat for any stretch does.
+//
+// The page stays live while it is measured: a run it puts in after the
+// runs were hidden (a preset's download finishing turns Ready to stream
+// into Restart to finish) is in the shot, and its own glyphs would read
+// 1:1 against its colour. So a measurement that new text overtook is
+// taken again, up to three times.
 export async function heatContrast(page) {
   const png = await pngReader();
   if (!png) return { ok: true, details: [], warnings: ['heat contrast skipped: no PNG decoder in playwright-core'] };
+  let r;
+  for (let tries = 0; tries < 3; tries++) {
+    r = await measureHeat(page, png);
+    if (!r.moved) break;
+  }
+  const { moved, ...out } = r;
+  if (moved) out.warnings = [...out.warnings, 'heat contrast: new text kept arriving over the heat fields while they were measured'];
+  return out;
+}
+
+async function measureHeat(page, png) {
   const busy = await settleHeat(page, { finish: true });
   const items = await page.evaluate(() => {
     scrollTo(0, 0);
@@ -357,10 +374,24 @@ export async function heatContrast(page) {
         out.push({ id: String(i++), text: t.textContent.trim().slice(0, 40), color: rgba(cs.color), size: parseFloat(cs.fontSize), weight: Number(cs.fontWeight) || 400, rects, tag: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).join('.') : '') });
       }
     }
+    if (out.length) {
+      // Text added outside the hidden runs from here until the shot is
+      // taken shows in it; a hidden run's own text changing does not.
+      const w = { moved: false };
+      w.check = (recs) => {
+        for (const r of recs) {
+          if (r.target.nodeType === Node.ELEMENT_NODE && r.target.closest('[data-vos-m]')) continue;
+          if ([...r.addedNodes].some((n) => n.textContent.trim())) w.moved = true;
+        }
+      };
+      w.mo = new MutationObserver(w.check);
+      for (const root of roots) w.mo.observe(root, { childList: true, subtree: true });
+      window.__vosHeat = w;
+    }
     return out;
   });
   const warnings = busy.length ? [`heat fields still painting after 3 s: ${busy.join(', ')}`] : [];
-  if (!items.length) return { ok: true, details: [], warnings };
+  if (!items.length) return { ok: true, details: [], warnings, moved: false };
   const toggle = (hide) =>
     page.evaluate((h) => {
       for (const el of document.querySelectorAll('[data-vos-m]')) {
@@ -370,13 +401,20 @@ export async function heatContrast(page) {
         }
         if (!h) delete el.dataset.vosM;
       }
+      const w = window.__vosHeat;
+      if (h || !w) return false;
+      w.check(w.mo.takeRecords());
+      w.mo.disconnect();
+      delete window.__vosHeat;
+      return w.moved;
     }, hide);
   await toggle(true);
   let buf;
+  let moved;
   try {
     buf = await page.screenshot({ animations: 'disabled' });
   } finally {
-    await toggle(false);
+    moved = await toggle(false);
   }
   const img = png(buf);
   const scale = img.width / (await page.evaluate(() => innerWidth));
@@ -404,7 +442,7 @@ export async function heatContrast(page) {
     const p5 = cs[Math.floor(cs.length * 0.05)];
     if (p5 < need) details.push(`${it.tag} "${it.text}" is ${p5.toFixed(2)}:1 at its 5th-percentile pixel (worst ${min.toFixed(2)}:1), under ${need}:1 on the heat field`);
   }
-  return { ok: details.length === 0, details, measured: items.length, warnings };
+  return { ok: details.length === 0, details, measured: items.length, warnings, moved };
 }
 
 const channel = (c) => {
