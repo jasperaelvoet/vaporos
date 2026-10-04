@@ -1353,9 +1353,10 @@ nothing (409).
   for it, and, unless it was added back meanwhile: when this boot mounted
   it, its `services` stop now (`systemctl stop`, or `systemctl --user -M
   vapor@ stop`; every instance of a template), noting first which of them
-  run (`systemctl list-units --state=active,activating,reloading`; when that
-  fails, its units that are not templates); its helper's `Remove` runs (with
-  `purge`, unless it was added back by then) only when this boot mounted it
+  run (`systemctl list-units --state=active,activating,reloading`, for user
+  units without a session, see Units; when that fails, its units that are
+  not templates); its helper's `Remove` runs (with `purge`, unless it was
+  added back by then) only when this boot mounted it
   or `settings/<id>.installed` exists; `settings/<id>.installed` goes; and,
   with `purge`, whether or not the helper ran, its data goes (library areas
   are its helper's to delete), unless it was added back by then. Under the
@@ -2189,6 +2190,8 @@ No keypress, local or from a Moonlight client, reboots or suspends the box: `ctr
 - `vos-sunshine.service`: `/usr/bin/sunshine %h/.config/sunshine/sunshine.conf`; ordered `After=` gamescope with no dependency on it; no `[Install]`. vosd starts it on every boot and again whenever it is inactive (checked every 10 s), only with a supported GPU. After each start or restart vosd reads that run's log until Sunshine's web UI is up: a run that logged `Platform failed to initialize` (its KMS capture found no lit plane, e.g. it came up before gamescope's first modeset) never recovers by itself and fails every stream with error 503, so vosd restarts it while idle, 5 s after the failure and then backing off to 2 min. Sunshine also maps `output_name` to a KMS monitor index (the n-th lit plane across `/dev/dri/card*`, cursor planes left out) once per run and checks capture against it before a stream's prep command runs, so a run that started while gamescope scanned out on two planes (at boot, before vosd forces composition) keeps an index that names no plane once gamescope composites into one, and fails every stream with error 503 (`Couldn't find monitor [N]`). While idle, at most every 15 s, vosd compares the index in the run's last `Mapped '<output>' to kmsgrab monitor index N` line with the one a fresh run would pick now, which it only works out while gamescope drives the virtual connector on exactly one lit plane and no other card lights a plane; when they differ on two checks in a row it restarts Sunshine, and restarts for this back off from 1 min to 30 min while the mismatch lasts.
 
 Both user units carry `ConditionKernelCommandLine=!vos.mode=live`.
+
+vosd starts, stops and restarts user units through `-M vapor@`, which opens a PAM `login` session for `vapor` per call and so also brings its manager up when it is not running yet. It reads their state (`is-active`, `show`, `list-units`) without a session, since its polls (Sunshine's every 3 s, the display's every 15 s) would otherwise log a session close in `vapor`'s journal each time and rotate the boot's logs away: it runs `systemctl --user` as `vapor` (uid and gid 1000, no supplementary groups, no PAM) with `XDG_RUNTIME_DIR=/run/user/1000`, so systemctl reaches the manager's private socket `/run/user/1000/systemd/private`; by hand, `setpriv --reuid=vapor --regid=vapor --clear-groups env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active vos-sunshine.service`. While that manager is not up, `is-active` prints nothing and the units count as not running.
 
 **Display policy (vosd):**
 - **No GPU profile:** no gamescope. Show the welcome screen if any connector is connected.
