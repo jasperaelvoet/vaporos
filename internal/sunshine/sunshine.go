@@ -103,6 +103,8 @@ type Service struct {
 	verifyRun      bool // the run vosd last started has not been seen to set up capture
 	nextCaptureFix time.Time
 	captureBackoff time.Duration
+	settleBy       time.Time // how long a capture restart still waits for gamescope to settle
+	runReadyAt     time.Time // when the run's capture was seen to come up
 	nextIndexCheck time.Time
 	nextIndexFix   time.Time     // the earliest next restart for a stale KMS index
 	indexBackoff   time.Duration // the last wait between those restarts

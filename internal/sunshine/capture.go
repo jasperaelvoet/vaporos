@@ -14,7 +14,10 @@ import (
 // modeset (both start at boot, and gamescope's unit is active before it
 // has a mode), it logs "Platform failed to initialize" and fails every
 // stream with error 503 until it is restarted. So vosd reads each run's
-// startup log and restarts a run whose capture never came up.
+// startup log and restarts a run whose capture never came up. It holds
+// that restart until gamescope settles on one plane (Screens'
+// CaptureIndex), up to captureSettleMax: a run restarted while gamescope
+// still scans out on two planes maps the wrong monitor index (below).
 const (
 	runStartMarker     = "Sunshine version:"
 	platformFailMarker = "Platform failed to initialize"
@@ -22,9 +25,10 @@ const (
 	runReadyMarker = "Configuration UI available"
 	// captureLogLines is how much of the journal the check reads; a run's
 	// startup is well under that.
-	captureLogLines = 400
-	captureRetryMin = 5 * time.Second
-	captureRetryMax = 2 * time.Minute
+	captureLogLines  = 400
+	captureRetryMin  = 5 * time.Second
+	captureRetryMax  = 2 * time.Minute
+	captureSettleMax = 30 * time.Second
 )
 
 type captureVerdict int
@@ -69,6 +73,7 @@ func (s *Service) checkCapture(ctx context.Context) {
 	case captureOK:
 		s.mu.Lock()
 		s.verifyRun, s.captureBackoff = false, 0
+		s.runReadyAt = now
 		s.mu.Unlock()
 	case captureFailed:
 		s.mu.Lock()
@@ -79,6 +84,19 @@ func (s *Service) checkCapture(ctx context.Context) {
 			s.mu.Unlock()
 			return
 		}
+		ci, _ := s.scr.(captureIndexer)
+		if ci != nil && s.settleBy.IsZero() {
+			s.settleBy = now.Add(captureSettleMax)
+		}
+		wait := ci != nil && now.Before(s.settleBy)
+		s.mu.Unlock()
+		if wait {
+			if _, ok := ci.CaptureIndex(); !ok {
+				return
+			}
+		}
+		s.mu.Lock()
+		s.settleBy = time.Time{}
 		s.nextCaptureFix = now.Add(s.captureBackoff)
 		s.captureBackoff = min(2*s.captureBackoff, captureRetryMax)
 		s.mu.Unlock()
@@ -97,9 +115,11 @@ func (s *Service) checkCapture(ctx context.Context) {
 // monitor [1]", and error 503 for every stream until a restart. So, while
 // idle, vosd compares the index the run logged with the one a fresh run
 // would pick (Screens' CaptureIndex) and restarts a run whose index went
-// stale.
+// stale. A run is checked on every poll for indexFreshFor after its
+// capture came up: at boot, the first stream often comes within seconds.
 const (
 	indexCheckEvery = 15 * time.Second
+	indexFreshFor   = 2 * time.Minute
 	indexRetryMin   = time.Minute
 	indexRetryMax   = 30 * time.Minute
 )
@@ -128,15 +148,15 @@ type captureIndexer interface {
 	CaptureIndex() (int, bool)
 }
 
-// checkIndex runs on idle polls once the run's capture came up, at most
-// every indexCheckEvery. A mismatch has to hold on two checks in a row
+// checkIndex runs on idle polls once the run's capture came up: on each
+// while the run is fresh, then at most every indexCheckEvery. A mismatch has to hold on two checks in a row
 // before vosd restarts Sunshine, and restarts for it back off, so a
 // counting that ever differed from Sunshine's own could not loop.
 func (s *Service) checkIndex(ctx context.Context) {
 	now := s.now()
 	s.mu.Lock()
 	due := !s.verifyRun && !now.Before(s.nextIndexCheck) && !now.Before(s.nextIndexFix)
-	if due {
+	if due && !now.Before(s.runReadyAt.Add(indexFreshFor)) {
 		s.nextIndexCheck = now.Add(indexCheckEvery)
 	}
 	ci, _ := s.scr.(captureIndexer)

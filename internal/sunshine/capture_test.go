@@ -193,3 +193,82 @@ func TestRestartsSunshineWhoseKMSIndexWentStale(t *testing.T) {
 		t.Errorf("restarts in an hour of a lasting mismatch: %d", n-1)
 	}
 }
+
+// From the box on 2026-10-12: vosd restarted the run that came up before
+// gamescope's first modeset while gamescope still scanned out on two
+// planes; streams 2 s and 10 s later failed until a restart.
+const bootIndexLog = `[2026-10-12 18:30:04.840]: Info: Sunshine version: 2026.929.125923 commit: 019b1ba661d829e334706557a3e2bdc3d2374591
+[2026-10-12 18:30:04.858]: Info: Mapped 'DP-1' to kmsgrab monitor index 1
+[2026-10-12 18:30:04.858]: Info: Found monitor for DRM screencasting
+[2026-10-12 18:30:04.951]: Info: Configuration UI available at [https://localhost:47990]
+[2026-10-12 18:30:06.616]: Error: Couldn't find monitor [1]
+`
+
+func TestCaptureRestartWaitsForOnePlane(t *testing.T) {
+	h := newHarness(t)
+	writeCreds(t, h.f.user, h.f.pass)
+	writeState(t, h.f.user)
+	clock := &fakeClock{t: time.Date(2026, 10, 12, 18, 29, 57, 0, time.UTC)}
+	h.s.now = clock.now
+	h.s.prepare(context.Background())
+	h.rec.systemctl = nil
+	scr := &fakeIndexScreens{index: 0, ok: false} // two planes
+	h.s.SetScreens(scr)
+	h.s.journalTail = func(context.Context, int) (string, error) { return failedRunLog, nil }
+	poll := func() {
+		clock.add(pollInterval)
+		h.s.poll(context.Background())
+	}
+
+	for range 4 {
+		poll()
+	}
+	if calls := h.rec.calls(); len(calls) != 0 {
+		t.Fatalf("restarted while gamescope scanned out on two planes: %q", calls)
+	}
+	scr.ok = true
+	poll()
+	if calls := h.rec.calls(); !reflect.DeepEqual(calls, []string{"restart " + unitName}) {
+		t.Fatalf("settled: systemctl %q", calls)
+	}
+
+	// A display that never settles holds the restart only so long.
+	scr.ok = false
+	for i := 0; len(h.rec.calls()) == 1; i++ {
+		if i > int((captureRetryMax+captureSettleMax)/pollInterval) {
+			t.Fatal("never restarted an unsettled display's failed run")
+		}
+		poll()
+	}
+}
+
+func TestFreshRunsKMSIndexIsCheckedEveryPoll(t *testing.T) {
+	h := newHarness(t)
+	writeCreds(t, h.f.user, h.f.pass)
+	writeState(t, h.f.user)
+	clock := &fakeClock{t: time.Date(2026, 10, 12, 18, 30, 5, 0, time.UTC)}
+	h.s.now = clock.now
+	h.s.prepare(context.Background())
+	h.rec.systemctl = nil
+	scr := &fakeIndexScreens{index: 0, ok: false}
+	h.s.SetScreens(scr)
+	h.s.journalTail = func(context.Context, int) (string, error) { return bootIndexLog, nil }
+	poll := func() {
+		clock.add(pollInterval)
+		h.s.poll(context.Background())
+	}
+
+	poll()
+	poll()        // not settled yet: no answer, and no 15 s wait either
+	scr.ok = true // vosd forced composition
+	start := clock.t
+	for len(h.rec.calls()) == 0 && clock.t.Sub(start) < indexCheckEvery {
+		poll()
+	}
+	if calls := h.rec.calls(); !reflect.DeepEqual(calls, []string{"restart " + unitName}) {
+		t.Fatalf("stale index on a fresh run: systemctl %q after %v", calls, clock.t.Sub(start))
+	}
+	if d := clock.t.Sub(start); d > 2*pollInterval {
+		t.Errorf("took %v to restart a fresh run with a stale index", d)
+	}
+}
