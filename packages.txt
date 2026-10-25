@@ -83,6 +83,10 @@ pipewire-alsa
 pipewire-jack
 wireplumber
 lib32-pipewire
+# RealtimeKit, for PipeWire's realtime threads. proton-cachyos-slr depends on it
+# since 11.0-20261014, and its service, user and D-Bus and polkit files can
+# only come with the base, never in an extension image.
+rtkit
 
 # ---- Fonts (ttf-liberation is also Steam's ttf-font provider)
 ttf-liberation
