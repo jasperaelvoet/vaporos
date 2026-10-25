@@ -511,14 +511,14 @@ function keyField(s) {
 }
 
 // authorizedKey is ssh.ParseAuthorizedKey on one line: {key, comment,
-// options} or null.
+// options} or null. The declared type must be the blob's, as in sshd.
 function authorizedKey(line) {
   const s = goTrim(line);
   if (!s || s[0] === '#') return null;
   let i = firstSpace(s);
   if (i < 0) return null;
   const direct = keyField(s.slice(i));
-  if (direct) return { ...direct, options: [] };
+  if (direct && direct.key.type === s.slice(0, i)) return { ...direct, options: [] };
   // No key type recognised: maybe an options field comes first.
   const options = [];
   let inQuote = false;
@@ -544,7 +544,7 @@ function authorizedKey(line) {
   const j = firstSpace(rest);
   if (j < 0) return null;
   const withOptions = keyField(rest.slice(j));
-  return withOptions ? { ...withOptions, options } : null;
+  return withOptions && withOptions.key.type === rest.slice(0, j) ? { ...withOptions, options } : null;
 }
 
 // cleanComment keeps a key comment printable, on one line and at most 200

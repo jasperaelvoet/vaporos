@@ -16,7 +16,7 @@ func TestAppLaunchOptions(t *testing.T) {
 		1091500: `PROTON_LOG=1 WINEDLLOVERRIDES="dxgi=n,b" %command% -skipStartScreen`,
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q", got)
+		t.Errorf("got %#v", got)
 	}
 
 	// The first block of a repeated app counts, as in Steam's lookups, and
@@ -30,10 +30,10 @@ func TestAppLaunchOptions(t *testing.T) {
 		"30" { "launchoptions" "-lower" }
 	} } } } }`
 	if got, err := AppLaunchOptions([]byte(odd)); err != nil || !reflect.DeepEqual(got, map[uint32]string{30: "-lower"}) {
-		t.Errorf("odd: %q %v", got, err)
+		t.Errorf("odd: %#v %v", got, err)
 	}
 	if got, err := AppLaunchOptions([]byte(`"UserLocalConfigStore" { }`)); err != nil || len(got) != 0 {
-		t.Errorf("no apps: %q %v", got, err)
+		t.Errorf("no apps: %#v %v", got, err)
 	}
 	if _, err := AppLaunchOptions([]byte(`"UserLocalConfigStore" {`)); err == nil {
 		t.Error("broken file accepted")

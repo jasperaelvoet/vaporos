@@ -327,7 +327,7 @@ func TestLocalConfigBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := lc.LaunchOptions(); len(got) != 2 || got[227300] != "-nointro -64bit" {
-		t.Errorf("read %q", got)
+		t.Errorf("read %#v", got)
 	}
 	for _, err := range []error{
 		lc.SetLaunchOptions(227300, "-x"),
@@ -419,6 +419,6 @@ func TestLocalConfigBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, err := AppLaunchOptions(out); err != nil || len(got) != 2 || got[1] != "a" || got[2] != "b" || strings.Count(string(out), `"apps"`) != 1 {
-		t.Errorf("new apps: %q %v\n%s", got, err, out)
+		t.Errorf("new apps: %#v %v\n%s", got, err, out)
 	}
 }

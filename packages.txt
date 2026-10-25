@@ -64,9 +64,10 @@ libdrm
 hwdata
 
 # ---- The gaming session
-# 3.16.31 from Arch: cachyos-v3 carries an older gamescope (3.16.25) and would
-# win on repo order. The mode-save-file/backend_set_dirty path VaporOS uses to
-# follow the client's resolution was verified against 3.16.31.
+# Arch's build: cachyos-v3 has lagged behind it (3.16.25 against 3.16.31) and
+# would win on repo order. The mode-save-file/backend_set_dirty path VaporOS
+# uses to follow the client's resolution was verified against 3.16.31; 3.17.0
+# does not touch it.
 extra/gamescope
 xorg-xwayland
 xorg-xprop
