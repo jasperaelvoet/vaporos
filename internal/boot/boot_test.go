@@ -326,7 +326,10 @@ func TestRewriteOptions(t *testing.T) {
 	esp, src := newESP(t)
 	mustInstall(t, esp, "1", "a", src, "quiet video=DP-1:e", 0)
 	mustInstall(t, esp, "2", "b", src, "quiet video=DP-1:e", 3)
-	if err := ApplyMachineCmdline(esp, "video=DP-1:e", "video=DP-2:e"); err != nil {
+	err := RewriteOptions(esp, func(e Entry) string {
+		return SwapMachineArgs(e.Options, "video=DP-1:e", "video=DP-2:e")
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	for slot, name := range map[string]string{"a": "vos-1.conf", "b": "vos-2+3.conf"} {

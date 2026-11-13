@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,8 @@ import (
 	"github.com/jasperaelvoet/vaporos/internal/auth"
 	"github.com/jasperaelvoet/vaporos/internal/config"
 	"github.com/jasperaelvoet/vaporos/internal/events"
+
+	"golang.org/x/crypto/argon2"
 )
 
 // The control center has two fakes of vosd over one set of fixtures: the
@@ -318,8 +321,14 @@ func newGoEngine(t *testing.T) *goEngine {
 	t.Cleanup(func() { events.Default = hub })
 	g := &goEngine{d: &devServer{fx: testFixtures(t), set: activeSet, fsys: content}}
 	// One argon2 hash and one sign-in for every vector: each world starts
-	// from these files instead of hashing the password again.
-	if err := auth.SetAdminPassword("", devPassword); err != nil {
+	// from these files instead of hashing the password again. The hash is a
+	// cheap one, so a step that checks the password stays well inside the
+	// fake's 400 ms download tick on a loaded machine.
+	salt := []byte("0123456789abcdef")
+	key := argon2.IDKey([]byte(devPassword), salt, 1, 64, 1, 32)
+	b64 := base64.RawStdEncoding
+	hash := fmt.Sprintf("$argon2id$v=19$m=64,t=1,p=1$%s$%s", b64.EncodeToString(salt), b64.EncodeToString(key))
+	if err := config.WriteJSONAtomic(config.AuthPath(), auth.File{User: auth.AdminUser, Hash: hash}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(config.AuthPath())

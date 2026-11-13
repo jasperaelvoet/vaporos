@@ -628,6 +628,8 @@ func TestSessionsPersistHashedAndSlide(t *testing.T) {
 	// A restarted vosd knows the session.
 	s2, _ := newServer(t, Options{})
 	s2.now = clk.Now
+	// New loaded the file against the real clock, where it has expired.
+	s2.sessions = newSessionStore(config.SessionsPath(), clk.Now)
 	var me meResponse
 	decode(t, do(t, s2, req{path: "/api/v1/auth/me", cookies: []*http.Cookie{c}}), &me)
 	if !me.Authenticated || me.CSRF != csrf {

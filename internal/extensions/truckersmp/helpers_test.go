@@ -149,18 +149,17 @@ type tmpServer struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu       sync.Mutex
-	version  string
-	files    map[string][]byte // FilePath without the leading slash
-	types    map[string]string
-	badCore  string            // an MD5 the API gives core_ets2mp.dll instead of its own
-	noCore   bool              // the API gives core_ets2mp.dll no MD5
-	noHead   bool              // HEAD is refused
-	chunked  bool              // GETs say no length
-	gets     map[string]int    // by path
-	ranges   int               // GETs with a Range header
-	cut      map[string]int    // path → bytes after which the next GET breaks off
-	extraAPI map[string]string // more API fields
+	mu      sync.Mutex
+	version string
+	files   map[string][]byte // FilePath without the leading slash
+	types   map[string]string
+	badCore string         // an MD5 the API gives core_ets2mp.dll instead of its own
+	noCore  bool           // the API gives core_ets2mp.dll no MD5
+	noHead  bool           // HEAD is refused
+	chunked bool           // GETs say no length
+	gets    map[string]int // by path
+	ranges  int            // GETs with a Range header
+	cut     map[string]int // path → bytes after which the next GET breaks off
 }
 
 func newTMPServer(t *testing.T) *tmpServer {

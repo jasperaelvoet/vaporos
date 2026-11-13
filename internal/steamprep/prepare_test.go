@@ -109,11 +109,19 @@ func TestBudget(t *testing.T) {
 			<-ctx.Done()
 		}
 	}
+	var done <-chan struct{}
+	startRun = func(ctx context.Context, o Options) <-chan struct{} {
+		done = start(ctx, o)
+		return done
+	}
+	defer func() { startRun = start }()
 	began := time.Now()
 	b.runWith(Options{Budget: 500 * time.Millisecond})
 	if d := time.Since(began); d > 2*time.Second {
 		t.Errorf("took %s", d)
 	}
+	// Run returns at the budget; the run's goroutine may still be writing.
+	<-done
 	st := b.state()
 	if !strings.Contains(st.Error, "out of time") || st.Fingerprint != "" {
 		t.Errorf("state error %q fingerprint %q", st.Error, st.Fingerprint)
@@ -132,12 +140,6 @@ func TestBudget(t *testing.T) {
 			<-release
 		}
 	}
-	var done <-chan struct{}
-	startRun = func(ctx context.Context, o Options) <-chan struct{} {
-		done = start(ctx, o)
-		return done
-	}
-	defer func() { startRun = start }()
 	began = time.Now()
 	b.runWith(Options{Budget: 300 * time.Millisecond})
 	if d := time.Since(began); d > 2*time.Second || d < 250*time.Millisecond {

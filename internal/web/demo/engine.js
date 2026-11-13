@@ -458,12 +458,6 @@ function parsePublicKey(buf) {
       key = { type: name, blob: wireString([name, mpint(ev), mpint(nv)]), bits: bitLen(nv) };
       break;
     }
-    case 'ssh-dss': {
-      const ps = [r.string(), r.string(), r.string(), r.string()];
-      if (ps.some((p) => !p)) return null;
-      key = { type: name, blob: wireString([name, ...ps.map((p) => mpint(bigOf(p)))]) };
-      break;
-    }
     case 'ecdsa-sha2-nistp256':
     case 'ecdsa-sha2-nistp384':
     case 'ecdsa-sha2-nistp521':
@@ -568,12 +562,12 @@ export function normalizeKeys(input) {
     if (!k) continue;
     const n = i + 1;
     if (/[\r\n\0]/.test(k)) return { error: `key ${n}: one key per entry, on a single line` };
+    if (goFields(k)[0] === 'ssh-dss') return { error: `key ${n}: DSA keys are no longer accepted by sshd; use ed25519` };
     const parsed = authorizedKey(k);
     if (!parsed) {
       return { error: `key ${n} is not an OpenSSH public key (it should start with ssh-ed25519, ecdsa-sha2-… or ssh-rsa)` };
     }
     if (parsed.options.length) return { error: `key ${n}: authorized_keys options are not supported` };
-    if (parsed.key.type === 'ssh-dss') return { error: `key ${n}: DSA keys are no longer accepted by sshd; use ed25519` };
     if (parsed.key.type === 'ssh-rsa' && parsed.key.bits < 2048) return { error: `key ${n}: RSA keys need at least 2048 bits` };
     let line = `${parsed.key.type} ${b64encode(parsed.key.blob)}`;
     if (seen.has(line)) continue;

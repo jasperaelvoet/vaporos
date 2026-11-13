@@ -78,12 +78,8 @@ type Progress func(step string, percent int, message string)
 // normal user. Nothing else sets it.
 var allowAnywhere = false
 
-// Install performs a full install. It refuses to run outside live mode
+// runInstall performs a full install. It refuses to run outside live mode
 // unless allowAnywhere is set (tests).
-func Install(ctx context.Context, opts Options, progress Progress) error {
-	return runInstall(ctx, defaultEnv(), opts, progress)
-}
-
 func runInstall(ctx context.Context, e *env, opts Options, progress Progress) error {
 	in, err := newInstaller(e, opts, progress)
 	if err != nil {

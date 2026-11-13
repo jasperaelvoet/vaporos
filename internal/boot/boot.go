@@ -143,14 +143,6 @@ func SwapMachineArgs(options, oldMachine, newMachine string) string {
 	return Cmdline(slot, strings.Join(keep, " "), newMachine)
 }
 
-// ApplyMachineCmdline swaps oldMachine for newMachine in every entry's
-// options. vosd calls it after writing a new /var/lib/vos/cmdline.
-func ApplyMachineCmdline(esp, oldMachine, newMachine string) error {
-	return RewriteOptions(esp, func(e Entry) string {
-		return SwapMachineArgs(e.Options, oldMachine, newMachine)
-	})
-}
-
 // MachineCmdline reads /var/lib/vos/cmdline ("" if missing).
 func MachineCmdline() string { return config.ReadLine(config.MachineCmdlinePath()) }
 

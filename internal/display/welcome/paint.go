@@ -41,11 +41,6 @@ type palette struct {
 	QRDark, QRLight   color.RGBA // the QR card: exactly these two, nothing else inside it
 }
 
-// rgb unpacks 0xRRGGBB into an opaque colour.
-func rgb(v uint32) color.RGBA {
-	return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xff}
-}
-
 // opaque converts a token colour; the tokens' TV and state colours are opaque.
 func opaque(c color.NRGBA) color.RGBA { return color.RGBA{R: c.R, G: c.G, B: c.B, A: 0xff} }
 

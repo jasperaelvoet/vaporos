@@ -425,10 +425,6 @@ func MachineCmdlineFor(connector string) string {
 		connector, connector, config.FirmwareDir())
 }
 
-// machineArgPrefixes are the kernel args MachineCmdlineFor owns; used to
-// swap them out of existing boot entries.
-var machineArgPrefixes = []string{"video=", "drm.edid_firmware=", "firmware_class.path="}
-
 func readTrim(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {

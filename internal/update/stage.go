@@ -91,12 +91,6 @@ func IsBenign(err error) bool {
 	return errors.Is(err, ErrUpToDate) || errors.Is(err, ErrAlreadyStaged)
 }
 
-// isRejection reports whether err is a manifest this machine does not take.
-func isRejection(err error) bool {
-	return errors.Is(err, ErrUpToDate) || errors.Is(err, ErrNotNewer) || errors.Is(err, ErrFailedBefore) ||
-		errors.Is(err, ErrHeld)
-}
-
 // isNotNow reports whether err refuses a stage only for the moment; it is
 // not recorded as last_error, which would outlive the reason.
 func isNotNow(err error) bool {

@@ -143,6 +143,10 @@ func NormalizeKeys(in []string) ([]string, error) {
 		if strings.ContainsAny(k, "\r\n\x00") {
 			return nil, fmt.Errorf("key %d: one key per entry, on a single line", n)
 		}
+		// x/crypto no longer parses DSA keys; keep saying why one is refused.
+		if strings.Fields(k)[0] == dsaKeyType {
+			return nil, fmt.Errorf("key %d: DSA keys are no longer accepted by sshd; use ed25519", n)
+		}
 		pub, comment, options, rest, err := ssh.ParseAuthorizedKey([]byte(k))
 		if err != nil || len(rest) != 0 {
 			return nil, fmt.Errorf("key %d is not an OpenSSH public key (it should start with ssh-ed25519, ecdsa-sha2-… or ssh-rsa)", n)
@@ -169,10 +173,10 @@ func NormalizeKeys(in []string) ([]string, error) {
 	return out, nil
 }
 
+const dsaKeyType = "ssh-dss"
+
 func acceptableKey(pub ssh.PublicKey) error {
 	switch pub.Type() {
-	case ssh.KeyAlgoDSA:
-		return fmt.Errorf("DSA keys are no longer accepted by sshd; use ed25519")
 	case ssh.KeyAlgoRSA:
 		if cp, ok := pub.(ssh.CryptoPublicKey); ok {
 			if rk, ok := cp.CryptoPublicKey().(*rsa.PublicKey); ok && rk.N.BitLen() < minRSABits {

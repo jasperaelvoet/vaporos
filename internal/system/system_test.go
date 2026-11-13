@@ -516,6 +516,9 @@ func TestNormalizeKeys(t *testing.T) {
 			t.Errorf("%s accepted", name)
 		}
 	}
+	if _, err := NormalizeKeys([]string{"ssh-dss AAAAB3NzaC1kc3MAAACBAP me@old"}); err == nil || !strings.Contains(err.Error(), "DSA keys") {
+		t.Errorf("a DSA key: %v, want the DSA message", err)
+	}
 	many := make([]string, maxSSHKeys+1)
 	for i := range many {
 		many[i] = edKey(t, "")
