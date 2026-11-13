@@ -21,7 +21,7 @@ const thermal = () => import('../ui/thermal.js');
 
 // p: GET /power (wol kept from the last full answer); at: when shutdown_in
 // and idle_seconds were true, so the countdown runs between events.
-export const P = { p: null, at: 0 };
+export const P = { p: null, at: 0, seen: 0 };
 
 const T = (iso) => Date.parse(iso || '') || 0;
 
@@ -88,9 +88,9 @@ export function render() {
 export function take(p) {
   if (!p || typeof p !== 'object') return;
   P.p = { ...(P.p || {}), ...p };
-  if (!('keep_awake_until' in p)) delete P.p.keep_awake_until;
-  if (!('web_until' in p)) delete P.p.web_until;
+  for (const k of ['keep_awake_until', 'web_until']) if (!(k in p)) delete P.p[k];
   P.at = serverNow();
+  P.seen = performance.now();
   render();
 }
 
@@ -117,10 +117,11 @@ async function start() {
   onReconnect(() => more.then((m) => m.reread()));
   await shell('power');
   (await more).start();
-  byId('pwr-retry').addEventListener('click', () => api('GET', '/power').then(take, failedLoad));
+  byId('pwr-retry').addEventListener('click', () => read().then(take, failedLoad));
   (early || read()).then(take, failedLoad);
   onStatus((snap) => {
-    if (!snap.power || !P.p) return;
+    // An old /status would undo a save.
+    if (!snap.power || !P.p || !(snap.asked > P.seen)) return;
     // The shell's copy of the adapters may be a day old; GET /power is not.
     const { wol, ...rest } = snap.power;
     take(rest);

@@ -5,7 +5,7 @@
    started by an attribute or a custom property. The pages draw their own
    signature art (Home's viewfinder, Screen's spot meter).
      ⟦cc-progress⟧ .heat-bar > .heat-bar-fill, filled to --progress (0-1)
-     ⟦cc-meter⟧    .meter > .meter-fill, filled to --v (ui/controls.js)
+     ⟦cc-meter⟧    .meter > .meter-fill, filled to --v
      ⟦cc-skeleton⟧ a cool sweep the compositor runs
      ⟦cc-tabs⟧ ⟦cc-link⟧ the tab underline and the link dot take the
                    page's temperature fast and give it back slowly

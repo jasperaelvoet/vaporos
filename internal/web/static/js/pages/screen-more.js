@@ -209,6 +209,7 @@ function liveSwitch(el, key, said) {
     try {
       await api('PUT', '/display/settings', { [key]: want });
       if (S.display) S.display[key] = want;
+      S.seen = performance.now();
       announce(`${said} ${want ? 'on' : 'off'}`);
     } catch (err) {
       el.checked = !want;
@@ -386,7 +387,7 @@ async function restart(btn) {
 // ---- wiring
 
 function loadDisplay() {
-  return api('GET', '/display').then(renderDisplay, oops);
+  return api('GET', '/display').then((d) => renderDisplay(d, 1), oops);
 }
 
 export function start() {

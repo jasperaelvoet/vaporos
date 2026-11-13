@@ -20,7 +20,7 @@ const more = import('./updates-more.js');
 
 // live: working progress; failed: a live error; checking: a stage's check;
 // asked: Check now runs; starting: Download pressed, no progress yet.
-export const S = { u: null, live: null, failed: null, checking: false, asked: false, starting: false };
+export const S = { u: null, live: null, failed: null, checking: false, asked: false, starting: false, seen: 0 };
 
 const KEYS = ['booted', 'staged', 'failed', 'available', 'checked', 'last_error', 'held'];
 const working = (p) => !!(p && UPDATE_PHASES[p.phase] && UPDATE_PHASES[p.phase].working);
@@ -175,6 +175,7 @@ export function render() {
 export function take(u) {
   if (!u || typeof u !== 'object') return;
   S.u = u;
+  S.seen = performance.now();
   if (u.busy && working(u.progress)) S.starting = false;
   if (!u.busy) S.checking = false;
   render();
@@ -230,7 +231,8 @@ async function start() {
   byId('upd-retry').addEventListener('click', () => api('GET', '/update').then(take, failed));
   (early || read()).then(take, failed);
   onStatus((snap) => {
-    if (snap.update) take({ ...snap.update });
+    // An old /status would undo what GET /update answered after a save.
+    if (snap.update && snap.asked > S.seen) take({ ...snap.update });
     // This page says itself what a restart installs; the row keeps the rest.
     const r = (snap.restart && snap.restart.reasons) || [];
     byId('restart-row').toggleAttribute('data-covered', r.length > 0 && r.every((x) => x.kind !== 'display'));

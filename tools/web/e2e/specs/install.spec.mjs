@@ -391,6 +391,10 @@ export default [
         assert.equal(d.type(), 'beforeunload');
         await d.dismiss();
         assert.equal(page.isClosed(), false);
+        // Also a round trip the page answers only once it is out of its
+        // beforeunload: a reload sent while the browser still waits for
+        // that answer joins the cancelled close and never starts.
+        assert.equal(await pane(page), 'progress');
       });
       await step('a reload in the middle of it picks the install up again', async () => {
         page.once('dialog', (d) => d.accept());

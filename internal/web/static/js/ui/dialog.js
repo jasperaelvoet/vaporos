@@ -13,13 +13,6 @@ export function confirmDialog(opts) {
   return ask(c, null);
 }
 
-// typedConfirm also needs a word typed before the action is enabled (the
-// installer's erase).
-export function typedConfirm(opts) {
-  const c = opts.id ? { ...confirmCopy(opts.id, opts.vars), ...pick(opts) } : { cancel: 'Cancel', tone: 'danger', ...opts };
-  return ask(c, opts.word || 'ERASE');
-}
-
 function pick(o) {
   const out = {};
   for (const k of ['title', 'body', 'confirm', 'tone', 'cancel']) if (o[k]) out[k] = o[k];

@@ -5,9 +5,6 @@
 import { UPDATE_PHASES, restartRowText } from './copy.js';
 import { compareVersions, duration, hostLabel, modeLabel, parseMode } from './fmt.js';
 
-// T1, shared with the TV (design/tokens.json).
-export const STATES = ['ready', 'streaming', 'updating', 'restart-needed', 'asleep', 'fault', 'installing'];
-
 export function snapshotFromStatus(st) {
   if (!st || typeof st !== 'object') return {};
   const sunshine = st.sunshine ? { ...st.sunshine, session: st.stream || null } : null;

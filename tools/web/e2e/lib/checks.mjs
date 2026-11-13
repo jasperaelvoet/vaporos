@@ -10,11 +10,16 @@ const AXE = readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 export const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
 // INIT runs in every page before its own scripts. It records CSP violations
-// and the layout-shift and LCP entries for the report. The page's CSP stays
-// enforced: nothing here bypasses it.
+// and the layout-shift and LCP entries for the report, and which dialogs
+// have closed without their close event yet (dev.mjs closed()). The page's
+// CSP stays enforced: nothing here bypasses it.
 export const INIT = `(() => {
   const w = window;
-  w.__vos = { csp: [], cls: 0, lcp: 0 };
+  w.__vos = { csp: [], cls: 0, lcp: 0, closing: new Set() };
+  new MutationObserver((recs) => {
+    for (const r of recs) if (r.target.localName === 'dialog' && r.oldValue !== null && !r.target.open) w.__vos.closing.add(r.target);
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ['open'], attributeOldValue: true });
+  addEventListener('close', (e) => w.__vos.closing.delete(e.target), true);
   document.addEventListener('securitypolicyviolation', (e) => {
     w.__vos.csp.push(e.violatedDirective + ' ' + (e.blockedURI || '') + ' ' + (e.sourceFile || '') + ':' + (e.lineNumber || 0));
   });
@@ -26,6 +31,11 @@ export const INIT = `(() => {
   } catch {}
 })();`;
 
+// How long before a navigation its aborted requests are reported: they come
+// in the same batch of browser events, so this only has to outlast a busy
+// event loop.
+const NAV_ABORT_MS = 500;
+
 // watch collects what a page logs from now on: console errors and warnings,
 // uncaught errors, failed requests and HTTP errors on its own origin, and
 // every request it makes.
@@ -36,11 +46,27 @@ export function watch(page, origin) {
   });
   page.on('pageerror', (e) => log.errors.push(e.message));
   page.on('request', (r) => log.requests.push({ at: Date.now(), method: r.method(), url: r.url() }));
+  // What the browser drops because the page went on (a reload, a link while
+  // a write or a module is still in flight) is not a failure either:
+  // playwright-core reports those from 1.65, right before the navigation
+  // of the main frame. An abort of the page's own, with no navigation
+  // behind it, still fails.
+  const dropped = [];
   page.on('requestfailed', (r) => {
     const err = r.failure()?.errorText ?? '';
+    const aborted = /ERR_ABORTED/.test(err);
     // An EventSource closed by navigation or by the page is not a failure.
-    if (r.url().includes('/api/v1/events') && /ERR_ABORTED/.test(err)) return;
-    log.failed.push(`${r.method()} ${r.url()} ${err}`);
+    if (r.url().includes('/api/v1/events') && aborted) return;
+    const line = `${r.method()} ${r.url()} ${err}`;
+    log.failed.push(line);
+    if (aborted) dropped.push({ line, at: Date.now() });
+  });
+  page.on('framenavigated', (f) => {
+    if (f !== page.mainFrame()) return;
+    for (const d of dropped.splice(0)) {
+      const i = Date.now() - d.at < NAV_ABORT_MS ? log.failed.lastIndexOf(d.line) : -1;
+      if (i >= 0) log.failed.splice(i, 1);
+    }
   });
   page.on('response', (r) => {
     if (r.url().startsWith(origin) && r.status() >= 400) log.http.push(`${r.status()} ${r.request().method()} ${r.url()}`);

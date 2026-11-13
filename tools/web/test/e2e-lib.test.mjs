@@ -1,12 +1,14 @@
 // The harness's pure parts: presets, routes, matrices, flags and the
 // browser lookup. No browser and no server here.
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { findChrome } from '../e2e/lib/browser.mjs';
+import { watch } from '../e2e/lib/checks.mjs';
 import { APP_TOPICS, flowRuns, hasAlias, KEY_PRESETS, loads, pagesFor, PRESETS, preset, presetEnv, ROUTES } from '../e2e/lib/presets.mjs';
 import { parseArgs, slug } from '../e2e/lib/run-helpers.mjs';
 
@@ -84,4 +86,23 @@ test('the browser comes from CHROME_PATH first and is never downloaded', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a request dropped by a navigation is not a failed request; an abort of the page\'s own is', async () => {
+  const page = new EventEmitter();
+  const main = {};
+  page.mainFrame = () => main;
+  const req = (method, url, errorText) => ({ method: () => method, url: () => url, failure: () => ({ errorText }) });
+  const log = watch(page, 'http://vapor.local:1');
+  // The page aborts a fetch itself, long before it navigates.
+  page.emit('requestfailed', req('GET', 'http://vapor.local:1/api/v1/power', 'net::ERR_ABORTED'));
+  await new Promise((r) => setTimeout(r, 600));
+  // A reload: the stream, a write in flight and a refused one, then the navigation.
+  page.emit('requestfailed', req('GET', 'http://vapor.local:1/api/v1/events', 'net::ERR_ABORTED'));
+  page.emit('requestfailed', req('PUT', 'http://vapor.local:1/api/v1/power', 'net::ERR_ABORTED'));
+  page.emit('requestfailed', req('GET', 'http://vapor.local:1/api/v1/status', 'net::ERR_CONNECTION_REFUSED'));
+  page.emit('framenavigated', {});
+  assert.equal(log.failed.length, 3, 'a frame that is not the main one drops nothing');
+  page.emit('framenavigated', main);
+  assert.deepEqual(log.failed, ['GET http://vapor.local:1/api/v1/power net::ERR_ABORTED', 'GET http://vapor.local:1/api/v1/status net::ERR_CONNECTION_REFUSED']);
 });

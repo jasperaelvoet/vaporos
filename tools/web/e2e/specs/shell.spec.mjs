@@ -336,9 +336,16 @@ export default [
       await page.locator('#link[data-link="live"]').waitFor();
       // The shell keeps the Wake-on-LAN adapters once VaporOS answers GET /power.
       await page.waitForFunction(() => JSON.parse(localStorage.getItem('vos-last') || '{}').wol);
+      // And has painted its heat: a painter still loading when the box goes
+      // dark fails, and the page says so in the console.
+      await page.locator('#now .heat-field[data-settled]').waitFor({ state: 'attached' });
       await step('powered off behind the page: after 10 s the page says it shows the last known state', async () => {
         await dev(server, 'down', { seconds: -1 });
-        await page.locator('#link[data-link="offline"]').waitFor({ timeout: 15000 });
+        // The page notices by itself, 2 s after its stream drops. From there
+        // the flow's clock moves it on, not the machine's: offline is 8 s on.
+        await page.locator('#link:not([data-link="live"])').waitFor();
+        await page.clock.fastForward(8000);
+        await page.locator('#link[data-link="offline"]').waitFor();
         await page.clock.fastForward(11000);
         await page.locator('#offline:not([hidden])').waitFor();
         assert.equal(await text(page, '#offline-text'), 'Showing the last known state.');
@@ -347,8 +354,9 @@ export default [
         await page.clock.fastForward(50000);
         await page.locator('#scene[open][data-state="asleep"]').waitFor();
         assert.equal(await text(page, '#scene-title'), 'Asleep');
-        // Its clock counts the outage, not how long the scene has been open.
-        assert.match(await text(page, '#scene-elapsed'), /^0?1:0\d$/);
+        // Its clock counts the outage (over a minute by now, plus however
+        // long this machine took), not how long the scene has been open.
+        assert.match(await text(page, '#scene-elapsed'), /^0?1:\d\d$/);
         await page.locator('#scene-wake:not([hidden])').waitFor();
         assert.equal(await text(page, '#scene-wake-mac'), '02:5e:a1:3c:4d:7f');
         assert.equal(await text(page, '#scene-wake-bcast'), '192.168.1.255');

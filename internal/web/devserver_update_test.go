@@ -251,7 +251,9 @@ func (f *devFake) runStage(version string, from fakeStagePoint) {
 		}
 		first := 0
 		if i == start {
-			first = (from.Percent - ph.from) * 100 / max(ph.to-ph.from, 1)
+			// Rounded up: the first percent published is never under the preset's.
+			span := max(ph.to-ph.from, 1)
+			first = ((from.Percent-ph.from)*100 + span - 1) / span
 		}
 		steps := int(ph.took / (250 * time.Millisecond))
 		for s := 0; s <= steps; s++ {

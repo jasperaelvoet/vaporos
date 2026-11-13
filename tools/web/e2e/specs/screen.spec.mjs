@@ -300,6 +300,57 @@ export default [
         await open(t);
         assert.equal(await page.isChecked('#hdr'), false);
       });
+      await step('an older /status does not undo the switch or a new resolution: one answered late, or handed over again with an event', async () => {
+        // The shell gives every page its last /status again with each event
+        // it applies; this page takes the display from it.
+        await live(page);
+        let release;
+        let got;
+        const held = new Promise((r) => { release = r; });
+        const old = new Promise((r) => { got = r; });
+        await page.route('**/api/v1/status', async (route) => {
+          try {
+            const res = await route.fetch({ url: route.request().url().replace('//vapor.local:', '//127.0.0.1:') });
+            const body = await res.text();
+            got();
+            await held;
+            await route.fulfill({ status: res.status(), headers: res.headers(), body });
+          } catch {
+            // the page went on while this answer was in flight
+          }
+        });
+        // A /status asked before the save, answered after it.
+        await dev(t.server, 'event', { topic: 'sunshine.state', data: {} });
+        await old;
+        const stays = async () => {
+          await page.waitForTimeout(300);
+          assert.equal(await page.isChecked('#hdr'), true);
+          assert.equal(await page.locator('#added .scr-extra', { hasText: '2560 × 1080 · 144 Hz' }).count(), 1);
+        };
+        const body = write(page, 'PUT', '/display/settings');
+        const put = armed(page.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/api/v1/display/settings'));
+        await press(page, '#hdr');
+        assert.deepEqual(await body, { hdr: true });
+        await put;
+        await page.click('#add-mode');
+        await page.locator('#add-sheet[open]').waitFor();
+        await page.fill('#add-w', '2560');
+        await page.fill('#add-h', '1080');
+        await page.fill('#add-hz', '144');
+        await page.click('#add-submit');
+        await page.locator('#added .scr-extra', { hasText: '2560 × 1080 · 144 Hz' }).waitFor();
+        const late = armed(page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/status'));
+        release();
+        await late;
+        await stays();
+        await dev(t.server, 'event', { topic: 'pairing.state', data: { pairings: [] } });
+        await stays();
+        await page.unroute('**/api/v1/status');
+        const off = armed(page.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/api/v1/display/settings'));
+        await press(page, '#hdr');
+        await off;
+        assert.equal(await page.isChecked('#hdr'), false);
+      });
       await step('a failed save flips it back and says why', async () => {
         await page.route('**/api/v1/display/settings', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"saving config: disk full"}' }));
         await page.click('#hdr');

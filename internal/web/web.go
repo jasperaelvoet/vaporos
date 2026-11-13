@@ -135,8 +135,7 @@ var nextSet = uiSet{
 
 // nextPages is every route of the four-tab UI, in order: Home is 0, the
 // tabs 1-3 and the System sub-pages 4-10, so moving to a lower number is
-// going back (head.js). Wave agents fill the pages; this list is the one
-// place routes are added (spec-cc-screens §1.1).
+// going back (head.js). This list is the one place routes are added.
 var nextPages = []page{
 	{Name: "home", Path: "/", Title: "Home", Script: "home", Icon: "vapor", Nav: true, HideHead: true, Styles: []string{"home"}},
 	{Name: "devices", Path: "/devices", Title: "Devices", Script: "devices", Icon: "devices", Nav: true, Styles: []string{"devices"},

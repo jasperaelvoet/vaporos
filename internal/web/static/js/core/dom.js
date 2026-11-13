@@ -78,5 +78,3 @@ export function icon(name) {
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-export const nextFrame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));

@@ -8,7 +8,6 @@
 @layer components {
   /* ------------------------------------------------------------ basics */
   .sprite { display: none; }
-  .defs { position: absolute; width: 0; height: 0; overflow: hidden; }
   .icon {
     width: 1.25rem; height: 1.25rem; flex: none;
     fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
@@ -25,11 +24,6 @@
   .skip:focus { top: calc(0.75rem + env(safe-area-inset-top)); }
   .noscript { padding: 1.5rem; text-align: center; color: var(--color-ink-2); }
   .copy-scratch { position: fixed; top: 0; left: -9999px; opacity: 0; }
-
-  /* the three cuts: width is temperature */
-  .cut-cold { font-family: var(--font-display); font-stretch: var(--cut-cold-w); font-weight: var(--cut-cold-g); }
-  .cut-warm { font-family: var(--font-display); font-stretch: var(--cut-warm-w); font-weight: var(--cut-warm-g); }
-  .cut-hot { font-family: var(--font-display); font-stretch: var(--cut-hot-w); font-weight: var(--cut-hot-g); }
 
   /* ----------------------------------------------------------- buttons */
   .btn {
@@ -491,10 +485,8 @@
     border: solid var(--color-ink-3); border-width: 1.5px 1.5px 0 0; rotate: 45deg;
   }
   .row-link:hover { background: var(--color-surface-2); }
-  .rack-signout { justify-items: start; }
 
   /* ------------------------------------------- regions and skeletons */
-  .stub { display: grid; gap: 0.75rem; }
   .skel-card { display: grid; gap: 0.625rem; padding: 1.125rem 1rem; border-radius: var(--radius-2xl); background: var(--color-surface); }
   /* ⟦cc-skeleton⟧ REDLINE: a cool ramp drifting across */
   .skel {

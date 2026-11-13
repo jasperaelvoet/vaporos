@@ -1279,11 +1279,9 @@ func TestLinksHonourBase(t *testing.T) {
 	}
 }
 
-// libraryModules are shell modules no page imports yet: the kit the tab
-// pages build with. Remove a name once a page uses it (the test says so).
-var libraryModules = map[string]string{
-	"js/ui/controls.js": "switches, meters and steppers: C3, C4a, C4b",
-}
+// libraryModules are shell modules no page imports; none is left, and a
+// module nothing reaches is an error.
+var libraryModules = map[string]string{}
 
 var (
 	jsRefStrict   = regexp.MustCompile(`\b(?:byId|setText|showError|cloneTpl|getElementById)\(\s*'([^']+)'|\$\$?\(\s*'#([\w-]+)'`)

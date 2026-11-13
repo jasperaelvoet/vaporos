@@ -258,5 +258,3 @@ export function updatePairings(list) {
 function raise() {
   if (noticeOn) notify(pairPrompt(waiting), { kind: 'info', id: 'pair', sticky: true, action: { label: 'Enter PIN', onClick: () => openPinpad() } });
 }
-
-export const pairingsWaiting = () => waiting;

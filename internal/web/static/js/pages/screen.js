@@ -22,7 +22,8 @@ export let early = signedInBefore() ? reads() : null;
 const more = import('./screen-more.js');
 const thermal = () => import('../ui/thermal.js');
 
-export const S = { display: null, sunshine: null, sunshineErr: null, settings: null };
+// seen: when this page last wrote or read the display itself.
+export const S = { display: null, sunshine: null, sunshineErr: null, settings: null, seen: 0 };
 
 export function settle(el) {
   el.removeAttribute('aria-busy');
@@ -125,8 +126,10 @@ function renderPorts(d) {
 export const views = [renderPorts];
 let shown = '';
 
-export function renderDisplay(d) {
+// mine: GET /display answered this page, not the shell's /status.
+export function renderDisplay(d, mine) {
   if (!d) return;
+  if (mine) S.seen = performance.now();
   S.display = d;
   renderNow(d);
   const sig = JSON.stringify(d);
@@ -139,7 +142,7 @@ async function start() {
   await shell('screen');
   early = early || reads();
   (await more).start();
-  byId('now-retry').addEventListener('click', () => api('GET', '/display').then(renderDisplay, displayFailed));
+  byId('now-retry').addEventListener('click', () => api('GET', '/display').then((d) => renderDisplay(d, 1), displayFailed));
   // The shell's GET /status is in flight: share it to learn if it fails.
   api('GET', '/status', undefined, { share: true }).then(
     (st) => st.display || S.display || displayFailed(new Error('')),
@@ -148,7 +151,8 @@ async function start() {
   onStatus((snap) => {
     const gpu = snap.system && snap.system.gpu;
     if (gpu && gpu.name) setText('now-gpu', gpu.supported === false ? `${gpu.name} (not supported)` : gpu.name);
-    if (snap.display) renderDisplay(snap.display);
+    // An old /status would undo a save.
+    if (snap.display && snap.asked > S.seen) renderDisplay(snap.display);
     else if (S.display) renderNow(S.display);
   });
 }

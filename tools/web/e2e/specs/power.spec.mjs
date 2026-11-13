@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 
-import { dev, write } from '../lib/dev.mjs';
+import { armed, dev, write } from '../lib/dev.mjs';
 
 const PATH = '/system/power';
 const text = async (page, sel) => (await page.textContent(sel))?.trim() ?? '';
@@ -60,6 +60,9 @@ export default [
         const old = (p) => ({ ...p, busy: p.busy && { reason: p.busy.reason }, web_until: undefined });
         await patch(page, '/power', old);
         await patch(page, '/status', (st) => ({ ...st, power: st.power && old(st.power) }));
+        // Nor does that vosd's power.idle have it. The stream replays the
+        // last one to the reloaded page, before or after GET /power answers.
+        await dev(t.server, 'event', { topic: 'power.idle', data: { idle_seconds: 0, shutdown_in: null, busy: { reason: 'web UI in use' } } });
         await page.reload();
         await t.ready();
         await title(page, 'Powers off after 15 minutes idle');
@@ -157,6 +160,44 @@ export default [
         await t.ready();
         await until(page, () => document.querySelector('#pwr-after .pwr-radio[value="custom"]').checked);
         assert.equal(await page.inputValue('#pwr-minutes'), '1');
+      });
+      await step('an older /status does not undo a save: one answered late, or handed over again with an event', async () => {
+        // The shell gives every page its last /status again with each event
+        // it applies. vosd's first pairing.state (the dev server's: 1 s after
+        // it starts) used to land in the step above and switch it back on.
+        let release;
+        const held = new Promise((r) => { release = r; });
+        await page.route('**/api/v1/status', async (route) => {
+          try {
+            const res = await route.fetch({ url: route.request().url().replace('//vapor.local:', '//127.0.0.1:') });
+            const body = await res.text();
+            await held;
+            await route.fulfill({ status: res.status(), headers: res.headers(), body });
+          } catch {
+            // the page went on while this answer was in flight
+          }
+        });
+        await page.reload();
+        await t.ready();
+        const off = async () => {
+          await page.waitForTimeout(300);
+          assert.equal(await page.isChecked('#pwr-auto'), false);
+          assert.equal(await page.$eval('#pwr-after', (el) => el.disabled), true);
+          assert.equal(await text(page, '#pwr-title'), 'Always on');
+        };
+        const body = write(page, 'PUT', '/power');
+        await press(page, '#pwr-auto');
+        assert.deepEqual(await body, { idle_shutdown: false });
+        await notice(page, 'Saved. VaporOS stays on.');
+        const late = armed(page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/status'));
+        release();
+        await late;
+        await off();
+        await dev(t.server, 'event', { topic: 'pairing.state', data: { pairings: [] } });
+        await off();
+        await page.unroute('**/api/v1/status');
+        await press(page, '#pwr-auto');
+        await notice(page, 'Saved. VaporOS powers off after 1 idle minutes.');
       });
     },
   },

@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 
-import { closed, dev, write } from '../lib/dev.mjs';
+import { armed, closed, dev, write } from '../lib/dev.mjs';
 
 const PATH = '/system/updates';
 // A restart takes the box down: /ping and the stream fail until it is back.
@@ -109,7 +109,9 @@ export default [
     async run(t) {
       const { page, step } = t;
       await step('a reload mid-stage shows it working, from GET busy and progress (B1)', async () => {
-        await open(t);
+        // The fake's download runs on the clock: it starts again here, not
+        // when the server came up.
+        await open(t, 'update-staging');
         assert.equal(await text(page, '#upd-title'), 'Installing version 20260929.143000');
         assert.equal(await page.getAttribute('#upd-status', 'data-state'), 'updating');
         assert.equal(await page.isVisible('#upd-progress'), true);
@@ -321,6 +323,49 @@ export default [
         await t.ready();
         await until(page, () => !document.getElementById('upd-auto').disabled);
         assert.equal(await page.isChecked('#upd-auto'), false);
+      });
+      await step('an older /status does not undo the switch: one answered late, or handed over again with an event', async () => {
+        // The shell gives every page its last /status again with each event
+        // it applies; its update part has the settings too.
+        let release;
+        let got;
+        const held = new Promise((r) => { release = r; });
+        const old = new Promise((r) => { got = r; });
+        await page.route('**/api/v1/status', async (route) => {
+          try {
+            const res = await route.fetch({ url: route.request().url().replace('//vapor.local:', '//127.0.0.1:') });
+            const body = await res.text();
+            got();
+            await held;
+            await route.fulfill({ status: res.status(), headers: res.headers(), body });
+          } catch {
+            // the page went on while this answer was in flight
+          }
+        });
+        await page.reload();
+        await t.ready();
+        await until(page, () => !document.getElementById('upd-auto').disabled);
+        await old;
+        const on = async () => {
+          await page.waitForTimeout(300);
+          assert.equal(await page.isChecked('#upd-auto'), true);
+        };
+        const body = write(page, 'PUT', '/update/settings');
+        const read = armed(page.waitForResponse((r) => r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/v1/update'));
+        await press(page, '#upd-auto');
+        assert.deepEqual(await body, { auto: 'stage' });
+        await read;
+        const late = armed(page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/status'));
+        release();
+        await late;
+        await on();
+        await dev(t.server, 'event', { topic: 'pairing.state', data: { pairings: [] } });
+        await on();
+        await page.unroute('**/api/v1/status');
+        const off = write(page, 'PUT', '/update/settings');
+        await press(page, '#upd-auto');
+        assert.deepEqual(await off, { auto: 'off' });
+        await until(page, () => document.getElementById('upd-auto').getAttribute('aria-disabled') !== 'true');
       });
       await step('a refused change flips back and says why', async () => {
         await page.route('**/api/v1/update/settings', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"config: disk full"}' }));

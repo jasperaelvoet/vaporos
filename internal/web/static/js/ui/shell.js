@@ -8,7 +8,7 @@ import { announce } from '../core/announce.js';
 import { boot } from '../core/boot.js';
 import { byId, optionalById, part } from '../core/dom.js';
 import { link, on, onLink, onReconnect, onVisible } from '../core/live.js';
-import { getJSON, loadSnapshot, saveSnapshot } from '../core/store.js';
+import { loadSnapshot, saveSnapshot } from '../core/store.js';
 
 const LINK = {
   live: ['Live', 'Live updates on'],
@@ -55,10 +55,13 @@ export const notify = (text, opts) => notices().then((m) => m.notify(text, opts)
 export async function shell(page, { pairNotice = !['home', 'devices'].includes(page) } = {}) {
   options = { pairNotice };
   byId('signout').addEventListener('click', signOut);
-  byId('link').addEventListener('click', (e) => notices().then((m) => m.openRecent(e.currentTarget)));
+  const recent = (e) => {
+    const from = e.currentTarget;
+    notices().then((m) => m.openRecent(from));
+  };
+  byId('link').addEventListener('click', recent);
   byId('offline-wake').addEventListener('click', () => scene().then((m) => m.asleep()));
-  byId('notices-more').addEventListener('click', (e) => notices().then((m) => m.openRecent(e.currentTarget)));
-  if (getJSON('session', 'vos-flash')) notices().then((m) => m.showFlash());
+  byId('notices-more').addEventListener('click', recent);
   onLink(renderLink);
   listen();
   const me = await boot(page);
@@ -83,9 +86,10 @@ export async function signOut() {
 
 export async function refresh(passive = true) {
   try {
+    const asked = performance.now();
     const st = await api('GET', '/status', undefined, { share: !passive, passive });
     saveSnapshot({ status: st });
-    apply({ ...st, live: {} });
+    apply({ ...st, live: {}, asked });
   } catch {
     /* the pages say what failed; the shell keeps what it had */
   }

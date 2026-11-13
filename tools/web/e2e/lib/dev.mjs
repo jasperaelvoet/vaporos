@@ -12,8 +12,15 @@ export async function dev(server, path, body) {
 }
 
 // closed waits until a <dialog> is closed (a closed one is never visible,
-// so a locator cannot wait for it).
-export const closed = (page, id, timeout = 5000) => page.waitForFunction((i) => !document.getElementById(i).open, id, { timeout });
+// so a locator cannot wait for it) and the page has had its close event.
+// That event comes a task after the dialog closes, and the page answers the
+// question and gives focus back to the invoker in it: a flow that went on
+// before it had its next focus or key taken by the dialog that just closed.
+export const closed = (page, id, timeout = 5000) =>
+  page.waitForFunction((i) => {
+    const d = document.getElementById(i);
+    return !d.open && !window.__vos?.closing.has(d);
+  }, id, { timeout });
 
 // armed returns a waiter a flow sets up before the action it waits for. If
 // the action throws first, the flow fails there, and the waiter's later

@@ -119,9 +119,10 @@ export function start() {
   byId('upd-reboot').addEventListener('click', () => power('reboot'));
 
   byId('upd-back').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
     const v = S.u && S.u.other_slot && S.u.other_slot.version;
     if (!v || !(await ask({ id: 'rollback', vars: { v } }))) return;
-    const ok = await busy(e.currentTarget, () => api('POST', '/update/rollback', {}), (err) => fail(err, { v }));
+    const ok = await busy(btn, () => api('POST', '/update/rollback', {}), (err) => fail(err, { v }));
     if (ok === undefined) {
       refresh(0);
       return;

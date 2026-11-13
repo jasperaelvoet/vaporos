@@ -270,9 +270,11 @@ export default [
     ui: ['next'],
     preset: 'update-staging',
     async run({ page, url, ready, server, step }) {
+      // The fake's download runs on the clock and is done 12 s after the
+      // preset starts: start it again here, not when the server came up.
+      await dev(server, 'preset', { name: 'update-staging' });
       await page.goto(url('/'));
       await ready();
-      await live(page);
       await step('a download in progress heats the hero to Updating, with the bar', async () => {
         await hero(page, 'updating');
         assert.equal(await text(page, '#hero-title'), 'Updating to 20260929.143000');
@@ -284,6 +286,7 @@ export default [
         assert.equal(await page.getAttribute('#hero-actions a', 'href'), '/system/updates');
       });
       await step('live ticks move the bar, and nothing is announced', async () => {
+        await live(page);
         const from = Number(await page.getAttribute('#hero-bar', 'aria-valuenow'));
         await page.waitForFunction((n) => Number(document.getElementById('hero-bar').getAttribute('aria-valuenow')) > n, from, { timeout: 20000 });
         assert.equal(await text(page, '#hero-title'), 'Updating to 20260929.143000');

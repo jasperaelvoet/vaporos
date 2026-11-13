@@ -6,13 +6,12 @@
 
 import { announce } from '../core/announce.js';
 import { byId, cloneTpl, part } from '../core/dom.js';
-import { getJSON, remove, setJSON } from '../core/store.js';
+import { getJSON, setJSON } from '../core/store.js';
 import { url } from '../core/api.js';
 
 const LIFE = { ok: 4000, info: 4000, warn: 8000 };
 const MAX = 3;
 const RECENT = 'vos-recent';
-const FLASH = 'vos-flash';
 const shown = new Map(); // id → {el, timer}
 let seq = 0;
 
@@ -95,20 +94,6 @@ function keep(item) {
   const list = getJSON('session', RECENT, []);
   list.unshift({ ...item, at: new Date().toISOString() });
   setJSON('session', RECENT, list.slice(0, 20));
-}
-
-// flash keeps a notice for the next page this tab shows (after a
-// navigation or reload).
-export function flash(text, kind = 'ok') {
-  setJSON('session', FLASH, { text, kind });
-}
-
-// showFlash shows the notice the previous page left for this one.
-export function showFlash() {
-  const f = getJSON('session', FLASH);
-  if (!f) return;
-  remove('session', FLASH);
-  notify(f.text, { kind: f.kind });
 }
 
 // openRecent lists this tab's last notices in the Recent sheet.
