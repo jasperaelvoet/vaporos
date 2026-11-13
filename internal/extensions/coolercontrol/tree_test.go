@@ -36,18 +36,23 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 	}
 }
 
-// upstreamUnit is coolercontrold.service as the package ships it.
+// upstreamUnit is coolercontrold.service as the package ships it (5.1.1).
 const upstreamUnit = `[Unit]
 Description=CoolerControl Daemon
-After=network.target
+After=network.target lm-sensors.service lm_sensors.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=notify
+Environment="CC_LOG=INFO"
 ExecStart=/usr/bin/coolercontrold
 Restart=always
 RestartSec=1
 TimeoutStopSec=10
+# Covers startup_delay (up to 120s) and device detection, which run before READY.
 TimeoutStartSec=300
+# The daemon pings once per main-loop tick, so a wedged loop is restarted.
 WatchdogSec=30
 
 [Install]
@@ -168,8 +173,9 @@ func TestDropInMatches(t *testing.T) {
 	if up := upstream(&extensions.Ext{ID: id}); up != d.Network.Ports[0].Upstream {
 		t.Errorf("the status check's own upstream %s, the descriptor's %s", up, d.Network.Ports[0].Upstream)
 	}
-	// coolercontrold's gRPC server takes CC_PORT+1 on the same addresses:
-	// on 11987 it took vosd's web UI port.
+	// coolercontrold 5.0's gRPC server took CC_PORT+1 on the same addresses:
+	// on 11987 it took vosd's web UI port. 5.1 has no second port; the margin
+	// stays.
 	port, err := strconv.Atoi(env["CC_PORT"])
 	must(t, err)
 	declared := []int{11987, d.Web.Port}

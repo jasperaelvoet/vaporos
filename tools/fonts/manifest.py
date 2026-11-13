@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "design" / "fonts" / "fonts.json"
 FALLBACK_CSS = "internal/web/styles/fonts-fallback.css"
 SOURCES_MD = "design/fonts/SOURCES.md"
-PINS = {"fontTools": "4.66.0", "brotli": "1.2.0"}
+PINS = {"fontTools": "4.68.0", "brotli": "1.2.1"}
 
 # The generated output directories. A file there that fonts.json does not
 # produce is stale: the build removes it and --check reports it.

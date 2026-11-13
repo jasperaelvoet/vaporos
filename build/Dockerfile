@@ -18,13 +18,14 @@ ARG VOS_WEEK=
 # this container's /etc/pacman.d and installs them with this container's
 # pacman, so set it up the way CachyOS's own cachyos-repo.sh does: trust the
 # signing key, then install the keyring, the mirrorlists and CachyOS's pacman.
-# The tools below stay stock Arch.
+# The tools below stay stock Arch. -Syu, not -Sy: CachyOS's pacman is built
+# against today's libraries (OpenSSL 4), and archlinux:base can be older.
 RUN pacman-key --init \
     && pacman-key --recv-keys F3B607488DB35A47 --keyserver hkps://keyserver.ubuntu.com \
     && pacman-key --lsign-key F3B607488DB35A47 \
     && printf '[cachyos]\nServer = https://mirror.cachyos.org/repo/$arch/$repo\n' >/tmp/cachyos.conf \
     && cat /etc/pacman.conf /tmp/cachyos.conf >/tmp/pacman.conf \
-    && pacman -Sy --noconfirm --config /tmp/pacman.conf \
+    && pacman -Syu --noconfirm --config /tmp/pacman.conf \
         cachyos-keyring cachyos-mirrorlist cachyos-v3-mirrorlist \
         cachyos-v4-mirrorlist cachyos/pacman \
     && rm /tmp/cachyos.conf /tmp/pacman.conf

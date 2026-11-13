@@ -611,7 +611,7 @@ check_extensions() {
 
 # CoolerControl (docs/CONTRACTS.md "Extensions", CoolerControl), once added
 # and booted: its daemon runs with VaporOS's start limit and listens on
-# loopback only (11985, and its gRPC server on 11986), where only root
+# loopback only (11985, and nothing on 5.0's gRPC port 11986), where only root
 # reaches its own port, vosd's page on :11987 asks for a sign-in (and,
 # with the password, passes a signed-in request through), the firewall
 # lets 11987 in from the LAN sets only, config.toml has what prepare
@@ -639,8 +639,8 @@ check_coolercontrol() {
         bad cc-start-limit "StartLimitIntervalUSec and StartLimitBurst are '$line', expected '30min 5' (is the drop-in loaded?)"
     fi
 
-    # 11985 (HTTP) and 11986 (gRPC, CC_PORT+1) listen on 127.0.0.1 and ::1
-    # only; /proc/net shows ports in hex.
+    # 11985 (HTTP, and gRPC since 5.1) listens on 127.0.0.1 and ::1 only, and
+    # so would 5.0's gRPC port 11986; /proc/net shows ports in hex.
     for port in 11985 11986; do
         printf -v hex ':%04X' "$port"
         line=$(awk -v p="$hex" '$4 == "0A" && substr($2, length($2) - 4) == p &&
@@ -649,7 +649,7 @@ check_coolercontrol() {
         if [[ -n $line ]]; then
             bad cc-loopback "coolercontrold listens on $port beyond loopback: $line"
         elif [[ $state == active ]]; then
-            ok cc-loopback "$port listens on loopback only"
+            ok cc-loopback "$port is not open beyond loopback"
         fi
     done
     # With CC_PORT=11986, gRPC took 127.0.0.1:11987 and vosd never served
@@ -674,7 +674,7 @@ check_coolercontrol() {
     fi
 
     # Only root (vosd) connects to the daemon's own port; vapor's connection
-    # is reset, whether the daemon runs or not. The read-only gRPC port has
+    # is reset, whether the daemon runs or not. 5.0's gRPC port had
     # no such rule (see CONTRACTS).
     rules=$(nft list chain inet vos upstream 2>/dev/null | grep 'dport 11985')
     if [[ $rules == *skuid* && $rules == *reject* ]]; then

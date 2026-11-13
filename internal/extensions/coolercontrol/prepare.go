@@ -27,8 +27,8 @@ const daemonPackage = "coolercontrold"
 const backupWait = 2 * time.Minute
 
 // daemonPort is coolercontrold's own HTTP port on loopback: the drop-in's
-// CC_PORT and the descriptor's proxied upstream. Its gRPC server takes the
-// next port, so this is never 11986 (gRPC would then take vosd's 11987).
+// CC_PORT and the descriptor's proxied upstream. coolercontrold 5.0's gRPC
+// server took the next port, so this is never 11986 (that was vosd's 11987).
 const daemonPort = "11985"
 
 // The settings vosd's proxy depends on, written at every start: it is the

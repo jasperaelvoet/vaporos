@@ -17,7 +17,7 @@ python3 tools/fonts/fonts.py --check   # rebuild in memory and compare; writes n
 ```
 
 The first run makes `tools/fonts/.venv` with the hash-pinned `requirements.txt`
-(fontTools 4.66.0, brotli 1.2.0). Nothing here runs in the OS build.
+(fontTools 4.68.0, brotli 1.2.1). Nothing here runs in the OS build.
 
 ## Originals
 
