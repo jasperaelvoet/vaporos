@@ -14,7 +14,7 @@
 #         builder and is never in git.
 #
 # Environment passed on to build/build.sh: VERSION COMPRESS REFRESH VOS_DEBUG
-# CHANNEL GIT VOS_ALLOW_STUB. DOCKER_PLATFORM=linux/amd64 is for Macs.
+# CHANNEL GIT. DOCKER_PLATFORM=linux/amd64 is for Macs.
 #
 # The caches (/work, the pacman package cache) are the Docker volumes vos-work
 # and vos-pkgcache. Two builds at once would trample them, so a build waits
@@ -24,7 +24,7 @@ set -euo pipefail
 (( $# == 3 )) || { echo "usage: $0 SRC OUT KEYS" >&2; exit 2; }
 src=$1 out=$2 keys=$3
 export VERSION COMPRESS REFRESH CHANNEL GIT
-export VOS_DEBUG=${VOS_DEBUG:-1} VOS_ALLOW_STUB=${VOS_ALLOW_STUB:-0}
+export VOS_DEBUG=${VOS_DEBUG:-1}
 
 platform=()
 [[ -z ${DOCKER_PLATFORM:-} ]] || platform=(--platform "$DOCKER_PLATFORM")
@@ -71,12 +71,8 @@ if [[ $VOS_DEBUG == 1 ]] &&
     echo "==> Creating the builder's dev signing key"
     if ! msg=$(docker run --rm "${platform[@]}" -v "$src:/src:ro" -v "$keys:/keys" \
                    vos-builder /src/.build/vos keygen --out /keys/dev 2>&1); then
-        if [[ $VOS_ALLOW_STUB == 1 && $msg == *"not implemented"* ]]; then
-            echo "warning: vos keygen is not implemented yet (VOS_ALLOW_STUB=1); the build is unsigned" >&2
-        else
-            echo "error: vos keygen failed: $msg" >&2
-            exit 1
-        fi
+        echo "error: vos keygen failed: $msg" >&2
+        exit 1
     fi
 fi
 
@@ -86,5 +82,5 @@ exec docker run --rm --privileged "${platform[@]}" \
     -v "$keys:/keys:ro" \
     -v vos-pkgcache:/var/cache/pacman/pkg \
     -v vos-work:/work \
-    -e VERSION -e COMPRESS -e REFRESH -e VOS_DEBUG -e CHANNEL -e GIT -e VOS_ALLOW_STUB \
+    -e VERSION -e COMPRESS -e REFRESH -e VOS_DEBUG -e CHANNEL -e GIT \
     vos-builder /src/build/build.sh

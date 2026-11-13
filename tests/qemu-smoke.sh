@@ -183,12 +183,6 @@ wait_serial_since() {
     die "timed out after $(($3 * SCALE))s waiting for /$regex/"
 }
 
-# vos health reports each installed boot's verdict on the serial console
-# (docs/CONTRACTS.md, "Serial lines"). The test holds the image to it as soon
-# as the contract lists that line.
-HEALTH_LINE=0
-grep -q 'VOS-HEALTH result=' "$here/../docs/CONTRACTS.md" 2>/dev/null && HEALTH_LINE=1
-
 # Save the display to screens/NAME.png (best effort).
 screendump() {
     local ppm=$WORK/screens/$1.ppm
@@ -319,7 +313,7 @@ QEMU_PID=""
 #    check. The installer's entry is not boot-counted, so on this boot a
 #    failing check does not reboot: vos health only reports it, and the
 #    first update would then fail every counted boot and fall back. The
-#    report is the VOS-HEALTH serial line, once the contract has it.
+#    report is the VOS-HEALTH serial line (docs/CONTRACTS.md, "Serial lines").
 boot_off=$(wc -c <"$LOG" 2>/dev/null || echo 0)
 start_vm disk
 v=$(wait_serial 'VOS-READY mode=os version=(\S+)' 600)
@@ -334,18 +328,11 @@ c=$(http GET /auth/me -b "$WORK/cookies")
 [[ $c == 200 && $(json authenticated) == true ]] || die "GET /auth/me after login -> $c $(cat "$WORK/body")"
 log "logged in with the password set during the install"
 
-if ((HEALTH_LINE)); then
-    log "waiting for the boot's health check (VOS-HEALTH)"
-    h=$(wait_serial_since "$boot_off" 'VOS-HEALTH result=[a-z]+.*' 240)
-    [[ $h =~ ^VOS-HEALTH\ result=ok($|\ ) ]] || die "vos health on the installed system did not pass: $h"
-    log "health check: ok"
-    alive || die "the installed system rebooted on its own after its health check"
-else
-    # Until then, only what a counted boot would show: a crash or reboot.
-    log "watching the installed system for $((45 * SCALE))s (docs/CONTRACTS.md has no VOS-HEALTH line yet)"
-    sleep $((45 * SCALE))
-    alive || die "the installed system rebooted on its own: its health check probably failed"
-fi
+log "waiting for the boot's health check (VOS-HEALTH)"
+h=$(wait_serial_since "$boot_off" 'VOS-HEALTH result=[a-z]+.*' 240)
+[[ $h =~ ^VOS-HEALTH\ result=ok($|\ ) ]] || die "vos health on the installed system did not pass: $h"
+log "health check: ok"
+alive || die "the installed system rebooted on its own after its health check"
 expect_ping os
 screendump 3-os-idle
 

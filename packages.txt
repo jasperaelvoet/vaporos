@@ -7,9 +7,10 @@
 # question with the first candidate. Virtual dependencies (vulkan-driver,
 # lib32-vulkan-driver, ttf-font, jack, ...) are therefore named explicitly.
 #
-# Not here on purpose: Wine and Proton (Steam downloads Proton itself; baking
-# it in would put the ISO over GitHub's 2 GiB asset limit), cachyos-gaming-meta,
-# man pages and shell completion (nobody reads them on an appliance).
+# Not here on purpose: Wine and Proton (Proton is the core extension in
+# extensions/proton, its own image and never on the ISO, which must stay under
+# GitHub's 2 GiB asset limit), cachyos-gaming-meta, man pages and shell
+# completion (nobody reads them on an appliance).
 
 # ---- The system
 base

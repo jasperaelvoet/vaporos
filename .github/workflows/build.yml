@@ -614,14 +614,6 @@ jobs:
           name: iso
           path: out
 
-      # The extension images, next to the ISO's manifest, for the extension
-      # tests: the ISO never carries them, so the guest fetches them from the
-      # runner, as an installed machine fetches them from its update source.
-      - uses: actions/download-artifact@v8
-        with:
-          name: ext
-          path: out
-
       # GitHub's Linux runners expose /dev/kvm, but only to root until a udev
       # rule opens it up.
       - name: Enable KVM

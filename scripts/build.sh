@@ -15,8 +15,6 @@
 #   VOS_DEBUG=0 ./scripts/build.sh      release image: no serial console, zstd,
 #                                       unsigned, fails over the ISO size limit
 #   COMPRESS=zstd,level=15 ./scripts/build.sh   any mkfs.erofs -z value
-#   VOS_ALLOW_STUB=1 ./scripts/build.sh tolerate vos subcommands that are
-#                                       still stubs ("not implemented")
 #   BUILDER=local ./scripts/build.sh    use this machine's Docker (needs x86-64-v3)
 #   ./scripts/build.sh clean            empty the builder's caches
 #
@@ -59,7 +57,7 @@ fi
 export VERSION=${VERSION:-$(date -u +%Y%m%d.%H%M%S)}
 export VOS_DEBUG=${VOS_DEBUG:-1}
 export CHANNEL=${CHANNEL:-dev}
-export COMPRESS=${COMPRESS:-} REFRESH=${REFRESH:-} VOS_ALLOW_STUB=${VOS_ALLOW_STUB:-0}
+export COMPRESS=${COMPRESS:-} REFRESH=${REFRESH:-}
 commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 short=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
@@ -145,7 +143,7 @@ rsync -rlpt --delete --exclude .DS_Store packages.txt build rootfs extensions ke
     "$PVE_USER@$PVE_HOST:$BUILD_DIR/src/"
 
 env_args=
-for var in VERSION COMPRESS REFRESH VOS_DEBUG CHANNEL GIT VOS_ALLOW_STUB; do
+for var in VERSION COMPRESS REFRESH VOS_DEBUG CHANNEL GIT; do
     env_args+=" $var=$(printf %q "${!var}")"
 done
 pve "pct exec $BUILDER_ID -- env$env_args bash /vos/src/build/run.sh /vos/src /vos/out /vos/keys"

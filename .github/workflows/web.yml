@@ -8,10 +8,6 @@
 #         unit tests
 #   e2e   the headless smoke matrix against the dev server; informational,
 #         not a required check
-#
-# Before the switch to the new UI, cc may be red between a commit that
-# changes classes or tokens and the one that regenerates static/app.css
-# (M-2); it must be green after that one.
 name: web
 
 on:

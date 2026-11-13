@@ -27,8 +27,6 @@
 #                    zstd,level=9 for release builds)
 #   EROFS_PCLUSTER   physical cluster size for zstd/lzma (default: 262144)
 #   REFRESH=1        re-pacstrap even though packages.txt and pacman.conf are unchanged
-#   VOS_ALLOW_STUB=1 tolerate `vos edid generate` and `vos sign` reporting
-#                    "not implemented" (while those Go subcommands are stubs)
 #
 # The release signing key never comes near this script. It runs package
 # scriptlets, pacman hooks, mkinitcpio hooks and locale-gen as root in a
@@ -71,7 +69,6 @@ STAGE=$WORK/stage
 
 VOS_DEBUG=${VOS_DEBUG:-0}
 VOS_PHASE=${VOS_PHASE:-all}
-VOS_ALLOW_STUB=${VOS_ALLOW_STUB:-0}
 CHANNEL=${CHANNEL:-dev}
 GIT=${GIT:-unknown}
 REFRESH=${REFRESH:-0}
@@ -138,17 +135,6 @@ vos_version=$("$VOS" version 2>&1) || die "$VOS does not run here: $vos_version"
 
 mode=release; [[ $VOS_DEBUG == 1 ]] && mode=debug
 step "VaporOS $VERSION ($mode, channel $CHANNEL, git ${GIT:0:12}, $COMPRESS)"
-
-# A Go subcommand that is still a stub fails with "not implemented". With
-# VOS_ALLOW_STUB=1 that one failure is a warning; anything else is an error.
-# Usage: stub_ok WHAT OUTPUT
-stub_ok() {
-    if [[ $VOS_ALLOW_STUB == 1 && $2 == *"not implemented"* ]]; then
-        warn "$1 is not implemented yet (VOS_ALLOW_STUB=1): $2"
-        return 0
-    fi
-    return 1
-}
 
 # The mkfs.erofs flags, besides -z, for compressor COMPRESS, one per line.
 # zstd and lzma need large physical clusters to compress well (the default
@@ -258,10 +244,7 @@ ln -sfn /usr/bin/vos "$ROOT/usr/lib/systemd/system-generators/vos-generator"
 # to add learned modes later
 edid=$ROOT/usr/lib/firmware/edid/vaporos.bin
 mkdir -p "${edid%/*}"
-if ! msg=$("$VOS" edid generate --out "$edid" 2>&1); then
-    stub_ok "vos edid generate" "$msg" || die "vos edid generate failed: $msg"
-    rm -f "$edid"
-fi
+msg=$("$VOS" edid generate --out "$edid" 2>&1) || die "vos edid generate failed: $msg"
 
 # ---- what this image is
 jq -n --arg version "$VERSION" --arg channel "$CHANNEL" --arg git "$GIT" \
@@ -522,7 +505,7 @@ check_image() {
         edid_head=$(od -An -tx1 -N8 "$m/usr/lib/firmware/edid/vaporos.bin" | tr -d ' \n')
         [[ $edid_head == 00ffffffffffff00 && $(( $(stat -c %s "$m/usr/lib/firmware/edid/vaporos.bin") % 128 )) == 0 ]] ||
             problem "/usr/lib/firmware/edid/vaporos.bin is not an EDID"
-    elif [[ $VOS_ALLOW_STUB != 1 ]]; then
+    else
         problem "/usr/lib/firmware/edid/vaporos.bin is missing"
     fi
 
@@ -655,7 +638,7 @@ if [[ $VOS_PHASE == all ]]; then
     if [[ $VOS_DEBUG == 1 && -s $KEYS/dev.key ]]; then
         step "Signing manifest.json with the dev key"
         if ! msg=$("$VOS" sign --key "$KEYS/dev.key" "$STAGE/vos/manifest.json" 2>&1); then
-            stub_ok "vos sign" "$msg" || die "vos sign failed: $msg"
+            die "vos sign failed: $msg"
         else
             [[ -s $STAGE/vos/manifest.json.sig ]] || die "vos sign did not write manifest.json.sig"
             if [[ -f $KEYS/dev.pub ]]; then
