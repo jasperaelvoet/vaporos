@@ -501,7 +501,6 @@ var notInContractYet = map[string][]string{
 	"system":        {"card"},
 	"install-probe": {"card"},
 	"update":        {"running", "tries_left", "tries_done", "entry"},
-	"storage":       {"parent", "type", "transport", "removable", "partlabel"},
 }
 
 func strictOnly(t *testing.T) {

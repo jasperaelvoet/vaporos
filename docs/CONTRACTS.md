@@ -1463,7 +1463,7 @@ from the control center applies it.
 
 **CoolerControl** (`extensions/coolercontrol/`, helper
 `internal/extensions/coolercontrol`; a system extension that runs as root).
-Packages `cachyos/coolercontrold` and `extra/liquidctl`, less liquidctl's
+Packages `cachyos-extra-v3/coolercontrold` and `extra/liquidctl`, less liquidctl's
 `usr/lib/udev/rules.d/71-liquidctl.rules` (a `uaccess` rule, with no seat to
 act on); provides `fan-control.hwmon` and `fan-control.amdgpu`; permissions
 `service` (`coolercontrold.service`, system) and `modules`
@@ -1479,14 +1479,11 @@ out), never during the backup.
   `CC_DATA_DIR`, `CC_PLUGINS_DIR=/usr/lib/vos/ext/coolercontrol/plugins`
   (empty and in the image: no plugin runs), `CC_HOST_IP4=127.0.0.1`,
   `CC_HOST_IP6=::1`, `CC_PORT=11985`, `CC_TLS=OFF` (`false` would turn TLS
-  on) and `CC_SERVICE_MANAGER=OFF`. coolercontrold 5 also serves gRPC on
-  `CC_PORT`+1 at the same addresses, so 11986 on loopback: an unauthenticated,
-  read-only device service (its health, the device list, sensor and fan
-  readings; every call that would change a device is refused or does
-  nothing). Neither port may be one vosd listens on (with `CC_PORT=11986`
-  gRPC took 11987). The firewall's upstream rule covers 11985 only: anyone
-  on the box may read the gRPC port's readings, which change nothing and
-  are mostly what `/sys/class/hwmon` shows every user. Then
+  on) and `CC_SERVICE_MANAGER=OFF`. Since coolercontrold 5.1 its
+  gRPC service is on `CC_PORT` itself, behind the same sign-in and the
+  firewall's upstream rule; 5.0 served it without a sign-in on `CC_PORT`+1
+  (11986), which is why `CC_PORT` is never 11986 (gRPC then took vosd's
+  11987). Then
   `StateDirectory=vos/ext/data/coolercontrol`,
   `RuntimeDirectory=coolercontrold`, `ProtectSystem=strict`,
   `ProtectHome=yes`, `PrivateTmp=yes`, `ReadWritePaths=` the data area,
@@ -2026,10 +2023,11 @@ already 1048576.
 **Middleware, in order:**
 1. Source IP must be loopback, private, link-local or ULA (else 403, unless `web.allow_public`).
 2. `Host` must be in the allowlist (`localhost`, `127.0.0.1`, `<hostname>`, `<hostname>.local`, `vaporos-setup.local`, any current local IP, with or without a port), else 421.
-3. Security headers (CSP `default-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, nosniff, same-origin referrer).
-4. Session cookie `vos_session` (HttpOnly, SameSite=Strict, 30-day sliding).
-5. For every non-GET on `Authed` routes, header `X-VOS-CSRF` must equal the session's csrf.
-6. Activity: every `Authed` or `Setup` request and every event-stream connect counts as web-UI activity, which idle shutdown treats as busy (`web UI in use`) for 5 minutes. A request with `X-VOS-Passive: 1`, or the query `passive=1` (for `EventSource`, which cannot send headers), does not count; pages send it on refreshes nobody asked for. Signing in and setting the setup cookie always count.
+3. Security headers (CSP `default-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, nosniff, same-origin referrer, `X-Frame-Options: DENY`).
+4. Every request other than GET or HEAD must be same-origin, on every access level, else 403: with an `Origin` header, its scheme (http or https) and host:port must equal the request's own scheme and `Host` (default ports made explicit; the opaque `null` origin fails); without one, the request passes unless `Sec-Fetch-Site` is `cross-site`.
+5. Session cookie `vos_session` (HttpOnly, SameSite=Strict, 30-day sliding).
+6. For every non-GET on `Authed` routes, header `X-VOS-CSRF` must equal the session's csrf.
+7. Activity: every `Authed` or `Setup` request and every event-stream connect counts as web-UI activity, which idle shutdown treats as busy (`web UI in use`) for 5 minutes. A request with `X-VOS-Passive: 1`, or the query `passive=1` (for `EventSource`, which cannot send headers), does not count; pages send it on refreshes nobody asked for. Signing in and setting the setup cookie always count.
 
 **Access levels:**
 - `Public`: no auth.
@@ -2090,7 +2088,7 @@ already 1048576.
 | PUT `/display/screens/{id}` | Authed | `{"kind"?:"auto\|phone\|handheld\|tablet\|laptop\|monitor\|tv","size"?:number,"steam_auto"?:bool}` → the screen, as GET `/display` lists it. `kind` `auto` makes it automatic again, another kind is the user's pick (`kind_from` `you`); a new `kind` resets `size` to 1.0 unless the body has one; a `size` alone pins the kind in effect as the user's, unless that kind is the veto of the session streaming now (`kind_from` `stream` with a `kind` other than `guess`), which is never stored: then only the size is stored and the kind stays automatic; a `kind` or `size` without `steam_auto` turns `steam_auto` off. It answers once screens.json has it (also while `display.ui_scaling` is false), and while that screen streams the scaler applies it at once (see Display policy, *Scaling*). The body is checked before the id: 400 "kind must be auto, phone, handheld, tablet, laptop, monitor or tv", or "size must be between 0.4 and 2.5"; then 404 "no such screen" for an unknown id |
 | DELETE `/display/screens/{id}` | Authed | → `{}`: forgets the screen (its kind, size, `steam_auto` and modes); the browser hints stay, so the device's next session is inferred anew. The screen of the session streaming now starts anew at once instead: it stays listed, automatic, at size 1.0, with only the session's mode, and the scaler applies that. 404 "no such screen" for an unknown id |
 | POST `/display/hint` | Authed | `{"w":int,"h":int,"dpr":number,"touch":int}` → `{}`: what a browser says about its own screen (CSS `screen.width` and `screen.height`, `devicePixelRatio`, `navigator.maxTouchPoints`), stored as a hint (screens.json) under the MAC of the request's source address, else under that IPv4 address, with the kind its User-Agent gives (see Display policy, *Scaling*); from loopback, from an IPv6 address without a known MAC, or from an address several devices share, it stores nothing. Pages send it passive (`X-VOS-Passive: 1`). 400, checked in this order: "w and h must be between 1 and 20000", "dpr must be between 0.5 and 8", "touch must be between 0 and 20" |
-| GET `/storage` | Authed | `{"disks":[{"path","model","size","uuid","label","fstype","mounted_at"?,"is_system":bool,"steam_library":bool,"library_dir"?,"adopted":bool,"missing"?:bool,"free"?,"registered":bool,"registration_pending"?:bool}]}` (`library_dir`: `.` or `SteamLibrary`; `missing`: adopted but not attached; `registered`: adopted, and Steam's library list has a library on it; `registration_pending`: queued in steam-libraries.json) |
+| GET `/storage` | Authed | `{"disks":[{"path","parent"?,"type"?,"model","size","transport"?,"removable":bool,"uuid"?,"label"?,"fstype"?,"partlabel"?,"mounted_at"?,"is_system":bool,"steam_library":bool,"library_dir"?,"adopted":bool,"missing"?:bool,"free"?,"registered":bool,"registration_pending"?:bool}]}` (`library_dir`: `.` or `SteamLibrary`; `missing`: adopted but not attached; `registered`: adopted, and Steam's library list has a library on it; `registration_pending`: queued in steam-libraries.json) |
 | POST `/storage/libraries` | Authed | `{"uuid"}` → `{"mountpoint","library","registered":bool,"registration_pending":bool,"hint"}` (config + mount now + add `library` to Steam's list now, or once Steam is not running). Only ext2/3/4, btrfs, xfs, f2fs and NTFS (ntfs3), never exFAT/FAT (`storage.LibraryFS`, shared with the installer and generator); else 400. A disk with no library gets a new vapor-owned `SteamLibrary/` |
 | DELETE `/storage/libraries/{uuid}` | Authed | → `{}` |
 | GET/PUT `/power` | Authed | `{"idle_shutdown","idle_minutes","keep_awake_until"?,"wol":[{"iface","mac","enabled","supported","ipv4"?,"prefix"?,"broadcast"?}],"busy":{"reason","web"?}\|null,"web_until"?,"idle_seconds","shutdown_in"}`. PUT takes `idle_shutdown` and/or `idle_minutes` (1–1440) and answers the same document. `wol`: every wired NIC; `enabled`: magic-packet wake is armed; `supported`: the NIC can wake on a magic packet; `ipv4`, `prefix`, `broadcast`: its first IPv4 address that is neither loopback nor link-local, the prefix length and the subnet's broadcast address (all omitted without one; `broadcast` is also omitted on a /31 or /32). `busy`: why the machine stays awake, null when idle. `busy.web`: web-UI activity is the only reason. `web_until`: when web-UI activity stops keeping it awake (UTC, whole seconds), present whenever that activity counts, whatever the reason, and omitted otherwise. `idle_seconds` and `shutdown_in`: the idle timer in seconds (`0` and null while busy; `shutdown_in` is also null with idle shutdown off) |
@@ -2239,7 +2237,7 @@ Sunshine renders from `/usr/share/vos/sunshine.conf.tmpl` into `~vapor/.config/s
 `~vapor/.config/sunshine/apps.json`: `"Steam"` (no command), then per installed game `{"name","detached":["/usr/bin/vos session launch steam://rungameid/<id>"]}`, then the apps of the extensions mounted and still wanted (as steam.json has them, see Extensions, Steam): per shortcut whose game id `vos steam prepare` recorded and did not mark deleted (its record, read through gamerfs; where accounts differ, the id VaporOS gave the shortcut, else the lowest account's) `{"name":<the shortcut's name>,"detached":["/usr/bin/vos session launch steam://rungameid/<game id>"]}` with the game id as an unsigned 64-bit decimal (unless its extension's helper adds an entry of the same name, case aside, which stands for it), then the entries their helpers add (`SteamParts.SunshineApps`, such as TruckersMP's multiplayer start), never `cmd`. Names stay unique (a game's gains ` (<id>)`, an extension's ` (2)`, ` (3)`, …), and `$` is written `$$` in names and in the extensions' commands.
 
 **Firewall** (nftables, input policy drop):
-- accept lo, established, ICMP/ICMPv6, udp 5353, udp 67-68;
+- accept lo, established and related (invalid dropped), ICMP/ICMPv6, udp 5353, udp 67-68, udp 546 from fe80::/10 (DHCPv6 replies);
 - tcp 80 (and 443 if HTTPS) from private ranges;
 - Sunshine tcp 47984, 47989, 48010 and udp 47998-48000;
 - tcp 22 only while SSH is enabled;
@@ -2258,8 +2256,8 @@ that port from a socket whose owner (`meta skuid`) is not root is rejected
 with a TCP reset. Only root (vosd, which guards the web UI it proxies)
 reaches an extension's own server on its upstream port; a game or anything
 else running as `vapor` does not. Other loopback ports of an extension's
-service are not covered (CoolerControl's read-only gRPC port, see
-Extensions). Packets without a socket are not matched. The chain also has
+service are not covered (as coolercontrold 5.0's read-only gRPC port was,
+see Extensions). Packets without a socket are not matched. The chain also has
 one rule of its own, written in its body in `nftables.nft` (never by
 `vos-firewall`, so it holds whatever the ports file says):
 `tcp dport 31911 meta skuid != 0 reject with tcp reset`, so only root

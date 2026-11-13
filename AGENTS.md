@@ -19,7 +19,7 @@ contract there first, then in code, and keep the two in sync.
 
 | Path | What |
 | --- | --- |
-| `cmd/vos/main.go` | Multi-call entry point: `daemon`, `welcome`, `session`, `edid`, `install`, `update/rollback/status/health/sign/keygen/index`, `generator` (also via argv[0] `vos-generator`), `version`. |
+| `cmd/vos/main.go` | Multi-call entry point: `daemon`, `welcome`, `session`, `edid`, `install`, `update/rollback/status/health/sign/keygen/index`, `generator` (also via argv[0] `vos-generator`), `ext`, `steam`, `version`. |
 | `internal/api` | vosd's HTTP server: routing, access levels (Public/Authed/Setup/Local), sessions, CSRF, setup codes, Host and source-IP checks, rate limit, SSE; `GuardWeb`, the access check of the extensions' web UI ports (`webguard.go`). |
 | `internal/auth` | Web admin password (argon2id, PHC string) in `/var/lib/vos/auth.json`. |
 | `internal/boot` | ESP management: systemd-boot entries per slot with boot counting, kernels under `/vos/<ver>/`, loader.conf, cmdline assembly. |
@@ -32,7 +32,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/display/steamui` | The scaler's client for Steam's CEF debugger on 127.0.0.1:31911 (stdlib only): the target list, the listener owner check (a `steamwebhelper` of vapor), a minimal RFC 6455 websocket and `Runtime.evaluate` of the fixed read, set and automatic-scale expressions, and of the sleep read, the idle-sleep set and the resume (`power.go`), with typed errors. |
 | `internal/display/welcome` | `vos welcome`: draws URL, QR, status and setup code on physical monitors as DRM master. |
 | `internal/events` | In-process pub/sub behind `GET /api/v1/events` (SSE) and the welcome screen. |
-| `internal/extensions` | vosd's extensions service (`service.go`, `pass.go`, `rehash.go`): the booted slot file, fetching and sealing images, reconcile, GC and the once-per-boot re-read. The control center's side: GET `/extensions` and its `extensions.state` event (`document.go`, with what a card changes in Steam in `document_steam.go`), add, remove, settings, actions and try again (`routes.go`, `install.go`, `remove.go`, `settings.go`) and the idle auto-restart with its circuit breaker (`autorestart.go`). And `vos ext`: one `register` per command file (`cli.go`); the build's `check-tree`, `catalog` and `digest` in `cli_build.go`, `fetch` in `cli_fetch.go`, `action` (a descriptor action, which vosd runs as vapor) in `cli_action.go`, the `launch` dispatcher in `cli_launch.go` and `dispatch.go`. vosd's Steam side: `steam.json` (`steamdesired.go`), the dispatcher's messages and Steam's accounts (`messages.go`, `steamwatch.go`), Sunshine's extension apps (`sunshineapps.go`), and the unwrap before a restart or power off of vosd's own that goes back to an image built before extensions (`goingdown.go`). The network side: the ports file the firewall opens (`ports.go`) and the web UIs vosd proxies on their own ports while their services run (`proxy.go`). |
+| `internal/extensions` | vosd's extensions service (`service.go`, `pass.go`, `rehash.go`): the booted slot file, fetching and sealing images, reconcile, GC and the once-per-boot re-read. The control center's side: GET `/extensions` and its `extensions.state` event (`document.go`, with what a card changes in Steam in `document_steam.go`), add, remove, settings, actions and try again (`routes.go`, `install.go`, `remove.go`, `settings.go`) and the idle auto-restart with its circuit breaker (`autorestart.go`). And `vos ext`: one `register` per command file (`cli.go`); the build's `validate`, `check-tree`, `catalog` and `digest` in `cli_build.go`, `fetch` in `cli_fetch.go`, `action` (a descriptor action, which vosd runs as vapor) in `cli_action.go`, the `launch` dispatcher in `cli_launch.go` and `dispatch.go`. vosd's Steam side: `steam.json` (`steamdesired.go`), the dispatcher's messages and Steam's accounts (`messages.go`, `steamwatch.go`), Sunshine's extension apps (`sunshineapps.go`), and the unwrap before a restart or power off of vosd's own that goes back to an image built before extensions (`goingdown.go`). The network side: the ports file the firewall opens (`ports.go`) and the web UIs vosd proxies on their own ports while their services run (`proxy.go`). |
 | `internal/extensions/coolercontrol` | CoolerControl's helper: `vos ext coolercontrol prepare`, `fans snapshot` and `fans restore`, the steps of its unit's start and stop (the admin password, a backup before a new version, `config.toml`, each fan's first mode), its card's status line and kernel module options. |
 | `internal/extensions/buildcheck` | The build's side: checks an extension's image tree against its descriptor, the base and the other extensions; writes the catalog, manifest entries and shipped descriptors. |
 | `internal/extensions/catalog` | `/usr/lib/vos/extensions.list`, the image's extension catalog the initramfs trusts (line format, closure, from a manifest). |
@@ -42,7 +42,8 @@ contract there first, then in code, and keep the two in sync.
 | `internal/extensions/starcitizen` | The star-citizen extension's helper (registered through `internal/extensions/all`): the Proton prefix on the picked drive with its filesystem marker, `vos ext star-citizen fetch-installer` (the RSI Launcher's `latest.yml`, resumed download, SHA-512), the launch hook's first-start batch file and launcher swap, status and purge. |
 | `internal/extensions/truckersmp` | TruckersMP's helper (linked in by `internal/extensions/all`): `vos ext truckersmp sync` keeps the mod's files in vapor's home (MD5 against files.json and the version API), `mp` and `handoff` start multiplayer through Steam, the launch hook swaps the game's executable for the injector, and the card shows the versions TruckersMP supports, the branch switch and profile copying. |
 | `internal/gameproc` | The one "a Steam game runs" probe idle shutdown and the display policy share (Steam's reaper, `SteamAppId`, the extension handoff unit), and the Steam client holding `steam.pipe`. |
-| `internal/install` | `vos install` and the web installer (shared `Install`): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
+| `internal/gamerfs` | The only way vosd (root) reads and writes under `/var/home/vapor` and `/run/user/1000`: no symlink followed in any component, every step relative to a directory descriptor, only regular files read (bounded, non-blocking). See CONTRACTS "Users". |
+| `internal/install` | `vos install` and the web installer (one shared installer): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |
 | `internal/power` | Idle shutdown policy, keep-awake, Wake-on-LAN status. |
 | `internal/session` | Sunshine prep-cmd protocol: `vos session begin` / `end` to `/run/vos/session.sock`. Always exits 0. |
@@ -59,9 +60,9 @@ contract there first, then in code, and keep the two in sync.
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
 | `extensions/` | The curated extensions, one directory per id: `extension.json` (the descriptor) and optional `files/usr/...`. Built with the image and signed in its manifest; see CONTRACTS "Extensions". |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
-| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, block index, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `lib.sh` holds the helpers `selftest.sh` tests. |
+| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, block index, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `iso.sh` makes the ISO from the OS files (build.sh calls it in the dev loop, CI's `sign` job after signing); `run.sh` runs one build in the builder container; `lib.sh` holds the helpers `selftest.sh` tests. |
 | `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`, `serve.py` (the dev loop's update server, with byte ranges). |
-| `tests/` | `qemu-smoke.sh` (the CI install-and-boot test), `vm-checks.sh` (in-VM checks for `make test`), QMP helpers. |
+| `tests/` | `qemu-smoke.sh` (the CI install-and-boot test), `ventoy-stick.sh` (the Ventoy stick it can also boot the ISO from), `vm-checks.sh` (in-VM checks for `make test`), QMP helpers, `ppm2png.py` (screendumps to PNG). |
 | `keys/` | `release.pub` only. See `keys/README.md`. |
 | `design/` | The one source for how VaporOS looks on the control center, the website and the TV: `tokens.json` (colours, the state vocabulary, type, motion), `logo.svg`, the UI icons in `icons/`, the font manifest and OFL licences in `fonts/`, the copy voice (`voice.md`) and test vectors (`*-vectors.json`). Everything made from it is generated (see Commands); `design/README.md` has the schema. |
 | `tools/web/` | Node tooling for the control center, never in the OS build: `css.mjs` (the pinned Tailwind CLI that builds `internal/web/static/app.css` and `static/pages/*.css`), `dev.mjs` (dev server and CSS watch) and `e2e/` (the headless browser harness, the no-poll check, runtime budgets and flow parity). A stub `go.mod` keeps it out of `./...`. |
@@ -160,18 +161,26 @@ and the security review are in `.claude/skills/SOURCES.md`.
 ## CI
 
 - `.github/workflows/build.yml` runs on every push, PR and manual dispatch, except changes that touch only
-  `website/**`, `**.md`, `.claude/**` or `pages.yml`. It has four jobs:
+  `website/**`, `**.md`, `.claude/**`, `tools/**`, `pages.yml` or `web.yml`. It has five jobs:
   - `go`: gofmt, vet, `test -race` and the static `vos` binary;
-  - `image`: `build/build.sh` in the builder container, which produces the OS files and the ISO (the ISO must stay under 1.95 GiB);
+  - `image`: `build/build.sh` in the builder container, which produces the OS files, the extension images and an
+    unsigned `manifest.json`: no ISO, and no signing key near this job;
+  - `sign`: checks that manifest against the commit, signs it with `VOS_SIGNING_KEY` on pushes (pull requests stay
+    unsigned) and makes the ISO around it with `build/iso.sh` (the ISO must stay under 1.95 GiB);
   - `vm-test`: `tests/qemu-smoke.sh` installs the ISO through the web installer in QEMU and boots it;
-  - `publish`: pushes only, and only with `VOS_SIGNING_KEY`. It signs the manifest, checks the signature
-    against `keys/release.pub`, writes `SHA256SUMS`, and pushes to `ghcr.io/jasperaelvoet/vaporos:<version>,<channel>`.
+  - `publish`: pushes only, and only signed builds that passed `vm-test`. It checks the signature against
+    `keys/release.pub`, writes `SHA256SUMS`, and pushes to `ghcr.io/jasperaelvoet/vaporos:<version>,<channel>`.
     It also creates the GitHub release: `--latest` on `main`, a prerelease on other branches.
 - `.github/workflows/web.yml` runs the control center's Node checks on changes under `internal/**`, `design/**`,
   `tools/web/**` or `docs/CONTRACTS.md`: `css:check`, the strict Go tests (`VOS_WEB_STRICT=1`), the tooling's
   unit tests and the headless smoke matrix. It never blocks an OS release.
 - `.github/workflows/pages.yml` builds `website/` and deploys it to GitHub Pages. It runs on pushes to `main` that
-  touch `website/**`, `keys/release.pub` or the workflow, daily, and on manual dispatch. Only runs on `main` deploy.
+  touch `website/**`, `keys/release.pub`, `design/**`, `internal/web/**`, `internal/display/welcome/**` or the
+  workflow, after every `build` run on `main` completes (a push that also changes OS files only checks, and
+  deploys from that later run), daily, and on manual dispatch. Only runs on `main` deploy.
   Pages must be enabled once with the Actions source (`gh api -X POST repos/jasperaelvoet/vaporos/pages -f build_type=workflow`)
   before the first run. Scheduled runs stop after 60 days without repository activity; the site's in-browser
   release refresh covers that.
+- `.github/workflows/cleanup.yml` runs weekly and on manual dispatch (with a `dry_run` input). It deletes branch
+  prereleases beyond the newest 10, with their tags, and ghcr.io versions beyond the newest 10 of each channel.
+  Releases from `main` and every version a channel tag points to stay.
