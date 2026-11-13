@@ -13,8 +13,10 @@
 // 320 is 1280 px at 400% zoom). Text whose contrast axe can't decide (over a
 // gradient, a canvas, the heat) is measured on the rendered pixels instead,
 // and so is every fitted headline line (the visible copy of an sr-only
-// headline, which axe skips as aria-hidden), below the fixed nav. At 1024 ×
-// 768 the hero is also measured 0.7 s into the live view's intro breath.
+// headline, which axe skips as aria-hidden), below the fixed nav: at rest,
+// once whatever plays when it scrolls into view has finished, and never from
+// a picture the text changed under. At 1024 × 768 the hero is also measured
+// 0.7 s into the live view's intro breath.
 // The keyboard pass tabs through the page, at phone widths too (without
 // touch, with the menu opened first): the first stop must be the skip link,
 // and every stop must be visible, scrolled into view and not covered (WCAG
@@ -214,7 +216,56 @@ function decodePNG(buf) {
 const lin = (c) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const lum = (r, g, b) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 
-async function pixelContrast(page, axeTargets) {
+const HIDE_TEXT =
+  '*,*::before,*::after{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important;caret-color:transparent!important}';
+// How often one text is photographed again when it changed under the camera.
+const STILL_TRIES = 4;
+
+// Runs in the page: wait until the texts in `sels` have kept their words and
+// their place for `idle` ms, or `max` ms have passed. A demo that plays when
+// it scrolls into view (the two update slots) rewrites its texts on timers;
+// with the main thread busy (WebGL in software) those timers run late, so
+// stillness is counted in this loop's own ticks, never in wall time: a long
+// stall counts as one tick and the page's late timers get their turn first.
+async function still(page, sels, { idle = 1500, max = 30_000 } = {}) {
+  return page.evaluate(
+    async ([sels, idle, max]) => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const sig = () =>
+        sels
+          .map((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return '';
+            const b = el.getBoundingClientRect();
+            return [el.textContent, Math.round(b.left + scrollX), Math.round(b.top + scrollY), Math.round(b.width), Math.round(b.height)].join('|');
+          })
+          .join('\n');
+      let last = sig();
+      let quiet = 0;
+      let t = performance.now();
+      const deadline = t + max;
+      while (quiet < idle && performance.now() < deadline) {
+        await wait(100);
+        const now = performance.now();
+        const s = sig();
+        quiet = s === last ? quiet + Math.min(now - t, 150) : 0;
+        last = s;
+        t = now;
+      }
+      return quiet >= idle;
+    },
+    [sels, idle, max],
+  );
+}
+
+// `live` measures the page as it is this instant (the hero's intro). Without
+// it the texts are measured at rest: each is scrolled into view once, so
+// whatever plays on arrival has started, and the pass waits until they stand
+// still. Each photograph then counts only if the text had the same words in
+// the same box before and after it; otherwise the box belongs to a state the
+// picture no longer shows (a status chip that shrank with its text leaves
+// bare heat where its end was), and the text is measured again once it rests.
+async function pixelContrast(page, axeTargets, { live = false } = {}) {
   // Every visible headline line, marked so it can be found again: the lines
   // are aria-hidden copies of an sr-only headline, so axe never sees them.
   const lines = await page.evaluate(() =>
@@ -227,75 +278,131 @@ async function pixelContrast(page, axeTargets) {
   );
   const targets = [...(axeTargets ?? []), ...lines];
   if (!targets.length) return [];
-  const runs = await page.evaluate((sels) => {
-    // Any CSS colour (rgb(), color(srgb …), oklch()) → sRGB bytes and alpha, through a canvas.
-    const g = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
-    const rgba = (css) => {
-      g.clearRect(0, 0, 1, 1);
-      g.fillStyle = css;
-      g.fillRect(0, 0, 1, 1);
-      const [r, gr, b, a] = g.getImageData(0, 0, 1, 1).data;
-      return [r, gr, b, a / 255]; // getImageData is not premultiplied
-    };
-    return sels
-      .map((sel) => {
+  if (!live) {
+    await page.evaluate(async (sels) => {
+      for (const sel of sels) {
         const el = document.querySelector(sel);
-        // Hidden from assistive tech: decoration (WCAG 1.4.3 exempts it),
-        // except a headline's visible lines, which carry its sr-only text.
-        if (!el || (el.closest('[aria-hidden="true"]') && !el.matches('[data-axe-px]'))) return null;
-        const cs = getComputedStyle(el);
-        const c = rgba(cs.color);
-        const size = parseFloat(cs.fontSize);
-        const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
-        return { target: sel, text: (el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40), color: c, need: large ? 3 : 4.5 };
-      })
-      .filter(Boolean);
-  }, targets);
-  await page.evaluate(() => {
-    const st = document.createElement('style');
-    st.id = '__axe_hide_text';
-    st.textContent =
-      '*,*::before,*::after{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important;caret-color:transparent!important}';
-    document.head.append(st);
-  });
-  const out = [];
-  try {
-    for (const r of runs) {
-      const box = await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return null; // re-rendered since axe ran (the release upgrade)
+        if (!el) continue;
         el.scrollIntoView({ block: 'center', inline: 'nearest' });
         window.lenis?.scrollTo?.(scrollY, { immediate: true, force: true });
-        // The text's own box (a Range over its text), not the element's
-        // padding, and only the part below the fixed nav (never sample the
-        // nav's own pixels as the text's ground).
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        const b = range.getBoundingClientRect();
-        const nav = document.querySelector('.site-nav')?.getBoundingClientRect().bottom ?? 0;
-        const x = Math.max(0, b.left);
-        const y = Math.max(0, nav, b.top);
-        return { x, y, width: Math.min(innerWidth, b.right) - x, height: Math.min(innerHeight, b.bottom) - y };
-      }, r.target);
-      if (!box || box.width < 2 || box.height < 2) continue;
-      await page.waitForTimeout(60);
-      const img = decodePNG(await page.screenshot({ clip: box }));
-      const [tr, tg, tb, ta = 1] = r.color;
-      const ratios = [];
-      for (let y = 0; y < img.h; y += 2) {
-        for (let x = 0; x < img.w; x += 2) {
-          const i = (y * img.w + x) * 3;
-          const [gr, gg, gb] = [img.d[i], img.d[i + 1], img.d[i + 2]];
-          const lg = lum(gr, gg, gb);
-          const lt = ta < 1 ? lum(tr * ta + gr * (1 - ta), tg * ta + gg * (1 - ta), tb * ta + gb * (1 - ta)) : lum(tr, tg, tb);
-          ratios.push((Math.max(lt, lg) + 0.05) / (Math.min(lt, lg) + 0.05));
-        }
+        await new Promise((r) => setTimeout(r, 80));
       }
-      ratios.sort((a, b) => a - b);
-      if (ratios.length) out.push({ ...r, ratio: Number(ratios[Math.floor(ratios.length * 0.1)].toFixed(2)) });
+    }, targets);
+    await still(page, targets);
+  }
+  // Text colour, words and size, read while the text is still painted.
+  const describe = (sels) =>
+    page.evaluate((sels) => {
+      // Any CSS colour (rgb(), color(srgb …), oklch()) → sRGB bytes and alpha, through a canvas.
+      const g = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      const rgba = (css) => {
+        g.clearRect(0, 0, 1, 1);
+        g.fillStyle = css;
+        g.fillRect(0, 0, 1, 1);
+        const [r, gr, b, a] = g.getImageData(0, 0, 1, 1).data;
+        return [r, gr, b, a / 255]; // getImageData is not premultiplied
+      };
+      return sels
+        .map((sel) => {
+          const el = document.querySelector(sel);
+          // Hidden from assistive tech: decoration (WCAG 1.4.3 exempts it),
+          // except a headline's visible lines, which carry its sr-only text.
+          if (!el || (el.closest('[aria-hidden="true"]') && !el.matches('[data-axe-px]'))) return null;
+          const cs = getComputedStyle(el);
+          const c = rgba(cs.color);
+          const size = parseFloat(cs.fontSize);
+          const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
+          return { target: sel, text: (el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40), color: c, need: large ? 3 : 4.5 };
+        })
+        .filter(Boolean);
+    }, sels);
+  const hide = () =>
+    page.evaluate((css) => {
+      const st = document.createElement('style');
+      st.id = '__axe_hide_text';
+      st.textContent = css;
+      document.head.append(st);
+    }, HIDE_TEXT);
+  const show = () => page.evaluate(() => document.getElementById('__axe_hide_text')?.remove());
+  // The text's own box (a Range over its text), not the element's padding,
+  // and only the part below the fixed nav (never sample the nav's own pixels
+  // as the text's ground), with the words it holds right now. With `scroll`
+  // the text is scrolled to first and left until its box has been the same
+  // for twelve frames: a headline widens with the scroll's speed (friction
+  // heat) and cools over a second, in steps that last up to seven frames,
+  // and frames, unlike a fixed wait, also pass slowly when the page is busy.
+  const locate = (sel, scroll) =>
+    page.evaluate(
+      async ([sel, scroll]) => {
+        const el = document.querySelector(sel);
+        if (!el) return null; // re-rendered since axe ran (the release upgrade)
+        const read = () => {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const b = range.getBoundingClientRect();
+          const nav = document.querySelector('.site-nav')?.getBoundingClientRect().bottom ?? 0;
+          const x = Math.max(0, b.left);
+          const y = Math.max(0, nav, b.top);
+          return { x, y, width: Math.min(innerWidth, b.right) - x, height: Math.min(innerHeight, b.bottom) - y };
+        };
+        if (scroll) {
+          el.scrollIntoView({ block: 'center', inline: 'nearest' });
+          window.lenis?.scrollTo?.(scrollY, { immediate: true, force: true });
+          let last = read();
+          for (let frames = 0, rest = 0; rest < 12 && frames < 240; frames++) {
+            await new Promise((r) => requestAnimationFrame(r));
+            const now = read();
+            rest = ['x', 'y', 'width', 'height'].every((k) => Math.abs(now[k] - last[k]) < 0.5) ? rest + 1 : 0;
+            last = now;
+          }
+        }
+        return { text: (el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40), box: read() };
+      },
+      [sel, scroll],
+    );
+  const same = (a, b) => !!b && a.text === b.text && ['x', 'y', 'width', 'height'].every((k) => Math.abs(a.box[k] - b.box[k]) < 1);
+
+  const runs = await describe(targets);
+  await hide();
+  const out = [];
+  try {
+    for (let r of runs) {
+      for (let attempt = 1; r; attempt++) {
+        const at = await locate(r.target, true);
+        if (!at || at.box.width < 2 || at.box.height < 2) break;
+        const img = decodePNG(await page.screenshot({ clip: at.box }));
+        if (live || (at.text === r.text && same(at, await locate(r.target, false)))) {
+          const [tr, tg, tb, ta = 1] = r.color;
+          const ratios = [];
+          for (let y = 0; y < img.h; y += 2) {
+            for (let x = 0; x < img.w; x += 2) {
+              const i = (y * img.w + x) * 3;
+              const [gr, gg, gb] = [img.d[i], img.d[i + 1], img.d[i + 2]];
+              const lg = lum(gr, gg, gb);
+              const lt = ta < 1 ? lum(tr * ta + gr * (1 - ta), tg * ta + gg * (1 - ta), tb * ta + gb * (1 - ta)) : lum(tr, tg, tb);
+              ratios.push((Math.max(lt, lg) + 0.05) / (Math.min(lt, lg) + 0.05));
+            }
+          }
+          ratios.sort((a, b) => a - b);
+          if (ratios.length) out.push({ ...r, ratio: Number(ratios[Math.floor(ratios.length * 0.1)].toFixed(2)), ...(attempt > 1 ? { attempts: attempt } : {}) });
+          break;
+        }
+        if (attempt === STILL_TRIES) {
+          // Never passed unmeasured, never failed on a picture of something else.
+          out.push({ ...r, ratio: null, moving: true, attempts: attempt });
+          break;
+        }
+        // It changed under the camera: let it come to rest, read its colour
+        // and words again with the text painted, and photograph it again.
+        await show();
+        await still(page, [r.target]);
+        [r] = await describe([r.target]);
+        await hide();
+        await page.waitForTimeout(300);
+      }
     }
   } finally {
-    await page.evaluate(() => document.getElementById('__axe_hide_text')?.remove());
+    await show();
   }
   return out;
 }
@@ -333,7 +440,7 @@ try {
           .catch(() => false);
         if (on) {
           await page.waitForTimeout(700);
-          intro = (await pixelContrast(page, ['.hero-lead', '.hero-kicker'])).map((m) => ({ ...m, when: 'intro' }));
+          intro = (await pixelContrast(page, ['.hero-lead', '.hero-kicker'], { live: true })).map((m) => ({ ...m, when: 'intro' }));
         }
       }
       await settle(page);
@@ -363,7 +470,8 @@ try {
         TAGS,
       );
       const measured = [...intro, ...(await pixelContrast(page, res.contrastTargets))];
-      const lowContrast = measured.filter((m) => m.ratio < m.need);
+      const lowContrast = measured.filter((m) => !m.moving && m.ratio < m.need);
+      const moving = measured.filter((m) => m.moving);
       delete res.contrastTargets;
       // Phones have no Tab key, but a narrow window with a keyboard does:
       // tab through the same width without touch, with the menu open.
@@ -389,16 +497,17 @@ try {
       }
       const reflow = overflow > 0 ? [`the page scrolls ${overflow} px sideways`] : [];
       const bad = res.violations.filter((v) => BLOCKING.has(v.impact));
-      blocking += bad.length + kb.length + lowContrast.length + reflow.length;
+      blocking += bad.length + kb.length + lowContrast.length + moving.length + reflow.length;
       report.runs.push({ path, width, height, overflow, ...res, pixelContrast: measured, keyboard: { stops, problems: kb } });
       const other = res.violations.filter((v) => !BLOCKING.has(v.impact));
       console.log(
         `${String(width).padStart(5)} ${path.padEnd(12)} blocking=${bad.length} other=${other.length} incomplete=${res.incomplete.reduce((n, v) => n + v.n, 0)}` +
-          ` measured=${measured.length} low=${lowContrast.length} overflow=${overflow}` +
+          ` measured=${measured.length} low=${lowContrast.length}${moving.length ? ` moving=${moving.length}` : ''} overflow=${overflow}` +
           ` tabstops=${stops.length} keyboard=${kb.length}`,
       );
       for (const r of reflow) console.log(`        ! reflow: ${r}`);
       for (const m of lowContrast) console.log(`        ! contrast ${m.ratio.toFixed(2)} < ${m.need} on the rendered ground${m.when ? ` (${m.when})` : ''}: ${m.target} "${m.text}"`);
+      for (const m of moving) console.log(`        ! contrast not measured, the text never stood still (${m.attempts} tries): ${m.target} "${m.text}"`);
       for (const v of bad) console.log(`        ! ${v.impact} ${v.id}: ${v.help}\n            ${v.nodes.slice(0, 4).map((n) => n.target).join('\n            ')}`);
       for (const v of other) console.log(`        ~ ${v.impact} ${v.id}: ${v.help} (${v.nodes.length})`);
       for (const k of kb) console.log(`        ! keyboard: ${k}`);
