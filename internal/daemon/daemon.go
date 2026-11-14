@@ -100,7 +100,10 @@ func Main(args []string) int {
 			}
 			return disp.Streaming()
 		}
-		pow := power.NewService(cfg, streaming, sun.Busy, up.Busy, ext.Busy)
+		// A stream only counts while someone is at it: a client left
+		// connected to Steam's home screen must not keep the PC awake.
+		input := power.NewInputWatch()
+		pow := power.NewService(cfg, input.Attended(streaming), input.Attended(sun.Busy), up.Busy, ext.Busy)
 		// Someone using the web UI keeps the machine from idling off.
 		srv.OnActivity(pow.Touch)
 		wireAutoRestart(ext, sys.Reboot, up.View, pow.OnTick)

@@ -2136,6 +2136,15 @@ vosd ends a session itself (as `end` would) when Sunshine's serverinfo has
 reported `SUNSHINE_SERVER_FREE` for 30 s while no `begin` or `end` is running,
 so a Sunshine that crashed mid-stream does not hold gamescope or keep the PC awake.
 
+For idle shutdown a stream counts only while someone is at it: vosd reads
+every `/dev/input/event*` device (Sunshine's virtual keyboard, mouse and
+controllers, and anything plugged in; not a controller's motion sensors,
+`INPUT_PROP_ACCELEROMETER`), and a stream is a busy reason for 1 minute after
+the last input, after it started and after a client left or came back. A
+client left connected to Steam's home screen thus lets the idle timer run,
+and the PC powers off under it. A game that runs, a download and the other
+busy reasons do not depend on input.
+
 ## Welcome screen (`/run/vos/welcome.json`, written by vosd, mode 0600)
 
 ```json

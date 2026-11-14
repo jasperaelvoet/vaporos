@@ -6,7 +6,8 @@
 // the reference machine's definition, check for check: no keep-awake, no
 // Moonlight stream, no game process, no Steam download, no disk activity
 // in the gamescope session, plus (new here) no one using the web UI. After
-// idle_minutes of that, vosd powers off.
+// idle_minutes of that, vosd powers off. A stream nobody touches is no
+// stream (input.go).
 package power
 
 import (
