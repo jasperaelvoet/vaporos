@@ -55,8 +55,8 @@ test('every spec flow of the new UI names a parity ID', async () => {
 });
 
 test('flows of what the eight-page UI never had are beyond parity', () => {
-  for (const id of ['SYS-ext-install', 'DEV-scale-adjust', 'SCR-scale-switch']) assert.match(id, BEYOND_PARITY);
-  for (const id of ['SYS-extensions', 'DEV-scaled', 'DEV-pin-input', 'SCR-scale', 'HOME-scale-x']) assert.doesNotMatch(id, BEYOND_PARITY);
+  for (const id of ['SYS-ext-install', 'SYS-plan-switch', 'DEV-scale-adjust', 'SCR-scale-switch']) assert.match(id, BEYOND_PARITY);
+  for (const id of ['SYS-extensions', 'SYS-pwr-plan', 'SYS-plan', 'DEV-scaled', 'DEV-pin-input', 'SCR-scale', 'HOME-scale-x']) assert.doesNotMatch(id, BEYOND_PARITY);
 });
 
 test('every parity ID has a spec flow (VOS_WEB_STRICT=1, GATE-2b)', async (t) => {

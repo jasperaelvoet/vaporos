@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -11,8 +12,9 @@ import (
 )
 
 // The dev server's fake of power (internal/power): idle power-off,
-// keep-awake, Wake-on-LAN (wol[] with each wired adapter's MAC, address,
-// prefix and broadcast, for the Wake card) and the power.idle events.
+// keep-awake, the power plan (profile, of the profiles the PC offers),
+// Wake-on-LAN (wol[] with each wired adapter's MAC, address, prefix and
+// broadcast, for the Wake card) and the power.idle events.
 // Document: base/power.json; busy, web_until, idle_seconds and shutdown_in
 // are worked out on every answer, as power.snapshot does.
 
@@ -23,14 +25,18 @@ const (
 	fakeWebReason     = "web UI in use"
 )
 
+// fakeProfiles is power.knownProfiles.
+var fakeProfiles = []string{"power-saver", "balanced", "performance"}
+
 func (f *devFake) powerRoutes(add fakeAdder) {
 	add("GET", "/power", api.Authed, func(w http.ResponseWriter, r *http.Request) any {
 		return f.powerStateLocked(time.Now())
 	})
 	add("PUT", "/power", api.Authed, func(w http.ResponseWriter, r *http.Request) any {
 		var req struct {
-			IdleShutdown *bool `json:"idle_shutdown"`
-			IdleMinutes  *int  `json:"idle_minutes"`
+			IdleShutdown *bool   `json:"idle_shutdown"`
+			IdleMinutes  *int    `json:"idle_minutes"`
+			Profile      *string `json:"profile"`
 		}
 		if !strictBody(w, r, &req) {
 			return nil
@@ -40,6 +46,17 @@ func (f *devFake) powerRoutes(add fakeAdder) {
 			return nil
 		}
 		p := f.doc("power")
+		if req.Profile != nil {
+			if !slices.Contains(fakeProfiles, *req.Profile) {
+				api.Error(w, http.StatusBadRequest, "profile must be power-saver, balanced or performance")
+				return nil
+			}
+			if !containsString(asList(p["profiles"]), *req.Profile) {
+				api.Error(w, http.StatusConflict, "this PC does not offer the %s power plan", *req.Profile)
+				return nil
+			}
+			p["profile"] = *req.Profile
+		}
 		if req.IdleShutdown != nil {
 			p["idle_shutdown"] = *req.IdleShutdown
 		}
@@ -252,6 +269,31 @@ func TestFakePower(t *testing.T) {
 		code, p = f.fakeDo(t, hs, "PUT", "/power", `{"idle_shutdown":false}`)
 		if code != 200 || p["idle_shutdown"] != false || p["idle_minutes"] != float64(1440) || p["shutdown_in"] != nil {
 			t.Errorf("PUT idle_shutdown false: %d %v", code, p)
+		}
+	})
+	t.Run("the power plan", func(t *testing.T) {
+		f, hs := fakeWorld(t, "idle", (*devFake).powerRoutes)
+		_, p := f.fakeDo(t, hs, "GET", "/power", "")
+		if p["profile"] != "balanced" || len(asList(p["profiles"])) != 3 {
+			t.Errorf("GET: profile %v of %v", p["profile"], p["profiles"])
+		}
+		code, p := f.fakeDo(t, hs, "PUT", "/power", `{"profile":"performance"}`)
+		if code != 200 || p["profile"] != "performance" || p["idle_minutes"] != float64(15) {
+			t.Errorf("PUT profile performance: %d %v", code, p)
+		}
+		if code, _ := f.fakeDo(t, hs, "PUT", "/power", `{"profile":"turbo"}`); code != 400 {
+			t.Errorf("PUT profile turbo: %d, want 400", code)
+		}
+		// A PC without performance refuses it, and saves nothing else of that PUT.
+		f.mu.Lock()
+		f.doc("power")["profiles"] = []any{"power-saver", "balanced"}
+		f.mu.Unlock()
+		code, p = f.fakeDo(t, hs, "PUT", "/power", `{"profile":"performance","idle_minutes":30}`)
+		if code != 409 || p["error"] != "this PC does not offer the performance power plan" {
+			t.Errorf("PUT a plan the PC lacks: %d %v", code, p)
+		}
+		if _, p = f.fakeDo(t, hs, "GET", "/power", ""); p["idle_minutes"] != float64(15) || p["profile"] != "performance" {
+			t.Errorf("after the refusal: idle_minutes %v profile %v", p["idle_minutes"], p["profile"])
 		}
 	})
 }

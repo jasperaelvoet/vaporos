@@ -61,6 +61,8 @@
 - **Powers off when nobody plays**, but not while you stream, download or
   update, after a delay you choose. Moonlight wakes it again over
   Wake-on-LAN (see [Wake it](#wake-it)).
+- **Power plans.** Switch between Power saver, Balanced and Performance under
+  **System › Power**. The PC keeps the plan across restarts and updates.
 
 ## Requirements
 

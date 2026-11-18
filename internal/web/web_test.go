@@ -617,17 +617,20 @@ const (
 	// to ask for the drive an extension needs. Both took 22 kB more, 2.5 kB
 	// from full, when each device's interface size came: the Adjust sheet
 	// (loaded only when it opens), the PIN pad's "What is it?" and the
-	// screen hint.
-	budgetTotalRaw = 774_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
-	budgetNextRaw  = 532_000 // the next set's own files (static/app.css, static/pages/, static/js/)
+	// screen hint. Both took 2 kB more, 1 kB from full, when the power plan
+	// came to System › Power: its card, script and styles are 4.4 kB raw.
+	budgetTotalRaw = 776_000 // every embedded static file of every set (fonts included), until the legacy UI is deleted
+	budgetNextRaw  = 534_000 // the next set's own files (static/app.css, static/pages/, static/js/)
 
 	// The next set (ARCH §3.3): what one page needs before it can paint and
 	// work, as served. Re-baselined when the page stylesheets and the web
 	// fonts' @font-face rules were wired in and the HTML began to be counted
 	// as render() serves it (compressed once, cached per ETag), and the
 	// import() calls a page makes as it starts began to count as critical:
-	// the old numbers only passed because none of that was measured.
-	budgetPageGz     = 58_000 // HTML + app.css + the page's stylesheets + head.js + the modules it loads at start, gzipped
+	// the old numbers only passed because none of that was measured. A page
+	// took 500 B more, 250 B from full on System › Power, when the power
+	// plan came there (1.3 kB gzipped).
+	budgetPageGz     = 58_500 // HTML + app.css + the page's stylesheets + head.js + the modules it loads at start, gzipped
 	budgetBarePageGz = 40_000 // sign-in and first-run setup
 	budgetInstallGz  = 52_000 // the installer wizard (its steps and the time zone list are in its HTML)
 	budgetCSSGz      = 14_000 // app.css as served: the shell, the tokens and the font faces

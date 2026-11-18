@@ -25,9 +25,10 @@ export const OWNERS = { 'HOME-': 'C1', 'DEV-': 'C2', 'SCR-': 'C3', 'SYS-': 'C4',
 export const ID_RE = /^(HOME|DEV|SCR|SYS|ENTRY|SHELL)-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 // BEYOND_PARITY: flows of what the eight-page UI never had (System ›
-// Extensions, each device's interface size on Devices and Screen) have no
-// parity row: GATE-2b is about the switch.
-export const BEYOND_PARITY = /^(?:SYS-ext|DEV-scale|SCR-scale)-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Extensions, the power plan on System › Power, each device's interface
+// size on Devices and Screen) have no parity row: GATE-2b is about the
+// switch.
+export const BEYOND_PARITY = /^(?:SYS-ext|SYS-plan|DEV-scale|SCR-scale)-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function owner(id) {
   const p = Object.keys(OWNERS).find((k) => id.startsWith(k));

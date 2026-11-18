@@ -3,7 +3,8 @@
    heat field over the Inferno scale, the needle at the box's temperature
    (--p-heat, 0-1). Staying awake runs warm, a stream hot; an idle
    countdown cools the field toward asleep. The title takes the level's cut
-   (width is temperature). The rest is quiet soot cards; the Wake card is
+   (width is temperature). The power plan is the same scale in three stops,
+   lit up to the plan's own. The rest is quiet soot cards; the Wake card is
    the shell's. Classes start with pwr- (TestNoUtilityCollisions). */
 @layer components {
   .pwr { display: grid; gap: 0; }
@@ -49,7 +50,7 @@
   /* width is temperature: cooling toward sleep is condensed, a stream expanded */
   .pwr-state[data-level="countdown"] .pwr-title { font-stretch: var(--cut-cold-w); font-weight: var(--cut-cold-g); }
   .pwr-state[data-needle="streaming"] .pwr-title { font-stretch: var(--cut-hot-w); font-weight: var(--cut-hot-g); }
-  .pwr-title .skel, .pwr-detail .skel { height: 1.25rem; }
+  .pwr-title .skel, .pwr-detail .skel, .pwr-plan-detail .skel { height: 1.25rem; }
   /* The detail's first paint holds the two lines it takes on a phone. */
   .pwr-skel-2 { display: none; margin-top: 0.25rem; }
   @media (max-width: 39.99rem) {
@@ -109,6 +110,38 @@
   .pwr-awake-line { margin: 0; }
   .pwr-keys { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
+  /* ------------------------------------------------------ the power plan */
+  .pwr-plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.25rem; min-width: 0; margin: 0; padding: 0; border: 0; }
+  .pwr-plan-opt { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+  .pwr-plan-radio { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  /* each stop is its third of the Inferno scale; the stops up to the plan's are lit */
+  .pwr-plan-opt::before {
+    content: ""; height: 0.375rem; border-radius: var(--radius-xs); box-shadow: 0 0 0 1px rgb(243 238 231 / 0.22); opacity: 0.22;
+    background: linear-gradient(90deg, var(--color-h1), var(--color-h2), var(--color-h3), var(--color-h4), var(--color-h5), var(--color-h6), var(--color-h7), var(--color-h8), var(--color-h9)) 0 / 300% 100%;
+    transition: opacity var(--vos-dur-base) var(--ease-out);
+  }
+  .pwr-plan-opt:nth-child(2)::before { background-position: 50%; }
+  .pwr-plan-opt:nth-child(3)::before { background-position: 100%; }
+  .pwr-plan-opt:has(:checked)::before, .pwr-plan-opt:has(~ .pwr-plan-opt :checked)::before { opacity: 1; }
+  /* three names side by side: "Performance" sets the size on a phone */
+  .pwr-plan-name {
+    display: flex; align-items: center; justify-content: center; min-height: 2.75rem; padding: 0.25rem; border-radius: var(--radius-lg);
+    box-shadow: inset 0 0 0 1px var(--color-line-strong); font-size: var(--text-sm); font-weight: 600; line-height: 1.15; text-align: center; overflow-wrap: anywhere;
+  }
+  @media (max-width: 22.49rem) {
+    .pwr-plan-name { padding: 0.25rem 0.125rem; font-size: var(--text-xs); letter-spacing: -0.01em; }
+  }
+  @media (min-width: 26rem) {
+    .pwr-plans { gap: 0.375rem; }
+    .pwr-plan-name { padding: 0.25rem 0.375rem; font-size: var(--text-md); }
+  }
+  .pwr-plan-radio:checked ~ .pwr-plan-name { background: var(--color-ink); color: var(--color-accent-ink); box-shadow: none; }
+  .pwr-plan-radio:focus-visible ~ .pwr-plan-name { outline: 2px solid var(--color-focus); outline-offset: 3px; }
+  .pwr-plan-radio:disabled { cursor: not-allowed; }
+  .pwr-plan-radio:disabled ~ .pwr-plan-name { opacity: 0.45; }
+  /* two lines on a phone, held from the first paint on */
+  .pwr-plan-detail { min-height: 2.75rem; margin: 0; color: var(--color-ink-2); }
+
   /* ------------------------------------------------ Wake-on-LAN (C10, NEW-1) */
   .pwr-wol { display: grid; gap: 0.625rem; }
   .pwr-wait { display: flex; align-items: center; gap: 0.5rem; min-height: 3.25rem; margin: 0; padding: 0 1rem; border-radius: var(--radius-2xl); background: var(--color-surface); color: var(--color-ink-2); }
@@ -130,11 +163,13 @@
   .pwr-nic-fix { margin: 0; color: var(--color-ink-2); font-size: var(--text-sm); max-width: 38em; }
 
   @media (min-width: 64rem) {
-    .pwr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "state state" "idle awake" "wol wol"; gap: 2.25rem 2.5rem; align-items: start; }
+    .pwr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "state state" "idle awake" "idle plan" "wol wol"; gap: 2.25rem 2.5rem; align-items: start; }
     .pwr .rack { padding-top: 0; }
     .pwr-state-rack { grid-area: state; }
     .pwr-idle-rack { grid-area: idle; }
     .pwr-awake-rack { grid-area: awake; }
+    .pwr-plan-rack { grid-area: plan; }
+    .pwr-plan-detail { min-height: 1.375rem; }
     .pwr-wol-rack { grid-area: wol; }
     .pwr-state { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
     .pwr-vf { height: auto; min-height: 13rem; border-radius: var(--radius-3xl) 0 0 var(--radius-3xl); }
@@ -147,16 +182,17 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .pwr-needle, .pwr-switch, .pwr-switch::before { transition: none; }
+    .pwr-needle, .pwr-switch, .pwr-switch::before, .pwr-plan-opt::before { transition: none; }
     .pwr-pip { animation: none; }
   }
 
   @media (forced-colors: active) {
     .pwr-vf { height: 4.5rem; min-height: 0; }
-    .pwr-state, .pwr-card, .pwr-banner, .pwr-preset-text, .pwr-switch, .pwr-nics, .pwr-tag, .pwr-wait, .pwr-count, .pwr-needle-label, .pwr-scale { border: 1px solid CanvasText; }
+    .pwr-state, .pwr-card, .pwr-banner, .pwr-preset-text, .pwr-plan-name, .pwr-switch, .pwr-nics, .pwr-tag, .pwr-wait, .pwr-count, .pwr-needle-label, .pwr-scale { border: 1px solid CanvasText; }
+    .pwr-plan-opt::before { display: none; }
     .pwr-vf .heat-field { display: none; }
     .pwr-tag { forced-color-adjust: none; background: Canvas; color: CanvasText; }
-    .pwr-radio:checked + .pwr-preset-text, .pwr-switch-input:checked + .pwr-switch::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+    .pwr-radio:checked + .pwr-preset-text, .pwr-plan-radio:checked ~ .pwr-plan-name, .pwr-switch-input:checked + .pwr-switch::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
     .pwr-needle::after { forced-color-adjust: none; border-top-color: Highlight; }
   }
 }

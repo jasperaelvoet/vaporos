@@ -45,7 +45,7 @@ contract there first, then in code, and keep the two in sync.
 | `internal/gamerfs` | The only way vosd (root) reads and writes under `/var/home/vapor` and `/run/user/1000`: no symlink followed in any component, every step relative to a directory descriptor, only regular files read (bounded, non-blocking). See CONTRACTS "Users". |
 | `internal/install` | `vos install` and the web installer (one shared installer): probe, partition (erase or repair), write and verify slot a, bootloader, first-boot config. |
 | `internal/manifest` | Signed update manifest (ed25519). Verify the bytes first, parse second. |
-| `internal/power` | Idle shutdown policy, keep-awake, Wake-on-LAN status. |
+| `internal/power` | Idle shutdown policy, keep-awake, Wake-on-LAN status, and the power plan (`profile.go`): config.json's `power.profile`, set as power-profiles-daemon's active profile through `busctl` at start and on PUT `/power`. |
 | `internal/session` | Sunshine prep-cmd protocol: `vos session begin` / `end` to `/run/vos/session.sock`. Always exits 0. |
 | `internal/steamlock` | The Steam lock (`/run/user/1000/vos-steam.lock`) every writer of Steam's files holds. |
 | `internal/steamprep` | `vos steam prepare [--unwrap]`, as vapor before every Steam start (never in vosd): applies `/var/lib/vos/ext/steam.json` to Steam's files (compat tools, with the default's per-game copies where Valve's own pick would beat it in `valve.go`, launch-option wrapping, shortcuts and art, branches) under the Steam lock within 5 s, recording what VaporOS owns in `~/.local/state/vaporos/steam.json`. |

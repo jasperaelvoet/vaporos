@@ -41,6 +41,8 @@ const RULES = [
   ['PUT', '/display/screens/{x}', 404, '', "VaporOS doesn't know this device's screen any more. Reload the page."],
   ['PUT', '/display/screens/{x}', 400, 'kind must be', 'Choose what it is from the list.'],
   ['PUT', '/display/screens/{x}', 400, 'size must be', 'Use a size from 40% to 250%.'],
+  ['PUT', '/power', 502, '', "Couldn't switch the power plan. Try again in a moment."],
+  ['PUT', '/power', 409, 'does not offer', "This PC doesn't offer that power plan."],
   ['POST', '/storage/libraries', 404, '', "That drive isn't connected any more. Press Rescan."],
   ['POST', '/storage/libraries', 500, '', "Couldn't mount <label>: <reason>"],
   ['DELETE', '/storage/libraries/{x}', 409, '', '<label> is in use. Quit the game running from it, then try again.'],

@@ -100,7 +100,7 @@ async function failedLoad(err) {
   setText('pwr-error-text', `Couldn't load power settings. ${await errorText(err)}`);
   setText('pwr-title', 'Power status unknown');
   setText('pwr-detail', '');
-  for (const id of ['pwr-state', 'pwr-idle', 'pwr-awake', 'pwr-wol']) byId(id).removeAttribute('aria-busy');
+  for (const id of ['pwr-state', 'pwr-idle', 'pwr-awake', 'pwr-plan', 'pwr-wol']) byId(id).removeAttribute('aria-busy');
   settleMain();
 }
 

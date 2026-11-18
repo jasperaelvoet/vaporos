@@ -1,5 +1,5 @@
 {
-  "description": "Power: why the box stays awake (the page's own activity, keep-awake, a stream), the idle countdown, the settings and Wake-on-LAN.",
+  "description": "Power: why the box stays awake (the page's own activity, keep-awake, a stream), the idle countdown, the settings, the power plan and Wake-on-LAN.",
   "vectors": [
     {
       "name": "power-busy-web",
@@ -54,6 +54,21 @@
         {"req": "PUT /power", "body": {"idle_minutes": "15"}, "expect": {"status": 400}},
         {"req": "PUT /power", "body": {"idle_minutes": 1440}, "expect": {"body": {"idle_minutes": 1440, "idle_shutdown": true}}},
         {"req": "PUT /power", "body": {}, "expect": {"status": 200}}
+      ]
+    },
+    {
+      "name": "power-profile",
+      "preset": "idle",
+      "steps": [
+        {"req": "GET /power", "passive": true, "expect": {"body": {"profile": "balanced", "profiles": ["power-saver", "balanced", "performance"]}}},
+        {"req": "PUT /power", "body": {"profile": "turbo"}, "expect": {"status": 400, "body": {"error": "profile must be power-saver, balanced or performance"}}},
+        {"req": "PUT /power", "body": {"profile": ""}, "expect": {"status": 400}},
+        {"req": "PUT /power", "body": {"profile": 2}, "expect": {"status": 400}},
+        {"req": "PUT /power", "body": {"profile": "performance"}, "expect": {"status": 200, "body": {"profile": "performance", "idle_minutes": 15, "idle_shutdown": true}, "events": []}},
+        {"req": "GET /status", "passive": true, "expect": {"body": {"power": {"profile": "performance", "profiles": ["power-saver", "balanced", "performance"]}}}},
+        {"req": "PUT /power", "body": {"profile": "power-saver", "idle_minutes": 0}, "expect": {"status": 400, "body": {"error": "idle_minutes must be between 1 and 1440"}}},
+        {"req": "PUT /power", "body": {"profile": "power-saver", "idle_minutes": 30}, "expect": {"body": {"profile": "power-saver", "idle_minutes": 30}}},
+        {"req": "PUT /power", "body": {"profile": null}, "expect": {"status": 200, "body": {"profile": "power-saver"}}}
       ]
     },
     {

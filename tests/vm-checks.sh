@@ -314,9 +314,49 @@ check_api() {
     code=$(http PUT /update/settings -b "$jar" -H "X-VOS-CSRF: $csrf" -H 'Content-Type: application/json' -d "$settings")
     if [[ $code == 200 ]]; then ok auto-update "automatic updates switched off (with CSRF token)"; else warn auto-update "PUT /update/settings -> $code $(<"$tmp/body")"; fi
 
+    check_power_plan "$jar" "$csrf"
+
     # Last, because a broken guard would log the session out.
     code=$(http POST /auth/logout -b "$jar")
     if [[ $code == 403 ]]; then ok csrf "POST without X-VOS-CSRF -> 403"; else bad csrf "POST without X-VOS-CSRF -> $code, expected 403"; fi
+}
+
+# power-profiles-daemon's active profile, read as vosd reads its profiles.
+ppd_active() {
+    busctl --system --timeout=4 --json=short get-property org.freedesktop.UPower.PowerProfiles \
+        /org/freedesktop/UPower/PowerProfiles org.freedesktop.UPower.PowerProfiles ActiveProfile 2>/dev/null | json_str data
+}
+
+# The power plan (docs/CONTRACTS.md, Units, "Power plan"): the plan vosd
+# reports is the daemon's active profile, a switch through the API reaches
+# the daemon and config.json, and the plan goes back. Every PC, the VM too,
+# offers power-saver and balanced.
+check_power_plan() {
+    local jar=$1 csrf=$2 code was want plans saved
+    code=$(http GET /power -b "$jar")
+    was=$(json_str profile <"$tmp/body")
+    plans=$(grep -o '"profiles" *: *\[[^]]*\]' "$tmp/body")
+    if [[ $code != 200 || -z $was || $plans != *'"power-saver"'* || $plans != *'"balanced"'* ]]; then
+        bad power-plan "GET /power -> $code, plan '$was' of ${plans:-no profiles}"
+        return
+    fi
+    if [[ $(ppd_active) == "$was" ]]; then
+        ok power-plan "the power plan is $was, as power-profiles-daemon has it"
+    else
+        bad power-plan "the power plan is $was, but power-profiles-daemon has '$(ppd_active)'"
+    fi
+    want=power-saver
+    [[ $was == power-saver ]] && want=balanced
+    code=$(http PUT /power -b "$jar" -H "X-VOS-CSRF: $csrf" -H 'Content-Type: application/json' -d "{\"profile\":\"$want\"}")
+    saved=$(json_str profile </var/lib/vos/config.json 2>/dev/null)
+    if [[ $code == 200 && $(json_str profile <"$tmp/body") == "$want" && $(ppd_active) == "$want" && $saved == "$want" ]]; then
+        ok power-plan-switch "PUT /power switched power-profiles-daemon to $want and saved it"
+    else
+        bad power-plan-switch "PUT /power to $want -> $code $(cut -c1-200 <"$tmp/body"); the daemon has '$(ppd_active)', config.json '$saved'"
+    fi
+    code=$(http PUT /power -b "$jar" -H "X-VOS-CSRF: $csrf" -H 'Content-Type: application/json' -d "{\"profile\":\"$was\"}")
+    [[ $code == 200 && $(ppd_active) == "$was" ]] ||
+        bad power-plan-back "PUT /power back to $was -> $code; the daemon has '$(ppd_active)'"
 }
 
 # Every page of the UI set this build serves answers 200 with the CSP, the

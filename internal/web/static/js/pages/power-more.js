@@ -1,6 +1,6 @@
 // pages/power-more.js: Power's controls (spec-cc-screens §8.3-§8.5): idle
-// power-off, stay awake, and the wired adapters with the Wake card
-// (DECISIONS NEW-1), loaded beside pages/power.js, which paints.
+// power-off, stay awake, the power plan, and the wired adapters with the
+// Wake card (DECISIONS NEW-1), loaded beside pages/power.js, which paints.
 
 import { ApiError, api, errorText, serverNow } from '../core/api.js';
 import { byId, cloneTpl, part } from '../core/dom.js';
@@ -14,9 +14,17 @@ import { idleMinutesError } from '../validate.js';
 import { P, render, take } from './power.js';
 
 const PRESETS = ['15', '30', '60', '120'];
+// The power plans (GET /power profiles): the name, and what it does.
+const PLANS = {
+  'power-saver': ['Power saver', 'Holds the processor back to save power. Games may run slower.'],
+  balanced: ['Balanced', 'The processor speeds up when a game needs it.'],
+  performance: ['Performance', 'Keeps the processor at full speed. Uses more power, even when idle.'],
+};
 const fail = async (err) => notify(await errorText(err), { kind: 'error' });
 const radios = () => Array.from(document.querySelectorAll('#pwr-after .pwr-radio'));
+const planRadios = () => Array.from(document.querySelectorAll('.pwr-plan-radio'));
 let wolSig = '';
+let planSig = '';
 
 // update runs after every paint of the state.
 export function update(p) {
@@ -43,7 +51,34 @@ export function update(p) {
   byId('pwr-awake-off').hidden = !!p.idle_shutdown;
   byId('pwr-awake').removeAttribute('aria-busy');
 
+  plan(p);
   if (Array.isArray(p.wol)) adapters(p.wol);
+}
+
+// plan: the plans this PC offers, with the one in use checked, what it
+// does, and which ones the PC lacks. A switch in flight keeps its own.
+function plan(p) {
+  const offered = Array.isArray(p.profiles) ? p.profiles : [];
+  const group = byId('pwr-plans');
+  const sig = `${p.profile} ${offered}`;
+  if (sig === planSig || group.hasAttribute('aria-busy')) return;
+  planSig = sig;
+  for (const r of planRadios()) {
+    r.checked = r.value === p.profile;
+    r.disabled = !offered.includes(r.value);
+  }
+  group.disabled = !offered.length;
+  planDetail();
+  const missing = Object.keys(PLANS).filter((k) => !offered.includes(k)).map((k) => PLANS[k][0]);
+  const hint = byId('pwr-plan-hint');
+  hint.textContent = !offered.length ? "Power plans aren't available on this PC." : missing.length ? `This PC doesn't offer ${missing.join(' or ')}.` : '';
+  hint.hidden = !hint.textContent;
+  byId('pwr-plan').removeAttribute('aria-busy');
+}
+
+function planDetail() {
+  const on = planRadios().find((r) => r.checked);
+  byId('pwr-plan-detail').textContent = on ? PLANS[on.value][1] : '';
 }
 
 // adapters: the Wake card for the adapter a magic packet reaches, and a
@@ -141,6 +176,26 @@ export function start() {
     } finally {
       auto.removeAttribute('aria-disabled');
     }
+  });
+
+  // A plan applies at once too, and goes back to the one in use if that
+  // fails. Quick picks go out one after the other.
+  const plans = byId('pwr-plans');
+  let picks = 0;
+  let sent = Promise.resolve();
+  plans.addEventListener('change', (e) => {
+    const want = e.target.value;
+    planDetail();
+    plans.setAttribute('aria-busy', 'true');
+    picks++;
+    sent = sent.then(() => put({ profile: want }))
+      .then(() => notify(`Saved. The power plan is ${PLANS[want][0]}.`, { kind: 'ok' }), fail)
+      .then(() => {
+        if (--picks) return;
+        plans.removeAttribute('aria-busy');
+        planSig = '';
+        plan(P.p);
+      });
   });
 
   const minutes = byId('pwr-minutes');

@@ -7,7 +7,7 @@
 // Moonlight stream, no game process, no Steam download, no disk activity
 // in the gamescope session, plus (new here) no one using the web UI. After
 // idle_minutes of that, vosd powers off. A stream nobody touches is no
-// stream (input.go).
+// stream (input.go). It also holds the power plan (profile.go).
 package power
 
 import (
@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -66,6 +67,11 @@ type Service struct {
 	poweringOff bool // poweroff requested; never ask twice
 	onTick      func(context.Context, Tick)
 	goingDown   func(act func() error) error // SetGoingDown
+	profiles    []string                     // the plans the daemon offered when last asked; nil without an answer
+	profileLeft int                          // attempts left to set the plan of the start
+	// profileMu orders the changes of the plan: the one of the start
+	// must not undo a PUT. Taken before mu.
+	profileMu sync.Mutex
 
 	// Seams for tests. The defaults read the real system.
 	now          func() time.Time
@@ -78,6 +84,8 @@ type Service struct {
 	ethtool      func(ctx context.Context, iface string) (string, error)
 	ifaceAddrs   func(iface string) ([]net.Addr, error)
 	sysNet       string
+	listProfiles func(context.Context) ([]string, error)
+	setProfile   func(ctx context.Context, name string) error
 }
 
 func NewService(cfg *config.Config, busy ...BusyFunc) *Service {
@@ -99,6 +107,9 @@ func NewService(cfg *config.Config, busy ...BusyFunc) *Service {
 		ethtool:      runEthtool,
 		ifaceAddrs:   ifaceAddrs,
 		sysNet:       "/sys/class/net",
+		profileLeft:  profileAttempts,
+		listProfiles: busProfiles,
+		setProfile:   busSetProfile,
 	}
 }
 
@@ -118,13 +129,15 @@ func (s *Service) Routes(srv *api.Server) {
 	srv.Handle("POST", "/power/keep-awake", api.Authed, s.handleKeepAwake)
 }
 
-// Run polls every 15 s and powers off after idle_minutes of idleness.
-// The live ISO never powers itself off: someone is installing.
+// Run sets the power plan, then polls every 15 s and powers off after
+// idle_minutes of idleness. The live ISO never powers itself off: someone
+// is installing.
 func (s *Service) Run(ctx context.Context) {
 	if config.IsLive() {
 		return
 	}
 	s.start()
+	s.applyProfile(ctx)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -132,6 +145,7 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.applyProfile(ctx)
 			s.tick(ctx)
 		}
 	}
@@ -372,6 +386,8 @@ func newBusy(reason string) *busyInfo {
 type Summary struct {
 	IdleShutdown   bool       `json:"idle_shutdown"`
 	IdleMinutes    int        `json:"idle_minutes"`
+	Profile        string     `json:"profile"`  // the power plan in use
+	Profiles       []string   `json:"profiles"` // the plans this PC offers; empty without an answer
 	KeepAwakeUntil *time.Time `json:"keep_awake_until,omitempty"`
 	Busy           *busyInfo  `json:"busy"`
 	WebUntil       *time.Time `json:"web_until,omitempty"`
@@ -384,7 +400,8 @@ type powerState struct {
 	WoL []WoLIface `json:"wol"`
 }
 
-// snapshot builds the GET /power answer, with the cheap checks run now.
+// snapshot builds the GET /power answer, with the cheap checks run now
+// and the power plans as the daemon last offered them.
 func (s *Service) snapshot(ctx context.Context) powerState {
 	wol := s.wolStatus(ctx)
 	now := s.now()
@@ -392,8 +409,9 @@ func (s *Service) snapshot(ctx context.Context) powerState {
 }
 
 // Summary is GET /power without wol, for GET /status. It never waits on
-// the other services or ethtool: only keep-awake is checked now, the
-// other reasons come from the last policy pass, at most 15 s old.
+// the other services, ethtool or power-profiles-daemon: only keep-awake is
+// checked now, the other reasons come from the last policy pass, at most
+// 15 s old.
 func (s *Service) Summary() Summary {
 	now := s.now()
 	return s.summary(now, s.keepReason(now))
@@ -405,9 +423,11 @@ func (s *Service) Summary() Summary {
 // read fresh; with the settings and the idle timer.
 func (s *Service) summary(now time.Time, fresh string) Summary {
 	pc := s.settings()
-	st := Summary{IdleShutdown: pc.IdleShutdown, IdleMinutes: pc.IdleMinutes}
+	st := Summary{IdleShutdown: pc.IdleShutdown, IdleMinutes: pc.IdleMinutes, Profiles: []string{}}
 	reason := fresh
 	s.mu.Lock()
+	st.Profiles = append(st.Profiles, s.profiles...)
+	st.Profile = effectiveProfile(pc.Profile, s.profiles)
 	if !s.keepUntil.IsZero() && now.Before(s.keepUntil) {
 		t := s.keepUntil.UTC().Truncate(time.Second)
 		st.KeepAwakeUntil = &t
@@ -440,14 +460,16 @@ func (s *Service) summary(now time.Time, fresh string) Summary {
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
+	s.readProfiles(r.Context())
 	api.WriteJSON(w, http.StatusOK, s.snapshot(r.Context()))
 }
 
-// handlePut changes idle_shutdown and/or idle_minutes.
+// handlePut changes idle_shutdown, idle_minutes and/or profile.
 func (s *Service) handlePut(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IdleShutdown *bool `json:"idle_shutdown"`
-		IdleMinutes  *int  `json:"idle_minutes"`
+		IdleShutdown *bool   `json:"idle_shutdown"`
+		IdleMinutes  *int    `json:"idle_minutes"`
+		Profile      *string `json:"profile"`
 	}
 	if err := api.ReadJSON(r, &req); err != nil {
 		api.Error(w, http.StatusBadRequest, "%v", err)
@@ -456,6 +478,19 @@ func (s *Service) handlePut(w http.ResponseWriter, r *http.Request) {
 	if req.IdleMinutes != nil && (*req.IdleMinutes < 1 || *req.IdleMinutes > 24*60) {
 		api.Error(w, http.StatusBadRequest, "idle_minutes must be between 1 and 1440")
 		return
+	}
+	if req.Profile != nil {
+		if !slices.Contains(knownProfiles, *req.Profile) {
+			api.Error(w, http.StatusBadRequest, "profile must be power-saver, balanced or performance")
+			return
+		}
+		// The daemon switches first: a plan it refuses is never saved.
+		s.profileMu.Lock()
+		defer s.profileMu.Unlock()
+		if status, msg := s.changeProfile(r.Context(), *req.Profile); status != 0 {
+			api.Error(w, status, "%s", msg)
+			return
+		}
 	}
 	var prev config.PowerConfig
 	err := s.cfg.Mutate(func(c *config.Config) {
@@ -466,13 +501,27 @@ func (s *Service) handlePut(w http.ResponseWriter, r *http.Request) {
 		if req.IdleMinutes != nil {
 			c.Power.IdleMinutes = *req.IdleMinutes
 		}
+		if req.Profile != nil {
+			c.Power.Profile = *req.Profile
+		}
 	})
 	if err != nil {
 		// config.json keeps the old settings; so does memory (saving may
-		// fail again, which changes nothing).
+		// fail again, which changes nothing), and the daemon.
 		s.cfg.Mutate(func(c *config.Config) { c.Power = prev })
+		if req.Profile != nil {
+			s.mu.Lock()
+			back := effectiveProfile(prev.Profile, s.profiles)
+			s.mu.Unlock()
+			if e := s.switchProfile(r.Context(), back); e != nil {
+				log.Printf("power: power plan back to %s: %v", back, e)
+			}
+		}
 		api.Error(w, http.StatusInternalServerError, "cannot save configuration: %v", err)
 		return
+	}
+	if req.Profile != nil {
+		s.profileSettled()
 	}
 	api.WriteJSON(w, http.StatusOK, s.snapshot(r.Context()))
 }

@@ -1,8 +1,9 @@
 // Flows over System › Power (spec-cc-screens §8, DECISIONS NEW-1): the
 // state as a heat level in its seven cases, idle power-off, stay awake, and
-// Wake-on-LAN with the Wake card. Each ID is a row of
-// tools/web/e2e/parity.json (owner C4). See legacy.spec.mjs for the flow
-// format.
+// Wake-on-LAN with the Wake card. Each SYS-pwr ID is a row of
+// tools/web/e2e/parity.json (owner C4). SYS-plan-switch is the power plan,
+// which the eight-page UI never had (BEYOND_PARITY in e2e/parity.mjs). See
+// legacy.spec.mjs for the flow format.
 
 import assert from 'node:assert/strict';
 
@@ -227,6 +228,90 @@ export default [
         await notice(page, 'Stay awake stopped.');
         await until(page, () => document.getElementById('pwr-stop').hidden);
         assert.equal(await text(page, '#pwr-awake-line'), 'Keep VaporOS on for a while, even when nobody plays.');
+      });
+    },
+  },
+  {
+    id: 'SYS-plan-switch',
+    ui: ['next'],
+    // The refused switch is answered 502, which Chrome logs.
+    allow: [/status of 502/, /502 PUT .*\/api\/v1\/power$/],
+    async run(t) {
+      const { page, step } = t;
+      const radio = (v) => `#pwr-plans .pwr-plan-radio[value="${v}"]`;
+      const checked = () => page.$eval('#pwr-plans .pwr-plan-radio:checked', (el) => el.value);
+      // lit waits for the stops of the scale that are lit: the first n.
+      const lit = (n) => until(page, (want) => Array.from(document.querySelectorAll('#pwr-plans .pwr-plan-opt'))
+        .every((el, i) => (getComputedStyle(el, '::before').opacity === '1') === (i < want)), n);
+      // offers answers GET /power and /status as a PC with these plans.
+      const offers = async (profiles) => {
+        await patch(page, '/power', (p) => ({ ...p, profiles }));
+        await patch(page, '/status', (st) => ({ ...st, power: st.power && { ...st.power, profiles } }));
+        await page.reload();
+        await t.ready();
+      };
+      await step('the plan in use is checked, says what it does, and lights the scale up to its stop', async () => {
+        await open(t);
+        await until(page, () => !document.getElementById('pwr-plan').hasAttribute('aria-busy'));
+        assert.equal(await checked(), 'balanced');
+        assert.equal(await text(page, '#pwr-plan-detail'), 'The processor speeds up when a game needs it.');
+        assert.equal(await page.isVisible('#pwr-plan-hint'), false);
+        assert.equal(await page.$eval('#pwr-plans', (el) => el.disabled), false);
+        await lit(2);
+      });
+      await step('a plan applies at once, and a reload still shows it', async () => {
+        const body = write(page, 'PUT', '/power');
+        await press(page, radio('performance'));
+        assert.deepEqual(await body, { profile: 'performance' });
+        await notice(page, 'Saved. The power plan is Performance.');
+        assert.equal(await text(page, '#pwr-plan-detail'), 'Keeps the processor at full speed. Uses more power, even when idle.');
+        await lit(3);
+        await page.reload();
+        await t.ready();
+        await until(page, () => document.querySelector('#pwr-plans .pwr-plan-radio:checked')?.value === 'performance');
+      });
+      await step('the arrow keys pick a plan, as in any group of radio buttons', async () => {
+        await page.focus(radio('performance'));
+        let body = write(page, 'PUT', '/power');
+        await page.keyboard.press('ArrowLeft');
+        assert.deepEqual(await body, { profile: 'balanced' });
+        await notice(page, 'Saved. The power plan is Balanced.');
+        body = write(page, 'PUT', '/power');
+        await page.keyboard.press('ArrowLeft');
+        assert.deepEqual(await body, { profile: 'power-saver' });
+        await notice(page, 'Saved. The power plan is Power saver.');
+        assert.equal(await text(page, '#pwr-plan-detail'), 'Holds the processor back to save power. Games may run slower.');
+        assert.equal(await page.evaluate(() => document.activeElement.value), 'power-saver');
+        await lit(1);
+      });
+      await step('a switch that fails says so and goes back to the plan in use', async () => {
+        await page.route('**/api/v1/power', (route) => (route.request().method() === 'PUT'
+          ? route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'power-profiles-daemon is not answering' }) })
+          : route.fallback()));
+        await press(page, radio('performance'));
+        await notice(page, "Couldn't switch the power plan. Try again in a moment.");
+        await until(page, () => document.querySelector('#pwr-plans .pwr-plan-radio:checked')?.value === 'power-saver');
+        assert.equal(await text(page, '#pwr-plan-detail'), 'Holds the processor back to save power. Games may run slower.');
+        await lit(1);
+        await page.unroute('**/api/v1/power');
+      });
+      await step('a PC without Performance: that plan is off and the card says so', async () => {
+        await offers(['power-saver', 'balanced']);
+        await until(page, () => !document.getElementById('pwr-plan').hasAttribute('aria-busy'));
+        assert.equal(await page.isDisabled(radio('performance')), true);
+        assert.equal(await page.isDisabled(radio('balanced')), false);
+        assert.equal(await text(page, '#pwr-plan-hint'), "This PC doesn't offer Performance.");
+        assert.equal(await checked(), 'power-saver');
+      });
+      await step('no plans at all: nothing to pick', async () => {
+        await page.unroute('**/api/v1/power');
+        await page.unroute('**/api/v1/status');
+        await offers([]);
+        await until(page, () => !document.getElementById('pwr-plan').hasAttribute('aria-busy'));
+        assert.equal(await page.$eval('#pwr-plans', (el) => el.disabled), true);
+        assert.equal(await text(page, '#pwr-plan-hint'), "Power plans aren't available on this PC.");
+        await page.unroute('**/api/v1/power');
+        await page.unroute('**/api/v1/status');
       });
     },
   },

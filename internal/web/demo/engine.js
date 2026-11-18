@@ -658,6 +658,7 @@ const errorAnswer = (status, msg, extra) => jsonAnswer(status, { error: goTrim(m
 const POWER_INTERVAL = 15000; // power.interval
 const WEB_WINDOW = 5 * 60000; // power.webActivityWindow
 const MAX_KEEP_AWAKE = 7 * 24 * 60; // minutes, power.maxKeepAwake
+const PROFILES = ['power-saver', 'balanced', 'performance']; // power.knownProfiles
 const WEB_REASON = 'web UI in use';
 const HEARTBEAT = 15000; // the event stream's heartbeat
 
@@ -2521,11 +2522,17 @@ const POWER = [
     return this.powerState(this.now());
   }],
   ['PUT', '/power', AUTHED, function (r) {
-    const b = readJSON(r.body, { idle_shutdown: 'bool', idle_minutes: 'int' });
+    const b = readJSON(r.body, { idle_shutdown: 'bool', idle_minutes: 'int', profile: 'string' });
     if (b.error) return fail(400, b.error);
     const m = b.v.idle_minutes;
     if (m !== undefined && (m < 1 || m > 1440)) return fail(400, 'idle_minutes must be between 1 and 1440');
     const p = this.doc('power');
+    const plan = b.v.profile;
+    if (plan !== undefined) {
+      if (!PROFILES.includes(plan)) return fail(400, 'profile must be power-saver, balanced or performance');
+      if (!asList(p.profiles).includes(plan)) return fail(409, `this PC does not offer the ${plan} power plan`);
+      p.profile = plan;
+    }
     if (b.v.idle_shutdown !== undefined) p.idle_shutdown = b.v.idle_shutdown;
     if (m !== undefined) p.idle_minutes = m;
     return this.powerState(this.now());

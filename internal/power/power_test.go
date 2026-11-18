@@ -56,6 +56,11 @@ type rig struct {
 	powerErr  error
 	events    []string
 	lastIdle  idleEvent
+	plans     []string // what power-profiles-daemon offers
+	plansErr  error
+	planSets  []string // every plan the daemon was switched to
+	planErr   error
+	planAsks  int
 }
 
 func newRig(t *testing.T, minutes int, enabled bool) *rig {
@@ -63,7 +68,7 @@ func newRig(t *testing.T, minutes int, enabled bool) *rig {
 	isolate(t)
 	cfg := config.Defaults()
 	cfg.Power = config.PowerConfig{IdleShutdown: enabled, IdleMinutes: minutes}
-	r := &rig{clock: time.Date(2026, 9, 29, 20, 0, 0, 0, time.UTC), ioOK: true}
+	r := &rig{clock: time.Date(2026, 9, 29, 20, 0, 0, 0, time.UTC), ioOK: true, plans: []string{"power-saver", "balanced", "performance"}}
 	s := NewService(cfg, func() (bool, string) { return r.busyNow, "Moonlight stream" }, nil)
 	s.now = func() time.Time { return r.clock }
 	s.poweroff = func(context.Context) error { r.poweroffs++; return r.powerErr }
@@ -80,6 +85,16 @@ func newRig(t *testing.T, minutes int, enabled bool) *rig {
 	s.ethtool = func(context.Context, string) (string, error) { return "", errors.New("no ethtool") }
 	s.ifaceAddrs = func(string) ([]net.Addr, error) { return nil, errors.New("no interfaces") }
 	s.sysNet = t.TempDir()
+	s.listProfiles = func(context.Context) ([]string, error) {
+		r.planAsks++
+		return slices.Clone(r.plans), r.plansErr
+	}
+	s.setProfile = func(_ context.Context, name string) error {
+		if r.planErr == nil {
+			r.planSets = append(r.planSets, name)
+		}
+		return r.planErr
+	}
 	r.Service = s
 	s.start()
 	return r

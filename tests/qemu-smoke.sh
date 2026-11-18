@@ -323,7 +323,8 @@ expect_ping os
 screendump 2-os
 
 c=$(http POST /auth/login -H 'Content-Type: application/json' -d "{\"password\":\"$PASSWORD\"}" -c "$WORK/cookies")
-[[ $c == 200 && -n $(json csrf) ]] || die "POST /auth/login with the install password -> $c $(cat "$WORK/body")"
+csrf=$(json csrf)
+[[ $c == 200 && -n $csrf ]] || die "POST /auth/login with the install password -> $c $(cat "$WORK/body")"
 c=$(http GET /auth/me -b "$WORK/cookies")
 [[ $c == 200 && $(json authenticated) == true ]] || die "GET /auth/me after login -> $c $(cat "$WORK/body")"
 log "logged in with the password set during the install"
@@ -336,8 +337,20 @@ alive || die "the installed system rebooted on its own after its health check"
 expect_ping os
 screendump 3-os-idle
 
-log "PASS: installed $VERSION through the web installer, booted it and logged in"
+# 5. The power plan (docs/CONTRACTS.md, Units, "Power plan"): vosd, as root,
+#    reaches power-profiles-daemon over the system bus and switches its
+#    profile, which only a booted system can show. Every PC, a VM too, offers
+#    power-saver and balanced; a switch the daemon refused would answer 502.
+c=$(http GET /power -b "$WORK/cookies")
+plans=$(json profiles)
+[[ $c == 200 && $plans == *"'power-saver'"* && $plans == *"'balanced'"* ]] ||
+    die "GET /power -> $c with the power plans ${plans:-none}: $(cat "$WORK/body")"
+c=$(http PUT /power -b "$WORK/cookies" -H "X-VOS-CSRF: $csrf" -H 'Content-Type: application/json' -d '{"profile":"power-saver"}')
+[[ $c == 200 && $(json profile) == power-saver ]] || die "PUT /power to the power-saver plan -> $c $(cat "$WORK/body")"
+log "power plans $plans; switched to power-saver"
+
+log "PASS: installed $VERSION through the web installer, booted it, logged in and switched the power plan"
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
-    printf '### VM smoke test (%s)\nInstalled `%s` on `%s` through the web installer, booted it from disk, logged in. %ss.\n' \
+    printf '### VM smoke test (%s)\nInstalled `%s` on `%s` through the web installer, booted it from disk, logged in, switched the power plan. %ss.\n' \
         "$ACCEL" "$VERSION" "$DISK" $((SECONDS - T0)) >>"$GITHUB_STEP_SUMMARY"
 fi

@@ -114,6 +114,9 @@ type UpdateConfig struct {
 type PowerConfig struct {
 	IdleShutdown bool `json:"idle_shutdown"`
 	IdleMinutes  int  `json:"idle_minutes"`
+	// Profile is the power plan, a profile of power-profiles-daemon
+	// (docs/CONTRACTS.md, Units, Power plan).
+	Profile string `json:"profile"`
 }
 
 type DisplayConfig struct {
@@ -155,7 +158,7 @@ func Defaults() *Config {
 	return &Config{
 		Schema:  1,
 		Update:  UpdateConfig{Source: DefaultUpdateSrc, Channel: ch, Auto: "stage"},
-		Power:   PowerConfig{IdleShutdown: false, IdleMinutes: 15}, // the installer turns it on when Wake-on-LAN can wake the PC again
+		Power:   PowerConfig{IdleShutdown: false, IdleMinutes: 15, Profile: "balanced"}, // the installer turns idle shutdown on when Wake-on-LAN can wake the PC again
 		Display: DisplayConfig{HDR: true, UIScaling: true},
 		Storage: StorageConfig{Libraries: []Library{}},
 		SSH:     SSHConfig{Keys: []string{}},

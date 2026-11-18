@@ -1,12 +1,14 @@
 {{- /*
   System › Power (spec-cc-screens §8, DECISIONS NEW-1): when VaporOS
-  sleeps, how to keep it on, and whether anything can wake it. The server
-  paints every card at its final size with its controls disabled;
-  pages/power.js fills the state from GET /power and power.idle, and
-  power-more.js wires the controls and the Wake card. REDLINE: the state
-  is a heat level (⟦cc-power-state⟧): a strip of the heat field over the
-  Inferno scale, its needle at the box's temperature; an idle countdown
-  cools it toward asleep. The art is aria-hidden; the words carry it all.
+  sleeps, how to keep it on, how hard it runs (the power plan), and
+  whether anything can wake it. The server paints every card at its final
+  size with its controls disabled; pages/power.js fills the state from
+  GET /power and power.idle, and power-more.js wires the controls and the
+  Wake card. REDLINE: the state is a heat level (⟦cc-power-state⟧): a
+  strip of the heat field over the Inferno scale, its needle at the box's
+  temperature; an idle countdown cools it toward asleep. The power plan
+  is three stops on the same scale, lit up to the plan's own. The art is
+  aria-hidden; the words carry it all.
 */ -}}
 {{define "content"}}
 <div class="pwr" id="pwr">
@@ -79,6 +81,19 @@
         <button class="btn ghost" id="pwr-stop" type="button" hidden>Stop<span class="sr-only"> staying awake</span></button>
       </div>
       <p class="field-hint" id="pwr-awake-off" hidden>Idle power-off is off, so VaporOS stays on anyway.</p>
+    </div>
+  </section>
+
+  <section class="rack pwr-plan-rack" aria-labelledby="pwr-plan-h">
+    <h2 class="rack-title" id="pwr-plan-h">Power plan</h2>
+    <div class="pwr-card" id="pwr-plan" data-region="pwr-plan" aria-busy="true">
+      <fieldset class="pwr-plans" id="pwr-plans" aria-labelledby="pwr-plan-h" aria-describedby="pwr-plan-detail" disabled>
+        <label class="pwr-plan-opt"><input class="pwr-plan-radio" type="radio" name="plan" value="power-saver"><span class="pwr-plan-name">Power saver</span></label>
+        <label class="pwr-plan-opt"><input class="pwr-plan-radio" type="radio" name="plan" value="balanced"><span class="pwr-plan-name">Balanced</span></label>
+        <label class="pwr-plan-opt"><input class="pwr-plan-radio" type="radio" name="plan" value="performance"><span class="pwr-plan-name">Performance</span></label>
+      </fieldset>
+      <p class="pwr-plan-detail" id="pwr-plan-detail"><span class="skel skel-line" aria-hidden="true"></span></p>
+      <p class="field-hint" id="pwr-plan-hint" hidden></p>
     </div>
   </section>
 
