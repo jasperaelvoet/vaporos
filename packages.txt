@@ -14,6 +14,11 @@
 
 # ---- The system
 base
+# Arch's build: multilib's lib32-libffi, which Steam's 32-bit libraries need,
+# depends on exactly Arch's libffi, and cachyos-core-v3 has lagged behind it
+# (3.8.0 against 3.8.1 since 2026-11-17) and would win on repo order, which
+# leaves pacstrap unable to install anything 32-bit.
+core/libffi
 # The CachyOS kernel: BORE scheduler, sched-ext, CachyOS patchset
 linux-cachyos
 linux-firmware
