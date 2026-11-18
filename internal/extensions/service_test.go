@@ -256,58 +256,66 @@ func TestPassFetchesTheOtherSlotAndCollects(t *testing.T) {
 }
 
 // A source whose bytes do not seal is not downloaded again, nor is any
-// image on a disk without fs-verity.
+// image on a disk without fs-verity. Each case is a subtest: its passes'
+// helper installs end before the next one's paths.
 func TestPassStopsRetryingWhatCannotSeal(t *testing.T) {
-	e := newEnv(t)
 	proton := newImage(t, "proton", "", 5000, true)
-	e.catalog(proton)
-	e.serve(newImage(t, "proton", "other", 5000, true)) // another version's file
-	e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonNoSet})
 
-	s, b := e.service()
-	if retry := s.pass(t.Context(), b); !retry {
-		t.Fatal("no retry after the first failure")
-	}
-	if retry := s.pass(t.Context(), b); retry {
-		t.Fatal("the same bytes are fetched again")
-	}
-	if x := e.state(s, "proton"); x.State != StateNeedsAttention || x.Error != badImageText {
-		t.Fatalf("proton = %+v", x)
-	}
-	s.retryAll() // someone asked: Reconcile
-	e.serve(proton)
-	s.pass(t.Context(), b)
-	if x := e.state(s, "proton"); x.State != StateRestartNeeded {
-		t.Fatalf("after Reconcile proton = %+v", x)
-	}
+	t.Run("bytes that do not seal", func(t *testing.T) {
+		e := newEnv(t)
+		e.catalog(proton)
+		e.serve(newImage(t, "proton", "other", 5000, true)) // another version's file
+		e.report(store.BootReport{Mode: store.ModeOff, Reason: store.ReasonNoSet})
 
-	e2 := newEnv(t)
-	e2.catalog(proton)
-	e2.serve(proton)
-	e2.report(store.BootReport{Mode: store.ModeEnabled, Reason: "no-set no-verity"})
-	s2, b2 := e2.service()
-	if retry := s2.pass(t.Context(), b2); retry {
-		t.Fatal("retry without fs-verity")
-	}
-	if got := e2.sealer.putIDs(); len(got) != 0 {
-		t.Fatalf("fetched %v without fs-verity", got)
-	}
-	if st := s2.Status(); st.Error != noVerityText || st.Extensions[0].State != StateNeedsAttention {
-		t.Fatalf("status = %+v", st)
-	}
+		s, b := e.service()
+		if retry := s.pass(t.Context(), b); !retry {
+			t.Fatal("no retry after the first failure")
+		}
+		if retry := s.pass(t.Context(), b); retry {
+			t.Fatal("the same bytes are fetched again")
+		}
+		if x := e.state(s, "proton"); x.State != StateNeedsAttention || x.Error != badImageText {
+			t.Fatalf("proton = %+v", x)
+		}
+		s.retryAll() // someone asked: Reconcile
+		e.serve(proton)
+		s.pass(t.Context(), b)
+		if x := e.state(s, "proton"); x.State != StateRestartNeeded {
+			t.Fatalf("after Reconcile proton = %+v", x)
+		}
+	})
 
-	e3 := newEnv(t)
-	e3.catalog(proton)
-	e3.serve(proton)
-	e3.sealer.err = store.ErrUnsupported
-	s3, b3 := e3.service()
-	s3.pass(t.Context(), b3)
-	if retry := s3.pass(t.Context(), b3); retry {
-		t.Fatal("retry after the disk refused to seal")
-	}
-	if x := e3.state(s3, "proton"); x.Error != noVerityText {
-		t.Fatalf("proton = %+v", x)
-	}
+	t.Run("a boot without fs-verity", func(t *testing.T) {
+		e := newEnv(t)
+		e.catalog(proton)
+		e.serve(proton)
+		e.report(store.BootReport{Mode: store.ModeEnabled, Reason: "no-set no-verity"})
+		s, b := e.service()
+		if retry := s.pass(t.Context(), b); retry {
+			t.Fatal("retry without fs-verity")
+		}
+		if got := e.sealer.putIDs(); len(got) != 0 {
+			t.Fatalf("fetched %v without fs-verity", got)
+		}
+		if st := s.Status(); st.Error != noVerityText || st.Extensions[0].State != StateNeedsAttention {
+			t.Fatalf("status = %+v", st)
+		}
+	})
+
+	t.Run("a disk that refuses to seal", func(t *testing.T) {
+		e := newEnv(t)
+		e.catalog(proton)
+		e.serve(proton)
+		e.sealer.err = store.ErrUnsupported
+		s, b := e.service()
+		s.pass(t.Context(), b)
+		if retry := s.pass(t.Context(), b); retry {
+			t.Fatal("retry after the disk refused to seal")
+		}
+		if x := e.state(s, "proton"); x.Error != noVerityText {
+			t.Fatalf("proton = %+v", x)
+		}
+	})
 }
 
 func TestBootedSlotFile(t *testing.T) {

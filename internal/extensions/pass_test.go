@@ -235,7 +235,8 @@ func TestPassKeepsATrialTheDesiredSetAddsTo(t *testing.T) {
 }
 
 // Recording a passed trial's images as proven is best effort: the pass
-// promotes it and goes on. A promotion that fails stops the pass.
+// promotes it and goes on. A promotion that fails stops the pass. Each case
+// is a subtest: its pass's helper installs end before the next one's paths.
 func TestPassPromotesWhateverProvenDoes(t *testing.T) {
 	setup := func(t *testing.T) (*env, *store.Set) {
 		e := newEnv(t)
@@ -257,32 +258,36 @@ func TestPassPromotesWhateverProvenDoes(t *testing.T) {
 		return e, trial
 	}
 
-	e, trial := setup(t)
-	must(t, os.MkdirAll(config.ExtProvenPath(), 0o755)) // cannot be written
-	s, b := e.service()
-	s.pass(t.Context(), b)
-	if en, _ := store.Enabled(); en == nil || en.Name != trial.Name {
-		t.Fatalf("enabled = %+v, want the trial %s", en, trial.Name)
-	}
-	if p, _ := store.Pending(); p == nil || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) {
-		t.Fatalf("pending = %+v: the pass stopped after the promotion", p)
-	}
-	if st := s.Status(); st.Error != "" {
-		t.Fatalf("status error %q", st.Error)
-	}
+	t.Run("proven cannot be written", func(t *testing.T) {
+		e, trial := setup(t)
+		must(t, os.MkdirAll(config.ExtProvenPath(), 0o755))
+		s, b := e.service()
+		s.pass(t.Context(), b)
+		if en, _ := store.Enabled(); en == nil || en.Name != trial.Name {
+			t.Fatalf("enabled = %+v, want the trial %s", en, trial.Name)
+		}
+		if p, _ := store.Pending(); p == nil || !slices.Equal(p.IDs, []string{"proton", "coolercontrol"}) {
+			t.Fatalf("pending = %+v: the pass stopped after the promotion", p)
+		}
+		if st := s.Status(); st.Error != "" {
+			t.Fatalf("status error %q", st.Error)
+		}
+	})
 
-	e, trial = setup(t)
-	writeFile(t, filepath.Join(config.ExtEnabledLink(), "x"), "") // enabled cannot be replaced
-	s, b = e.service()
-	if retry := s.pass(t.Context(), b); !retry {
-		t.Fatal("no retry after a promotion that failed")
-	}
-	if p, _ := store.Pending(); p == nil || p.Name != trial.Name {
-		t.Fatalf("pending = %+v, want the trial %s still", p, trial.Name)
-	}
-	if st := s.Status(); !strings.Contains(st.Error, "promoting set "+trial.Name) {
-		t.Fatalf("status error %q", st.Error)
-	}
+	t.Run("enabled cannot be replaced", func(t *testing.T) {
+		e, trial := setup(t)
+		writeFile(t, filepath.Join(config.ExtEnabledLink(), "x"), "")
+		s, b := e.service()
+		if retry := s.pass(t.Context(), b); !retry {
+			t.Fatal("no retry after a promotion that failed")
+		}
+		if p, _ := store.Pending(); p == nil || p.Name != trial.Name {
+			t.Fatalf("pending = %+v, want the trial %s still", p, trial.Name)
+		}
+		if st := s.Status(); !strings.Contains(st.Error, "promoting set "+trial.Name) {
+			t.Fatalf("status error %q", st.Error)
+		}
+	})
 }
 
 // A damaged image's card says so until its image is sealed again, also
