@@ -13,9 +13,13 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jasperaelvoet/vaporos/internal/config"
+	"github.com/jasperaelvoet/vaporos/internal/gamerfs"
 )
 
 var (
@@ -39,11 +43,19 @@ type Client struct {
 	user     string
 	password string
 	pinPath  string
-	hc       *http.Client
+	// pinRoot and pinRel are pinPath as readRegular resolves it, worked
+	// out once: the transport verifies the pin on goroutines of its own,
+	// some of which outlive the request that started them.
+	pinRoot, pinRel string
+	hc              *http.Client
 }
 
 func NewClient(base, user, password, pinPath string) *Client {
-	c := &Client{base: strings.TrimRight(base, "/"), user: user, password: password, pinPath: pinPath}
+	c := &Client{base: strings.TrimRight(base, "/"), user: user, password: password, pinPath: pinPath,
+		pinRoot: filepath.Dir(pinPath), pinRel: filepath.Base(pinPath)}
+	if rel, err := gamerRel(pinPath); err == nil {
+		c.pinRoot, c.pinRel = config.GamerHome, rel
+	}
 	c.hc = &http.Client{
 		Transport: &http.Transport{
 			Proxy: nil, // never send loopback traffic to a proxy
@@ -69,7 +81,7 @@ func (c *Client) verifyPin(cs tls.ConnectionState) error {
 	}
 	// The certificate lives in the gaming user's home: never follow a link or
 	// block on a FIFO a game put there.
-	data, err := readRegular(c.pinPath)
+	data, err := gamerfs.ReadFile(c.pinRoot, c.pinRel, maxFileSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil // Sunshine has not created its certificate yet
 	}
