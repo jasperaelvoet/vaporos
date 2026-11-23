@@ -121,7 +121,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           cache: true
-          tools: tools_qtcreator_gui
           version: 6.12.0
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@073e34d7c2ab4ae6961ed7cca690b3abd5ba5a7e'
 
@@ -130,6 +129,8 @@ jobs:
         working-directory: src/moonlight-qt
         shell: cmd
         run: |
+          rem build-arch.bat finds jom next to Qt Creator, else uses nmake
+          set "QT_PATH=%QT_ROOT_DIR%\bin"
           set "PATH=%QT_ROOT_DIR%\bin;%PATH%"
           scripts\build-arch.bat Release x64
 
