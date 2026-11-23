@@ -108,6 +108,22 @@ set a new password.
 3. Moonlight shows a 4-digit PIN. Enter it on the **Devices** tab of the web UI
    (every page asks when a device is waiting).
 
+### PyroWave
+
+VaporOS's Sunshine also streams **PyroWave**, the intra-only wavelet codec
+Valve added to Steam Remote Play: every frame stands on its own, so fast motion
+stays sharp and there is no smearing from frame to frame. It needs a lot of bandwidth (150 to 500 Mbit/s), so use it on a
+wired gigabit network, not over Wi-Fi or the internet.
+
+1. Download VaporOS's Moonlight from the release: `moonlight-pyrowave-macos.dmg`
+   (Apple silicon), `moonlight-pyrowave-windows-x64.zip` or
+   `moonlight-pyrowave-x86_64.AppImage`. Stock Moonlight can't decode PyroWave.
+   The builds are not signed: on a Mac, right-click Moonlight and choose
+   **Open** the first time.
+2. In Moonlight's **Settings**, set **Video codec** to **PyroWave**. The
+   bitrate switches to PyroWave's default for your resolution (150 to
+   600 Mbit/s) and the slider goes up to 1 Gbit/s.
+
 ## Wake it
 
 When VaporOS has powered itself off, Moonlight wakes it: open Moonlight and
@@ -199,8 +215,9 @@ protocol, units) are in [docs/CONTRACTS.md](docs/CONTRACTS.md). Coding agents
 start at [AGENTS.md](AGENTS.md).
 
 The OS is built from prebuilt CachyOS and Arch packages (`packages.txt`, with
-the repos set up as in `build/pacman.conf`) plus the `rootfs/` overlay and one
-static Go binary, `vos`. That binary is the whole control plane: web UI and API,
+the repos set up as in `build/pacman.conf`), VaporOS's own Sunshine with the
+PyroWave codec (built from the patches in `forks/`), the `rootfs/` overlay and
+one static Go binary, `vos`. That binary is the whole control plane: web UI and API,
 installer, updater and display manager.
 
 ```

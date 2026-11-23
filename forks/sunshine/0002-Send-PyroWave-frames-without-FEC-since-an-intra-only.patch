@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Mon, 23 Nov 2026 23:55:21 +0100
+Subject: [PATCH] Send PyroWave frames without FEC, since an intra-only frame
+ is replaced by the next
+
+
+diff --git a/src/stream.cpp b/src/stream.cpp
+index a222b404..219c2f17 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -1682,7 +1682,10 @@ namespace stream {
+         frame_header.frame_processing_latency = 0;
+       }
+ 
+-      auto fecPercentage = config::stream.fec_percentage;
++      // PyroWave is intra-only: a lost frame costs one frame and the next one
++      // replaces it, so parity would only spend bandwidth (and cap the frame
++      // size at the FEC block limit) to save what the next frame brings anyway.
++      auto fecPercentage = session->config.monitor.videoFormat == video::format_pyrowave ? 0 : config::stream.fec_percentage;
+ 
+       // Insert space for packet headers
+       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
+@@ -1703,7 +1706,9 @@ namespace stream {
+       // If the number of FEC blocks needed exceeds the protocol limit, turn off FEC for this frame.
+       // For normal FEC percentages, this should only happen for enormous frames (over 800 packets at 20%).
+       if (fec_blocks_needed > MAX_FEC_BLOCKS) {
+-        BOOST_LOG(warning) << "Skipping FEC for abnormally large encoded frame (needed "sv << fec_blocks_needed << " FEC blocks)"sv;
++        if (fecPercentage != 0) {
++          BOOST_LOG(warning) << "Skipping FEC for abnormally large encoded frame (needed "sv << fec_blocks_needed << " FEC blocks)"sv;
++        }
+         fecPercentage = 0;
+         fec_blocks_needed = MAX_FEC_BLOCKS;
+       }

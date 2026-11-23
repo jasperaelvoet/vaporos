@@ -6,7 +6,7 @@
 #
 #   build/run.sh SRC OUT KEYS
 #
-#   SRC   the build inputs (packages.txt build rootfs extensions keys
+#   SRC   the build inputs (packages.txt build forks rootfs extensions keys
 #         .build/vos), mounted read-only
 #   OUT   where the artifacts land
 #   KEYS  a directory or Docker volume holding the dev signing key (dev.key,

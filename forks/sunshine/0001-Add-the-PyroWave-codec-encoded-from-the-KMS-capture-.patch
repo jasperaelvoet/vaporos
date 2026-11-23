@@ -1,0 +1,1232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Mon, 23 Nov 2026 23:25:13 +0100
+Subject: [PATCH] Add the PyroWave codec, encoded from the KMS capture through
+ Vulkan with the cursor drawn in
+
+
+diff --git a/cmake/compile_definitions/linux.cmake b/cmake/compile_definitions/linux.cmake
+index 1188d402..98002efc 100644
+--- a/cmake/compile_definitions/linux.cmake
++++ b/cmake/compile_definitions/linux.cmake
+@@ -220,6 +220,45 @@ if(${SUNSHINE_ENABLE_VULKAN})
+     set(SUNSHINE_TARGET_DEPENDENCIES ${SUNSHINE_TARGET_DEPENDENCIES} vulkan_shaders)
+ endif()
+ 
++# pyrowave (intra-only wavelet codec, encoded on the KMS capture through Vulkan)
++if(${SUNSHINE_ENABLE_PYROWAVE})
++    if(NOT ${SUNSHINE_ENABLE_VULKAN} OR NOT ${SUNSHINE_ENABLE_DRM})
++        message(FATAL_ERROR "SUNSHINE_ENABLE_PYROWAVE needs SUNSHINE_ENABLE_VULKAN and SUNSHINE_ENABLE_DRM")
++    endif()
++    pkg_check_modules(PYROWAVE REQUIRED IMPORTED_TARGET pyrowave-shared)
++    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_PYROWAVE=1)
++    list(APPEND PLATFORM_LIBRARIES PkgConfig::PYROWAVE)
++    list(APPEND PLATFORM_TARGET_FILES
++            "${CMAKE_SOURCE_DIR}/src/platform/linux/pyrowave_encode.h"
++            "${CMAKE_SOURCE_DIR}/src/platform/linux/pyrowave_encode.cpp")
++
++    # The pass that copies the capture and draws the cursor before encoding
++    set(PYROWAVE_SHADER_SOURCE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/shaders/vulkan/pyrowave_compose.comp")
++    set(PYROWAVE_SHADER_SPV "${VULKAN_SHADER_DIR}/pyrowave_compose.spv")
++    set(PYROWAVE_SHADER_DATA "${VULKAN_SHADER_DIR}/pyrowave_compose.spv.inc")
++    if(GLSLC_EXECUTABLE)
++        add_custom_command(
++                OUTPUT "${PYROWAVE_SHADER_SPV}"
++                COMMAND ${GLSLC_EXECUTABLE} -O "${PYROWAVE_SHADER_SOURCE}" -o "${PYROWAVE_SHADER_SPV}"
++                DEPENDS "${PYROWAVE_SHADER_SOURCE}"
++                VERBATIM)
++    else()
++        add_custom_command(
++                OUTPUT "${PYROWAVE_SHADER_SPV}"
++                COMMAND ${GLSLANG_EXECUTABLE} -V -o "${PYROWAVE_SHADER_SPV}" "${PYROWAVE_SHADER_SOURCE}"
++                DEPENDS "${PYROWAVE_SHADER_SOURCE}"
++                VERBATIM)
++    endif()
++    add_custom_command(
++            OUTPUT "${PYROWAVE_SHADER_DATA}"
++            COMMAND ${CMAKE_COMMAND} -DSPV_FILE=${PYROWAVE_SHADER_SPV} -DOUT_FILE=${PYROWAVE_SHADER_DATA}
++                -P "${CMAKE_SOURCE_DIR}/cmake/scripts/binary_to_c.cmake"
++            DEPENDS "${PYROWAVE_SHADER_SPV}"
++            VERBATIM)
++    add_custom_target(pyrowave_shaders DEPENDS "${PYROWAVE_SHADER_DATA}")
++    set(SUNSHINE_TARGET_DEPENDENCIES ${SUNSHINE_TARGET_DEPENDENCIES} pyrowave_shaders)
++endif()
++
+ # wayland
+ if(${SUNSHINE_ENABLE_WAYLAND})
+     find_package(Wayland REQUIRED)
+diff --git a/cmake/prep/options.cmake b/cmake/prep/options.cmake
+index fe5de0cc..f45c6a62 100644
+--- a/cmake/prep/options.cmake
++++ b/cmake/prep/options.cmake
+@@ -64,6 +64,8 @@ elseif(UNIX)  # Linux
+             "Enable building vaapi specific code." ON)
+     option(SUNSHINE_ENABLE_VULKAN
+             "Enable Vulkan video encoding." ON)
++    option(SUNSHINE_ENABLE_PYROWAVE
++            "Enable the PyroWave codec (needs the pyrowave-shared library)." OFF)
+     option(SUNSHINE_ENABLE_WAYLAND
+             "Enable building wayland specific code." ON)
+     option(SUNSHINE_ENABLE_X11
+diff --git a/src/config.cpp b/src/config.cpp
+index 81c7965a..5c09a7fb 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -715,6 +715,7 @@ namespace config {
+     0,  // av1_mode
+     0,  // mpeg2_mode
+     0,  // h263p_mode
++    0,  // pyrowave_mode
+ 
+     2,  // min_threads
+ 
+@@ -1665,6 +1666,7 @@ namespace config {
+     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
+     int_between_f(vars, "mpeg2_mode", video.mpeg2_mode, {0, 2});
+     int_between_f(vars, "h263p_mode", video.h263p_mode, {0, 2});
++    int_between_f(vars, "pyrowave_mode", video.pyrowave_mode, {0, 2});
+     int_f(vars, "min_threads", video.min_threads);
+ 
+     std::string max_stream_resolution;
+diff --git a/src/config.h b/src/config.h
+index f1a84910..d8711686 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -77,6 +77,7 @@ namespace config {
+     int av1_mode;  ///< AV1 support mode advertised to clients.
+     int mpeg2_mode;  ///< MPEG-2 codec advertisement mode.
+     int h263p_mode;  ///< H.263+ codec advertisement mode.
++    int pyrowave_mode;  ///< PyroWave advertisement mode: 0 auto, 1 off, 2 required.
+ 
+     int min_threads;  ///< Minimum number of threads or slices for CPU encoding.
+ 
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+index 45730c56..ac1e34a8 100644
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -1241,6 +1241,12 @@ namespace nvhttp {
+     if (modes.h263p == 2) {
+       codec_mode_flags |= SCM_H263P;
+     }
++    if (modes.pyrowave == 2) {
++      codec_mode_flags |= SCM_PYROWAVE;
++      if (modes.pyrowave_yuv444) {
++        codec_mode_flags |= SCM_PYROWAVE_444;
++      }
++    }
+     return codec_mode_flags;
+   }
+ 
+diff --git a/src/platform/linux/kmsgrab.cpp b/src/platform/linux/kmsgrab.cpp
+index 41197559..ba8b52a4 100644
+--- a/src/platform/linux/kmsgrab.cpp
++++ b/src/platform/linux/kmsgrab.cpp
+@@ -36,6 +36,9 @@
+ #include "vaapi.h"
+ #include "vulkan_encode.h"
+ #include "wayland.h"
++#ifdef SUNSHINE_BUILD_PYROWAVE
++  #include "pyrowave_encode.h"
++#endif
+ 
+ using namespace std::literals;
+ namespace fs = std::filesystem;
+@@ -1879,6 +1882,21 @@ namespace platf {
+           display_t(mem_type) {
+       }
+ 
++#ifdef SUNSHINE_BUILD_PYROWAVE
++      /**
++       * @brief Create the PyroWave encode device, which encodes the DMA-BUF capture directly.
++       *
++       * @param pix_fmt Unused; PyroWave converts RGB to YCbCr itself.
++       * @return Constructed encode device, or null when not capturing to Vulkan memory.
++       */
++      std::unique_ptr<vt_encode_device_t> make_vt_encode_device(pix_fmt_e pix_fmt) override {
++        if (mem_type != mem_type_e::vulkan) {
++          return nullptr;
++        }
++        return pw::make_encode_device(width, height, img_offset_x, img_offset_y);
++      }
++#endif
++
+       /**
+        * @brief Create AVCodec encode device.
+        *
+diff --git a/src/platform/linux/pyrowave_encode.cpp b/src/platform/linux/pyrowave_encode.cpp
+new file mode 100644
+index 00000000..16b11341
+--- /dev/null
++++ b/src/platform/linux/pyrowave_encode.cpp
+@@ -0,0 +1,806 @@
++/**
++ * @file src/platform/linux/pyrowave_encode.cpp
++ * @brief PyroWave encoder: KMS DMA-BUF -> compose pass (crop, cursor) -> PyroWave (Vulkan compute).
++ *
++ * PyroWave is intra-only, so every frame is sent as an IDR frame and reference
++ * frame invalidation never applies. A frame's payload is PyroWave's own
++ * bitstream: its 32x32 blocks each carry their size, so the client pushes the
++ * whole frame into the decoder at once.
++ *
++ * Everything runs on PyroWave's own VkDevice. One command buffer per frame
++ * holds the compose pass (the visible part of the capture plus the cursor,
++ * which KMS keeps on its own plane) and PyroWave's encode, recorded into it
++ * through pyrowave_device_set_command_buffer().
++ */
++#include <algorithm>
++#include <array>
++#include <cstring>
++#include <drm_fourcc.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#if defined(__FreeBSD__)
++  #include <sys/types.h>
++#else
++  #include <sys/sysmacros.h>
++#endif
++#include <vector>
++#include <vulkan/vulkan.h>
++
++#include <pyrowave/pyrowave.h>
++
++#include "graphics.h"
++#include "pyrowave_encode.h"
++#include "src/config.h"
++#include "src/logging.h"
++#include "src/video.h"
++#include "src/video_colorspace.h"
++
++static const std::vector<uint32_t> compose_spv
++#include "shaders/pyrowave_compose.spv.inc"
++  ;
++
++using namespace std::literals;
++
++namespace pw {
++  namespace {
++    // Imported scanout buffers kept alive. gamescope and the compositor flip
++    // between a few buffers, so importing each once and reusing it saves a
++    // Vulkan import per frame.
++    constexpr std::size_t max_cached_images = 6;
++
++    /**
++     * @brief Identify the Vulkan physical device behind the render node Sunshine captures from.
++     */
++    bool find_device_ids(uint32_t &vendor, uint32_t &device, pyrowave_uuid &uuid) {
++      auto render_path = platf::resolve_render_device();
++      struct stat node_stat {};
++      bool have_node = !render_path.empty() && render_path[0] == '/' && stat(render_path.c_str(), &node_stat) == 0;
++
++      VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO};
++      app.apiVersion = VK_API_VERSION_1_1;
++      VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
++      ci.pApplicationInfo = &app;
++      VkInstance inst = VK_NULL_HANDLE;
++      if (vkCreateInstance(&ci, nullptr, &inst) != VK_SUCCESS) {
++        return false;
++      }
++
++      uint32_t count = 0;
++      vkEnumeratePhysicalDevices(inst, &count, nullptr);
++      std::vector<VkPhysicalDevice> devs(count);
++      vkEnumeratePhysicalDevices(inst, &count, devs.data());
++
++      bool found = false;
++      for (auto dev : devs) {
++        VkPhysicalDeviceDrmPropertiesEXT drm = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
++        VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
++        id.pNext = &drm;
++        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
++        props.pNext = &id;
++        vkGetPhysicalDeviceProperties2(dev, &props);
++
++        bool match = !have_node || (drm.hasRender && drm.renderMajor == (int64_t) major(node_stat.st_rdev) && drm.renderMinor == (int64_t) minor(node_stat.st_rdev));
++        if (match && props.properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
++          vendor = props.properties.vendorID;
++          device = props.properties.deviceID;
++          std::memcpy(uuid.uuid, id.deviceUUID, VK_UUID_SIZE);
++          BOOST_LOG(info) << "PyroWave: using "sv << props.properties.deviceName;
++          found = true;
++          break;
++        }
++      }
++      vkDestroyInstance(inst, nullptr);
++      return found;
++    }
++
++    VkFormat vk_format_for(uint32_t fourcc) {
++      switch (fourcc) {
++        case DRM_FORMAT_XRGB8888:
++        case DRM_FORMAT_ARGB8888:
++          return VK_FORMAT_B8G8R8A8_UNORM;
++        case DRM_FORMAT_XBGR8888:
++        case DRM_FORMAT_ABGR8888:
++          return VK_FORMAT_R8G8B8A8_UNORM;
++        case DRM_FORMAT_XRGB2101010:
++        case DRM_FORMAT_ARGB2101010:
++          return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
++        case DRM_FORMAT_XBGR2101010:
++        case DRM_FORMAT_ABGR2101010:
++          return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
++        case DRM_FORMAT_XBGR16161616:
++        case DRM_FORMAT_ABGR16161616:
++          return VK_FORMAT_R16G16B16A16_UNORM;
++        default:
++          return VK_FORMAT_UNDEFINED;
++      }
++    }
++
++    struct cached_image_t {
++      dev_t dev;
++      ino_t ino;
++      uint32_t fourcc;
++      uint64_t modifier;
++      int width;
++      int height;
++      std::array<uint32_t, 4> pitches;
++      std::array<uint32_t, 4> offsets;
++      pyrowave_image image;
++      VkImageView view;
++      uint64_t last_used;
++    };
++
++    struct push_t {
++      int32_t src_offset[2];
++      int32_t size[2];
++      int32_t cursor_pos[2];
++      int32_t cursor_size[2];
++    };
++
++    struct image_t {
++      VkImage image = VK_NULL_HANDLE;
++      VkDeviceMemory mem = VK_NULL_HANDLE;
++      VkImageView view = VK_NULL_HANDLE;
++    };
++
++    class encode_device_t: public platf::vt_encode_device_t {
++    public:
++      encode_device_t(int width, int height, int offset_x, int offset_y):
++          display_width {width},
++          display_height {height},
++          offset_x {offset_x},
++          offset_y {offset_y} {
++      }
++
++      ~encode_device_t() override {
++        if (dev) {
++          vkDeviceWaitIdle(dev);
++          for (auto &c : cache) {
++            vkDestroyImageView(dev, c.view, nullptr);
++          }
++          destroy_image(target);
++          destroy_image(cursor);
++          vkDestroyPipeline(dev, pipeline, nullptr);
++          vkDestroyPipelineLayout(dev, pipeline_layout, nullptr);
++          vkDestroyDescriptorPool(dev, descriptor_pool, nullptr);
++          vkDestroyDescriptorSetLayout(dev, set_layout, nullptr);
++          vkDestroySampler(dev, sampler_nearest, nullptr);
++          vkDestroySampler(dev, sampler_linear, nullptr);
++          vkDestroyFence(dev, fence, nullptr);
++          vkDestroyCommandPool(dev, command_pool, nullptr);
++        }
++        for (auto &c : cache) {
++          pyrowave_image_destroy(c.image);
++        }
++        if (encoder) {
++          pyrowave_encoder_destroy(encoder);
++        }
++        if (device) {
++          pyrowave_device_destroy(device);
++        }
++      }
++
++      bool init_encoder(const video::config_t &config, const video::sunshine_colorspace_t &cs) override {
++        uint32_t major_v = 0, minor_v = 0, patch_v = 0;
++        pyrowave_get_api_version(&major_v, &minor_v, &patch_v);
++        if (major_v != PYROWAVE_API_VERSION_MAJOR) {
++          BOOST_LOG(error) << "PyroWave: library API "sv << major_v << '.' << minor_v << " does not match the headers"sv;
++          return false;
++        }
++
++        uint32_t vendor = 0, device_id = 0;
++        pyrowave_uuid uuid {};
++        bool by_uuid = find_device_ids(vendor, device_id, uuid);
++        auto res = pyrowave_create_device_by_compat(by_uuid ? vendor : 0, by_uuid ? device_id : 0, by_uuid ? &uuid : nullptr, nullptr, nullptr, VK_QUEUE_GLOBAL_PRIORITY_MEDIUM, &device);
++        if (res != PYROWAVE_SUCCESS) {
++          BOOST_LOG(error) << "PyroWave: could not create a device: "sv << res;
++          return false;
++        }
++        // The compose pass and the encode share one command buffer on the graphics queue.
++        pyrowave_device_set_queue_type(device, VK_QUEUE_GRAPHICS_BIT);
++
++        width = config.width;
++        height = config.height;
++        chroma = config.chromaSamplingType == 1 ? PYROWAVE_CHROMA_SUBSAMPLING_444 : PYROWAVE_CHROMA_SUBSAMPLING_420;
++        if (chroma == PYROWAVE_CHROMA_SUBSAMPLING_420 && (width % 2 || height % 2)) {
++          BOOST_LOG(error) << "PyroWave: 4:2:0 needs an even resolution, not "sv << width << 'x' << height;
++          return false;
++        }
++
++        pyrowave_encoder_create_info eci {device, width, height, chroma};
++        if ((res = pyrowave_encoder_create(&eci, &encoder)) != PYROWAVE_SUCCESS) {
++          BOOST_LOG(error) << "PyroWave: could not create the encoder: "sv << res;
++          return false;
++        }
++
++        if (cs.colorspace == video::colorspace_e::bt2020) {
++          // No DYNAMIC_RANGE capability is advertised, so this should not happen.
++          BOOST_LOG(warning) << "PyroWave encodes SDR only; HDR content will look washed out"sv;
++        } else if (cs.colorspace != video::colorspace_e::rec709) {
++          BOOST_LOG(warning) << "PyroWave always encodes BT.709, but the client asked for "sv << video::colorspace_to_string(cs.colorspace);
++        }
++        full_range = cs.full_range;
++
++        auto kbps = (int64_t) config.bitrate;
++        if (config::video.max_bitrate > 0) {
++          kbps = std::min<int64_t>(kbps, config::video.max_bitrate);
++        }
++        auto fps = config.framerateX100 > 0 ? config.framerateX100 / 100.0 : (double) std::max(config.framerate, 1);
++        frame_budget = (std::size_t) (kbps * 1000 / 8 / fps);
++        frame_budget = std::max<std::size_t>(frame_budget, 16 * 1024);
++        bitstream.resize(frame_budget + 64 * 1024);
++
++        if (!init_vulkan()) {
++          return false;
++        }
++
++        BOOST_LOG(info) << "PyroWave: "sv << width << 'x' << height << (chroma == PYROWAVE_CHROMA_SUBSAMPLING_444 ? " 4:4:4"sv : " 4:2:0"sv)
++                        << (full_range ? " full range"sv : " limited range"sv) << ", "sv << kbps / 1000 << " Mbit/s, at most "sv
++                        << frame_budget / 1024 << " KiB per frame"sv;
++        return true;
++      }
++
++      int convert(platf::img_t &img) override {
++        auto &descriptor = (egl::img_descriptor_t &) img;
++        if (descriptor.sequence == 0) {
++          // The dummy image used before the first capture and in the probe.
++          current = nullptr;
++          return 0;
++        }
++
++        if (descriptor.data && descriptor.serial != cursor_serial) {
++          cursor_serial = descriptor.serial;
++          if (!upload_cursor(descriptor.src_w, descriptor.src_h, descriptor.data)) {
++            return -1;
++          }
++        }
++        if (descriptor.data) {
++          push.cursor_pos[0] = descriptor.x - offset_x;
++          push.cursor_pos[1] = descriptor.y - offset_y;
++          push.cursor_size[0] = descriptor.width;
++          push.cursor_size[1] = descriptor.height;
++        } else {
++          push.cursor_size[0] = push.cursor_size[1] = 0;
++        }
++
++        if (descriptor.sequence == sequence && current) {
++          return 0;
++        }
++        sequence = descriptor.sequence;
++        current = import(descriptor.sd);
++        return current ? 0 : -1;
++      }
++
++      platf::vt_encoded_frame encode_frame(uint64_t frame_index, bool) override {
++        pyrowave_rate_control rc {frame_budget};
++        pyrowave_result res = current ? encode_capture(rc) : encode_black(rc);
++        if (res != PYROWAVE_SUCCESS) {
++          BOOST_LOG(error) << "PyroWave: encode failed: "sv << res;
++          return {};
++        }
++
++        // Packets of about one network shard keep partial-frame decoding possible later.
++        constexpr std::size_t packet_boundary = 1024;
++        std::size_t count = 0;
++        if (pyrowave_encoder_compute_num_packets(encoder, packet_boundary, &count) != PYROWAVE_SUCCESS) {
++          return {};
++        }
++        packets.resize(count);
++        std::size_t written = 0;
++        res = pyrowave_encoder_packetize(encoder, packets.data(), packet_boundary, &written, bitstream.data(), bitstream.size());
++        if (res != PYROWAVE_SUCCESS || written == 0) {
++          BOOST_LOG(error) << "PyroWave: packetize failed: "sv << res;
++          return {};
++        }
++
++        platf::vt_encoded_frame out;
++        out.frame_index = frame_index;
++        out.idr = true;
++        std::size_t size = 0;
++        for (std::size_t i = 0; i < written; i++) {
++          size += packets[i].size;
++        }
++        out.data.resize(size);
++        auto *dst = out.data.data();
++        for (std::size_t i = 0; i < written; i++) {
++          std::memcpy(dst, bitstream.data() + packets[i].offset, packets[i].size);
++          dst += packets[i].size;
++        }
++        return out;
++      }
++
++    private:
++      bool init_vulkan() {
++        pyrowave_device_get_vk_device_handles(device, &inst, &phys, &dev);
++        if (!dev) {
++          return false;
++        }
++
++        uint32_t count = 0;
++        vkGetPhysicalDeviceQueueFamilyProperties(phys, &count, nullptr);
++        std::vector<VkQueueFamilyProperties> families(count);
++        vkGetPhysicalDeviceQueueFamilyProperties(phys, &count, families.data());
++        family = UINT32_MAX;
++        for (uint32_t i = 0; i < count; i++) {
++          if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
++            family = i;
++            break;
++          }
++        }
++        if (family == UINT32_MAX) {
++          return false;
++        }
++        // PyroWave's device always has the first graphics queue; PyroWave
++        // only submits to it inside its own calls, which all run on this thread.
++        vkGetDeviceQueue(dev, family, 0, &queue);
++        vkGetPhysicalDeviceMemoryProperties(phys, &memory_props);
++
++        VkCommandPoolCreateInfo pool_ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
++        pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
++        pool_ci.queueFamilyIndex = family;
++        if (vkCreateCommandPool(dev, &pool_ci, nullptr, &command_pool) != VK_SUCCESS) {
++          return false;
++        }
++        VkCommandBufferAllocateInfo cmd_ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
++        cmd_ai.commandPool = command_pool;
++        cmd_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
++        cmd_ai.commandBufferCount = 1;
++        VkFenceCreateInfo fence_ci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
++        if (vkAllocateCommandBuffers(dev, &cmd_ai, &cmd) != VK_SUCCESS || vkCreateFence(dev, &fence_ci, nullptr, &fence) != VK_SUCCESS) {
++          return false;
++        }
++
++        VkSamplerCreateInfo sampler_ci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
++        sampler_ci.addressModeU = sampler_ci.addressModeV = sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
++        sampler_ci.magFilter = sampler_ci.minFilter = VK_FILTER_NEAREST;
++        if (vkCreateSampler(dev, &sampler_ci, nullptr, &sampler_nearest) != VK_SUCCESS) {
++          return false;
++        }
++        sampler_ci.magFilter = sampler_ci.minFilter = VK_FILTER_LINEAR;
++        if (vkCreateSampler(dev, &sampler_ci, nullptr, &sampler_linear) != VK_SUCCESS) {
++          return false;
++        }
++
++        std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
++          {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
++          {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
++          {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
++        }};
++        VkDescriptorSetLayoutCreateInfo dsl_ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
++        dsl_ci.bindingCount = bindings.size();
++        dsl_ci.pBindings = bindings.data();
++        if (vkCreateDescriptorSetLayout(dev, &dsl_ci, nullptr, &set_layout) != VK_SUCCESS) {
++          return false;
++        }
++        std::array<VkDescriptorPoolSize, 2> sizes = {{
++          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
++          {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
++        }};
++        VkDescriptorPoolCreateInfo dp_ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
++        dp_ci.maxSets = 1;
++        dp_ci.poolSizeCount = sizes.size();
++        dp_ci.pPoolSizes = sizes.data();
++        if (vkCreateDescriptorPool(dev, &dp_ci, nullptr, &descriptor_pool) != VK_SUCCESS) {
++          return false;
++        }
++        VkDescriptorSetAllocateInfo ds_ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
++        ds_ai.descriptorPool = descriptor_pool;
++        ds_ai.descriptorSetCount = 1;
++        ds_ai.pSetLayouts = &set_layout;
++        if (vkAllocateDescriptorSets(dev, &ds_ai, &descriptor_set) != VK_SUCCESS) {
++          return false;
++        }
++
++        VkPushConstantRange range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_t)};
++        VkPipelineLayoutCreateInfo pl_ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
++        pl_ci.setLayoutCount = 1;
++        pl_ci.pSetLayouts = &set_layout;
++        pl_ci.pushConstantRangeCount = 1;
++        pl_ci.pPushConstantRanges = &range;
++        if (vkCreatePipelineLayout(dev, &pl_ci, nullptr, &pipeline_layout) != VK_SUCCESS) {
++          return false;
++        }
++        VkShaderModuleCreateInfo sm_ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
++        sm_ci.codeSize = compose_spv.size() * sizeof(uint32_t);
++        sm_ci.pCode = compose_spv.data();
++        VkShaderModule module;
++        if (vkCreateShaderModule(dev, &sm_ci, nullptr, &module) != VK_SUCCESS) {
++          return false;
++        }
++        VkComputePipelineCreateInfo cp_ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
++        cp_ci.stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
++        cp_ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
++        cp_ci.stage.module = module;
++        cp_ci.stage.pName = "main";
++        cp_ci.layout = pipeline_layout;
++        auto pres = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cp_ci, nullptr, &pipeline);
++        vkDestroyShaderModule(dev, module, nullptr);
++        if (pres != VK_SUCCESS) {
++          return false;
++        }
++
++        // The encoder's input: the visible display, with the cursor drawn in.
++        if (!create_image(target, display_width, display_height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_IMAGE_LAYOUT_UNDEFINED)) {
++          return false;
++        }
++        // A transparent cursor until the first one arrives.
++        static const uint8_t transparent[4] = {};
++        if (!upload_cursor(1, 1, transparent)) {
++          return false;
++        }
++        push.size[0] = display_width;
++        push.size[1] = display_height;
++        push.src_offset[0] = offset_x;
++        push.src_offset[1] = offset_y;
++        return true;
++      }
++
++      uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags flags) {
++        for (uint32_t i = 0; i < memory_props.memoryTypeCount; i++) {
++          if ((bits & (1u << i)) && (memory_props.memoryTypes[i].propertyFlags & flags) == flags) {
++            return i;
++          }
++        }
++        return UINT32_MAX;
++      }
++
++      bool create_image(image_t &img, int w, int h, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags flags, VkImageLayout initial) {
++        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++        ci.imageType = VK_IMAGE_TYPE_2D;
++        ci.format = format;
++        ci.extent = {(uint32_t) w, (uint32_t) h, 1};
++        ci.mipLevels = 1;
++        ci.arrayLayers = 1;
++        ci.samples = VK_SAMPLE_COUNT_1_BIT;
++        ci.tiling = tiling;
++        ci.usage = usage;
++        ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++        ci.initialLayout = initial;
++        if (vkCreateImage(dev, &ci, nullptr, &img.image) != VK_SUCCESS) {
++          return false;
++        }
++        VkMemoryRequirements req;
++        vkGetImageMemoryRequirements(dev, img.image, &req);
++        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
++        ai.allocationSize = req.size;
++        ai.memoryTypeIndex = memory_type(req.memoryTypeBits, flags);
++        if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(dev, &ai, nullptr, &img.mem) != VK_SUCCESS) {
++          return false;
++        }
++        vkBindImageMemory(dev, img.image, img.mem, 0);
++        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
++        vi.image = img.image;
++        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
++        vi.format = format;
++        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        return vkCreateImageView(dev, &vi, nullptr, &img.view) == VK_SUCCESS;
++      }
++
++      void destroy_image(image_t &img) {
++        if (img.view) {
++          vkDestroyImageView(dev, img.view, nullptr);
++        }
++        if (img.image) {
++          vkDestroyImage(dev, img.image, nullptr);
++        }
++        if (img.mem) {
++          vkFreeMemory(dev, img.mem, nullptr);
++        }
++        img = {};
++      }
++
++      bool upload_cursor(int w, int h, const uint8_t *pixels) {
++        if (dev == VK_NULL_HANDLE) {
++          // init_vulkan() makes the first one
++          return true;
++        }
++        // The previous frame's work has completed (encode_frame waits for it).
++        destroy_image(cursor);
++        if (!create_image(cursor, w, h, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_IMAGE_LAYOUT_PREINITIALIZED)) {
++          return false;
++        }
++        void *mapped;
++        if (vkMapMemory(dev, cursor.mem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
++          return false;
++        }
++        VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
++        VkSubresourceLayout layout;
++        vkGetImageSubresourceLayout(dev, cursor.image, &sub, &layout);
++        for (int y = 0; y < h; y++) {
++          std::memcpy((uint8_t *) mapped + layout.offset + y * layout.rowPitch, pixels + (std::size_t) y * w * 4, (std::size_t) w * 4);
++        }
++        vkUnmapMemory(dev, cursor.mem);
++        cursor_needs_transition = true;
++        return true;
++      }
++
++      pyrowave_result encode_capture(const pyrowave_rate_control &rc) {
++        std::array<VkDescriptorImageInfo, 3> infos = {{
++          {sampler_nearest, current->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
++          {sampler_linear, cursor.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
++          {VK_NULL_HANDLE, target.view, VK_IMAGE_LAYOUT_GENERAL},
++        }};
++        std::array<VkWriteDescriptorSet, 3> writes {};
++        for (uint32_t i = 0; i < 3; i++) {
++          writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
++          writes[i].dstSet = descriptor_set;
++          writes[i].dstBinding = i;
++          writes[i].descriptorCount = 1;
++          writes[i].descriptorType = i < 2 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
++          writes[i].pImageInfo = &infos[i];
++        }
++        vkUpdateDescriptorSets(dev, writes.size(), writes.data(), 0, nullptr);
++
++        vkResetCommandBuffer(cmd, 0);
++        VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
++        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
++        vkBeginCommandBuffer(cmd, &begin);
++
++        // The scanout buffer comes from the compositor; acquire it as Sunshine's
++        // Vulkan encoder does (implicit DMA-BUF sync orders the writes).
++        std::array<VkImageMemoryBarrier, 3> before {};
++        uint32_t n = 0;
++        before[n] = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++        before[n].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++        before[n].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++        before[n].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++        before[n].srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
++        before[n].dstQueueFamilyIndex = family;
++        before[n].image = pyrowave_image_get_handle(current->image);
++        before[n].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        n++;
++        // The encode of the frame before read the target; it has finished.
++        before[n] = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++        before[n].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
++        before[n].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++        before[n].newLayout = VK_IMAGE_LAYOUT_GENERAL;
++        before[n].srcQueueFamilyIndex = before[n].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        before[n].image = target.image;
++        before[n].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        n++;
++        if (cursor_needs_transition) {
++          before[n] = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++          before[n].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
++          before[n].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++          before[n].oldLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
++          before[n].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++          before[n].srcQueueFamilyIndex = before[n].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++          before[n].image = cursor.image;
++          before[n].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++          n++;
++          cursor_needs_transition = false;
++        }
++        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, n, before.data());
++
++        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
++        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &descriptor_set, 0, nullptr);
++        vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
++        vkCmdDispatch(cmd, (display_width + 15) / 16, (display_height + 15) / 16, 1);
++
++        // PyroWave samples the target in its own compute shaders.
++        VkImageMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++        written.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
++        written.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++        written.oldLayout = written.newLayout = VK_IMAGE_LAYOUT_GENERAL;
++        written.srcQueueFamilyIndex = written.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        written.image = target.image;
++        written.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &written);
++
++        pyrowave_scaled_encode_info info {};
++        info.view.image = target.image;
++        info.view.width = display_width;
++        info.view.height = display_height;
++        info.view.image_format = VK_FORMAT_R8G8B8A8_UNORM;
++        info.view.view_format = VK_FORMAT_R8G8B8A8_UNORM;
++        info.view.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
++        info.view.swizzle = VK_COMPONENT_SWIZZLE_IDENTITY;
++        info.view.layout = VK_IMAGE_LAYOUT_GENERAL;
++        info.input_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++        info.output_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++        info.intermediate_plane_format = VK_FORMAT_R8_UNORM;
++        info.ycbcr_range = full_range ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
++        info.ycbcr_range_bit_depth = 8;
++        info.ycbcr_chroma_midpoint = 128.0f / 255.0f;
++
++        pyrowave_device_set_command_buffer(device, cmd);
++        auto res = pyrowave_encoder_encode_gpu_scaled(encoder, nullptr, nullptr, &info, &rc);
++        pyrowave_device_set_command_buffer(device, VK_NULL_HANDLE);
++        vkEndCommandBuffer(cmd);
++        if (res != PYROWAVE_SUCCESS) {
++          return res;
++        }
++
++        VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
++        submit.commandBufferCount = 1;
++        submit.pCommandBuffers = &cmd;
++        if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS) {
++          return PYROWAVE_ERROR_GENERIC;
++        }
++        auto wait = vkWaitForFences(dev, 1, &fence, VK_TRUE, 1000000000ull);
++        vkResetFences(dev, 1, &fence);
++        return wait == VK_SUCCESS ? PYROWAVE_SUCCESS : PYROWAVE_TIMEOUT;
++      }
++
++      cached_image_t *import(const egl::surface_descriptor_t &sd) {
++        struct stat st {};
++        if (sd.fds[0] < 0 || fstat(sd.fds[0], &st) != 0) {
++          return nullptr;
++        }
++        ++use_counter;
++        for (auto &c : cache) {
++          if (c.dev == st.st_dev && c.ino == st.st_ino && c.fourcc == sd.fourcc && c.modifier == sd.modifier && c.width == sd.width && c.height == sd.height && c.pitches == sd.pitches && c.offsets == sd.offsets) {
++            c.last_used = use_counter;
++            return &c;
++          }
++        }
++
++        auto format = vk_format_for(sd.fourcc);
++        if (format == VK_FORMAT_UNDEFINED) {
++          BOOST_LOG(error) << "PyroWave: unsupported capture format 0x"sv << std::hex << sd.fourcc << std::dec;
++          return nullptr;
++        }
++        if (sd.width < offset_x + display_width || sd.height < offset_y + display_height) {
++          BOOST_LOG(error) << "PyroWave: the capture ("sv << sd.width << 'x' << sd.height << ") is smaller than the display"sv;
++          return nullptr;
++        }
++
++        int planes = 0;
++        while (planes < 4 && sd.fds[planes] >= 0) {
++          planes++;
++        }
++        // AMD exports DCC metadata as extra planes; Vulkan wants only the ones the modifier has.
++        if (sd.modifier != DRM_FORMAT_MOD_INVALID) {
++          auto info = drm_planes(format, sd.modifier);
++          if (info > 0 && info <= planes) {
++            planes = info;
++          }
++        }
++
++        std::array<VkSubresourceLayout, 4> layouts {};
++        for (int i = 0; i < planes; i++) {
++          layouts[i].offset = sd.offsets[i];
++          layouts[i].rowPitch = sd.pitches[i];
++        }
++        VkImageDrmFormatModifierExplicitCreateInfoEXT drm = {.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT};
++        drm.drmFormatModifier = sd.modifier == DRM_FORMAT_MOD_INVALID ? DRM_FORMAT_MOD_LINEAR : sd.modifier;
++        drm.drmFormatModifierPlaneCount = std::max(planes, 1);
++        drm.pPlaneLayouts = layouts.data();
++
++        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++        ci.pNext = &drm;
++        ci.imageType = VK_IMAGE_TYPE_2D;
++        ci.format = format;
++        ci.extent = {(uint32_t) sd.width, (uint32_t) sd.height, 1};
++        ci.mipLevels = 1;
++        ci.arrayLayers = 1;
++        ci.samples = VK_SAMPLE_COUNT_1_BIT;
++        ci.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
++        ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
++        ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++
++        int fd = dup(sd.fds[0]);
++        if (fd < 0) {
++          return nullptr;
++        }
++        pyrowave_image_create_info ii {device, (pyrowave_os_handle) fd, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, &ci};
++        pyrowave_image image = nullptr;
++        auto res = pyrowave_image_create(&ii, &image);
++        if (res != PYROWAVE_SUCCESS) {
++          close(fd);
++          BOOST_LOG(error) << "PyroWave: DMA-BUF import failed: "sv << res << " (modifier 0x"sv << std::hex << sd.modifier << std::dec << ", "sv << planes << " planes)"sv;
++          return nullptr;
++        }
++
++        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
++        vi.image = pyrowave_image_get_handle(image);
++        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
++        vi.format = format;
++        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        VkImageView view = VK_NULL_HANDLE;
++        if (vkCreateImageView(dev, &vi, nullptr, &view) != VK_SUCCESS) {
++          pyrowave_image_destroy(image);
++          return nullptr;
++        }
++
++        if (cache.size() >= max_cached_images) {
++          auto oldest = std::min_element(cache.begin(), cache.end(), [](auto &a, auto &b) {
++            return a.last_used < b.last_used;
++          });
++          vkDestroyImageView(dev, oldest->view, nullptr);
++          pyrowave_image_destroy(oldest->image);
++          cache.erase(oldest);
++        }
++        // Reserved up front so pointers into the cache stay valid.
++        cache.reserve(max_cached_images);
++        cache.push_back({st.st_dev, st.st_ino, sd.fourcc, sd.modifier, sd.width, sd.height, sd.pitches, sd.offsets, image, view, use_counter});
++        return &cache.back();
++      }
++
++      int drm_planes(VkFormat format, uint64_t modifier) {
++        VkDrmFormatModifierPropertiesListEXT list = {.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT};
++        VkFormatProperties2 props = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
++        props.pNext = &list;
++        vkGetPhysicalDeviceFormatProperties2(phys, format, &props);
++        std::vector<VkDrmFormatModifierPropertiesEXT> mods(list.drmFormatModifierCount);
++        list.pDrmFormatModifierProperties = mods.data();
++        vkGetPhysicalDeviceFormatProperties2(phys, format, &props);
++        for (auto &m : mods) {
++          if (m.drmFormatModifier == modifier) {
++            return (int) m.drmFormatModifierPlaneCount;
++          }
++        }
++        return 0;
++      }
++
++      pyrowave_result encode_black(const pyrowave_rate_control &rc) {
++        bool full = chroma == PYROWAVE_CHROMA_SUBSAMPLING_444;
++        int cw = full ? width : width / 2, chh = full ? height : height / 2;
++        if (black_y.empty()) {
++          black_y.assign((std::size_t) width * height, full_range ? 0 : 16);
++          black_c.assign((std::size_t) cw * chh, 128);
++        }
++        pyrowave_cpu_buffer buf {};
++        buf.data[0] = black_y.data();
++        buf.data[1] = black_c.data();
++        buf.data[2] = black_c.data();
++        buf.row_stride_in_bytes[0] = width;
++        buf.row_stride_in_bytes[1] = buf.row_stride_in_bytes[2] = cw;
++        buf.plane_size_in_bytes[0] = black_y.size();
++        buf.plane_size_in_bytes[1] = buf.plane_size_in_bytes[2] = black_c.size();
++        buf.width = width;
++        buf.height = height;
++        buf.format = full ? PYROWAVE_CPU_BUFFER_FORMAT_YUV444P : PYROWAVE_CPU_BUFFER_FORMAT_YUV420P;
++        return pyrowave_encoder_encode_cpu(encoder, &buf, &rc);
++      }
++
++      int display_width;
++      int display_height;
++      int offset_x;
++      int offset_y;
++
++      pyrowave_device device = nullptr;
++      pyrowave_encoder encoder = nullptr;
++      pyrowave_chroma_subsampling chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
++      int width = 0;
++      int height = 0;
++      bool full_range = false;
++      std::size_t frame_budget = 0;
++
++      VkInstance inst = VK_NULL_HANDLE;
++      VkPhysicalDevice phys = VK_NULL_HANDLE;
++      VkDevice dev = VK_NULL_HANDLE;
++      uint32_t family = 0;
++      VkQueue queue = VK_NULL_HANDLE;
++      VkPhysicalDeviceMemoryProperties memory_props {};
++      VkCommandPool command_pool = VK_NULL_HANDLE;
++      VkCommandBuffer cmd = VK_NULL_HANDLE;
++      VkFence fence = VK_NULL_HANDLE;
++      VkSampler sampler_nearest = VK_NULL_HANDLE;
++      VkSampler sampler_linear = VK_NULL_HANDLE;
++      VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
++      VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
++      VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
++      VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
++      VkPipeline pipeline = VK_NULL_HANDLE;
++      image_t target;
++      image_t cursor;
++      bool cursor_needs_transition = false;
++      unsigned long cursor_serial = 0;
++      push_t push {};
++
++      std::vector<cached_image_t> cache;
++      cached_image_t *current = nullptr;
++      uint64_t sequence = 0;
++      uint64_t use_counter = 0;
++
++      std::vector<uint8_t> bitstream;
++      std::vector<pyrowave_packet> packets;
++      std::vector<uint8_t> black_y;
++      std::vector<uint8_t> black_c;
++    };
++  }  // namespace
++
++  std::unique_ptr<platf::vt_encode_device_t> make_encode_device(int width, int height, int offset_x, int offset_y) {
++    return std::make_unique<encode_device_t>(width, height, offset_x, offset_y);
++  }
++}  // namespace pw
+diff --git a/src/platform/linux/pyrowave_encode.h b/src/platform/linux/pyrowave_encode.h
+new file mode 100644
+index 00000000..fb6b61d3
+--- /dev/null
++++ b/src/platform/linux/pyrowave_encode.h
+@@ -0,0 +1,22 @@
++/**
++ * @file src/platform/linux/pyrowave_encode.h
++ * @brief PyroWave encoder: KMS DMA-BUF -> PyroWave (Vulkan compute) -> one frame of packets.
++ */
++#pragma once
++
++#include <memory>
++
++#include "src/platform/common.h"
++
++namespace pw {
++  /**
++   * @brief Create a PyroWave encode device for a KMS capture.
++   *
++   * @param width Width of the captured display.
++   * @param height Height of the captured display.
++   * @param offset_x Horizontal offset of the display inside the captured framebuffer.
++   * @param offset_y Vertical offset of the display inside the captured framebuffer.
++   * @return The encode device; init_encoder() creates the PyroWave device and encoder.
++   */
++  std::unique_ptr<platf::vt_encode_device_t> make_encode_device(int width, int height, int offset_x, int offset_y);
++}  // namespace pw
+diff --git a/src/rtsp.cpp b/src/rtsp.cpp
+index c3e6b37c..c753389a 100644
+--- a/src/rtsp.cpp
++++ b/src/rtsp.cpp
+@@ -56,6 +56,9 @@ namespace rtsp_stream {
+     if (codec_modes & SCM_H263P) {
+       result += "a=rtpmap:98 H263-1998/90000\r\n";
+     }
++    if (codec_modes & (SCM_PYROWAVE | SCM_PYROWAVE_444)) {
++      result += "a=rtpmap:98 PYROWAVE/90000\r\n";
++    }
+     return result;
+   }
+ 
+@@ -1270,6 +1273,19 @@ namespace rtsp_stream {
+       return;
+     }
+ 
++    if (config.monitor.videoFormat == video::format_pyrowave && video::probed_codec_modes().pyrowave != 2) {
++      BOOST_LOG(warning) << "PyroWave is disabled, yet the client requested PyroWave"sv;
++
++      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
++      return;
++    }
++
++    if (config.monitor.videoFormat == video::format_pyrowave && (config.monitor.width <= 0 || config.monitor.height <= 0 || config.monitor.width % 2 != 0 || config.monitor.height % 2 != 0)) {
++      BOOST_LOG(warning) << "PyroWave requires a positive, even width and height"sv;
++      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
++      return;
++    }
++
+     if (config.monitor.videoFormat == video::format_h263p && (config.monitor.width <= 0 || config.monitor.height <= 0 || config.monitor.width % 4 != 0 || config.monitor.height % 4 != 0)) {
+       BOOST_LOG(warning) << "H.263+ requires a positive width and height divisible by four"sv;
+       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+diff --git a/src/video.cpp b/src/video.cpp
+index fb401621..75cefe77 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -1546,6 +1546,31 @@ namespace video {
+     LIMITED_GOP_SIZE | PARALLEL_ENCODING
+   };
+   #endif  // SUNSHINE_BUILD_VULKAN
++
++  #ifdef SUNSHINE_BUILD_PYROWAVE
++  // PyroWave encodes the KMS capture directly on the GPU through its own Vulkan
++  // device. It reuses the native (VideoToolbox-style) encode device interface:
++  // the capture is handed over in convert() and encode_frame() returns one
++  // complete PyroWave frame. It only serves format_pyrowave, so it never takes
++  // part in the H.264/HEVC/AV1 encoder selection.
++  encoder_t pyrowave {
++    "pyrowave"sv,
++    std::make_unique<encoder_platform_formats_vt>(
++      platf::mem_type_e::vulkan,
++      platf::pix_fmt_e::nv12,
++      platf::pix_fmt_e::p010,
++      platf::pix_fmt_e::yuv444p,
++      platf::pix_fmt_e::yuv444p16
++    ),
++    {},  // AV1
++    {},  // HEVC
++    {},  // H.264
++    {},  // MPEG-2
++    {},  // H.263+
++    PARALLEL_ENCODING | YUV444_SUPPORT,
++    {{}, {}, {}, {}, {}, {}, "pyrowave"s, {}},
++  };
++  #endif  // SUNSHINE_BUILD_PYROWAVE
+ #endif  // linux
+ 
+ #ifdef __APPLE__
+@@ -1667,6 +1692,8 @@ namespace video {
+         return encoder.mpeg2[encoder_t::PASSED];
+       case format_h263p:
+         return encoder.h263p[encoder_t::PASSED];
++      case format_pyrowave:
++        return encoder.pyrowave[encoder_t::PASSED];
+       case format_h264:
+         return encoder.h264[encoder_t::PASSED];
+       case format_hevc:
+@@ -3398,6 +3425,37 @@ namespace video {
+     return codec[encoder_t::PASSED];
+   }
+ 
++  /**
++   * @brief Probe the PyroWave encoder on the capture display, at 4:2:0 and 4:4:4.
++   *
++   * @param encoder The PyroWave encoder.
++   * @return Whether 4:2:0 passed; 4:4:4 is recorded in the codec's YUV444 flag.
++   */
++  bool validate_pyrowave_codec(encoder_t &encoder) {
++    auto &codec = encoder.pyrowave;
++    codec.capabilities.reset();
++    if (codec.name.empty() || !encoder.platform_formats) {
++      return false;
++    }
++
++    config_t config {1920, 1080, 60, 6000, 200000, 1, 0, 2, format_pyrowave, 0, 0, 0};
++    std::shared_ptr<platf::display_t> display;
++    reset_display(display, encoder.platform_formats->dev_type, display_device::map_output_name(config::video.output_name), config);
++    if (!display) {
++      return false;
++    }
++
++    codec[encoder_t::PASSED] = true;
++    if (validate_config(display, encoder, config) < 0) {
++      codec.capabilities.reset();
++      return false;
++    }
++
++    config.chromaSamplingType = 1;
++    codec[encoder_t::YUV444] = validate_config(display, encoder, config) >= 0;
++    return true;
++  }
++
+   encoder_t *select_legacy_encoder(std::span<encoder_t *const> candidates, int video_format, const codec_probe_t &probe) {
+     if (!is_legacy_video_format(video_format)) {
+       return nullptr;
+@@ -3681,6 +3739,8 @@ namespace video {
+     active_av1_mode = config::video.av1_mode;
+     modes.mpeg2 = config::video.mpeg2_mode;
+     modes.h263p = config::video.h263p_mode;
++    modes.pyrowave = config::video.pyrowave_mode;
++    modes.pyrowave_yuv444 = false;
+     reset_encoder_probe_results();
+ 
+     auto adjust_encoder_constraints_hevc = [&](encoder_t *encoder) {
+@@ -3847,6 +3907,23 @@ namespace video {
+       }
+     }
+ 
++#ifdef SUNSHINE_BUILD_PYROWAVE
++    // Mode 0 (auto) advertises PyroWave whenever the probe passes.
++    if (modes.pyrowave != 1) {
++      if (validate_pyrowave_codec(pyrowave)) {
++        codec_encoders[format_pyrowave] = &pyrowave;
++        modes.pyrowave = 2;
++        modes.pyrowave_yuv444 = pyrowave.pyrowave[encoder_t::YUV444];
++        BOOST_LOG(info) << "Found PyroWave encoder"sv << (modes.pyrowave_yuv444 ? " with YUV 4:4:4"sv : ""sv);
++      } else {
++        BOOST_LOG(warning) << "PyroWave encoder failed its probe"sv;
++        modes.pyrowave = 1;
++      }
++    }
++#else
++    modes.pyrowave = 1;
++#endif
++
+     if (!chosen_encoder && !codec_encoders[format_mpeg2] && !codec_encoders[format_h263p]) {
+       const auto output_name {display_device::map_output_name(config::video.output_name)};
+       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
+diff --git a/src/video.h b/src/video.h
+index 64bac6ae..04f4164e 100644
+--- a/src/video.h
++++ b/src/video.h
+@@ -41,8 +41,16 @@ namespace video {
+   inline constexpr int format_av1 = 2;  ///< AV1 Main/Main10 wire identifier.
+   inline constexpr int format_mpeg2 = 3;  ///< MPEG-2/H.262 wire identifier.
+   inline constexpr int format_h263p = 4;  ///< H.263+ wire identifier.
++  inline constexpr int format_pyrowave = 5;  ///< PyroWave intra-only wavelet codec wire identifier (VaporOS extension).
+ 
+-  constexpr int VIDEO_FORMAT_COUNT = format_h263p + 1;  ///< Number of supported wire codec identifiers.
++  constexpr int VIDEO_FORMAT_COUNT = format_pyrowave + 1;  ///< Number of supported wire codec identifiers.
++
++// VaporOS's PyroWave serverinfo bits. Kept clear of every SCM_* value upstream
++// moonlight-common-c defines; the VaporOS Moonlight fork uses the same values.
++#ifndef SCM_PYROWAVE
++  #define SCM_PYROWAVE 0x10000000
++  #define SCM_PYROWAVE_444 0x20000000
++#endif
+ 
+   /**
+    * @brief Encoding configuration requested by a remote client.
+@@ -514,10 +522,15 @@ namespace video {
+           return mpeg2;
+         case format_h263p:
+           return h263p;
++        case format_pyrowave:
++          return pyrowave;
+       }
+     }
+ 
+     uint32_t flags;  ///< Encoder flags advertised to clients through GameStream capability responses.
++
++    // Last so that the positional initializers of the other encoders stay valid.
++    codec_t pyrowave {};  ///< PyroWave codec capability set.
+   };
+ 
+   /**
+@@ -811,6 +824,8 @@ namespace video {
+     bool h264 = false;  ///< Whether baseline H.264 passed its probe.
+     int mpeg2 = 0;  ///< Active MPEG-2 advertisement mode.
+     int h263p = 0;  ///< Active H.263+ advertisement mode.
++    int pyrowave = 0;  ///< Active PyroWave advertisement mode (1 off, 2 advertised).
++    bool pyrowave_yuv444 = false;  ///< Whether the PyroWave probe passed 4:4:4.
+   };
+ 
+   /**
+diff --git a/src_assets/linux/assets/shaders/vulkan/pyrowave_compose.comp b/src_assets/linux/assets/shaders/vulkan/pyrowave_compose.comp
+new file mode 100644
+index 00000000..3a1215fc
+--- /dev/null
++++ b/src_assets/linux/assets/shaders/vulkan/pyrowave_compose.comp
+@@ -0,0 +1,34 @@
++#version 450
++
++// Copies the visible part of the KMS capture into the PyroWave encoder's
++// input and draws the cursor, which KMS keeps on a plane of its own.
++
++layout(local_size_x = 16, local_size_y = 16) in;
++
++layout(set = 0, binding = 0) uniform sampler2D rgb_in;
++layout(set = 0, binding = 1) uniform sampler2D cursor_in;
++layout(set = 0, binding = 2, rgba8) uniform writeonly image2D rgb_out;
++
++layout(push_constant) uniform PushConstants {
++  ivec2 src_offset;
++  ivec2 size;
++  ivec2 cursor_pos;
++  ivec2 cursor_size;  // w=0 means no cursor
++} pc;
++
++void main() {
++  ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
++  if (pos.x >= pc.size.x || pos.y >= pc.size.y)
++    return;
++
++  vec3 rgb = texelFetch(rgb_in, pos + pc.src_offset, 0).rgb;
++
++  ivec2 cp = pos - pc.cursor_pos;
++  if (pc.cursor_size.x > 0 && cp.x >= 0 && cp.y >= 0 && cp.x < pc.cursor_size.x && cp.y < pc.cursor_size.y) {
++    // Same cursor sampling and channel order as rgb2yuv.comp
++    vec4 c = texture(cursor_in, (vec2(cp) + 0.5) / vec2(pc.cursor_size));
++    rgb = mix(rgb, c.bgr, c.a);
++  }
++
++  imageStore(rgb_out, pos, vec4(rgb, 1.0));
++}

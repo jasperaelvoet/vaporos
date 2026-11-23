@@ -1,0 +1,171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Mon, 23 Nov 2026 23:55:21 +0100
+Subject: [PATCH] Size the bitrate slider and default for PyroWave
+
+
+diff --git a/app/cli/commandlineparser.cpp b/app/cli/commandlineparser.cpp
+index 77b93018..c898baf1 100644
+--- a/app/cli/commandlineparser.cpp
++++ b/app/cli/commandlineparser.cpp
+@@ -412,15 +412,20 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
+         }
+     }
+ 
++    // Resolve --video-codec option (before --bitrate: PyroWave has its own default)
++    if (parser.isSet("video-codec")) {
++        preferences->videoCodecConfig = mapValue(m_VideoCodecMap, parser.getChoiceOptionValue("video-codec"));
++    }
++
+     // Resolve --bitrate option
+     if (parser.isSet("bitrate")) {
+         preferences->bitrateKbps = parser.getIntOption("bitrate");
+-        if (!inRange(preferences->bitrateKbps, 500, 500000)) {
++        if (!inRange(preferences->bitrateKbps, 500, preferences->videoCodecConfig == StreamingPreferences::VCC_FORCE_PYROWAVE ? 1000000 : 500000)) {
+             fprintf(stderr, "Warning: Bitrate is out of the supported range (500 - 500000 Kbps). Performance may suffer!\n");
+         }
+-    } else if (displaySet || parser.isSet("fps")) {
++    } else if (displaySet || parser.isSet("fps") || parser.isSet("video-codec")) {
+         preferences->bitrateKbps = preferences->getDefaultBitrate(
+-            preferences->width, preferences->height, preferences->fps, preferences->enableYUV444);
++            preferences->width, preferences->height, preferences->fps, preferences->enableYUV444, preferences->videoCodecConfig);
+     }
+ 
+     // Resolve --packet-size option
+@@ -497,11 +502,6 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
+         preferences->captureSysKeysMode = mapValue(m_CaptureSysKeysModeMap, parser.getChoiceOptionValue("capture-system-keys"));
+     }
+ 
+-    // Resolve --video-codec option
+-    if (parser.isSet("video-codec")) {
+-        preferences->videoCodecConfig = mapValue(m_VideoCodecMap, parser.getChoiceOptionValue("video-codec"));
+-    }
+-
+     // Resolve --video-decoder option
+     if (parser.isSet("video-decoder")) {
+         preferences->videoDecoderSelection = mapValue(m_VideoDecoderMap, parser.getChoiceOptionValue("video-decoder"));
+diff --git a/app/gui/SettingsView.qml b/app/gui/SettingsView.qml
+index 064ed490..6b7f0b74 100644
+--- a/app/gui/SettingsView.qml
++++ b/app/gui/SettingsView.qml
+@@ -285,7 +285,8 @@ Flickable {
+                                     StreamingPreferences.bitrateKbps = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width,
+                                                                                                               StreamingPreferences.height,
+                                                                                                               StreamingPreferences.fps,
+-                                                                                                              StreamingPreferences.enableYUV444);
++                                                                                                              StreamingPreferences.enableYUV444,
++                                                                                                              StreamingPreferences.videoCodecConfig);
+                                     slider.value = StreamingPreferences.bitrateKbps
+                                 }
+                             }
+@@ -453,7 +454,8 @@ Flickable {
+                                     StreamingPreferences.bitrateKbps = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width,
+                                                                                                               StreamingPreferences.height,
+                                                                                                               StreamingPreferences.fps,
+-                                                                                                              StreamingPreferences.enableYUV444);
++                                                                                                              StreamingPreferences.enableYUV444,
++                                                                                                              StreamingPreferences.videoCodecConfig);
+                                     slider.value = StreamingPreferences.bitrateKbps
+                                 }
+                             }
+@@ -693,7 +695,9 @@ Flickable {
+ 
+                         stepSize: 500
+                         from : 500
+-                        to: StreamingPreferences.unlockBitrate ? 500000 : 150000
++                        // PyroWave (VaporOS) needs gigabit rates whatever the unlock says
++                        to: StreamingPreferences.videoCodecConfig === StreamingPreferences.VCC_FORCE_PYROWAVE ? 1000000 :
++                            (StreamingPreferences.unlockBitrate ? 500000 : 150000)
+ 
+                         snapMode: "SnapOnRelease"
+                         width: Math.min(bitrateDesc.implicitWidth, parent.width - (resetBitrateButton.visible ? resetBitrateButton.width + parent.spacing : 0))
+@@ -715,10 +719,10 @@ Flickable {
+ 
+                     Button {
+                         id: resetBitrateButton
+-                        text: qsTr("Use Default (%1 Mbps)").arg(StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444) / 1000.0)
+-                        visible: StreamingPreferences.bitrateKbps !== StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444)
++                        text: qsTr("Use Default (%1 Mbps)").arg((StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444, StreamingPreferences.videoCodecConfig)) / 1000.0)
++                        visible: StreamingPreferences.bitrateKbps !== (StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444, StreamingPreferences.videoCodecConfig))
+                         onClicked: {
+-                            var defaultBitrate = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444)
++                            var defaultBitrate = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444, StreamingPreferences.videoCodecConfig)
+                             StreamingPreferences.bitrateKbps = defaultBitrate
+                             StreamingPreferences.autoAdjustBitrate = true
+                             slider.value = defaultBitrate
+@@ -1655,7 +1659,19 @@ Flickable {
+                     // ::onActivated must be used, as it only listens for when the index is changed by a human
+                     onActivated : {
+                         if (enabled) {
++                            var wasPyrowave = StreamingPreferences.videoCodecConfig === StreamingPreferences.VCC_FORCE_PYROWAVE
+                             StreamingPreferences.videoCodecConfig = codecListModel.get(currentIndex).val
++
++                            // PyroWave's bitrates are a different scale: moving to or
++                            // from it starts from that codec's default.
++                            if (wasPyrowave !== (StreamingPreferences.videoCodecConfig === StreamingPreferences.VCC_FORCE_PYROWAVE)) {
++                                StreamingPreferences.bitrateKbps = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width,
++                                                                                                          StreamingPreferences.height,
++                                                                                                          StreamingPreferences.fps,
++                                                                                                          StreamingPreferences.enableYUV444,
++                                                                                                          StreamingPreferences.videoCodecConfig)
++                                slider.value = StreamingPreferences.bitrateKbps
++                            }
+                         }
+                     }
+                 }
+@@ -1731,7 +1747,8 @@ Flickable {
+                                 StreamingPreferences.bitrateKbps = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width,
+                                                                                                           StreamingPreferences.height,
+                                                                                                           StreamingPreferences.fps,
+-                                                                                                          StreamingPreferences.enableYUV444);
++                                                                                                          StreamingPreferences.enableYUV444,
++                                                                                                          StreamingPreferences.videoCodecConfig);
+                                 slider.value = StreamingPreferences.bitrateKbps
+                             }
+                         }
+diff --git a/app/settings/streamingpreferences.cpp b/app/settings/streamingpreferences.cpp
+index 6d143af6..df588a39 100644
+--- a/app/settings/streamingpreferences.cpp
++++ b/app/settings/streamingpreferences.cpp
+@@ -126,7 +126,8 @@ void StreamingPreferences::reload()
+     height = settings.value(SER_HEIGHT, 1080).toInt();
+     fps = settings.value(SER_FPS, 60).toInt();
+     enableYUV444 = settings.value(SER_YUV444, false).toBool();
+-    bitrateKbps = settings.value(SER_BITRATE, getDefaultBitrate(width, height, fps, enableYUV444)).toInt();
++    bitrateKbps = settings.value(SER_BITRATE, getDefaultBitrate(width, height, fps, enableYUV444,
++                                                            settings.value(SER_VIDEOCFG, (int)VCC_AUTO).toInt())).toInt();
+     unlockBitrate = settings.value(SER_UNLOCK_BITRATE, false).toBool();
+     autoAdjustBitrate = settings.value(SER_AUTOADJUSTBITRATE, true).toBool();
+     enableVsync = settings.value(SER_VSYNC, true).toBool();
+@@ -364,8 +365,17 @@ void StreamingPreferences::save()
+     settings.setValue(SER_KEEPAWAKE, keepAwake);
+ }
+ 
+-int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444)
++int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444, int videoCodec)
+ {
++    if (videoCodec == VCC_FORCE_PYROWAVE) {
++        // PyroWave codes every frame on its own: about 1 bit per pixel looks
++        // clean (1.5 for 4:4:4). Above 600 Mbps a 4K frame no longer fits the
++        // host's error correction on gigabit Ethernet, and it never goes
++        // below 150 Mbps, where it starts to blur.
++        double kbps = (double)width * height * qMin(fps, 120) * (yuv444 ? 1.5 : 1.0) / 1000.0;
++        return qBound(150, qRound(kbps / 1000.0), 600) * 1000;
++    }
++
+     // Don't scale bitrate linearly beyond 60 FPS. It's definitely not a linear
+     // bitrate increase for frame rate once we get to values that high.
+     float frameRateFactor = (fps <= 60 ? fps : (qSqrt(fps / 60.f) * 60.f)) / 30.f;
+diff --git a/app/settings/streamingpreferences.h b/app/settings/streamingpreferences.h
+index 96b05e7c..a2d333b2 100644
+--- a/app/settings/streamingpreferences.h
++++ b/app/settings/streamingpreferences.h
+@@ -12,7 +12,7 @@ public:
+     static StreamingPreferences* get(QQmlEngine *qmlEngine = nullptr);
+ 
+     Q_INVOKABLE static int
+-    getDefaultBitrate(int width, int height, int fps, bool yuv444);
++    getDefaultBitrate(int width, int height, int fps, bool yuv444, int videoCodec = VCC_AUTO);
+ 
+     Q_INVOKABLE void save();
+ 

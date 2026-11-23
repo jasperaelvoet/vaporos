@@ -1,0 +1,9 @@
+# The upstream commit each fork is based on. forks/<name>/*.patch apply on top,
+# in order. moonlight-common-c is moonlight-qt's submodule; its commit is the
+# one moonlight-qt pins and is listed only as the base its patches export from.
+#
+# name                url                                                    commit
+pyrowave            https://github.com/Themaister/pyrowave.git                 a32b05e03d70826b19d4d11ff74fe166ed74371b
+sunshine            https://github.com/LizardByte/Sunshine.git                 cae70da9f71595aa07e7948b11175bb2f5134787
+moonlight-qt        https://github.com/moonlight-stream/moonlight-qt.git       de2467e433821664cdd2224aad8c89a625be1ad9
+moonlight-common-c  https://github.com/moonlight-stream/moonlight-common-c.git  f900dd4767759c7b9d0e93bcea666b55c69ea62f

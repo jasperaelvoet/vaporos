@@ -1,0 +1,883 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Mon, 23 Nov 2026 23:32:50 +0100
+Subject: [PATCH] Add the PyroWave codec (VaporOS): Metal and Vulkan decoders
+ behind FFmpegVideoDecoder, and a codec choice
+
+
+diff --git a/app/app.pro b/app/app.pro
+index 1c0661b3..e4ba6d21 100644
+--- a/app/app.pro
++++ b/app/app.pro
+@@ -415,6 +415,49 @@ macx {
+     HEADERS += \
+         streaming/video/ffmpeg-renderers/vt.h
+ }
++# VaporOS: the PyroWave decoder. PYROWAVE_DIR is an install prefix holding
++# lib/ and include/pyrowave/ of pyrowave-metal (macOS) or pyrowave-shared
++# (Windows, Linux); on Linux pkg-config's pyrowave-shared works as well.
++# It may also come from the environment, for the upstream build scripts.
++isEmpty(PYROWAVE_DIR) {
++    PYROWAVE_DIR = $$(PYROWAVE_DIR)
++}
++!isEmpty(PYROWAVE_DIR) {
++    CONFIG += pyrowave
++}
++unix:!macx:isEmpty(PYROWAVE_DIR) {
++    packagesExist(pyrowave-shared) {
++        CONFIG += pyrowave
++    }
++}
++pyrowave {
++    message(PyroWave decoder enabled)
++
++    DEFINES += HAVE_PYROWAVE
++    HEADERS += streaming/video/pyrowave/pyrowavedecoder.h
++
++    macx {
++        INCLUDEPATH += $$PYROWAVE_DIR/include/pyrowave
++        LIBS += -L$$PYROWAVE_DIR/lib -lpyrowave-metal -framework IOSurface
++        SOURCES += streaming/video/pyrowave/pyrowavedecoder_metal.mm
++
++        PYROWAVE_BUNDLE.files = $$PYROWAVE_DIR/lib/libpyrowave-metal.1.dylib
++        PYROWAVE_BUNDLE.path = Contents/Frameworks
++        QMAKE_BUNDLE_DATA += PYROWAVE_BUNDLE
++        QMAKE_RPATHDIR += @executable_path/../Frameworks
++    }
++    else {
++        isEmpty(PYROWAVE_DIR) {
++            PKGCONFIG += pyrowave-shared
++        }
++        else {
++            # include/ may also hold the Vulkan headers pyrowave.h needs
++            INCLUDEPATH += $$PYROWAVE_DIR/include/pyrowave $$PYROWAVE_DIR/include
++            LIBS += -L$$PYROWAVE_DIR/lib -lpyrowave-shared
++        }
++        SOURCES += streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp
++    }
++}
+ discord-rpc {
+     message(Discord integration enabled)
+ 
+diff --git a/app/cli/commandlineparser.cpp b/app/cli/commandlineparser.cpp
+index 2acac458..77b93018 100644
+--- a/app/cli/commandlineparser.cpp
++++ b/app/cli/commandlineparser.cpp
+@@ -310,6 +310,7 @@ StreamCommandLineParser::StreamCommandLineParser()
+         {"H.264", StreamingPreferences::VCC_FORCE_H264},
+         {"HEVC",  StreamingPreferences::VCC_FORCE_HEVC},
+         {"AV1", StreamingPreferences::VCC_FORCE_AV1},
++        {"PyroWave", StreamingPreferences::VCC_FORCE_PYROWAVE},
+     };
+     m_VideoDecoderMap = {
+         {"auto",     StreamingPreferences::VDS_AUTO},
+diff --git a/app/gui/SettingsView.qml b/app/gui/SettingsView.qml
+index c119d155..064ed490 100644
+--- a/app/gui/SettingsView.qml
++++ b/app/gui/SettingsView.qml
+@@ -1647,6 +1647,10 @@ Flickable {
+                             text: qsTr("AV1")
+                             val: StreamingPreferences.VCC_FORCE_AV1
+                         }
++                        ListElement {
++                            text: qsTr("PyroWave (wired LAN, VaporOS)")
++                            val: StreamingPreferences.VCC_FORCE_PYROWAVE
++                        }
+                     }
+                     // ::onActivated must be used, as it only listens for when the index is changed by a human
+                     onActivated : {
+diff --git a/app/settings/streamingpreferences.h b/app/settings/streamingpreferences.h
+index ad611f6a..96b05e7c 100644
+--- a/app/settings/streamingpreferences.h
++++ b/app/settings/streamingpreferences.h
+@@ -32,7 +32,8 @@ public:
+         VCC_FORCE_H264,
+         VCC_FORCE_HEVC,
+         VCC_FORCE_HEVC_HDR_DEPRECATED, // Kept for backwards compatibility
+-        VCC_FORCE_AV1
++        VCC_FORCE_AV1,
++        VCC_FORCE_PYROWAVE // VaporOS: PyroWave, for wired gigabit networks
+     };
+     Q_ENUM(VideoCodecConfig)
+ 
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index 40c1e59c..8ec6b95b 100644
+--- a/app/streaming/session.cpp
++++ b/app/streaming/session.cpp
+@@ -730,7 +730,12 @@ bool Session::initialize(QQuickWindow* qtWindow)
+                 "Audio channel mask: %X",
+                 CHANNEL_MASK_FROM_AUDIO_CONFIGURATION(m_StreamConfig.audioConfiguration));
+ 
+-    // Start with all codecs and profiles in priority order
++    // Start with all codecs and profiles in priority order. PyroWave is only
++    // ever used when picked, since it needs a wired gigabit network.
++    if (m_Preferences->videoCodecConfig == StreamingPreferences::VCC_FORCE_PYROWAVE) {
++        m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE_444);
++        m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE);
++    }
+     m_SupportedVideoFormats.append(VIDEO_FORMAT_AV1_HIGH10_444);
+     m_SupportedVideoFormats.append(VIDEO_FORMAT_AV1_MAIN10);
+     m_SupportedVideoFormats.append(VIDEO_FORMAT_H265_REXT10_444);
+@@ -863,6 +868,10 @@ bool Session::initialize(QQuickWindow* qtWindow)
+         // straight to H.264 if the user asked for AV1 and the host doesn't support it.
+         m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_MASK_H265));
+         break;
++    case StreamingPreferences::VCC_FORCE_PYROWAVE:
++        // Keep the other codecs after PyroWave, so a host or client that can't
++        // do it still streams.
++        break;
+     }
+ 
+     // NB: Since deprioritization puts codecs in reverse order (at the bottom of the list),
+@@ -984,6 +993,37 @@ bool Session::validateLaunch(SDL_Window* testWindow)
+         emitLaunchWarning(tr("Your settings selection to force software decoding may cause poor streaming performance."));
+     }
+ 
++    if (m_SupportedVideoFormats & VIDEO_FORMAT_MASK_PYROWAVE) {
++        // Keep only the PyroWave profiles both ends support
++        int hostPyrowave = m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport & SCM_MASK_PYROWAVE);
++        if (hostPyrowave == 0) {
++            emitLaunchWarning(tr("Your host doesn't support PyroWave. It needs VaporOS with PyroWave on an AMD GPU."));
++            m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
++        }
++        else {
++            m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE & ~hostPyrowave);
++            int pyrowaveFormat = 0;
++            for (int format : m_SupportedVideoFormats) {
++                if (format & VIDEO_FORMAT_MASK_PYROWAVE) {
++                    pyrowaveFormat = format;
++                    break;
++                }
++            }
++            if (getDecoderAvailability(testWindow,
++                                       m_Preferences->videoDecoderSelection,
++                                       pyrowaveFormat,
++                                       m_StreamConfig.width,
++                                       m_StreamConfig.height,
++                                       m_StreamConfig.fps) == DecoderAvailability::None) {
++                emitLaunchWarning(tr("This PC can't decode PyroWave."));
++                m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
++            }
++            else if (m_StreamConfig.bitrate < 100000) {
++                emitLaunchWarning(tr("PyroWave needs a high bitrate to look good. Raise the video bitrate to 150 Mbps or more."));
++            }
++        }
++    }
++
+     if (m_SupportedVideoFormats & VIDEO_FORMAT_MASK_AV1) {
+         if (m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport & SCM_MASK_AV1) == 0) {
+             if (m_Preferences->videoCodecConfig == StreamingPreferences::VCC_FORCE_AV1) {
+diff --git a/app/streaming/session.h b/app/streaming/session.h
+index 53ac9e06..4cfb6900 100644
+--- a/app/streaming/session.h
++++ b/app/streaming/session.h
+@@ -72,6 +72,8 @@ public:
+             {SCM_AV1_MAIN10, VIDEO_FORMAT_AV1_MAIN10},
+             {SCM_AV1_HIGH8_444, VIDEO_FORMAT_AV1_HIGH8_444},
+             {SCM_AV1_HIGH10_444, VIDEO_FORMAT_AV1_HIGH10_444},
++            {SCM_PYROWAVE, VIDEO_FORMAT_PYROWAVE},
++            {SCM_PYROWAVE_444, VIDEO_FORMAT_PYROWAVE_444},
+         };
+ 
+         for (QMap<int, int>::const_iterator it = mapping.cbegin(); it != mapping.cend(); ++it) {
+@@ -81,8 +83,8 @@ public:
+             }
+         }
+ 
+-        // Make sure nobody forgets to update this for new SCM values
+-        SDL_assert(serverCodecModes == 0);
++        // Hosts may advertise codecs this client doesn't know (Sunshine's MPEG-2 and
++        // H.263+, for one); they simply aren't candidates.
+ 
+         int val = *this;
+         return val & mask;
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+index c20d3126..0cc89e96 100644
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -1,5 +1,6 @@
+ #include <Limelight.h>
+ #include "ffmpeg.h"
++#include <vector>
+ #include "utils.h"
+ #include "streaming/session.h"
+ 
+@@ -50,6 +51,10 @@ extern "C" {
+ #include "ffmpeg-renderers/plvk.h"
+ #endif
+ 
++#ifdef HAVE_PYROWAVE
++#include "pyrowave/pyrowavedecoder.h"
++#endif
++
+ // This is gross but it allows us to use sizeof()
+ #include "ffmpeg_videosamples.cpp"
+ 
+@@ -61,6 +66,11 @@ extern "C" {
+ 
+ bool FFmpegVideoDecoder::isHardwareAccelerated()
+ {
++    if (m_Pyrowave != nullptr) {
++        // Decoded on the GPU in compute shaders
++        return true;
++    }
++
+     return m_HwDecodeCfg != nullptr ||
+             (getAVCodecCapabilities(m_VideoDecoderCtx->codec) & AV_CODEC_CAP_HARDWARE) != 0;
+ }
+@@ -98,7 +108,10 @@ int FFmpegVideoDecoder::getDecoderCapabilities()
+         // Start with the backend renderer's capabilities
+         capabilities = m_BackendRenderer->getDecoderCapabilities();
+ 
+-        if (!isHardwareAccelerated()) {
++        if (m_Pyrowave != nullptr) {
++            // PyroWave is intra-only: no slices, and no reference frames to invalidate
++        }
++        else if (!isHardwareAccelerated()) {
+             // Slice up to 4 times for parallel CPU decoding, once slice per core
+             int slices = qMin(MAX_SLICES, SDL_GetCPUCount());
+             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+@@ -157,6 +170,11 @@ int FFmpegVideoDecoder::getDecoderCapabilities()
+ 
+ int FFmpegVideoDecoder::getDecoderColorspace()
+ {
++    if (m_Pyrowave != nullptr) {
++        // PyroWave's encoder converts with BT.709 coefficients only
++        return COLORSPACE_REC_709;
++    }
++
+     return m_FrontendRenderer->getDecoderColorspace();
+ }
+ 
+@@ -220,6 +238,8 @@ enum AVPixelFormat FFmpegVideoDecoder::ffGetFormat(AVCodecContext* context,
+ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
+     : m_Pkt(av_packet_alloc()),
+       m_VideoDecoderCtx(nullptr),
++      m_Pyrowave(nullptr),
++      m_PyrowaveFrame(nullptr),
+       m_RequiredPixelFormat(AV_PIX_FMT_NONE),
+       m_DecodeBuffer(1024 * 1024, 0),
+       m_HwDecodeCfg(nullptr),
+@@ -288,6 +308,14 @@ void FFmpegVideoDecoder::reset()
+     // need to delete in the renderer destructor.
+     avcodec_free_context(&m_VideoDecoderCtx);
+ 
++    // After Pacer too: frames it held reference the decoder's output buffers,
++    // which stay alive on their own until those frames are freed.
++    av_frame_free(&m_PyrowaveFrame);
++#ifdef HAVE_PYROWAVE
++    delete m_Pyrowave;
++#endif
++    m_Pyrowave = nullptr;
++
+     if (m_CurrentTestMode != TestMode::TestFrameOnly) {
+         Session::get()->getOverlayManager().setOverlayRenderer(nullptr);
+     }
+@@ -564,9 +592,9 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
+         return false;
+     }
+ 
+-    QString optionVarName = QString("%1_AVOPTIONS").arg(decoder->name).toUpper();
++    QString optionVarName = QString("%1_AVOPTIONS").arg(decoder != nullptr ? decoder->name : "pyrowave").toUpper();
+     QByteArray optionVarValue = qgetenv(optionVarName.toUtf8());
+-    if (!optionVarValue.isNull()) {
++    if (!optionVarValue.isNull() && decoder != nullptr) {
+         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                     "Applying FFmpeg option overrides for %s: %s",
+                     decoder->name,
+@@ -581,7 +609,8 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
+     SDL_assert(m_VideoDecoderCtx->opaque == nullptr);
+     m_VideoDecoderCtx->opaque = this;
+ 
+-    int err = avcodec_open2(m_VideoDecoderCtx, decoder, &options);
++    // PyroWave (decoder == nullptr) only keeps the context for its dimensions
++    int err = decoder != nullptr ? avcodec_open2(m_VideoDecoderCtx, decoder, &options) : 0;
+     av_dict_free(&options);
+     if (err < 0) {
+         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+@@ -595,7 +624,7 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
+     // our minds on the selected video codec, so we'll do a trial run
+     // now to see if things will actually work when the video stream
+     // comes in.
+-    if (testMode != TestMode::NoTesting) {
++    if (testMode != TestMode::NoTesting && m_Pyrowave == nullptr) {
+         switch (params->videoFormat) {
+         case VIDEO_FORMAT_H264:
+             m_Pkt->data = (uint8_t*)k_H264TestFrame;
+@@ -873,6 +902,14 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
+         }
+         break;
+ 
++    case VIDEO_FORMAT_PYROWAVE:
++        codecString = "PyroWave";
++        break;
++
++    case VIDEO_FORMAT_PYROWAVE_444:
++        codecString = "PyroWave 4:4:4";
++        break;
++
+     default:
+         SDL_assert(false);
+         codecString = "UNKNOWN";
+@@ -1626,6 +1663,10 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
+ 
+ bool FFmpegVideoDecoder::initialize(PDECODER_PARAMETERS params)
+ {
++    if (params->videoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
++        return tryInitializePyrowave(params);
++    }
++
+     // Increase log level until the first frame is decoded
+     av_log_set_level(AV_LOG_DEBUG);
+ 
+@@ -1881,7 +1922,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+ 
+             int err;
+             do {
+-                err = avcodec_receive_frame(m_VideoDecoderCtx, frame);
++                err = receiveFrame(frame);
+                 if (err == 0) {
+                     SDL_assert(m_FrameInfoQueue.size() == m_FramesIn - m_FramesOut);
+                     m_FramesOut++;
+@@ -2183,6 +2224,14 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+ 
+     m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
+ 
++#ifdef HAVE_PYROWAVE
++    if (m_Pyrowave != nullptr) {
++        // Decode now; receiveFrame() hands the frame out right after.
++        av_frame_unref(m_PyrowaveFrame);
++        err = m_Pyrowave->decode(m_Pkt->data, m_Pkt->size, m_PyrowaveFrame) == 0 ? 0 : AVERROR_INVALIDDATA;
++    }
++    else
++#endif
+     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
+     if (err < 0) {
+         char errorstring[512];
+@@ -2216,6 +2265,72 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+     return DR_OK;
+ }
+ 
++int FFmpegVideoDecoder::receiveFrame(AVFrame* frame)
++{
++    if (m_Pyrowave != nullptr) {
++        if (m_PyrowaveFrame->buf[0] == nullptr) {
++            return AVERROR(EAGAIN);
++        }
++        av_frame_move_ref(frame, m_PyrowaveFrame);
++        return 0;
++    }
++
++    return avcodec_receive_frame(m_VideoDecoderCtx, frame);
++}
++
++bool FFmpegVideoDecoder::tryInitializePyrowave(PDECODER_PARAMETERS params)
++{
++#ifdef HAVE_PYROWAVE
++    bool yuv444 = (params->videoFormat & VIDEO_FORMAT_PYROWAVE_444) != 0;
++    AVPixelFormat format = yuv444 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P;
++
++    // Renderers that take planar YUV frames from system memory, best first
++    std::vector<std::function<IFFmpegRenderer*()>> renderers;
++#ifdef Q_OS_DARWIN
++    renderers.push_back([]() -> IFFmpegRenderer* { return VTMetalRendererFactory::createRenderer(false); });
++#endif
++#ifdef HAVE_LIBPLACEBO_VULKAN
++    renderers.push_back([]() -> IFFmpegRenderer* { return new PlVkRenderer(); });
++#endif
++    renderers.push_back([]() -> IFFmpegRenderer* { return new SdlRenderer(); });
++
++    for (auto& createRenderer : renderers) {
++        SDL_assert(m_BackendRenderer == nullptr);
++        m_BackendRenderer = createRenderer();
++        if (m_BackendRenderer != nullptr &&
++                initializeRendererInternal(m_BackendRenderer, params) &&
++                m_BackendRenderer->isPixelFormatSupported(params->videoFormat, format)) {
++            m_Pyrowave = PyrowaveDecoder::create(params->width, params->height, yuv444);
++            if (m_Pyrowave == nullptr) {
++                // The decoder itself can't run here; no renderer will change that
++                reset();
++                return false;
++            }
++            m_PyrowaveFrame = av_frame_alloc();
++            if (m_PyrowaveFrame != nullptr &&
++                    completeInitialization(nullptr, format, params,
++                                           m_TestOnly ? TestMode::TestFrameOnly : TestMode::NoTesting,
++                                           false)) {
++                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
++                            "%s decoder with renderer '%s'",
++                            m_Pyrowave->name(),
++                            m_FrontendRenderer->getRendererName());
++                return true;
++            }
++        }
++        reset();
++    }
++
++    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                 "No renderer can show PyroWave frames (%s)",
++                 yuv444 ? "YUV 4:4:4" : "YUV 4:2:0");
++#else
++    Q_UNUSED(params);
++    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "This build has no PyroWave decoder");
++#endif
++    return false;
++}
++
+ void FFmpegVideoDecoder::renderFrameOnMainThread()
+ {
+     m_Pacer->renderOnMainThread();
+diff --git a/app/streaming/video/ffmpeg.h b/app/streaming/video/ffmpeg.h
+index 1e9e9d18..39e9a0c7 100644
+--- a/app/streaming/video/ffmpeg.h
++++ b/app/streaming/video/ffmpeg.h
+@@ -13,6 +13,8 @@ extern "C" {
+ #include <libavcodec/avcodec.h>
+ }
+ 
++class PyrowaveDecoder;
++
+ class FFmpegVideoDecoder : public IVideoDecoder {
+ public:
+     FFmpegVideoDecoder(bool testOnly);
+@@ -75,6 +77,10 @@ private:
+                                         bool requireZeroCopyFormat,
+                                         QSet<const AVCodec*>& terminallyFailedHardwareDecoders);
+ 
++    bool tryInitializePyrowave(PDECODER_PARAMETERS params);
++
++    int receiveFrame(AVFrame* frame);
++
+     bool tryInitializeRendererForUnknownDecoder(const AVCodec* decoder,
+                                                 PDECODER_PARAMETERS params,
+                                                 bool tryHwAccel);
+@@ -106,6 +112,10 @@ private:
+ 
+     AVPacket* m_Pkt;
+     AVCodecContext* m_VideoDecoderCtx;
++
++    // PyroWave decodes outside FFmpeg; its frames take the software-frame path.
++    PyrowaveDecoder* m_Pyrowave;
++    AVFrame* m_PyrowaveFrame;
+     enum AVPixelFormat m_RequiredPixelFormat;
+     QByteArray m_DecodeBuffer;
+     const AVCodecHWConfig* m_HwDecodeCfg;
+diff --git a/app/streaming/video/pyrowave/pyrowavedecoder.h b/app/streaming/video/pyrowave/pyrowavedecoder.h
+new file mode 100644
+index 00000000..9489f639
+--- /dev/null
++++ b/app/streaming/video/pyrowave/pyrowavedecoder.h
+@@ -0,0 +1,28 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++extern "C" {
++#include <libavutil/frame.h>
++}
++
++// Decodes PyroWave frames (VaporOS's intra-only wavelet codec) into planar
++// YUV AVFrames for FFmpegVideoDecoder's software-frame renderers. A Moonlight
++// frame carries one complete PyroWave frame: its 32x32 blocks each state
++// their own size, so the whole frame goes to the decoder in one call.
++//
++// macOS decodes with PyroWave's Metal port, everything else with its Vulkan
++// C API.
++class PyrowaveDecoder {
++public:
++    // Returns nullptr when this machine can't run the decoder.
++    static PyrowaveDecoder* create(int width, int height, bool yuv444);
++
++    virtual ~PyrowaveDecoder() {}
++
++    // Decodes one frame into out (which must be empty). Returns 0 on success.
++    virtual int decode(const uint8_t* data, size_t size, AVFrame* out) = 0;
++
++    virtual const char* name() = 0;
++};
+diff --git a/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm b/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm
+new file mode 100644
+index 00000000..816bfae1
+--- /dev/null
++++ b/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm
+@@ -0,0 +1,256 @@
++// PyroWave decoding with its Metal port (Apple silicon). Built without ARC,
++// like the rest of Moonlight's Objective-C++.
++
++#import <Metal/Metal.h>
++
++#include <atomic>
++#include <memory>
++#include <mutex>
++#include <vector>
++
++#include "SDL_compat.h"
++#include "pyrowavedecoder.h"
++
++#include <pyrowave_metal.h>
++
++extern "C" {
++#include <libavutil/buffer.h>
++#include <libavutil/pixfmt.h>
++}
++
++namespace {
++
++// One output frame: three planes in a single shared-storage buffer, which the
++// decoder writes through linear textures and the renderer reads as an AVFrame
++// without a copy. A slot is busy until the AVFrame that references it is freed.
++struct Slot {
++    id<MTLBuffer> buffer = nil;
++    id<MTLTexture> planes[3] = {nil, nil, nil};
++    size_t offsets[3] = {};
++    size_t strides[3] = {};
++    std::atomic<bool> busy{false};
++
++    ~Slot()
++    {
++        for (auto& t : planes) {
++            [t release];
++        }
++        [buffer release];
++    }
++};
++
++// Frames can outlive the decoder (Pacer frees its queue later), so each holds its slot.
++void releaseSlot(void* opaque, uint8_t*)
++{
++    auto* slot = static_cast<std::shared_ptr<Slot>*>(opaque);
++    (*slot)->busy = false;
++    delete slot;
++}
++
++size_t alignUp(size_t v, size_t a)
++{
++    return (v + a - 1) / a * a;
++}
++
++class PyrowaveMetalDecoder : public PyrowaveDecoder {
++public:
++    PyrowaveMetalDecoder(int width, int height, bool yuv444)
++        : m_Width(width), m_Height(height), m_Yuv444(yuv444) {}
++
++    ~PyrowaveMetalDecoder() override
++    {
++        if (m_Decoder) {
++            pyrowave_decoder_destroy(m_Decoder);
++        }
++        if (m_PwDevice) {
++            pyrowave_device_destroy(m_PwDevice);
++        }
++        m_Slots.clear();
++        [m_Queue release];
++        [m_Device release];
++    }
++
++    bool initialize()
++    {
++        uint32_t major, minor, patch;
++        pyrowave_get_api_version(&major, &minor, &patch);
++        if (major != PYROWAVE_API_VERSION_MAJOR) {
++            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                         "PyroWave: library API %u.%u does not match", major, minor);
++            return false;
++        }
++
++        m_Device = MTLCreateSystemDefaultDevice();
++        if (m_Device == nil || !pyrowave_device_is_supported((__bridge void*)m_Device)) {
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
++                        "PyroWave: this GPU can't run the Metal decoder (Apple silicon only)");
++            return false;
++        }
++        m_Queue = [m_Device newCommandQueue];
++
++        pyrowave_device_create_info dci = {};
++        dci.mtl_device = (__bridge void*)m_Device;
++        if (pyrowave_device_create(&dci, &m_PwDevice) != PYROWAVE_SUCCESS) {
++            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: pyrowave_device_create() failed");
++            return false;
++        }
++
++        pyrowave_decoder_create_info info = {};
++        info.device = m_PwDevice;
++        info.width = m_Width;
++        info.height = m_Height;
++        info.chroma = m_Yuv444 ? PYROWAVE_CHROMA_SUBSAMPLING_444 : PYROWAVE_CHROMA_SUBSAMPLING_420;
++        if (pyrowave_decoder_create(&info, &m_Decoder) != PYROWAVE_SUCCESS) {
++            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                         "PyroWave: pyrowave_decoder_create(%dx%d) failed", m_Width, m_Height);
++            return false;
++        }
++
++        // Linear textures need their rows and offsets aligned for the GPU; 64 also suits FFmpeg.
++        m_Align = qMaxAlign([m_Device minimumLinearTextureAlignmentForPixelFormat:MTLPixelFormatR8Unorm]);
++        return true;
++    }
++
++    const char* name() override
++    {
++        return "PyroWave (Metal)";
++    }
++
++    int decode(const uint8_t* data, size_t size, AVFrame* out) override
++    {
++        // Every Moonlight frame is a whole PyroWave frame, so start clean: the
++        // bitstream's 3-bit sequence counter can't order frames across losses.
++        pyrowave_decoder_clear(m_Decoder);
++        if (pyrowave_decoder_push_packet(m_Decoder, data, size) != PYROWAVE_SUCCESS) {
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: corrupt frame (%zu bytes)", size);
++            return -1;
++        }
++        if (!pyrowave_decoder_decode_is_ready(m_Decoder, false) && !m_WarnedPartial) {
++            // Missing blocks decode as blur; it should not happen with complete Moonlight frames.
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: decoding an incomplete frame");
++            m_WarnedPartial = true;
++        }
++
++        std::shared_ptr<Slot> slot = acquireSlot();
++        if (!slot) {
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: no free output buffer, dropping a frame");
++            return -1;
++        }
++
++        @autoreleasepool {
++            id<MTLCommandBuffer> cmd = [m_Queue commandBuffer];
++            pyrowave_gpu_buffers buffers = {};
++            for (int i = 0; i < 3; i++) {
++                buffers.planes[i] = (__bridge void*)slot->planes[i];
++            }
++            if (pyrowave_decoder_decode_gpu_buffer(m_Decoder, (__bridge void*)cmd, &buffers) != PYROWAVE_SUCCESS) {
++                slot->busy = false;
++                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: decode failed");
++                return -1;
++            }
++            [cmd commit];
++            [cmd waitUntilCompleted];
++            if (cmd.status != MTLCommandBufferStatusCompleted) {
++                slot->busy = false;
++                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: GPU decode failed");
++                return -1;
++            }
++        }
++
++        uint8_t* base = static_cast<uint8_t*>(slot->buffer.contents);
++        out->format = m_Yuv444 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P;
++        out->width = m_Width;
++        out->height = m_Height;
++        for (int i = 0; i < 3; i++) {
++            out->data[i] = base + slot->offsets[i];
++            out->linesize[i] = static_cast<int>(slot->strides[i]);
++        }
++        out->buf[0] = av_buffer_create(base, slot->buffer.length, releaseSlot,
++                                       new std::shared_ptr<Slot>(slot), AV_BUFFER_FLAG_READONLY);
++        if (!out->buf[0]) {
++            slot->busy = false;
++            return -1;
++        }
++        out->flags |= AV_FRAME_FLAG_KEY;
++        out->pict_type = AV_PICTURE_TYPE_I;
++        return 0;
++    }
++
++private:
++    static size_t qMaxAlign(size_t a)
++    {
++        return a > 64 ? a : 64;
++    }
++
++    std::shared_ptr<Slot> acquireSlot()
++    {
++        for (auto& s : m_Slots) {
++            bool expected = false;
++            if (s->busy.compare_exchange_strong(expected, true)) {
++                return s;
++            }
++        }
++        // Pacer holds up to 5 frames, the renderer 1 or 2, and one is being decoded.
++        if (m_Slots.size() >= 12) {
++            return nullptr;
++        }
++
++        auto slot = std::make_shared<Slot>();
++        int cw = m_Yuv444 ? m_Width : m_Width / 2;
++        int ch = m_Yuv444 ? m_Height : m_Height / 2;
++        int widths[3] = {m_Width, cw, cw};
++        int heights[3] = {m_Height, ch, ch};
++        size_t total = 0;
++        for (int i = 0; i < 3; i++) {
++            slot->strides[i] = alignUp(widths[i], m_Align);
++            slot->offsets[i] = total;
++            total = alignUp(total + slot->strides[i] * heights[i], m_Align);
++        }
++        slot->buffer = [m_Device newBufferWithLength:total options:MTLResourceStorageModeShared];
++        if (slot->buffer == nil) {
++            return nullptr;
++        }
++        for (int i = 0; i < 3; i++) {
++            MTLTextureDescriptor* desc =
++                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
++                                                                   width:widths[i]
++                                                                  height:heights[i]
++                                                               mipmapped:NO];
++            desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
++            desc.storageMode = MTLStorageModeShared;
++            slot->planes[i] = [slot->buffer newTextureWithDescriptor:desc
++                                                              offset:slot->offsets[i]
++                                                         bytesPerRow:slot->strides[i]];
++            if (slot->planes[i] == nil) {
++                return nullptr;
++            }
++        }
++        slot->busy = true;
++        m_Slots.push_back(slot);
++        return slot;
++    }
++
++    int m_Width;
++    int m_Height;
++    bool m_Yuv444;
++    size_t m_Align = 64;
++    bool m_WarnedPartial = false;
++
++    id<MTLDevice> m_Device = nil;
++    id<MTLCommandQueue> m_Queue = nil;
++    pyrowave_device m_PwDevice = nullptr;
++    pyrowave_decoder m_Decoder = nullptr;
++    std::vector<std::shared_ptr<Slot>> m_Slots;
++};
++
++}
++
++PyrowaveDecoder* PyrowaveDecoder::create(int width, int height, bool yuv444)
++{
++    auto* decoder = new PyrowaveMetalDecoder(width, height, yuv444);
++    if (!decoder->initialize()) {
++        delete decoder;
++        return nullptr;
++    }
++    return decoder;
++}
+diff --git a/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp b/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp
+new file mode 100644
+index 00000000..6bdef3a3
+--- /dev/null
++++ b/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp
+@@ -0,0 +1,117 @@
++// PyroWave decoding with its Vulkan C API (Windows and Linux). The frame is
++// read back to system memory for the software-frame renderers.
++
++#include <vulkan/vulkan.h>
++#include <pyrowave.h>
++
++#include "SDL_compat.h"
++#include "pyrowavedecoder.h"
++
++extern "C" {
++#include <libavutil/pixfmt.h>
++}
++
++namespace {
++
++class PyrowaveVulkanDecoder : public PyrowaveDecoder {
++public:
++    PyrowaveVulkanDecoder(int width, int height, bool yuv444)
++        : m_Width(width), m_Height(height), m_Yuv444(yuv444) {}
++
++    ~PyrowaveVulkanDecoder() override
++    {
++        if (m_Decoder) {
++            pyrowave_decoder_destroy(m_Decoder);
++        }
++        if (m_Device) {
++            pyrowave_device_destroy(m_Device);
++        }
++    }
++
++    bool initialize()
++    {
++        uint32_t major, minor, patch;
++        pyrowave_get_api_version(&major, &minor, &patch);
++        if (major != PYROWAVE_API_VERSION_MAJOR) {
++            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                         "PyroWave: library API %u.%u does not match", major, minor);
++            return false;
++        }
++        if (pyrowave_create_default_device(&m_Device) != PYROWAVE_SUCCESS) {
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: no usable Vulkan device");
++            return false;
++        }
++
++        pyrowave_decoder_create_info info = {};
++        info.device = m_Device;
++        info.width = m_Width;
++        info.height = m_Height;
++        info.chroma = m_Yuv444 ? PYROWAVE_CHROMA_SUBSAMPLING_444 : PYROWAVE_CHROMA_SUBSAMPLING_420;
++        info.fragment_path = pyrowave_decoder_device_prefers_fragment_path(m_Device);
++        if (pyrowave_decoder_create(&info, &m_Decoder) != PYROWAVE_SUCCESS) {
++            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                         "PyroWave: pyrowave_decoder_create(%dx%d) failed", m_Width, m_Height);
++            return false;
++        }
++        return true;
++    }
++
++    const char* name() override
++    {
++        return "PyroWave (Vulkan)";
++    }
++
++    int decode(const uint8_t* data, size_t size, AVFrame* out) override
++    {
++        pyrowave_decoder_clear(m_Decoder);
++        if (pyrowave_decoder_push_packet(m_Decoder, data, size) != PYROWAVE_SUCCESS) {
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: corrupt frame (%zu bytes)", size);
++            return -1;
++        }
++
++        out->format = m_Yuv444 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P;
++        out->width = m_Width;
++        out->height = m_Height;
++        if (av_frame_get_buffer(out, 64) < 0) {
++            return -1;
++        }
++
++        int ch = m_Yuv444 ? m_Height : m_Height / 2;
++        pyrowave_cpu_buffer buf = {};
++        for (int i = 0; i < 3; i++) {
++            buf.data[i] = out->data[i];
++            buf.row_stride_in_bytes[i] = out->linesize[i];
++            buf.plane_size_in_bytes[i] = (size_t)out->linesize[i] * (i ? ch : m_Height);
++        }
++        buf.width = m_Width;
++        buf.height = m_Height;
++        buf.format = m_Yuv444 ? PYROWAVE_CPU_BUFFER_FORMAT_YUV444P : PYROWAVE_CPU_BUFFER_FORMAT_YUV420P;
++        if (pyrowave_decoder_decode_cpu_buffer_synchronous(m_Decoder, &buf) != PYROWAVE_SUCCESS) {
++            av_frame_unref(out);
++            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: decode failed");
++            return -1;
++        }
++        out->flags |= AV_FRAME_FLAG_KEY;
++        out->pict_type = AV_PICTURE_TYPE_I;
++        return 0;
++    }
++
++private:
++    int m_Width;
++    int m_Height;
++    bool m_Yuv444;
++    pyrowave_device m_Device = nullptr;
++    pyrowave_decoder m_Decoder = nullptr;
++};
++
++}
++
++PyrowaveDecoder* PyrowaveDecoder::create(int width, int height, bool yuv444)
++{
++    auto* decoder = new PyrowaveVulkanDecoder(width, height, yuv444);
++    if (!decoder->initialize()) {
++        delete decoder;
++        return nullptr;
++    }
++    return decoder;
++}

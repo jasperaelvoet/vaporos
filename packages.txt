@@ -79,8 +79,9 @@ xorg-xwayland
 xorg-xprop
 seatd
 steam
-# Stock prebuilt Sunshine from the cachyos repo (never compiled here)
-sunshine
+# Sunshine with the PyroWave codec, built from forks/ into the local repo
+# [vaporos] (build/forks.sh); it pulls in pyrowave.
+vaporos/sunshine
 
 # ---- Audio: PipeWire for everything, 32-bit clients included
 pipewire

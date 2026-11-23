@@ -62,6 +62,8 @@ export const anchors = {
   verify: 'verify',
   /** /download/: the requirements section (the Astro site used #req-title). */
   requirements: 'requirements',
+  /** /download/: Moonlight with PyroWave. */
+  pyrowave: 'pyrowave',
   /** /: the how-it-works section (the hero's second button). */
   how: 'how',
   /** /: the download section. */

@@ -1,0 +1,252 @@
+# VaporOS's Moonlight with the PyroWave decoder, for the GitHub release:
+# moonlight-qt at the commit in forks/sources with forks/moonlight-qt and
+# forks/moonlight-common-c applied, linked against PyroWave (its Metal port on
+# macOS, its Vulkan C API elsewhere). The steps follow moonlight-qt's own CI
+# (.github/workflows/build-win-mac.yml and build-appimage.yml upstream).
+#
+# Each client is cached by its inputs, so an OS-only commit reuses the last
+# build. The files carry no version, so the website can link to
+# releases/latest/download/<name>.
+name: clients
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: client
+          key: client-macos-${{ hashFiles('forks/sources', 'forks/fetch.sh', 'forks/moonlight-qt/**', 'forks/moonlight-common-c/**', '.github/workflows/clients.yml') }}
+
+      - name: Fetch the sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          forks/fetch.sh pyrowave src/pyrowave
+          forks/fetch.sh moonlight-qt src/moonlight-qt
+
+      - name: Build PyroWave (Metal)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cmake -S src/pyrowave/metal -B build/pyrowave -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_INSTALL_PREFIX="$PWD/pyrowave" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_INSTALL_INCLUDEDIR=include -DCMAKE_INSTALL_BINDIR=bin -DCMAKE_INSTALL_NAME_DIR=@rpath
+          cmake --build build/pyrowave -j
+          cmake --install build/pyrowave
+          echo "PYROWAVE_DIR=$PWD/pyrowave" >>"$GITHUB_ENV"
+
+      - name: Install create-dmg
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: npm install --global create-dmg
+
+      - name: Install Qt
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jurplel/install-qt-action@v4
+        with:
+          cache: true
+          version: 6.11.2
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@073e34d7c2ab4ae6961ed7cca690b3abd5ba5a7e'
+
+      - name: Build the DMG
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src/moonlight-qt
+        run: |
+          bash scripts/generate-dmg.sh Release
+          mkdir -p "$GITHUB_WORKSPACE/client"
+          cp build/installer-Release/*.dmg "$GITHUB_WORKSPACE/client/moonlight-pyrowave-macos.dmg"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: client-macos
+          path: client/
+          compression-level: 0
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: client
+          key: client-windows-${{ hashFiles('forks/sources', 'forks/fetch.sh', 'forks/moonlight-qt/**', 'forks/moonlight-common-c/**', '.github/workflows/clients.yml') }}
+
+      - name: Fetch the sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          forks/fetch.sh pyrowave src/pyrowave
+          forks/fetch.sh moonlight-qt src/moonlight-qt
+          (cd src/pyrowave && bash checkout_granite.sh)
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: steps.cache.outputs.cache-hit != 'true'
+
+      - name: Build PyroWave (Vulkan)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cmake -S src/pyrowave -B build/pyrowave -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/pyrowave" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_INSTALL_INCLUDEDIR=include -DCMAKE_INSTALL_BINDIR=bin -DCMAKE_INSTALL_DATAROOTDIR=share
+          cmake --build build/pyrowave
+          cmake --install build/pyrowave
+          # pyrowave.h includes vulkan/vulkan.h; Moonlight finds it next to it.
+          cp -r src/pyrowave/Granite/third_party/khronos/vulkan-headers/include/vulkan pyrowave/include/
+          echo "PYROWAVE_DIR=$(cygpath -w "$PWD/pyrowave")" >>"$GITHUB_ENV"
+
+      - name: Download Moonlight's dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src/moonlight-qt
+        shell: pwsh
+        run: ./setup-deps.ps1
+
+      - name: Install Qt
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jurplel/install-qt-action@v4
+        with:
+          cache: true
+          tools: tools_qtcreator_gui
+          version: 6.12.0
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@073e34d7c2ab4ae6961ed7cca690b3abd5ba5a7e'
+
+      - name: Build x64
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src/moonlight-qt
+        shell: cmd
+        run: |
+          set "PATH=%QT_ROOT_DIR%\bin;%PATH%"
+          scripts\build-arch.bat Release x64
+
+      - name: Package
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          deploy=src/moonlight-qt/build/deploy-x64-release
+          cp pyrowave/bin/*.dll "$deploy/"
+          mkdir -p client
+          (cd "$deploy" && 7z a -tzip "$GITHUB_WORKSPACE/client/moonlight-pyrowave-windows-x64.zip" . >/dev/null)
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: client-windows
+          path: client/
+          compression-level: 0
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: client
+          key: client-linux-${{ hashFiles('forks/sources', 'forks/fetch.sh', 'forks/moonlight-qt/**', 'forks/moonlight-common-c/**', '.github/workflows/clients.yml') }}
+
+      - name: Fetch the sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          forks/fetch.sh pyrowave src/pyrowave
+          forks/fetch.sh moonlight-qt src/moonlight-qt
+          (cd src/pyrowave && bash checkout_granite.sh)
+
+      - name: Set up the build environment
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-1.4.313-jammy.list https://packages.lunarg.com/vulkan/1.4.313/lunarg-vulkan-1.4.313-jammy.list
+          sudo apt update
+          sudo apt install -y qt6-base-dev qt6-declarative-dev libqt6svg6-dev qml6-module-qtquick-controls qml6-module-qtquick-templates qml6-module-qtquick-layouts \
+            qml6-module-qtqml-workerscript qml6-module-qtquick-window qml6-module-qtquick python3-pip nasm libgbm-dev libdrm-dev libfreetype-dev libasound2-dev \
+            libdbus-1-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libibus-1.0-dev libpulse-dev libudev-dev libx11-dev libxcursor-dev \
+            libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev libx11-xcb-dev \
+            libxfixes-dev libxtst-dev wayland-protocols libopus-dev libvdpau-dev libgl-dev libpipewire-0.3-dev liburing-dev vulkan-sdk cmake ninja-build
+          sudo pip3 install meson
+          mkdir -p dep_root/bin
+          echo "$PWD/dep_root/bin" >>"$GITHUB_PATH"
+
+      - name: Build PyroWave (Vulkan)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cmake -S src/pyrowave -B build/pyrowave -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_INSTALL_INCLUDEDIR=include -DCMAKE_INSTALL_BINDIR=bin -DCMAKE_INSTALL_DATAROOTDIR=share
+          cmake --build build/pyrowave
+          sudo cmake --install build/pyrowave
+          sudo ldconfig
+
+      # Moonlight's own dependency builds, as in its build-appimage.yml.
+      - name: Build SDL3, sdl2-compat and SDL_ttf
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p deps && cd deps
+          git clone -q --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL.git
+          cmake -DSDL_KMSDRM=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_INSTALL_DOCS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S SDL -B SDL/build
+          cmake --build SDL/build -j && sudo cmake --install SDL/build
+          git clone -q --depth 1 --branch release-2.32.74 https://github.com/libsdl-org/sdl2-compat.git
+          cmake -DSDL2COMPAT_TESTS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S sdl2-compat -B sdl2-compat/build
+          cmake --build sdl2-compat/build -j && sudo cmake --install sdl2-compat/build
+          git clone -q https://github.com/libsdl-org/SDL_ttf.git && git -C SDL_ttf checkout -q a883e490e30fb44a5336ea3dcb990c6982c5216f
+          git -C SDL_ttf submodule update -q --init --recursive
+          (cd SDL_ttf && ./autogen.sh && ./configure && make -j"$(nproc)" && sudo make install)
+
+      - name: Build libva, libplacebo, dav1d and FFmpeg
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd deps
+          git clone -q --depth 1 --branch 2.24.1 https://github.com/intel/libva.git
+          (cd libva && ./autogen.sh && ./configure --enable-x11=yes --enable-glx=no --enable-drm=no --enable-wayland=no && make -j"$(nproc)" && sudo make install)
+          git clone -q https://github.com/haasn/libplacebo.git && git -C libplacebo checkout -q 92b5ac6db79f4d680eb656692f7bf51e9606f42a
+          git -C libplacebo submodule update -q --init --recursive
+          (cd libplacebo && git apply ../../src/moonlight-qt/app/deploy/linux/appimage/*.patch && meson setup build -Dvulkan=enabled -Dopengl=disabled -Ddemos=false && ninja -C build && sudo ninja install -C build)
+          git clone -q --branch 1.5.4 --depth 1 https://code.videolan.org/videolan/dav1d.git
+          (cd dav1d && meson setup build -Ddefault_library=static -Dbuildtype=release -Denable_tools=false -Denable_tests=false && ninja -C build && sudo ninja install -C build)
+          git clone -q --depth 1 --branch n9.0.2 https://github.com/FFmpeg/FFmpeg.git
+          (cd FFmpeg && ./configure --enable-pic --enable-lto --disable-static --enable-shared --disable-all --disable-autodetect \
+            --enable-avcodec --enable-avformat --enable-swscale \
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=av1 \
+            --enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --enable-hwaccel=av1_vaapi \
+            --enable-vdpau --enable-hwaccel=h264_vdpau  --enable-hwaccel=hevc_vdpau --enable-hwaccel=av1_vdpau \
+            --enable-libdrm --enable-vulkan --enable-hwaccel=h264_vulkan --enable-hwaccel=hevc_vulkan --enable-hwaccel=av1_vulkan \
+            --enable-libdav1d --enable-decoder=libdav1d && make -j"$(nproc)" && sudo make install)
+
+      - name: Install linuxdeploy
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: dep_root/bin
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+
+      - name: Build the AppImage
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src/moonlight-qt
+        run: |
+          sudo ldconfig
+          scripts/build-appimage.sh
+          mkdir -p "$GITHUB_WORKSPACE/client"
+          cp build/installer-release/*.AppImage "$GITHUB_WORKSPACE/client/moonlight-pyrowave-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: client-linux
+          path: client/
+          compression-level: 0
+          if-no-files-found: error

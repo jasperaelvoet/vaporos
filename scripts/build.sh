@@ -139,7 +139,7 @@ ensure_builder
 rm -f out/.built-on
 
 # keys/ holds the release public key; .build/ the vos binary.
-rsync -rlpt --delete --exclude .DS_Store packages.txt build rootfs extensions keys .build \
+rsync -rlpt --delete --exclude .DS_Store packages.txt build forks rootfs extensions keys .build \
     "$PVE_USER@$PVE_HOST:$BUILD_DIR/src/"
 
 env_args=

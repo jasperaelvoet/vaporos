@@ -9,8 +9,8 @@
 import { PageHead, RequirementList, SectionTitle } from '@/components/docs';
 import { VerifySteps } from '@/components/docs/verify-steps';
 import { DownloadCard, RequirementSummary } from '@/components/release';
-import { Notice, Rich, TextLink } from '@/components/ui';
-import { anchors, downloadPage, pageMeta, requirements, requirementsSection, routes, site, verifySection } from '@/content';
+import { LinkButton, Notice, Rich, TextLink } from '@/components/ui';
+import { anchors, downloadPage, pageMeta, pyrowaveSection, requirements, requirementsSection, routes, site, verifySection } from '@/content';
 import { HEAT } from '@/direction';
 import { absoluteUrl } from '@/lib/base-path';
 import { pageMetadata } from '@/lib/metadata';
@@ -44,7 +44,10 @@ export default async function DownloadPage() {
   // With no release yet there is nothing to check: no verify section or link.
   const none = release.state === 'none';
   const channels = none ? downloadPage.channelsNone : downloadPage.channels;
-  const jump = none ? downloadPage.jump.filter((l) => l.href !== `#${anchors.verify}`) : downloadPage.jump;
+  // With no release yet there are no clients to download either.
+  const jump = none
+    ? downloadPage.jump.filter((l) => l.href !== `#${anchors.verify}` && l.href !== `#${anchors.pyrowave}`)
+    : downloadPage.jump;
   return (
     <>
       {release.state === 'ready' && (
@@ -99,6 +102,35 @@ export default async function DownloadPage() {
           <RequirementList items={requirements} />
         </div>
       </section>
+
+      {!none && (
+        <section
+          id={pyrowaveSection.id}
+          aria-labelledby="pyrowave-title"
+          className="wrap mt-[clamp(5rem,10vw,8.5rem)]"
+          data-heat={HEAT.ready}
+          data-heat-label="ready"
+        >
+          <div className="grid gap-x-16 gap-y-8 desk:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+            <SectionTitle id="pyrowave-title">{pyrowaveSection.title}</SectionTitle>
+            <div className="grid gap-6">
+              <p className="max-w-read text-smoke">
+                <Rich text={pyrowaveSection.lead} />
+              </p>
+              <p className="flex flex-wrap gap-3">
+                {pyrowaveSection.downloads.map((d) => (
+                  <LinkButton key={d.href} href={d.href} icon={d.icon} variant="ghost">
+                    {d.label}
+                  </LinkButton>
+                ))}
+              </p>
+              <p className="max-w-read text-fine text-smoke">
+                <Rich text={pyrowaveSection.note} />
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {!none && (
         <section

@@ -1,0 +1,37 @@
+# PyroWave's shared C API (libpyrowave-shared), which VaporOS's Sunshine links.
+# Built by build/forks.sh; the commit is the one in forks/sources.
+
+pkgname=pyrowave
+_commit=a32b05e03d70826b19d4d11ff74fe166ed74371b
+pkgver=1.0.0.r20261111
+pkgrel=1
+pkgdesc="Intra-only wavelet video codec in Vulkan compute (C API)"
+arch=('x86_64')
+url="https://github.com/Themaister/pyrowave"
+license=('MIT')
+depends=('gcc-libs' 'vulkan-icd-loader')
+makedepends=('cmake' 'git' 'ninja')
+source=("$pkgname::git+$url.git#commit=$_commit")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname"
+    # The small part of Granite the standalone C API needs, at the commit PyroWave pins.
+    bash checkout_granite.sh
+}
+
+build() {
+    cmake -S "$pkgname" -B build -G Ninja -Wno-dev \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_INSTALL_BINDIR=bin \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_INSTALL_INCLUDEDIR=include \
+        -DCMAKE_INSTALL_DATAROOTDIR=share
+    cmake --build build
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install build
+    install -Dm644 "$pkgname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

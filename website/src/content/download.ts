@@ -26,9 +26,27 @@ export const downloadPage = {
   /** In-page links under the card, to the two sections below it. */
   jump: [
     { label: 'What you need', href: `#${anchors.requirements}` },
+    { label: 'PyroWave', href: `#${anchors.pyrowave}` },
     { label: 'Check your download', href: `#${anchors.verify}` },
   ] satisfies LinkItem[],
   jumpLabel: 'On this page',
+};
+
+/**
+ * VaporOS's Moonlight with the PyroWave decoder. Each release carries the
+ * three files under these names (.github/workflows/clients.yml), so the
+ * links always point at the latest release.
+ */
+export const pyrowaveSection = {
+  id: anchors.pyrowave,
+  title: 'Stream with PyroWave',
+  lead: "PyroWave is the intra-only codec Valve added to Steam Remote Play. Every frame stands on its own, so fast motion stays sharp. It needs 150 to 500 Mbit/s, so it's for a wired gigabit network, not Wi-Fi or the internet. Stock Moonlight can't decode it: use VaporOS's build, then pick **PyroWave** under **Settings → Video codec**." as Rich,
+  downloads: [
+    { label: 'Mac (Apple silicon)', href: `${links.releases}/latest/download/moonlight-pyrowave-macos.dmg`, icon: 'download' },
+    { label: 'Windows', href: `${links.releases}/latest/download/moonlight-pyrowave-windows-x64.zip`, icon: 'download' },
+    { label: 'Linux (AppImage)', href: `${links.releases}/latest/download/moonlight-pyrowave-x86_64.AppImage`, icon: 'download' },
+  ] satisfies ButtonItem[],
+  note: 'These builds are not signed. On a Mac, right-click Moonlight and choose **Open** the first time.' as Rich,
 };
 
 export type AssetKey = 'sums' | 'manifest' | 'sig' | 'notes';

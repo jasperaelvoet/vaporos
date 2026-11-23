@@ -58,9 +58,10 @@ contract there first, then in code, and keep the two in sync.
 | `internal/web` | Embedded web UI, the control center (go:embed): server-rendered page shells in `templates/`; ES modules and a Tailwind-built CSS file in `static/`; CSS input in `styles/`; the dev server's fake API data in `fixtures/`; no external assets. The routes are the registry in `web.go`, and `activeSet` picks the UI vosd serves. The previous eight-page UI stays in `templates/legacy/` and `static/legacy/` until it is removed. |
 | `rootfs/` | Overlay onto the image: systemd system/user units, initramfs hook (`usr/lib/initcpio`), nftables, cmdline, sysusers, tmpfiles, os-release, avahi, NetworkManager config and its polkit rule, the `steamos-*` stubs Steam calls. |
 | `iso/airootfs/` | Empty placeholder tree. Nothing in `build/` or `scripts/` uses it. |
+| `forks/` | VaporOS's forks as patches: `sources` pins each upstream commit (PyroWave, Sunshine, moonlight-qt, moonlight-common-c), `<name>/*.patch` apply on top, `pkg/` holds the PKGBUILDs `build/forks.sh` builds (PyroWave and Sunshine with the PyroWave codec). `fetch.sh NAME DEST` checks one out patched; `export.sh NAME` rewrites the patches from the commits in the gitignored development checkout `third_party/NAME`. See CONTRACTS "Sunshine". |
 | `extensions/` | The curated extensions, one directory per id: `extension.json` (the descriptor) and optional `files/usr/...`. Built with the image and signed in its manifest; see CONTRACTS "Extensions". |
 | `packages.txt` | Every package in the image. Repos are set up in `build/pacman.conf`. |
-| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which pacstraps, overlays and makes erofs, kernel, initramfs, block index, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `iso.sh` makes the ISO from the OS files (build.sh calls it in the dev loop, CI's `sign` job after signing); `run.sh` runs one build in the builder container; `lib.sh` holds the helpers `selftest.sh` tests. |
+| `build/` | The Arch build container (`Dockerfile`) and `build.sh`, which builds `forks/`'s packages (`forks.sh`, cached by input), pacstraps, overlays and makes erofs, kernel, initramfs, block index, manifest and ISO; `extensions.sh` makes the extension images (`ext-<id>.raw`, never on the ISO) and their catalog; `iso.sh` makes the ISO from the OS files (build.sh calls it in the dev loop, CI's `sign` job after signing); `run.sh` runs one build in the builder container; `lib.sh` holds the helpers `selftest.sh` tests. |
 | `scripts/` | `dev.sh` (the dev loop behind `make`), `build.sh` (runs the build on the Proxmox builder), `serial.py`, `serve.py` (the dev loop's update server, with byte ranges). |
 | `tests/` | `qemu-smoke.sh` (the CI install-and-boot test), `ventoy-stick.sh` (the Ventoy stick it can also boot the ISO from), `vm-checks.sh` (in-VM checks for `make test`), QMP helpers, `ppm2png.py` (screendumps to PNG). |
 | `keys/` | `release.pub` only. See `keys/README.md`. |
@@ -161,16 +162,19 @@ and the security review are in `.claude/skills/SOURCES.md`.
 ## CI
 
 - `.github/workflows/build.yml` runs on every push, PR and manual dispatch, except changes that touch only
-  `website/**`, `**.md`, `.claude/**`, `tools/**`, `pages.yml` or `web.yml`. It has five jobs:
+  `website/**`, `**.md`, `.claude/**`, `tools/**`, `pages.yml` or `web.yml`. It has six jobs:
   - `go`: gofmt, vet, `test -race` and the static `vos` binary;
   - `image`: `build/build.sh` in the builder container, which produces the OS files, the extension images and an
     unsigned `manifest.json`: no ISO, and no signing key near this job;
   - `sign`: checks that manifest against the commit, signs it with `VOS_SIGNING_KEY` on pushes (pull requests stay
     unsigned) and makes the ISO around it with `build/iso.sh` (the ISO must stay under 1.95 GiB);
   - `vm-test`: `tests/qemu-smoke.sh` installs the ISO through the web installer in QEMU and boots it;
+  - `clients`: `.github/workflows/clients.yml` builds Moonlight with PyroWave from `forks/` for macOS, Windows
+    and Linux (cached until `forks/` changes);
   - `publish`: pushes only, and only signed builds that passed `vm-test`. It checks the signature against
     `keys/release.pub`, writes `SHA256SUMS`, and pushes to `ghcr.io/jasperaelvoet/vaporos:<version>,<channel>`.
-    It also creates the GitHub release: `--latest` on `main`, a prerelease on other branches.
+    It also creates the GitHub release: `--latest` on `main`, a prerelease on other branches, with the clients
+    attached when they built (a failed client build never holds back the OS).
 - `.github/workflows/web.yml` runs the control center's Node checks on changes under `internal/**`, `design/**`,
   `tools/web/**` or `docs/CONTRACTS.md`: `css:check`, the strict Go tests (`VOS_WEB_STRICT=1`), the tooling's
   unit tests and the headless smoke matrix. It never blocks an OS release.

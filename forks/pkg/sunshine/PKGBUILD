@@ -1,0 +1,71 @@
+# VaporOS's Sunshine: upstream at the commit in forks/sources plus
+# forks/sunshine/*.patch (the PyroWave codec). Built by build/forks.sh, which
+# copies the patches next to this file. Based on upstream's
+# packaging/linux/Arch/PKGBUILD, without CUDA, tests or docs.
+
+pkgname=sunshine
+_commit=cae70da9f71595aa07e7948b11175bb2f5134787
+_version=2026.1123.40502
+pkgver=${_version}.pyrowave
+pkgrel=1
+pkgdesc="Self-hosted game stream host for Moonlight, with the PyroWave codec (VaporOS)"
+arch=('x86_64')
+url="https://github.com/LizardByte/Sunshine"
+license=('GPL-3.0-only')
+install=sunshine.install
+
+depends=(
+  'avahi' 'curl' 'gcc-libs' 'gtk3' 'hicolor-icon-theme' 'libayatana-appindicator'
+  'libcap' 'libdrm' 'libevdev' 'libmfx' 'libpipewire' 'libpulse' 'libva' 'libx11'
+  'libxcb' 'libxfixes' 'libxrandr' 'libxtst' 'miniupnpc' 'numactl' 'openssl' 'opus'
+  'pyrowave' 'qt6-base' 'qt6-svg' 'udev' 'vulkan-icd-loader' 'which'
+)
+makedepends=(
+  'appstream' 'appstream-glib' 'boost' 'boost-libs' 'cmake' 'desktop-file-utils' 'gcc'
+  'git' 'make' 'nodejs' 'npm' 'python-jinja' 'shaderc' 'vulkan-headers'
+)
+optdepends=('libva-mesa-driver: AMD GPU encoding support')
+
+source=("$pkgname::git+$url.git#commit=$_commit")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname"
+    git submodule update --recursive --init --depth 1
+    local p
+    for p in "$startdir"/patches/*.patch; do
+        [[ -e $p ]] || continue
+        git apply --whitespace=nowarn "$p"
+    done
+}
+
+build() {
+    export BRANCH="pyrowave"
+    export BUILD_VERSION="$_version"
+    export COMMIT="$_commit"
+    export CFLAGS="${CFLAGS/-Werror=format-security/}"
+    export CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
+    cmake -S "$pkgname" -B build -Wno-dev \
+        -D BUILD_DOCS=OFF \
+        -D BUILD_TESTS=OFF \
+        -D BUILD_WERROR=OFF \
+        -D CMAKE_BUILD_TYPE=Release \
+        -D CMAKE_INSTALL_PREFIX=/usr \
+        -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine \
+        -D SUNSHINE_ASSETS_DIR="share/sunshine" \
+        -D SUNSHINE_PUBLISHER_NAME='VaporOS' \
+        -D SUNSHINE_PUBLISHER_WEBSITE='https://jasperaelvoet.github.io/vaporos/' \
+        -D SUNSHINE_PUBLISHER_ISSUE_URL='https://github.com/jasperaelvoet/vaporos/issues' \
+        -D SUNSHINE_ENABLE_CUDA=OFF \
+        -D CUDA_FAIL_ON_MISSING=OFF \
+        -D SUNSHINE_ENABLE_PYROWAVE=ON
+    cmake --build build
+}
+
+check() {
+    ./build/sunshine --version
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install build
+}

@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 00:12:28 +0100
+Subject: [PATCH] Align PyroWave packets to network packets, repeat the
+ critical ones, and keep the wire bitrate on budget
+
+
+diff --git a/src/platform/linux/pyrowave_encode.cpp b/src/platform/linux/pyrowave_encode.cpp
+index 16b11341..d67cab7a 100644
+--- a/src/platform/linux/pyrowave_encode.cpp
++++ b/src/platform/linux/pyrowave_encode.cpp
+@@ -227,6 +227,8 @@ namespace pw {
+         auto fps = config.framerateX100 > 0 ? config.framerateX100 / 100.0 : (double) std::max(config.framerate, 1);
+         frame_budget = (std::size_t) (kbps * 1000 / 8 / fps);
+         frame_budget = std::max<std::size_t>(frame_budget, 16 * 1024);
++        packet_payload = (std::size_t) std::max(config.packetPayloadSize, 0);
++        frame_header = (std::size_t) std::max(config.frameHeaderSize, 0);
+         bitstream.resize(frame_budget + 64 * 1024);
+ 
+         if (!init_vulkan()) {
+@@ -271,39 +273,70 @@ namespace pw {
+       }
+ 
+       platf::vt_encoded_frame encode_frame(uint64_t frame_index, bool) override {
+-        pyrowave_rate_control rc {frame_budget};
++        // The budget covers what goes on the wire, padding and copies included.
++        pyrowave_rate_control rc {std::max<std::size_t>((std::size_t) (frame_budget * fill), 16 * 1024)};
+         pyrowave_result res = current ? encode_capture(rc) : encode_black(rc);
+         if (res != PYROWAVE_SUCCESS) {
+           BOOST_LOG(error) << "PyroWave: encode failed: "sv << res;
+           return {};
+         }
+ 
+-        // Packets of about one network shard keep partial-frame decoding possible later.
+-        constexpr std::size_t packet_boundary = 1024;
++        // Each PyroWave packet fills exactly one network packet (the first one
++        // after Moonlight's frame header), zero padded: a lost network packet
++        // then costs only the blocks in it, and the client decodes the rest of
++        // the frame. Zero bytes never start a block (a block with an empty
++        // ballot is never sent), so padding is unambiguous.
++        bool aligned = packet_payload > 0 && packet_payload % 4 == 0 && frame_header % 4 == 0 && packet_payload > frame_header + 64;
++        std::size_t boundary = aligned ? packet_payload : 1024;
++        std::size_t first_padding = aligned ? frame_header : 0;
+         std::size_t count = 0;
+-        if (pyrowave_encoder_compute_num_packets(encoder, packet_boundary, &count) != PYROWAVE_SUCCESS) {
++        if (pyrowave_encoder_compute_num_packets_with_padding(encoder, boundary, first_padding, &count) != PYROWAVE_SUCCESS) {
+           return {};
+         }
+         packets.resize(count);
+         std::size_t written = 0;
+-        res = pyrowave_encoder_packetize(encoder, packets.data(), packet_boundary, &written, bitstream.data(), bitstream.size());
++        res = pyrowave_encoder_packetize_with_padding(encoder, packets.data(), boundary, first_padding, &written, bitstream.data(), bitstream.size());
+         if (res != PYROWAVE_SUCCESS || written == 0) {
+           BOOST_LOG(error) << "PyroWave: packetize failed: "sv << res;
+           return {};
+         }
+ 
++        // The packets of the coarsest wavelet level (PyroWave's two "pristine"
++        // bands, which a frame with losses can't be decoded without) go out a
++        // second time after the rest: a frame survives losing either copy.
++        std::size_t critical = 0;
++        if (aligned) {
++          pyrowave_encoder_compute_num_critical_packets(encoder, 2, boundary, first_padding, &critical);
++          critical = std::min(critical, written);
++        }
++
+         platf::vt_encoded_frame out;
+         out.frame_index = frame_index;
+         out.idr = true;
+-        std::size_t size = 0;
++        out.data.reserve((written + critical) * boundary);
++        std::size_t bitstream_bytes = 0;
++        auto append = [&](const pyrowave_packet &packet, bool pad) {
++          auto *src = bitstream.data() + packet.offset;
++          out.data.insert(out.data.end(), src, src + packet.size);
++          bitstream_bytes += packet.size;
++          if (pad) {
++            // Up to the next packet boundary; a block larger than one packet spans several.
++            std::size_t used = out.data.size() + first_padding;
++            std::size_t padded = (used + boundary - 1) / boundary * boundary;
++            out.data.resize(padded - first_padding, 0);
++          }
++        };
+         for (std::size_t i = 0; i < written; i++) {
+-          size += packets[i].size;
++          append(packets[i], aligned && (i + 1 < written || critical > 0));
+         }
+-        out.data.resize(size);
+-        auto *dst = out.data.data();
+-        for (std::size_t i = 0; i < written; i++) {
+-          std::memcpy(dst, bitstream.data() + packets[i].offset, packets[i].size);
+-          dst += packets[i].size;
++        for (std::size_t i = 0; i < critical; i++) {
++          append(packets[i], i + 1 < critical);
++        }
++
++        // Steer the next frame's target so that the bytes sent match the budget.
++        if (!out.data.empty()) {
++          double ratio = (double) bitstream_bytes / (double) out.data.size();
++          fill = std::clamp(fill * 0.7 + ratio * 0.3, 0.4, 1.0);
+         }
+         return out;
+       }
+@@ -765,6 +798,9 @@ namespace pw {
+       int height = 0;
+       bool full_range = false;
+       std::size_t frame_budget = 0;
++      std::size_t packet_payload = 0;
++      double fill = 1.0;  ///< Share of the bytes sent that is PyroWave's own bitstream (the rest is padding and copies).
++      std::size_t frame_header = 0;
+ 
+       VkInstance inst = VK_NULL_HANDLE;
+       VkPhysicalDevice phys = VK_NULL_HANDLE;
+diff --git a/src/stream.cpp b/src/stream.cpp
+index 219c2f17..db1e63e1 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -2231,6 +2231,10 @@ namespace stream {
+     auto address = session->video.peer.address();
+     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, config::stream.dscp_tagging && session->config.videoQosType != 0);
+ 
++    // As videoBroadcastThread cuts frames into packets, for encoders that align to them (PyroWave)
++    session->config.monitor.packetPayloadSize = (int) (session->config.packetsize + MAX_RTP_HEADER_SIZE - sizeof(video_packet_raw_t));
++    session->config.monitor.frameHeaderSize = (int) sizeof(video_short_frame_header_t);
++
+     BOOST_LOG(debug) << "Start capturing Video"sv;
+     video::capture(session->mail, session->config.monitor, session);
+   }
+diff --git a/src/video.h b/src/video.h
+index 04f4164e..a01e537c 100644
+--- a/src/video.h
++++ b/src/video.h
+@@ -68,6 +68,10 @@ namespace video {
+     int dynamicRange;  ///< Encoding color depth: 0 = 8-bit, 1 = 10-bit.
+     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
+     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
++
++    // Last, so the positional initializers above stay valid.
++    int packetPayloadSize = 0;  ///< Video bytes per network packet (PyroWave aligns its packets to them); 0 when unknown.
++    int frameHeaderSize = 0;  ///< Bytes of frame header the first packet carries before the video.
+   };
+ 
+   /**

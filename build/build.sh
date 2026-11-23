@@ -42,8 +42,11 @@
 # trust).
 #
 # Stages, and what makes them fast:
+#   forks     VaporOS's own packages (build/forks.sh: PyroWave and Sunshine with
+#             the PyroWave codec), compiled from forks/ into the local repo
+#             [vaporos]. Cached in /work/forks until forks/ changes.
 #   base      pacstrap of packages.txt. Cached in /work/base and reused until
-#             packages.txt or pacman.conf changes (or REFRESH=1).
+#             packages.txt, pacman.conf or the forks change (or REFRESH=1).
 #   rootfs    an overlayfs on top of base with our files and configuration.
 #             Thrown away every build, so it costs seconds.
 #   extensions  one image per extensions/<id>/, installed from the base's own
@@ -163,7 +166,14 @@ for want in "${PACKAGES[@]}"; do
     [[ $want =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$ ]] ||
         die "packages.txt: '$want' is not a package name (or repo/name)"
 done
-base_key=$(cat "$SRC/packages.txt" "$SRC/build/pacman.conf" | sha256sum | cut -c1-16)
+# ----------------------------------------------------------------- forks ----
+
+step "VaporOS packages (forks/)"
+forks_key=$(SRC=$SRC WORK=$WORK bash "$SRC/build/forks.sh") || die "building the forked packages failed"
+info "forks $forks_key"
+elapsed
+
+base_key=$( (cat "$SRC/packages.txt" "$SRC/build/pacman.conf"; echo "$forks_key") | sha256sum | cut -c1-16)
 
 if [[ $REFRESH == 1 || ! -f $WORK/base/.vos-key || $(<"$WORK/base/.vos-key") != "$base_key" ]]; then
     step "Installing ${#PACKAGES[@]} packages (base cache miss)"

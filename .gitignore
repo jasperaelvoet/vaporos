@@ -7,3 +7,6 @@ __pycache__/
 # Local Claude Code state (worktrees, settings) stays out; the shared skills are tracked.
 .claude/*
 !.claude/skills/
+
+# Development checkouts of the forked projects (see forks/README.md).
+/third_party/

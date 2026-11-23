@@ -236,6 +236,13 @@ jobs:
             pacman-${{ hashFiles('packages.txt', 'build/pacman.conf', 'extensions/**/extension.json') }}-
             pacman-
 
+      # VaporOS's own packages (build/forks.sh: Sunshine with PyroWave) take
+      # minutes to compile; reuse them until forks/ or the script changes.
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.SCRATCH }}/work/forks/repo
+          key: forks-${{ hashFiles('forks/**', 'build/forks.sh') }}
+
       - name: Build the image
         env:
           VOS_DEBUG: '0'
@@ -696,11 +703,18 @@ jobs:
           retention-days: 14
           overwrite: true
 
+  # Moonlight with PyroWave for macOS, Windows and Linux (clients.yml),
+  # attached to the release. Cached until forks/ changes.
+  clients:
+    needs: [go]
+    uses: ./.github/workflows/clients.yml
+
   publish:
-    needs: [go, sign, vm-test]
-    # No status function here, so GitHub adds success(): a failed, cancelled
-    # or timed-out sign or vm-test job means nothing is published.
-    if: github.event_name == 'push'
+    needs: [go, sign, vm-test, clients]
+    # A failed, cancelled or timed-out sign or vm-test job means nothing is
+    # published. The clients are attached when they built; an OS release
+    # never waits on them.
+    if: github.event_name == 'push' && !cancelled() && needs.sign.result == 'success' && needs.vm-test.result == 'success'
     # One publish per version at a time: a commit pushed to two branches at
     # once is two builds of one version, and the second must see what the
     # first published (see "Check who owns ..." below).
@@ -764,6 +778,13 @@ jobs:
           name: ext
           path: out
 
+      - uses: actions/download-artifact@v8
+        if: steps.gate.outputs.enabled == 'true' && needs.clients.result == 'success'
+        with:
+          pattern: client-*
+          path: clients
+          merge-multiple: true
+
       # A release that installed systems do not trust would be refused by
       # every one of them, so check it before publishing anything.
       - name: Check the signed manifest
@@ -811,6 +832,9 @@ jobs:
         working-directory: out
         run: |
           sha256sum "vaporos-$VERSION.iso" manifest.json manifest.json.sig >SHA256SUMS
+          if compgen -G '../clients/moonlight-pyrowave-*' >/dev/null; then
+            (cd ../clients && sha256sum moonlight-pyrowave-*) >>SHA256SUMS
+          fi
           cat SHA256SUMS
 
       # The version is the commit's time, so a commit pushed to two branches
@@ -957,11 +981,16 @@ jobs:
             echo
             echo "- **Install:** write \`vaporos-$VERSION.iso\` to a USB stick and boot it in UEFI mode."
             echo "- **Update:** machines on the \`$CHANNEL\` channel pull \`$repo:$CHANNEL\`."
+            echo "- **PyroWave:** Moonlight with the PyroWave codec, for wired gigabit networks: \`moonlight-pyrowave-macos.dmg\` (Apple silicon), \`moonlight-pyrowave-windows-x64.zip\`, \`moonlight-pyrowave-x86_64.AppImage\`. Pick PyroWave under Settings, Video codec."
             echo
             echo "### Recent commits"
             git log -n 15 --no-merges --format='- %h %s' "$GITHUB_SHA"
           } >"$RUNNER_TEMP/notes.md"
           files=("out/vaporos-$VERSION.iso" out/manifest.json out/manifest.json.sig out/SHA256SUMS)
+          # Moonlight with PyroWave, when the clients job built it
+          shopt -s nullglob
+          files+=(clients/moonlight-pyrowave-*)
+          shopt -u nullglob
           if [ "$GITHUB_REF_NAME" = main ]; then
             kind=(--latest="$latest")
           else

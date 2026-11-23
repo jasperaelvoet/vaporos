@@ -1,0 +1,350 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 00:12:28 +0100
+Subject: [PATCH] Repair PyroWave frames with lost packets and skip the ones
+ PyroWave can't show
+
+
+diff --git a/app/app.pro b/app/app.pro
+index e4ba6d21..5e5c81f3 100644
+--- a/app/app.pro
++++ b/app/app.pro
+@@ -435,6 +435,7 @@ pyrowave {
+ 
+     DEFINES += HAVE_PYROWAVE
+     HEADERS += streaming/video/pyrowave/pyrowavedecoder.h
++    SOURCES += streaming/video/pyrowave/pyrowavecompact.cpp
+ 
+     macx {
+         INCLUDEPATH += $$PYROWAVE_DIR/include/pyrowave
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+index 0cc89e96..a557f513 100644
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -2228,7 +2228,14 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+     if (m_Pyrowave != nullptr) {
+         // Decode now; receiveFrame() hands the frame out right after.
+         av_frame_unref(m_PyrowaveFrame);
+-        err = m_Pyrowave->decode(m_Pkt->data, m_Pkt->size, m_PyrowaveFrame) == 0 ? 0 : AVERROR_INVALIDDATA;
++        int ret = m_Pyrowave->decode(m_Pkt->data, m_Pkt->size, m_PyrowaveFrame);
++        if (ret == 1) {
++            // Lost too much to show: keep the last frame on screen. The next
++            // frame stands on its own, so there is nothing to recover from.
++            m_ActiveWndVideoStats.networkDroppedFrames++;
++            return DR_OK;
++        }
++        err = ret == 0 ? 0 : AVERROR_INVALIDDATA;
+     }
+     else
+ #endif
+diff --git a/app/streaming/video/pyrowave/pyrowavecompact.cpp b/app/streaming/video/pyrowave/pyrowavecompact.cpp
+new file mode 100644
+index 00000000..7edf6656
+--- /dev/null
++++ b/app/streaming/video/pyrowave/pyrowavecompact.cpp
+@@ -0,0 +1,149 @@
++#include "pyrowavedecoder.h"
++
++#include <cstdint>
++#include <cstring>
++#include <vector>
++
++// Bitstream v1 (PyroWave's bitstream/bitstream.md), little endian:
++//
++//   block header       word 0: ballot:16 payload_words:12 sequence:3 extended:1
++//                      word 1: quant_code:8 block_index:24
++//   start of frame     word 0: width_minus_1:14 height_minus_1:14 sequence:3 extended:1
++//                      word 1: total_blocks:24 code:2 chroma_resolution:1 ...
++//
++// A block with an empty ballot is never sent, so a zero word is padding (the
++// host's, or a lost packet the client filled with zeros). Blocks come in
++// increasing block_index order.
++namespace {
++
++uint32_t readU32(const uint8_t* p)
++{
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++// An upper bound on the number of 32x32 blocks of the 5-level padded image's
++// three planes, to reject block indices no frame can have.
++uint32_t blockBound(int width, int height, bool yuv444)
++{
++    const int alignment = 1 << 5;
++    const int minimum = 4 << 5;
++    int w = (width + alignment - 1) & ~(alignment - 1);
++    int h = (height + alignment - 1) & ~(alignment - 1);
++    if (w < minimum) w = minimum;
++    if (h < minimum) h = minimum;
++    uint64_t luma = ((uint64_t)w / 32 + 1) * ((uint64_t)h / 32 + 1) * 2;
++    uint64_t chroma = yuv444 ? luma : luma / 2;
++    return (uint32_t)(luma + 2 * chroma);
++}
++
++struct Parser {
++    const uint8_t* data;
++    size_t size;
++    uint32_t sequence;
++    uint32_t maxBlocks;
++
++    // A block header at pos that could follow block `after` (-1: none yet)
++    bool plausible(size_t pos, int64_t after, size_t* bytes) const
++    {
++        if (pos + 8 > size) {
++            return false;
++        }
++        uint32_t w0 = readU32(data + pos);
++        uint32_t w1 = readU32(data + pos + 4);
++        uint32_t words = (w0 >> 16) & 0xFFF;
++        uint32_t index = w1 >> 8;
++        if ((w0 >> 31) != 0 || (w0 & 0xFFFF) == 0 || words < 2 || ((w0 >> 28) & 7) != sequence ||
++                index >= maxBlocks || (int64_t)index <= after || pos + (size_t)words * 4 > size) {
++            return false;
++        }
++        *bytes = (size_t)words * 4;
++        return true;
++    }
++
++    bool zeroAt(size_t pos) const
++    {
++        return pos + 4 <= size && readU32(data + pos) == 0;
++    }
++};
++
++}
++
++namespace {
++
++bool isStartOfFrame(const uint8_t* p, int width, int height, bool yuv444)
++{
++    uint32_t s0 = readU32(p);
++    uint32_t s1 = readU32(p + 4);
++    return (s0 >> 31) != 0 && (s0 & 0x3FFF) + 1 == (uint32_t)width && ((s0 >> 14) & 0x3FFF) + 1 == (uint32_t)height &&
++           ((s1 >> 24) & 3) == 0 && ((s1 >> 26) & 1) == (yuv444 ? 1U : 0U);
++}
++
++}
++
++size_t pyrowaveCompactFrame(const uint8_t* data, size_t size, int width, int height, bool yuv444,
++                            uint8_t* out, size_t* outSize)
++{
++    *outSize = 0;
++
++    // The start-of-frame header leads the first packet, and the host sends
++    // that packet again at the end of the frame: either copy will do.
++    size_t sof = SIZE_MAX;
++    for (size_t pos = 0; pos + 8 <= size; pos += 4) {
++        if (isStartOfFrame(data + pos, width, height, yuv444)) {
++            sof = pos;
++            break;
++        }
++    }
++    if (sof == SIZE_MAX) {
++        return 0;
++    }
++
++    Parser parser = { data, size, (readU32(data + sof) >> 28) & 7, blockBound(width, height, yuv444) };
++    std::vector<bool> seen(parser.maxBlocks, false);
++    memcpy(out, data + sof, 8);
++    size_t written = 8;
++    size_t pos = 0, kept = 0;
++
++    while (pos + 8 <= size) {
++        if (parser.zeroAt(pos)) {
++            pos += 4;
++            continue;
++        }
++
++        if (memcmp(data + pos, data + sof, 8) == 0) {
++            // A copy of the start-of-frame header
++            pos += 8;
++            continue;
++        }
++
++        size_t bytes;
++        if (parser.plausible(pos, -1, &bytes)) {
++            // It must also end where something valid starts: padding, the end
++            // of the frame, or the next block.
++            size_t end = pos + bytes;
++            size_t nextBytes;
++            uint32_t index = readU32(data + pos + 4) >> 8;
++            if (end + 4 > size || parser.zeroAt(end) || parser.plausible(end, index, &nextBytes) ||
++                    (end + 8 <= size && memcmp(data + end, data + sof, 8) == 0)) {
++                // The host repeats the most important packets; keep the first copy
++                if (!seen[index]) {
++                    seen[index] = true;
++                    memcpy(out + written, data + pos, bytes);
++                    written += bytes;
++                    kept++;
++                }
++                pos = end;
++                continue;
++            }
++        }
++
++        // The tail of a block whose start was lost: skip it to the padding
++        // that ends its packet.
++        while (pos + 4 <= size && !parser.zeroAt(pos)) {
++            pos += 4;
++        }
++    }
++
++    *outSize = written;
++    return kept;
++}
+diff --git a/app/streaming/video/pyrowave/pyrowavedecoder.h b/app/streaming/video/pyrowave/pyrowavedecoder.h
+index 9489f639..a24f8815 100644
+--- a/app/streaming/video/pyrowave/pyrowavedecoder.h
++++ b/app/streaming/video/pyrowave/pyrowavedecoder.h
+@@ -14,6 +14,27 @@ extern "C" {
+ //
+ // macOS decodes with PyroWave's Metal port, everything else with its Vulkan
+ // C API.
++//
++// Frames with lost packets are decoded too: VaporOS's Sunshine aligns every
++// PyroWave packet to a network packet and pads it with zeros, and
++// moonlight-common-c fills a lost network packet with zeros instead of
++// dropping the frame. pyrowaveCompactFrame() keeps the blocks that arrived
++// whole; the missing ones decode as zero coefficients (a little blur, for
++// one frame).
++
++// Copies the start-of-frame header and every intact 32x32 block of a frame
++// into out, once each: it skips zero padding (a block with an empty ballot is
++// never sent), the copies of the critical packets the host sends again at the
++// end of the frame, and anything that doesn't parse as a block, such as the
++// tail of a block whose start was lost. Returns how many blocks it kept.
++//
++// The decoders then decode the frame only when PyroWave says it can: every
++// block of the coarsest level arrived and at least 90% of all blocks did
++// (pyrowave_decoder_decode_is_ready() with partial frames allowed). Otherwise
++// the frame is skipped and the last one stays on screen.
++size_t pyrowaveCompactFrame(const uint8_t* data, size_t size, int width, int height, bool yuv444,
++                            uint8_t* out, size_t* outSize);
++
+ class PyrowaveDecoder {
+ public:
+     // Returns nullptr when this machine can't run the decoder.
+@@ -21,7 +42,9 @@ public:
+ 
+     virtual ~PyrowaveDecoder() {}
+ 
+-    // Decodes one frame into out (which must be empty). Returns 0 on success.
++    // Decodes one frame into out (which must be empty). Returns 0 on success,
++    // 1 when too much of the frame was lost to show it (out stays empty), and
++    // a negative value on an error.
+     virtual int decode(const uint8_t* data, size_t size, AVFrame* out) = 0;
+ 
+     virtual const char* name() = 0;
+diff --git a/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm b/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm
+index 816bfae1..7ec41df9 100644
+--- a/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm
++++ b/app/streaming/video/pyrowave/pyrowavedecoder_metal.mm
+@@ -121,14 +121,33 @@ int decode(const uint8_t* data, size_t size, AVFrame* out) override
+         // Every Moonlight frame is a whole PyroWave frame, so start clean: the
+         // bitstream's 3-bit sequence counter can't order frames across losses.
+         pyrowave_decoder_clear(m_Decoder);
+-        if (pyrowave_decoder_push_packet(m_Decoder, data, size) != PYROWAVE_SUCCESS) {
++        if (m_Compact.size() < size) {
++            m_Compact.resize(size);
++        }
++        size_t compactSize = 0;
++        pyrowaveCompactFrame(data, size, m_Width, m_Height, m_Yuv444, m_Compact.data(), &compactSize);
++        if (compactSize == 0) {
++            // Both copies of the start-of-frame header were lost
++            ++m_SkippedFrames;
++            return 1;
++        }
++        if (pyrowave_decoder_push_packet(m_Decoder, m_Compact.data(), compactSize) != PYROWAVE_SUCCESS) {
+             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: corrupt frame (%zu bytes)", size);
+             return -1;
+         }
+-        if (!pyrowave_decoder_decode_is_ready(m_Decoder, false) && !m_WarnedPartial) {
+-            // Missing blocks decode as blur; it should not happen with complete Moonlight frames.
+-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: decoding an incomplete frame");
+-            m_WarnedPartial = true;
++        if (!pyrowave_decoder_decode_is_ready(m_Decoder, false)) {
++            // Packets were lost. Their blocks decode as zero coefficients (a
++            // little blur, for this frame), but only when the coarsest level
++            // is whole and 90% of the blocks arrived; otherwise skip the frame.
++            if (!pyrowave_decoder_decode_is_ready(m_Decoder, true)) {
++                if (++m_SkippedFrames % 60 == 1) {
++                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: skipped %u frames that lost too much", m_SkippedFrames);
++                }
++                return 1;
++            }
++            if (++m_PartialFrames % 60 == 1) {
++                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: decoded %u frames with lost packets", m_PartialFrames);
++            }
+         }
+ 
+         std::shared_ptr<Slot> slot = acquireSlot();
+@@ -234,7 +253,9 @@ static size_t qMaxAlign(size_t a)
+     int m_Height;
+     bool m_Yuv444;
+     size_t m_Align = 64;
+-    bool m_WarnedPartial = false;
++    unsigned int m_PartialFrames = 0;
++    unsigned int m_SkippedFrames = 0;
++    std::vector<uint8_t> m_Compact;
+ 
+     id<MTLDevice> m_Device = nil;
+     id<MTLCommandQueue> m_Queue = nil;
+diff --git a/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp b/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp
+index 6bdef3a3..476c62f6 100644
+--- a/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp
++++ b/app/streaming/video/pyrowave/pyrowavedecoder_vulkan.cpp
+@@ -4,6 +4,8 @@
+ #include <vulkan/vulkan.h>
+ #include <pyrowave.h>
+ 
++#include <vector>
++
+ #include "SDL_compat.h"
+ #include "pyrowavedecoder.h"
+ 
+@@ -64,10 +66,34 @@ public:
+     int decode(const uint8_t* data, size_t size, AVFrame* out) override
+     {
+         pyrowave_decoder_clear(m_Decoder);
+-        if (pyrowave_decoder_push_packet(m_Decoder, data, size) != PYROWAVE_SUCCESS) {
++        if (m_Compact.size() < size) {
++            m_Compact.resize(size);
++        }
++        size_t compactSize = 0;
++        pyrowaveCompactFrame(data, size, m_Width, m_Height, m_Yuv444, m_Compact.data(), &compactSize);
++        if (compactSize == 0) {
++            // Both copies of the start-of-frame header were lost
++            ++m_SkippedFrames;
++            return 1;
++        }
++        if (pyrowave_decoder_push_packet(m_Decoder, m_Compact.data(), compactSize) != PYROWAVE_SUCCESS) {
+             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: corrupt frame (%zu bytes)", size);
+             return -1;
+         }
++        if (!pyrowave_decoder_decode_is_ready(m_Decoder, false)) {
++            // Packets were lost. Their blocks decode as zero coefficients (a
++            // little blur, for this frame), but only when the coarsest level
++            // is whole and 90% of the blocks arrived; otherwise skip the frame.
++            if (!pyrowave_decoder_decode_is_ready(m_Decoder, true)) {
++                if (++m_SkippedFrames % 60 == 1) {
++                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: skipped %u frames that lost too much", m_SkippedFrames);
++                }
++                return 1;
++            }
++            if (++m_PartialFrames % 60 == 1) {
++                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PyroWave: decoded %u frames with lost packets", m_PartialFrames);
++            }
++        }
+ 
+         out->format = m_Yuv444 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P;
+         out->width = m_Width;
+@@ -100,6 +126,9 @@ private:
+     int m_Width;
+     int m_Height;
+     bool m_Yuv444;
++    unsigned int m_PartialFrames = 0;
++    unsigned int m_SkippedFrames = 0;
++    std::vector<uint8_t> m_Compact;
+     pyrowave_device m_Device = nullptr;
+     pyrowave_decoder m_Decoder = nullptr;
+ };

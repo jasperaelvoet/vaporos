@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 00:12:28 +0100
+Subject: [PATCH] Decode PyroWave frames with lost packets instead of dropping
+ them
+
+
+diff --git a/src/RtpVideoQueue.c b/src/RtpVideoQueue.c
+index a4e022e..6403f4f 100644
+--- a/src/RtpVideoQueue.c
++++ b/src/RtpVideoQueue.c
+@@ -537,6 +537,137 @@ static void submitCompletedFrame(PRTP_VIDEO_QUEUE queue) {
+     }
+ }
+ 
++static void completeFecBlock(PRTP_VIDEO_QUEUE queue) {
++    // Stage the complete FEC block for use once reassembly is complete
++    stageCompleteFecBlock(queue);
++
++    // stageCompleteFecBlock() should have consumed all pending FEC data
++    LC_ASSERT(queue->pendingFecBlockList.head == NULL);
++    LC_ASSERT(queue->pendingFecBlockList.tail == NULL);
++    LC_ASSERT(queue->pendingFecBlockList.count == 0);
++
++    // If we're not yet at the last FEC block for this frame, move on to the next block.
++    // Otherwise, the frame is complete and we can move on to the next frame.
++    if (queue->multiFecCurrentBlockNumber < queue->multiFecLastBlockNumber) {
++        // Move on to the next FEC block for this frame
++        queue->multiFecCurrentBlockNumber++;
++    }
++    else {
++        // Submit all FEC blocks to the depacketizer
++        submitCompletedFrame(queue);
++
++        // submitCompletedFrame() should have consumed all completed FEC data
++        LC_ASSERT(queue->completedFecBlockList.head == NULL);
++        LC_ASSERT(queue->completedFecBlockList.tail == NULL);
++        LC_ASSERT(queue->completedFecBlockList.count == 0);
++
++        // Continue to the next frame
++        queue->currentFrameNumber++;
++        queue->multiFecCurrentBlockNumber = 0;
++    }
++}
++
++// PyroWave (VaporOS) frames are decoded even when packets are lost: the host
++// aligns every PyroWave packet to a network packet, so a lost one costs only
++// the 32x32 blocks in it, and the decoder treats zero bytes as padding. When
++// a block can't be completed (a packet of a later block or frame arrived),
++// fill each missing data packet with zeros under the headers it would have
++// had, and complete the block as if FEC had recovered it.
++//
++// When the frame's first packet is lost, its 8-byte frame header is written
++// again (type 2, an IDR frame; the depacketizer doesn't trim PyroWave's last
++// packet, so the length it held isn't needed). The host repeats the packets
++// holding PyroWave's start-of-frame header and coarsest blocks at the end of
++// the frame, so the decoder still finds them.
++static bool concealPyrowaveBlock(PRTP_VIDEO_QUEUE queue) {
++    PRTPV_QUEUE_ENTRY entry;
++    PRTPV_QUEUE_ENTRY tmpl = NULL;
++    unsigned int i, missing = 0;
++    bool* present;
++
++    if (queue->bufferDataPackets == 0) {
++        return false;
++    }
++
++    present = calloc(queue->bufferDataPackets, sizeof(bool));
++    if (present == NULL) {
++        return false;
++    }
++
++    for (entry = queue->pendingFecBlockList.head; entry != NULL; entry = entry->next) {
++        if (!entry->isParity) {
++            unsigned int index = U16(entry->packet->sequenceNumber - queue->bufferLowestSequenceNumber);
++            if (index < queue->bufferDataPackets) {
++                present[index] = true;
++                if (tmpl == NULL) {
++                    tmpl = entry;
++                }
++            }
++        }
++    }
++
++    if (tmpl == NULL) {
++        free(present);
++        return false;
++    }
++
++    int dataOffset = sizeof(RTP_PACKET);
++    if (tmpl->packet->header & FLAG_EXTENSION) {
++        dataOffset += 4; // 2 additional fields
++    }
++    int receiveSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
++    unsigned int tmplIndex = U16(tmpl->packet->sequenceNumber - queue->bufferLowestSequenceNumber);
++    PNV_VIDEO_PACKET tmplNv = (PNV_VIDEO_PACKET)(((char*)tmpl->packet) + dataOffset);
++
++    for (i = 0; i < queue->bufferDataPackets; i++) {
++        if (present[i]) {
++            continue;
++        }
++
++        char* buffer = calloc(1, receiveSize + sizeof(RTPV_QUEUE_ENTRY));
++        if (buffer == NULL) {
++            free(present);
++            return false;
++        }
++
++        PRTP_PACKET rtpPacket = (PRTP_PACKET)buffer;
++        PRTPV_QUEUE_ENTRY queueEntry = (PRTPV_QUEUE_ENTRY)&buffer[receiveSize];
++        memcpy(rtpPacket, tmpl->packet, dataOffset + sizeof(NV_VIDEO_PACKET));
++        rtpPacket->sequenceNumber = U16(i + queue->bufferLowestSequenceNumber);
++
++        // As the host numbers and flags the packets of a FEC block
++        PNV_VIDEO_PACKET nvPacket = (PNV_VIDEO_PACKET)(buffer + dataOffset);
++        nvPacket->streamPacketIndex = tmplNv->streamPacketIndex + (uint32_t)(((int32_t)i - (int32_t)tmplIndex) * 256);
++        nvPacket->fecInfo = (tmplNv->fecInfo & ~0x3FF000U) | ((uint32_t)i << 12);
++        nvPacket->flags = FLAG_CONTAINS_PIC_DATA;
++        if (i == 0) {
++            nvPacket->flags |= FLAG_SOF;
++        }
++        if (i == queue->bufferDataPackets - 1) {
++            nvPacket->flags |= FLAG_EOF;
++        }
++        if (i == 0 && queue->multiFecCurrentBlockNumber == 0) {
++            // Sunshine's 8-byte frame header: header type 1, then the frame type
++            char* frameHeader = (char*)(nvPacket + 1);
++            frameHeader[0] = 0x01;
++            frameHeader[3] = 2;
++        }
++
++        queuePacket(queue, queueEntry, rtpPacket, StreamConfig.packetSize + dataOffset, false, true);
++        missing++;
++    }
++
++    free(present);
++
++    queue->receivedDataPackets = queue->bufferDataPackets;
++    Limelog("Concealed %u lost video packets of frame %u (block %u of %u)\n",
++            missing, queue->currentFrameNumber,
++            queue->multiFecCurrentBlockNumber + 1, queue->multiFecLastBlockNumber + 1);
++
++    completeFecBlock(queue);
++    return true;
++}
++
+ uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
+     return queue->currentFrameNumber;
+ }
+@@ -589,6 +720,14 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
+         return RTPF_RET_REJECTED;
+     }
+ 
++    // PyroWave: a block that can't be completed any more is decoded with what arrived
++    if (queue->pendingFecBlockList.count != 0 &&
++            (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) &&
++            (queue->currentFrameNumber != nvPacket->frameIndex ||
++             queue->multiFecCurrentBlockNumber != fecCurrentBlockNumber)) {
++        concealPyrowaveBlock(queue);
++    }
++
+     // Reinitialize the queue if it's empty after a frame delivery or
+     // if we can't finish a frame before receiving the next one.
+     if (queue->pendingFecBlockList.count == 0 || queue->currentFrameNumber != nvPacket->frameIndex ||
+@@ -776,33 +915,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
+         // Try to submit this frame. If we haven't received enough packets,
+         // this will fail and we'll keep waiting.
+         if (reconstructFrame(queue) == 0) {
+-            // Stage the complete FEC block for use once reassembly is complete
+-            stageCompleteFecBlock(queue);
+-
+-            // stageCompleteFecBlock() should have consumed all pending FEC data
+-            LC_ASSERT(queue->pendingFecBlockList.head == NULL);
+-            LC_ASSERT(queue->pendingFecBlockList.tail == NULL);
+-            LC_ASSERT(queue->pendingFecBlockList.count == 0);
+-
+-            // If we're not yet at the last FEC block for this frame, move on to the next block.
+-            // Otherwise, the frame is complete and we can move on to the next frame.
+-            if (queue->multiFecCurrentBlockNumber < queue->multiFecLastBlockNumber) {
+-                // Move on to the next FEC block for this frame
+-                queue->multiFecCurrentBlockNumber++;
+-            }
+-            else {
+-                // Submit all FEC blocks to the depacketizer
+-                submitCompletedFrame(queue);
+-
+-                // submitCompletedFrame() should have consumed all completed FEC data
+-                LC_ASSERT(queue->completedFecBlockList.head == NULL);
+-                LC_ASSERT(queue->completedFecBlockList.tail == NULL);
+-                LC_ASSERT(queue->completedFecBlockList.count == 0);
+-
+-                // Continue to the next frame
+-                queue->currentFrameNumber++;
+-                queue->multiFecCurrentBlockNumber = 0;
+-            }
++            completeFecBlock(queue);
+         }
+ 
+         return RTPF_RET_QUEUED;
+diff --git a/src/VideoDepacketizer.c b/src/VideoDepacketizer.c
+index 2eb887b..2f2a53e 100644
+--- a/src/VideoDepacketizer.c
++++ b/src/VideoDepacketizer.c
+@@ -1035,8 +1035,10 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
+     }
+     else {
+         // We fixup the length of the last packet for other codecs since they may not be tolerant
+-        // of trailing zero padding like H.264/HEVC Annex B bitstream parsers are.
+-        if (lastPacket) {
++        // of trailing zero padding like H.264/HEVC Annex B bitstream parsers are. PyroWave
++        // reads zeros as padding, and its first packet may have been lost (and with it the
++        // length; see RtpVideoQueue.c), so it takes the packet as it is.
++        if (lastPacket && !(NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE)) {
+             // The payload length includes the frame header, so it cannot be smaller than that
+             LC_ASSERT_VT(lastPacketPayloadLength > frameHeaderSize);
+ 
