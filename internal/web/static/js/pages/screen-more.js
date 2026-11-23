@@ -15,6 +15,7 @@ let rules = null;
 import('../validate.js').then((m) => (rules = m), () => {});
 
 const ENCODERS = { vulkan: 'Vulkan (recommended for AMD)', vaapi: 'VA-API', software: 'Software (CPU)', nvenc: 'NVENC (NVIDIA)' };
+const QUALITIES = { speed: 'Speed', balanced: 'Balanced', quality: 'Quality' };
 const GAMEPADS = { auto: 'Automatic', xone: 'Xbox One', xseries: 'Xbox Series', x360: 'Xbox 360', ds4: 'DualShock 4', ds5: 'DualSense', switch: 'Switch Pro', generic: 'Generic' };
 
 const key = (s) => {
@@ -31,7 +32,8 @@ let shownValues = {};
 
 function values() {
   const enc = form.querySelector('input[name="encoder"]:checked');
-  return { encoder: enc ? enc.value : '', bitrate: byId('q-bitrate').value.trim(), gamepad: byId('q-gamepad').value, audio: byId('q-audio').value.trim() };
+  const qual = form.querySelector('input[name="quality"]:checked');
+  return { encoder: enc ? enc.value : '', quality: qual ? qual.value : '', bitrate: byId('q-bitrate').value.trim(), gamepad: byId('q-gamepad').value, audio: byId('q-audio').value.trim() };
 }
 
 // A saved value the server no longer offers stays selectable (nvenc).
@@ -47,23 +49,28 @@ function presets() {
 
 function enable(on) {
   byId('q-encoder').disabled = !on;
+  byId('q-quality').disabled = !on;
   for (const el of [byId('q-bitrate'), byId('q-gamepad'), byId('q-audio'), ...byId('q-presets').children]) el.disabled = !on;
   byId('quality-actions').hidden = !on;
+}
+
+function radios(boxId, name, prefix, opts, labels, current) {
+  const box = byId(boxId);
+  if ([...box.querySelectorAll('input')].map((r) => r.value).join() !== opts.join()) {
+    box.replaceChildren(...opts.map((v) => h('label', { class: 'scr-option', for: `${prefix}${v}` },
+      h('input', { class: 'scr-radio', type: 'radio', name, id: `${prefix}${v}`, value: v }),
+      h('span', { class: 'scr-dot', 'aria-hidden': 'true' }),
+      h('span', { class: 'scr-option-name', text: labels[v] || v }))));
+  }
+  for (const r of box.querySelectorAll('input')) r.checked = r.value === current;
 }
 
 // An edited card keeps its edits (B9).
 function renderSettings(s, force) {
   S.settings = s;
   if (!force && quality && quality.isDirty()) return;
-  const enc = choices(s, 'encoder', Object.keys(ENCODERS).slice(0, 3));
-  const box = byId('q-encoders');
-  if ([...box.querySelectorAll('input')].map((r) => r.value).join() !== enc.join()) {
-    box.replaceChildren(...enc.map((v) => h('label', { class: 'scr-option', for: `q-enc-${v}` },
-      h('input', { class: 'scr-radio', type: 'radio', name: 'encoder', id: `q-enc-${v}`, value: v }),
-      h('span', { class: 'scr-dot', 'aria-hidden': 'true' }),
-      h('span', { class: 'scr-option-name', text: ENCODERS[v] || v }))));
-  }
-  for (const r of box.querySelectorAll('input')) r.checked = r.value === s.encoder;
+  radios('q-encoders', 'encoder', 'q-enc-', choices(s, 'encoder', Object.keys(ENCODERS).slice(0, 3)), ENCODERS, s.encoder);
+  radios('q-qualities', 'quality', 'q-qual-', choices(s, 'quality', Object.keys(QUALITIES)), QUALITIES, s.quality);
   const pads = choices(s, 'gamepad', Object.keys(GAMEPADS));
   const sel = byId('q-gamepad');
   if ([...sel.options].map((o) => o.value).join() !== pads.join()) sel.replaceChildren(...pads.map((v) => h('option', { value: v, text: GAMEPADS[v] || v })));
@@ -103,6 +110,7 @@ async function save() {
   const v = values();
   const body = {};
   if (v.encoder !== shownValues.encoder) body.encoder = v.encoder;
+  if (v.quality !== shownValues.quality) body.quality = v.quality;
   if (v.bitrate !== shownValues.bitrate) body.bitrate_kbps_max = Number(v.bitrate) * 1000;
   if (v.gamepad !== shownValues.gamepad) body.gamepad = v.gamepad;
   if (v.audio !== shownValues.audio) body.audio_sink = v.audio;

@@ -436,6 +436,7 @@ func (s *Service) writeConf() (bool, error) {
 	conn := outputName(connector)
 	data := renderConf(tmpl, confData{
 		Encoder:     set.Encoder,
+		Tuning:      tuningFor(set.Quality),
 		AdapterName: adapterFor(s.sysDRM, conn),
 		OutputName:  conn,
 		MaxBitrate:  set.BitrateKbpsMax,

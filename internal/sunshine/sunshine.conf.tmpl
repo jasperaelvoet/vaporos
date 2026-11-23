@@ -3,7 +3,7 @@
 # vosd renders this file from /usr/share/vos/sunshine.conf.tmpl (Go
 # text/template) each time it starts or a streaming setting changes, and
 # restarts Sunshine when the result differs. Edits made here are lost:
-# change encoder, bitrate, audio and gamepad in the web UI instead.
+# change encoder, quality, bitrate, audio and gamepad in the web UI instead.
 
 # Capture the virtual display straight from KMS; encode on the same GPU.
 capture = kms
@@ -17,6 +17,12 @@ max_bitrate = {{.MaxBitrate}}
 audio_sink = {{.AudioSink}}
 {{- end}}
 gamepad = {{.Gamepad}}
+
+# The encoder's trade-off between delay and picture, for each encoder.
+vk_quality = {{.Tuning.VkQuality}}
+vk_tune = {{.Tuning.VkTune}}
+vaapi_quality = {{.Tuning.VaapiQuality}}
+sw_preset = {{.Tuning.SwPreset}}
 
 # Sunshine's own web UI answers this machine only; vosd manages it.
 origin_web_ui_allowed = pc

@@ -177,6 +177,15 @@ export default [
         await notice(page, 'Saved. Streaming restarts to use it.');
         await until(page, () => document.getElementById('quality-save').disabled);
       });
+      await step('the encoder priority offers speed, balanced and quality, and saves alone', async () => {
+        const values = await page.$$eval('#q-quality input[name="quality"]', (rs) => rs.map((r) => r.value));
+        assert.deepEqual(values, ['speed', 'balanced', 'quality']);
+        assert.equal(await page.isChecked('#q-qual-balanced'), true);
+        assert.equal(await text(page, '#q-quality legend'), 'Encoder priority');
+        await page.check('#q-qual-speed');
+        assert.deepEqual(await save(page), { quality: 'speed' });
+        await until(page, () => document.getElementById('quality-save').disabled);
+      });
       await step('a saved encoder the server no longer offers stays selectable', async () => {
         await patchJSON(page, '/sunshine/settings', (s) => ({ ...s, encoder: 'nvenc' }));
         await open(t);

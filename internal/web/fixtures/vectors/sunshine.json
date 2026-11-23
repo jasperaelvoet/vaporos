@@ -77,12 +77,13 @@
         {"req": "GET /sunshine/settings", "passive": true},
         {"req": "PUT /sunshine/settings", "body": {"encoder": "auto"}, "expect": {"status": 400, "body": {"error": "encoder must be one of vulkan, vaapi, software, nvenc"}}},
         {"req": "PUT /sunshine/settings", "body": {"gamepad": "xbox"}, "expect": {"status": 400}},
+        {"req": "PUT /sunshine/settings", "body": {"quality": "max"}, "expect": {"status": 400, "body": {"error": "quality must be one of speed, balanced, quality"}}},
         {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 1000001}, "expect": {"status": 400}},
         {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 1.5}, "expect": {"status": 400}},
         {"req": "PUT /sunshine/settings", "body": {"audio_sink": "a#b"}, "expect": {"status": 400, "body": {"error": "audio_sink is not a valid sink name"}}},
         {"req": "PUT /sunshine/settings", "body": {"encoder": "nvenc", "audio_sink": " alsa_output.pci-0000_03_00.1.hdmi-stereo ", "choices": {"encoder": []}}, "expect": {"status": 200, "body": {"encoder": "nvenc", "audio_sink": "alsa_output.pci-0000_03_00.1.hdmi-stereo", "bitrate_kbps_max": 150000, "choices": {"encoder": ["vulkan", "vaapi", "software"]}}}},
-        {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 0, "gamepad": "ds5", "audio_sink": ""}, "expect": {"status": 200}},
-        {"req": "GET /sunshine/settings", "passive": true, "expect": {"body": {"bitrate_kbps_max": 0, "gamepad": "ds5", "audio_sink": ""}}}
+        {"req": "PUT /sunshine/settings", "body": {"bitrate_kbps_max": 0, "gamepad": "ds5", "audio_sink": "", "quality": "speed"}, "expect": {"status": 200}},
+        {"req": "GET /sunshine/settings", "passive": true, "expect": {"body": {"bitrate_kbps_max": 0, "gamepad": "ds5", "audio_sink": "", "quality": "speed"}}}
       ]
     },
     {
