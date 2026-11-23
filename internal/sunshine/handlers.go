@@ -254,7 +254,6 @@ type settingsView struct {
 
 type settingsChoices struct {
 	Encoder        []string `json:"encoder"`
-	Quality        []string `json:"quality"`
 	Gamepad        []string `json:"gamepad"`
 	BitrateKbpsMax intRange `json:"bitrate_kbps_max"`
 }
@@ -267,7 +266,6 @@ type intRange struct {
 func viewSettings(set Settings) settingsView {
 	return settingsView{set, settingsChoices{
 		Encoder:        offeredEncoders,
-		Quality:        qualities,
 		Gamepad:        gamepads,
 		BitrateKbpsMax: intRange{0, maxBitrateKbps},
 	}}
@@ -282,7 +280,6 @@ func (s *Service) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Encoder        *string `json:"encoder"`
-		Quality        *string `json:"quality"`
 		BitrateKbpsMax *int    `json:"bitrate_kbps_max"`
 		AudioSink      *string `json:"audio_sink"`
 		Gamepad        *string `json:"gamepad"`
@@ -295,9 +292,6 @@ func (s *Service) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	set := prev
 	if req.Encoder != nil {
 		set.Encoder = *req.Encoder
-	}
-	if req.Quality != nil {
-		set.Quality = *req.Quality
 	}
 	if req.BitrateKbpsMax != nil {
 		set.BitrateKbpsMax = *req.BitrateKbpsMax

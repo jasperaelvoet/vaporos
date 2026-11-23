@@ -150,13 +150,11 @@ export function validateHostname(name) {
 }
 
 const ENCODERS = ['vulkan', 'vaapi', 'software', 'nvenc'];
-const QUALITIES = ['speed', 'balanced', 'quality'];
 const GAMEPADS = ['auto', 'xone', 'xseries', 'x360', 'ds4', 'ds5', 'switch', 'generic'];
 
 // validateSettings is sunshine.Settings.Validate.
 function validateSettings(s) {
   if (!ENCODERS.includes(s.encoder)) return `encoder must be one of ${ENCODERS.join(', ')}`;
-  if (!QUALITIES.includes(s.quality)) return `quality must be one of ${QUALITIES.join(', ')}`;
   if (s.bitrate_kbps_max < 0 || s.bitrate_kbps_max > 1000000) return 'bitrate_kbps_max must be between 0 (no limit) and 1000000';
   if (s.audio_sink !== '' && !/^[A-Za-z0-9_.:@+-]{1,255}$/.test(s.audio_sink)) return 'audio_sink is not a valid sink name';
   if (!GAMEPADS.includes(s.gamepad)) return `gamepad must be one of ${GAMEPADS.join(', ')}`;
@@ -2417,18 +2415,16 @@ const SUNSHINE = [
     return this.doc('sunshine-settings');
   }],
   ['PUT', '/sunshine/settings', AUTHED, function (r) {
-    const b = readJSON(r.body, { encoder: 'string', quality: 'string', bitrate_kbps_max: 'int', audio_sink: 'string', gamepad: 'string' });
+    const b = readJSON(r.body, { encoder: 'string', bitrate_kbps_max: 'int', audio_sink: 'string', gamepad: 'string' });
     if (b.error) return fail(400, b.error);
     const doc = this.doc('sunshine-settings');
     const set = {
       encoder: asStr(doc.encoder),
-      quality: asStr(doc.quality),
       bitrate_kbps_max: Math.trunc(asNum(doc.bitrate_kbps_max)),
       audio_sink: asStr(doc.audio_sink),
       gamepad: asStr(doc.gamepad),
     };
     if (b.v.encoder !== undefined) set.encoder = b.v.encoder;
-    if (b.v.quality !== undefined) set.quality = b.v.quality;
     if (b.v.bitrate_kbps_max !== undefined) set.bitrate_kbps_max = b.v.bitrate_kbps_max;
     if (b.v.audio_sink !== undefined) set.audio_sink = goTrim(b.v.audio_sink);
     if (b.v.gamepad !== undefined) set.gamepad = b.v.gamepad;

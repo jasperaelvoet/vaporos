@@ -1,12 +1,10 @@
 {
   "encoder": "vulkan",
-  "quality": "balanced",
   "bitrate_kbps_max": 150000,
   "audio_sink": "",
   "gamepad": "xone",
   "choices": {
     "encoder": ["vulkan", "vaapi", "software"],
-    "quality": ["speed", "balanced", "quality"],
     "gamepad": ["auto", "xone", "xseries", "x360", "ds4", "ds5", "switch", "generic"],
     "bitrate_kbps_max": {"min": 0, "max": 1000000}
   }

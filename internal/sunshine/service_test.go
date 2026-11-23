@@ -518,12 +518,11 @@ func TestSettingsHandlers(t *testing.T) {
 	h := newHarness(t)
 	wantChoices := map[string]any{
 		"encoder":          []any{"vulkan", "vaapi", "software"},
-		"quality":          []any{"speed", "balanced", "quality"},
 		"gamepad":          []any{"auto", "xone", "xseries", "x360", "ds4", "ds5", "switch", "generic"},
 		"bitrate_kbps_max": map[string]any{"min": float64(0), "max": float64(1_000_000)},
 	}
 	w, out := call(t, h.s.handleGetSettings, "GET", "")
-	if w.Code != 200 || out["encoder"] != "vulkan" || out["quality"] != "balanced" || out["gamepad"] != "xone" || out["bitrate_kbps_max"] != float64(0) {
+	if w.Code != 200 || out["encoder"] != "vulkan" || out["gamepad"] != "xone" || out["bitrate_kbps_max"] != float64(0) {
 		t.Errorf("GET settings = %v", out)
 	}
 	if sink, ok := out["audio_sink"]; !ok || sink != "" {
@@ -543,21 +542,12 @@ func TestSettingsHandlers(t *testing.T) {
 	if calls := h.rec.calls(); !reflect.DeepEqual(calls, []string{"restart " + unitName}) {
 		t.Errorf("systemctl = %q", calls)
 	}
-	if w, out := call(t, h.s.handlePutSettings, "PUT", `{"quality":"speed"}`); w.Code != 200 || out["quality"] != "speed" {
-		t.Fatalf("quality: %d %v", w.Code, out)
-	}
-	if vars := parseConf(mustRead(t, confPath())); vars["vk_quality"] != "speed" || vars["vk_tune"] != "3" || h.s.currentSettings().Quality != "speed" {
-		t.Errorf("quality conf = %v", vars)
-	}
-	if calls := h.rec.calls(); len(calls) != 2 {
-		t.Errorf("quality change: systemctl = %q", calls)
-	}
 	// The same values again: no rewrite, no restart.
 	call(t, h.s.handlePutSettings, "PUT", `{"encoder":"vaapi"}`)
-	if len(h.rec.calls()) != 2 {
+	if len(h.rec.calls()) != 1 {
 		t.Errorf("no-op PUT restarted Sunshine: %q", h.rec.calls())
 	}
-	for _, bad := range []string{`{"encoder":"auto"}`, `{"quality":"max"}`, `{"gamepad":"n64"}`, `{"bitrate_kbps_max":-1}`, `{"audio_sink":"x#y"}`, `[`} {
+	for _, bad := range []string{`{"encoder":"auto"}`, `{"gamepad":"n64"}`, `{"bitrate_kbps_max":-1}`, `{"audio_sink":"x#y"}`, `[`} {
 		if w, _ := call(t, h.s.handlePutSettings, "PUT", bad); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, w.Code)
 		}
@@ -568,7 +558,7 @@ func TestSettingsHandlers(t *testing.T) {
 	// During a stream the restart waits.
 	h.f.setBusy(true)
 	call(t, h.s.handlePutSettings, "PUT", `{"gamepad":"ds5"}`)
-	if len(h.rec.calls()) != 2 || !h.s.pendingRestart {
+	if len(h.rec.calls()) != 1 || !h.s.pendingRestart {
 		t.Errorf("restarted during a stream: %q", h.rec.calls())
 	}
 	// Not offered, but still accepted (a hand-edited sunshine.conf).

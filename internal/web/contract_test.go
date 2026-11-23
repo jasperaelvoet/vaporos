@@ -77,7 +77,6 @@ var fakeTypes = map[string]func() any{
 			sunshine.Settings
 			Choices struct {
 				Encoder        []string `json:"encoder"`
-				Quality        []string `json:"quality"`
 				Gamepad        []string `json:"gamepad"`
 				BitrateKbpsMax struct {
 					Min int `json:"min"`

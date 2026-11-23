@@ -140,7 +140,6 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 	add("PUT", "/sunshine/settings", api.Authed, func(w http.ResponseWriter, r *http.Request) any {
 		var req struct {
 			Encoder        *string `json:"encoder"`
-			Quality        *string `json:"quality"`
 			BitrateKbpsMax *int    `json:"bitrate_kbps_max"`
 			AudioSink      *string `json:"audio_sink"`
 			Gamepad        *string `json:"gamepad"`
@@ -149,13 +148,10 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 			return nil
 		}
 		doc := f.doc("sunshine-settings")
-		set := sunshine.Settings{Encoder: asStr(doc["encoder"]), Quality: asStr(doc["quality"]), BitrateKbpsMax: int(asNum(doc["bitrate_kbps_max"])),
+		set := sunshine.Settings{Encoder: asStr(doc["encoder"]), BitrateKbpsMax: int(asNum(doc["bitrate_kbps_max"])),
 			AudioSink: asStr(doc["audio_sink"]), Gamepad: asStr(doc["gamepad"])}
 		if req.Encoder != nil {
 			set.Encoder = *req.Encoder
-		}
-		if req.Quality != nil {
-			set.Quality = *req.Quality
 		}
 		if req.BitrateKbpsMax != nil {
 			set.BitrateKbpsMax = *req.BitrateKbpsMax
@@ -170,8 +166,8 @@ func (f *devFake) sunshineRoutes(add fakeAdder) {
 			api.Error(w, http.StatusBadRequest, "%v", err)
 			return nil
 		}
-		doc["encoder"], doc["quality"], doc["bitrate_kbps_max"], doc["audio_sink"], doc["gamepad"] =
-			set.Encoder, set.Quality, float64(set.BitrateKbpsMax), set.AudioSink, set.Gamepad
+		doc["encoder"], doc["bitrate_kbps_max"], doc["audio_sink"], doc["gamepad"] =
+			set.Encoder, float64(set.BitrateKbpsMax), set.AudioSink, set.Gamepad
 		return doc
 	})
 	add("GET", "/sunshine/logs", api.Authed, func(w http.ResponseWriter, r *http.Request) any {

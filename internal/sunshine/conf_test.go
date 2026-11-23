@@ -41,8 +41,6 @@ func TestRenderConfDefaults(t *testing.T) {
 		"gamepad":               "xone",
 		"vk_quality":            "balanced",
 		"vk_tune":               "2",
-		"vaapi_quality":         "balanced",
-		"sw_preset":             "superfast",
 		"origin_web_ui_allowed": "pc",
 		"upnp":                  "disabled",
 		"system_tray":           "disabled",
@@ -83,7 +81,7 @@ func TestRenderConfKeepsUserAndSunshineKeys(t *testing.T) {
 	if _, err := h.s.writeConf(); err != nil {
 		t.Fatal(err)
 	}
-	want := Settings{Encoder: "vaapi", Quality: "balanced", BitrateKbpsMax: 80000, AudioSink: "alsa_output.pci-0000_03_00.1.hdmi-stereo", Gamepad: "xone"}
+	want := Settings{Encoder: "vaapi", BitrateKbpsMax: 80000, AudioSink: "alsa_output.pci-0000_03_00.1.hdmi-stereo", Gamepad: "xone"}
 	if got := h.s.currentSettings(); got != want {
 		t.Errorf("settings = %+v, want %+v", got, want)
 	}
@@ -104,36 +102,16 @@ func TestRenderConfKeepsUserAndSunshineKeys(t *testing.T) {
 }
 
 func TestSettingsFromConfIgnoresInvalid(t *testing.T) {
-	got := settingsFromConf(map[string]string{"encoder": "quicksync", "vk_quality": "best", "max_bitrate": "-5", "audio_sink": "a#b", "gamepad": "ds5"})
-	if want := (Settings{Encoder: "vulkan", Quality: "balanced", Gamepad: "ds5"}); got != want {
+	got := settingsFromConf(map[string]string{"encoder": "quicksync", "max_bitrate": "-5", "audio_sink": "a#b", "gamepad": "ds5"})
+	if want := (Settings{Encoder: "vulkan", Gamepad: "ds5"}); got != want {
 		t.Errorf("settings = %+v", got)
-	}
-}
-
-func TestQualityRendersEveryEncodersKeys(t *testing.T) {
-	for q, want := range map[string]map[string]string{
-		"speed":    {"vk_quality": "speed", "vk_tune": "3", "vaapi_quality": "speed", "sw_preset": "ultrafast"},
-		"balanced": {"vk_quality": "balanced", "vk_tune": "2", "vaapi_quality": "balanced", "sw_preset": "superfast"},
-		"quality":  {"vk_quality": "quality", "vk_tune": "1", "vaapi_quality": "quality", "sw_preset": "veryfast"},
-	} {
-		set := DefaultSettings()
-		set.Quality = q
-		vars := parseConf(renderConf(loadTemplate(), confData{Encoder: set.Encoder, Tuning: tuningFor(set.Quality), Gamepad: set.Gamepad, PrepCmd: "[]"}, nil))
-		for k, v := range want {
-			if vars[k] != v {
-				t.Errorf("%s: %s = %q, want %q", q, k, vars[k], v)
-			}
-		}
-		if got := settingsFromConf(vars); got.Quality != q {
-			t.Errorf("%s read back as %q", q, got.Quality)
-		}
 	}
 }
 
 func TestSettingsValidate(t *testing.T) {
 	ok := []Settings{
 		DefaultSettings(),
-		{Encoder: "software", Quality: "speed", BitrateKbpsMax: 150000, AudioSink: "sink.1", Gamepad: "auto"},
+		{Encoder: "software", BitrateKbpsMax: 150000, AudioSink: "sink.1", Gamepad: "auto"},
 	}
 	for _, s := range ok {
 		if err := s.Validate(); err != nil {
@@ -141,15 +119,13 @@ func TestSettingsValidate(t *testing.T) {
 		}
 	}
 	bad := []Settings{
-		{Encoder: "", Quality: "balanced", Gamepad: "xone"},
-		{Encoder: "auto", Quality: "balanced", Gamepad: "xone"},
-		{Encoder: "vulkan", Quality: "balanced", Gamepad: "wiimote"},
-		{Encoder: "vulkan", Quality: "max", Gamepad: "xone"},
-		{Encoder: "vulkan", Gamepad: "xone"},
-		{Encoder: "vulkan", Quality: "balanced", Gamepad: "xone", BitrateKbpsMax: -1},
-		{Encoder: "vulkan", Quality: "balanced", Gamepad: "xone", BitrateKbpsMax: maxBitrateKbps + 1},
-		{Encoder: "vulkan", Quality: "balanced", Gamepad: "xone", AudioSink: "sink # comment"},
-		{Encoder: "vulkan", Quality: "balanced", Gamepad: "xone", AudioSink: "two\nlines"},
+		{Encoder: "", Gamepad: "xone"},
+		{Encoder: "auto", Gamepad: "xone"},
+		{Encoder: "vulkan", Gamepad: "wiimote"},
+		{Encoder: "vulkan", Gamepad: "xone", BitrateKbpsMax: -1},
+		{Encoder: "vulkan", Gamepad: "xone", BitrateKbpsMax: maxBitrateKbps + 1},
+		{Encoder: "vulkan", Gamepad: "xone", AudioSink: "sink # comment"},
+		{Encoder: "vulkan", Gamepad: "xone", AudioSink: "two\nlines"},
 	}
 	for _, s := range bad {
 		if err := s.Validate(); err == nil {

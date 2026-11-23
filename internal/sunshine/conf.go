@@ -25,7 +25,6 @@ import (
 // file needs no second copy in /var/lib/vos.
 type Settings struct {
 	Encoder        string `json:"encoder"`
-	Quality        string `json:"quality"`          // the encoder's trade-off: speed, balanced or quality
 	BitrateKbpsMax int    `json:"bitrate_kbps_max"` // Sunshine's max_bitrate; 0 = whatever the client asks
 	AudioSink      string `json:"audio_sink"`       // "" = Sunshine's default sink
 	Gamepad        string `json:"gamepad"`
@@ -33,9 +32,7 @@ type Settings struct {
 
 // DefaultSettings are the reference machine's: Vulkan encode and an Xbox
 // One pad, which Steam Input maps for every controller.
-func DefaultSettings() Settings {
-	return Settings{Encoder: "vulkan", Quality: "balanced", Gamepad: "xone"}
-}
+func DefaultSettings() Settings { return Settings{Encoder: "vulkan", Gamepad: "xone"} }
 
 var (
 	// Encoders Sunshine implements on Linux. There is deliberately no
@@ -44,8 +41,6 @@ var (
 	// offeredEncoders are the ones the web UI offers. VaporOS supports AMD
 	// GPUs only; nvenc stays valid so a hand-edited sunshine.conf keeps it.
 	offeredEncoders = []string{"vulkan", "vaapi", "software"}
-	// qualities are the encoder priorities, fastest first.
-	qualities = []string{"speed", "balanced", "quality"}
 	// Gamepad emulations current Sunshine accepts on Linux.
 	gamepads = []string{"auto", "xone", "xseries", "x360", "ds4", "ds5", "switch", "generic"}
 )
@@ -59,9 +54,6 @@ var audioSinkRe = regexp.MustCompile(`^[A-Za-z0-9_.:@+-]{1,255}$`)
 func (s Settings) Validate() error {
 	if !slices.Contains(encoders, s.Encoder) {
 		return fmt.Errorf("encoder must be one of %s", strings.Join(encoders, ", "))
-	}
-	if !slices.Contains(qualities, s.Quality) {
-		return fmt.Errorf("quality must be one of %s", strings.Join(qualities, ", "))
 	}
 	if s.BitrateKbpsMax < 0 || s.BitrateKbpsMax > maxBitrateKbps {
 		return fmt.Errorf("bitrate_kbps_max must be between 0 (no limit) and %d", maxBitrateKbps)
@@ -88,9 +80,6 @@ func settingsFromConf(vars map[string]string) Settings {
 	}
 	if v, ok := vars["encoder"]; ok {
 		try(func(c *Settings) { c.Encoder = v })
-	}
-	if v, ok := vars["vk_quality"]; ok {
-		try(func(c *Settings) { c.Quality = v })
 	}
 	if v, ok := vars["max_bitrate"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -180,33 +169,12 @@ var defaultTemplate string
 // own /usr/share/vos/sunshine.conf.tmpl using these fields.
 type confData struct {
 	Encoder     string // one of the Linux encoders
-	Tuning      encoderTuning
 	AdapterName string // /dev/dri/renderD*, the GPU that drives OutputName
 	OutputName  string // KMS connector name of the virtual display ("DP-1"), or ""
 	MaxBitrate  int    // kbps, 0 = no cap
 	AudioSink   string // "" = the default sink
 	Gamepad     string
 	PrepCmd     string // JSON list for global_prep_cmd
-}
-
-// encoderTuning is one encoder priority in each encoder's own keys, all
-// rendered so a change of encoder keeps it. vk_tune: 1 high quality, 2 low
-// latency (Sunshine's default), 3 ultra low latency.
-type encoderTuning struct {
-	VkQuality    string
-	VkTune       int
-	VaapiQuality string
-	SwPreset     string
-}
-
-func tuningFor(quality string) encoderTuning {
-	switch quality {
-	case "speed":
-		return encoderTuning{"speed", 3, "speed", "ultrafast"}
-	case "quality":
-		return encoderTuning{"quality", 1, "quality", "veryfast"}
-	}
-	return encoderTuning{"balanced", 2, "balanced", "superfast"}
 }
 
 // sessionPrepCmd runs `vos session begin|end` around every stream, as the
