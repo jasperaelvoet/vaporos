@@ -240,8 +240,19 @@ try {
     };
     // Every click that loads a page in the frame, and the page settled.
     const go = async (selector, path) => {
-      await fr.locator(selector).first().click();
-      await fr.waitForURL((u) => u.pathname.replace(/\/$/, '') === `/vaporos/demo/ui${path}`.replace(/\/$/, ''), { timeout: 10000 });
+      const want = (u) => u.pathname.replace(/\/$/, '') === `/vaporos/demo/ui${path}`.replace(/\/$/, '');
+      for (let attempt = 1; ; attempt++) {
+        await fr.locator(selector).first().click();
+        try {
+          await fr.waitForURL(want, { timeout: 10000 });
+          break;
+        } catch (e) {
+          // A reload the frame started itself can abort the click's navigation: click again once it settles.
+          if (attempt >= 3 || !/ERR_ABORTED/.test(String(e?.message))) throw e;
+          await fr.waitForLoadState('load');
+          await booted(fr);
+        }
+      }
       await booted(fr);
     };
 
@@ -266,12 +277,20 @@ try {
     await said(page, /VaporOS is off/);
     await page.screenshot({ path: join(REPORT, 'shots', 'walk-held-off.png') });
     // Once the box is back the frame reloads itself (scene.js); a tab clicked
-    // before that reload has its navigation aborted, so wait for it first.
-    const reloaded = page.waitForEvent('framenavigated', { predicate: (f) => f === fr, timeout: 30000 });
+    // before that reload has its navigation aborted, so wait for a new document
+    // (one without this mark) first. framenavigated would also fire on a
+    // same-document URL change.
+    await fr.evaluate(() => { window.__beforeWake = true; });
     await page.getByRole('button', { name: 'Wake it' }).click();
     await said(page, /VaporOS is back on/, 20000);
-    await reloaded;
-    await fr.waitForLoadState('load');
+    await page.waitForFunction(
+      () => {
+        const w = document.querySelector('.demo-frame')?.contentWindow;
+        return !!w && w.__beforeWake !== true && w.document.readyState === 'complete';
+      },
+      null,
+      { timeout: 30000 },
+    );
     await fr.locator('#scene').waitFor({ state: 'hidden', timeout: 20000 });
     await booted(fr);
     check('walk: Wake it brings the frame back', true);
