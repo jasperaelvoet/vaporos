@@ -50,6 +50,12 @@ mkdir -p "$REPO" "$FORKS/build"
 id builder >/dev/null 2>&1 || useradd -m builder
 # The image's sync databases are as old as the image; refresh them (and so upgrade) first.
 pacman -Syu --noconfirm --needed base-devel git >/dev/null
+# The upgraded makepkg.conf (CachyOS's) builds for -march=native: the build
+# machine's CPU, which may have AVX-512 that the box lacks (an illegal instruction at
+# Sunshine's start). Build for the image's own target instead.
+sed -E -e 's/-march=[^ "]+/-march=x86-64-v3/g' -e 's/-mtune=[^ "]+/-mtune=generic/g' \
+    -e 's/target-cpu=[^ "]+/target-cpu=x86-64-v3/g' /etc/makepkg.conf >"$FORKS/makepkg.conf"
+grep -q -- '-march=x86-64-v3' "$FORKS/makepkg.conf" || { echo "error: no -march in /etc/makepkg.conf to set" >&2; exit 1; }
 
 for pkg in "${PKGS[@]}"; do
     dir=$FORKS/build/$pkg
@@ -70,7 +76,7 @@ for pkg in "${PKGS[@]}"; do
     done
 
     log "makepkg $pkg"
-    if ! (cd "$dir" && su builder -c "MAKEFLAGS=-j$jobs CMAKE_BUILD_PARALLEL_LEVEL=$jobs PKGDEST=$dir/out makepkg --noconfirm --nodeps --cleanbuild" >"$dir/makepkg.log" 2>&1); then
+    if ! (cd "$dir" && su builder -c "MAKEFLAGS=-j$jobs CMAKE_BUILD_PARALLEL_LEVEL=$jobs PKGDEST=$dir/out makepkg --config $FORKS/makepkg.conf --noconfirm --nodeps --cleanbuild" >"$dir/makepkg.log" 2>&1); then
         tail -n 60 "$dir/makepkg.log" >&2
         echo "error: makepkg $pkg failed (full log: $dir/makepkg.log)" >&2
         exit 1
