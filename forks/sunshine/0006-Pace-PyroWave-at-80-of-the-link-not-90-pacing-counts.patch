@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 18:08:05 +0100
+Subject: [PATCH] Pace PyroWave at 80% of the link, not 90%: pacing counts
+ payload only, so 90% was 94% of the wire and fq_codel and the client's socket
+ dropped packets that PyroWave can only conceal
+
+
+diff --git a/src/stream.cpp b/src/stream.cpp
+index 840e2363..f4e3bf41 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -1742,10 +1742,11 @@ namespace stream {
+ 
+       try {
+         // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
+-        // PyroWave frames are large and every one goes out whole, so the time a frame
+-        // spends on the wire is most of its latency: pace them at 90% of the link the
+-        // client is reached through rather than 80%. Never above 1 Gbit/s, since the
+-        // client's own link is unknown and a burst into a slower switch port is lost.
++        // PyroWave is paced at 80% of the link the client is reached through, never
++        // above 1 Gbit/s, since the client's own link is unknown and a burst into a
++        // slower switch port is lost. Not higher: this counts payload only, so 90% was
++        // 94% of the wire, and the NIC queue (fq_codel) and the client's socket
++        // dropped packets that PyroWave, sent without FEC, can only conceal.
+         std::uint64_t pace_bits_per_s = std::giga::num * 80 / 100;
+         if (session->config.monitor.videoFormat == video::format_pyrowave) {
+ #ifdef __linux__
+@@ -1753,7 +1754,7 @@ namespace stream {
+ #else
+           const std::uint64_t link = std::giga::num;
+ #endif
+-          pace_bits_per_s = link * 90 / 100;
++          pace_bits_per_s = link * 80 / 100;
+         }
+         size_t ratecontrol_packets_in_1ms = pace_bits_per_s / 1000 / blocksize / 8;
+ 

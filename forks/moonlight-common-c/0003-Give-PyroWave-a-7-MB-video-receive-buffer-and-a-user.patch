@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 18:08:05 +0100
+Subject: [PATCH] Give PyroWave a 7 MB video receive buffer and a
+ user-interactive receive thread on macOS, since bursts overflowed 2048
+ packets and every dropped packet is a concealed block without FEC
+
+
+diff --git a/src/VideoStream.c b/src/VideoStream.c
+index 402b056..847f880 100644
+--- a/src/VideoStream.c
++++ b/src/VideoStream.c
+@@ -1,5 +1,9 @@
+ #include "Limelight-internal.h"
+ 
++#if defined(__APPLE__)
++#include <pthread/qos.h>
++#endif
++
+ #define FIRST_FRAME_MAX 1500
+ #define FIRST_FRAME_TIMEOUT_SEC 10
+ 
+@@ -34,6 +38,12 @@ static bool receivedFullFrame;
+ // and subsequent packet/frame bursts that follow.
+ #define RTP_RECV_PACKETS_BUFFERED 2048
+ 
++// PyroWave (VaporOS) frames are about 450 packets at 300 Mbps and arrive at
++// close to line rate with no FEC, so a short stall of this thread overflows
++// 2048 packets and each dropped packet is a concealed block. 5120 packets
++// (about 7 MB) is the most macOS takes with its default kern.ipc.maxsockbuf.
++#define RTP_RECV_PACKETS_BUFFERED_PYROWAVE 5120
++
+ // Initialize the video stream
+ void initializeVideoStream(void) {
+     initializeVideoDepacketizer(StreamConfig.packetSize);
+@@ -92,6 +102,14 @@ static void VideoReceiveThreadProc(void* context) {
+     int waitingForVideoMs;
+     bool encrypted;
+ 
++#if defined(__APPLE__)
++    // Keep this thread on a performance core and ahead of the UI: a PyroWave
++    // frame fills the socket buffer within milliseconds if it is preempted.
++    if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
++        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
++    }
++#endif
++
+     encrypted = !!(EncryptionFeaturesEnabled & SS_ENC_VIDEO);
+     decryptedSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
+     minSize = sizeof(RTP_PACKET) + ((EncryptionFeaturesEnabled & SS_ENC_VIDEO) ? sizeof(ENC_VIDEO_HEADER) : 0);
+@@ -329,13 +347,22 @@ int startVideoStream(void* rendererContext, int drFlags) {
+     }
+ 
+     rtpSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen,
+-                              RTP_RECV_PACKETS_BUFFERED * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE),
++                              ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) ? RTP_RECV_PACKETS_BUFFERED_PYROWAVE : RTP_RECV_PACKETS_BUFFERED) *
++                                  (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE),
+                               SOCK_QOS_TYPE_VIDEO);
+     if (rtpSocket == INVALID_SOCKET) {
+         VideoCallbacks.cleanup();
+         return LastSocketError();
+     }
+ 
++    {
++        int actual = 0;
++        SOCKADDR_LEN len = sizeof(actual);
++        if (getsockopt(rtpSocket, SOL_SOCKET, SO_RCVBUF, (char*)&actual, &len) == 0) {
++            Limelog("Video receive buffer: %d bytes\n", actual);
++        }
++    }
++
+     VideoCallbacks.start();
+ 
+     err = PltCreateThread("VideoRecv", VideoReceiveThreadProc, NULL, &receiveThread);
