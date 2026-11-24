@@ -240,19 +240,8 @@ try {
     };
     // Every click that loads a page in the frame, and the page settled.
     const go = async (selector, path) => {
-      const want = (u) => u.pathname.replace(/\/$/, '') === `/vaporos/demo/ui${path}`.replace(/\/$/, '');
-      for (let attempt = 1; ; attempt++) {
-        await fr.locator(selector).first().click();
-        try {
-          await fr.waitForURL(want, { timeout: 10000 });
-          break;
-        } catch (e) {
-          // A reload the frame started itself can abort the click's navigation: click again once it settles.
-          if (attempt >= 3 || !/ERR_ABORTED/.test(String(e?.message))) throw e;
-          await fr.waitForLoadState('load');
-          await booted(fr);
-        }
-      }
+      await fr.locator(selector).first().click();
+      await fr.waitForURL((u) => u.pathname.replace(/\/$/, '') === `/vaporos/demo/ui${path}`.replace(/\/$/, ''), { timeout: 10000 });
       await booted(fr);
     };
 
