@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 02:43:28 +0100
+Subject: [PATCH] Pace PyroWave at 90% of the client's link up to 1 Gbit/s and
+ keep the FEC share of its bitrate, since it is sent without FEC and its wire
+ time is most of its latency
+
+
+diff --git a/src/platform/common.h b/src/platform/common.h
+index de03e7c7..ede7ba89 100644
+--- a/src/platform/common.h
++++ b/src/platform/common.h
+@@ -1393,6 +1393,16 @@ namespace platf {
+    */
+   std::string resolve_render_device();
+ 
++#ifdef __linux__
++  /**
++   * @brief Link speed of the network interface a peer is reached through.
++   *
++   * @param peer The peer's IPv4 or IPv6 address.
++   * @return Bits per second; 1 Gbit/s when the interface or its speed is unknown.
++   */
++  std::uint64_t link_speed_bits_per_s(const std::string &peer);
++#endif
++
+   /**
+    * @brief Gets the supported gamepads for this platform backend.
+    * @details This may be called prior to `platf::input()`!
+diff --git a/src/platform/linux/misc.cpp b/src/platform/linux/misc.cpp
+index 302e6c68..bdfd023a 100644
+--- a/src/platform/linux/misc.cpp
++++ b/src/platform/linux/misc.cpp
+@@ -1377,6 +1377,55 @@ namespace platf {
+     return true;
+   }
+ 
++  std::uint64_t link_speed_bits_per_s(const std::string &peer) {
++    constexpr std::uint64_t fallback = 1000000000ull;
++    in6_addr peer6 {};
++    in_addr peer4 {};
++    bool v4 = inet_pton(AF_INET, peer.c_str(), &peer4) == 1;
++    bool v6 = !v4 && inet_pton(AF_INET6, peer.c_str(), &peer6) == 1;
++    if (v6 && IN6_IS_ADDR_V4MAPPED(&peer6)) {
++      std::memcpy(&peer4, &peer6.s6_addr[12], 4);
++      v4 = true;
++      v6 = false;
++    }
++    if (!v4 && !v6) {
++      return fallback;
++    }
++
++    std::uint64_t best = 0;
++    auto ifaddrs = get_ifaddrs();
++    for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
++      if (!pos->ifa_addr || !pos->ifa_netmask || !pos->ifa_name) {
++        continue;
++      }
++      bool same_net = false;
++      if (v4 && pos->ifa_addr->sa_family == AF_INET) {
++        auto a = ((sockaddr_in *) pos->ifa_addr)->sin_addr.s_addr;
++        auto m = ((sockaddr_in *) pos->ifa_netmask)->sin_addr.s_addr;
++        same_net = (a & m) == (peer4.s_addr & m);
++      } else if (v6 && pos->ifa_addr->sa_family == AF_INET6) {
++        auto *a = ((sockaddr_in6 *) pos->ifa_addr)->sin6_addr.s6_addr;
++        auto *m = ((sockaddr_in6 *) pos->ifa_netmask)->sin6_addr.s6_addr;
++        same_net = true;
++        for (int i = 0; i < 16; i++) {
++          if ((a[i] & m[i]) != (peer6.s6_addr[i] & m[i])) {
++            same_net = false;
++            break;
++          }
++        }
++      }
++      if (!same_net) {
++        continue;
++      }
++      std::ifstream speed_file {std::string {"/sys/class/net/"} + pos->ifa_name + "/speed"};
++      long mbps = 0;
++      if (speed_file >> mbps && mbps > 0) {
++        best = std::max<std::uint64_t>(best, (std::uint64_t) mbps * 1000000ull);
++      }
++    }
++    return best ? best : fallback;
++  }
++
+   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+     // Please ensure that KMS followed by CUDA remains at the top so that we can
+     // drop DRM worker privileges once neither backend requires it.
+diff --git a/src/rtsp.cpp b/src/rtsp.cpp
+index c753389a..f034d541 100644
+--- a/src/rtsp.cpp
++++ b/src/rtsp.cpp
+@@ -1228,7 +1228,8 @@ namespace rtsp_stream {
+ 
+       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
+       // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.
+-      if (config::stream.fec_percentage <= 80) {
++      // PyroWave is sent without FEC (see stream.cpp), so it keeps that share.
++      if (config::stream.fec_percentage <= 80 && config.monitor.videoFormat != video::format_pyrowave) {
+         configuredBitrateKbps /= 100.f / (100 - config::stream.fec_percentage);
+       }
+ 
+diff --git a/src/stream.cpp b/src/stream.cpp
+index db1e63e1..840e2363 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -1742,7 +1742,20 @@ namespace stream {
+ 
+       try {
+         // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
+-        size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
++        // PyroWave frames are large and every one goes out whole, so the time a frame
++        // spends on the wire is most of its latency: pace them at 90% of the link the
++        // client is reached through rather than 80%. Never above 1 Gbit/s, since the
++        // client's own link is unknown and a burst into a slower switch port is lost.
++        std::uint64_t pace_bits_per_s = std::giga::num * 80 / 100;
++        if (session->config.monitor.videoFormat == video::format_pyrowave) {
++#ifdef __linux__
++          const std::uint64_t link = std::min<std::uint64_t>(platf::link_speed_bits_per_s(session->video.peer.address().to_string()), std::giga::num);
++#else
++          const std::uint64_t link = std::giga::num;
++#endif
++          pace_bits_per_s = link * 90 / 100;
++        }
++        size_t ratecontrol_packets_in_1ms = pace_bits_per_s / 1000 / blocksize / 8;
+ 
+         // Send less than 64K in a single batch.
+         // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,

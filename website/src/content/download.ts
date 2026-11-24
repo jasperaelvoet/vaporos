@@ -40,7 +40,7 @@ export const downloadPage = {
 export const pyrowaveSection = {
   id: anchors.pyrowave,
   title: 'Stream with PyroWave',
-  lead: "PyroWave is the intra-only codec Valve added to Steam Remote Play. Every frame stands on its own, so fast motion stays sharp. It needs 150 to 500 Mbit/s, so it's for a wired gigabit network, not Wi-Fi or the internet. Stock Moonlight can't decode it: use VaporOS's build, then pick **PyroWave** under **Settings → Video codec**." as Rich,
+  lead: "PyroWave is the intra-only codec Valve added to Steam Remote Play. Every frame stands on its own, so fast motion stays sharp. It needs 150 to 600 Mbit/s, so it's for a wired gigabit network, not Wi-Fi or the internet. Stock Moonlight can't decode it: use VaporOS's build, then pick **PyroWave** under **Settings → Video codec**." as Rich,
   downloads: [
     { label: 'Mac (Apple silicon)', href: `${links.releases}/latest/download/moonlight-pyrowave-macos.dmg`, icon: 'download' },
     { label: 'Windows', href: `${links.releases}/latest/download/moonlight-pyrowave-windows-x64.zip`, icon: 'download' },

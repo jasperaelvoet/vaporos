@@ -8,7 +8,7 @@
 # Cached in /work/forks by a key over forks/: a build compiles them only when
 # a patch, a PKGBUILD or a pinned commit changes. Prints the key on stdout.
 #
-# Environment: SRC (default /src), WORK (default /work).
+# Environment: SRC (default /src), WORK (default /work), VOS_MEM_KIB (optional).
 set -euo pipefail
 
 SRC=${SRC:-/src}
@@ -28,7 +28,16 @@ fi
 log() { printf '    %s\n' "$*" >&2; }
 
 # C++ compile jobs: the builder has more cores than memory for Sunshine's (about 1.5 GiB each).
+# A container's /proc/meminfo is the host kernel's, so also take this cgroup's limit and
+# VOS_MEM_KIB, the memory run.sh found outside the container (an LXC's own limit).
 mem_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+if [[ -r /sys/fs/cgroup/memory.max && $(</sys/fs/cgroup/memory.max) =~ ^[0-9]+$ ]]; then
+    cg_kib=$(( $(</sys/fs/cgroup/memory.max) / 1024 ))
+    (( cg_kib >= mem_kib )) || mem_kib=$cg_kib
+fi
+if [[ ${VOS_MEM_KIB:-} =~ ^[0-9]+$ ]] && (( VOS_MEM_KIB < mem_kib )); then
+    mem_kib=$VOS_MEM_KIB
+fi
 jobs=$(( mem_kib / 1572864 ))
 (( jobs >= 1 )) || jobs=1
 (( jobs <= $(nproc) )) || jobs=$(nproc)

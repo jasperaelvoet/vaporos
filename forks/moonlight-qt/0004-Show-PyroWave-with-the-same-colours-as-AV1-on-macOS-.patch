@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 02:40:34 +0100
+Subject: [PATCH] Show PyroWave with the same colours as AV1 on macOS: render
+ it through libplacebo and match BT.709 by primaries and transfer for the sRGB
+ swapchain, plus an opt-in frame dump (MOONLIGHT_DUMP_FRAME) for colour checks
+
+
+diff --git a/app/streaming/video/ffmpeg-renderers/plvk.cpp b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+index 3a7b2a10..e7c3399e 100644
+--- a/app/streaming/video/ffmpeg-renderers/plvk.cpp
++++ b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+@@ -980,7 +980,14 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
+         // There is a gamma mismatch on macOS between what libplacebo thinks BT.709
+         // should use and what the Metal layer actually displays. Use sRGB for the
+         // swapchain when the incoming frames are BT.709 as a workaround.
+-        if (pl_color_space_equal(&mappedFrame.color, &pl_color_space_bt709)) {
++        //
++        // VaporOS: compare only primaries and transfer. Frames mapped through
++        // pl_map_avframe() (software decoders such as PyroWave) carry inferred
++        // luminance metadata, so the full struct never equals pl_color_space_bt709
++        // and they were shown with BT.1886's darker gamma.
++        if (mappedFrame.color.primaries == PL_COLOR_PRIM_BT_709 &&
++                mappedFrame.color.transfer == PL_COLOR_TRC_BT_1886) {
++            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BT.709 frames: presenting with an sRGB swapchain");
+             pl_swapchain_colorspace_hint(m_Swapchain, &pl_color_space_srgb);
+         }
+         else
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+index a557f513..925d0e66 100644
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -2079,6 +2079,12 @@ void FFmpegVideoDecoder::decoderThreadProc()
+ 
+                     m_ActiveWndVideoStats.decodedFrames++;
+ 
++                    // VaporOS debugging: MOONLIGHT_DUMP_FRAME=<path> writes the 300th decoded
++                    // frame's planes and colour tags, to compare against the host's picture.
++                    if (m_FramesOut == 300) {
++                        dumpFrame(frame);
++                    }
++
+                     // Queue the frame for rendering (or render now if pacer is disabled)
+                     m_Pacer->submitFrame(frame);
+                 }
+@@ -2272,6 +2278,44 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+     return DR_OK;
+ }
+ 
++void FFmpegVideoDecoder::dumpFrame(const AVFrame* frame)
++{
++    QByteArray path = qgetenv("MOONLIGHT_DUMP_FRAME");
++    if (path.isEmpty()) {
++        return;
++    }
++
++    AVFrame* sw = av_frame_alloc();
++    const AVFrame* src = frame;
++    if (frame->hw_frames_ctx != nullptr) {
++        if (av_hwframe_transfer_data(sw, frame, 0) < 0) {
++            av_frame_free(&sw);
++            return;
++        }
++        src = sw;
++    }
++
++    FILE* f = fopen(path.constData(), "wb");
++    if (f != nullptr) {
++        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get((AVPixelFormat)src->format);
++        for (int p = 0; p < 4 && src->data[p] != nullptr; p++) {
++            int h = p == 0 ? src->height : AV_CEIL_RSHIFT(src->height, desc->log2_chroma_h);
++            int w = p == 0 ? src->width : AV_CEIL_RSHIFT(src->width, desc->log2_chroma_w);
++            int bytes = (desc->comp[0].depth > 8 ? 2 : 1) * ((desc->flags & AV_PIX_FMT_FLAG_PLANAR) || p == 0 ? 1 : 2);
++            for (int y = 0; y < h; y++) {
++                fwrite(src->data[p] + (size_t)y * src->linesize[p], 1, (size_t)w * bytes, f);
++            }
++        }
++        fclose(f);
++        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
++                    "Dumped frame to %s: %dx%d %s range=%s colorspace=%s trc=%s primaries=%s",
++                    path.constData(), src->width, src->height, desc->name,
++                    av_color_range_name(frame->color_range), av_color_space_name(frame->colorspace),
++                    av_color_transfer_name(frame->color_trc), av_color_primaries_name(frame->color_primaries));
++    }
++    av_frame_free(&sw);
++}
++
+ int FFmpegVideoDecoder::receiveFrame(AVFrame* frame)
+ {
+     if (m_Pyrowave != nullptr) {
+@@ -2291,13 +2335,16 @@ bool FFmpegVideoDecoder::tryInitializePyrowave(PDECODER_PARAMETERS params)
+     bool yuv444 = (params->videoFormat & VIDEO_FORMAT_PYROWAVE_444) != 0;
+     AVPixelFormat format = yuv444 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P;
+ 
+-    // Renderers that take planar YUV frames from system memory, best first
++    // Renderers that take planar YUV frames from system memory, best first.
++    // libplacebo first: it is what the other codecs render through on macOS
++    // too, so PyroWave gets the same colour handling (VideoToolbox's Metal
++    // renderer showed PyroWave's frames too dark).
+     std::vector<std::function<IFFmpegRenderer*()>> renderers;
+-#ifdef Q_OS_DARWIN
+-    renderers.push_back([]() -> IFFmpegRenderer* { return VTMetalRendererFactory::createRenderer(false); });
+-#endif
+ #ifdef HAVE_LIBPLACEBO_VULKAN
+     renderers.push_back([]() -> IFFmpegRenderer* { return new PlVkRenderer(); });
++#endif
++#ifdef Q_OS_DARWIN
++    renderers.push_back([]() -> IFFmpegRenderer* { return VTMetalRendererFactory::createRenderer(false); });
+ #endif
+     renderers.push_back([]() -> IFFmpegRenderer* { return new SdlRenderer(); });
+ 
+diff --git a/app/streaming/video/ffmpeg.h b/app/streaming/video/ffmpeg.h
+index 39e9a0c7..7ef13f75 100644
+--- a/app/streaming/video/ffmpeg.h
++++ b/app/streaming/video/ffmpeg.h
+@@ -81,6 +81,8 @@ private:
+ 
+     int receiveFrame(AVFrame* frame);
+ 
++    void dumpFrame(const AVFrame* frame);
++
+     bool tryInitializeRendererForUnknownDecoder(const AVCodec* decoder,
+                                                 PDECODER_PARAMETERS params,
+                                                 bool tryHwAccel);

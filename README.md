@@ -112,7 +112,7 @@ set a new password.
 
 VaporOS's Sunshine also streams **PyroWave**, the intra-only wavelet codec
 Valve added to Steam Remote Play: every frame stands on its own, so fast motion
-stays sharp and there is no smearing from frame to frame. It needs a lot of bandwidth (150 to 500 Mbit/s), so use it on a
+stays sharp and there is no smearing from frame to frame. It needs a lot of bandwidth (150 to 600 Mbit/s), so use it on a
 wired gigabit network, not over Wi-Fi or the internet.
 
 1. Download VaporOS's Moonlight from the release: `moonlight-pyrowave-macos.dmg`
@@ -121,8 +121,10 @@ wired gigabit network, not over Wi-Fi or the internet.
    The builds are not signed: on a Mac, right-click Moonlight and choose
    **Open** the first time.
 2. In Moonlight's **Settings**, set **Video codec** to **PyroWave**. The
-   bitrate switches to PyroWave's default for your resolution (150 to
-   600 Mbit/s) and the slider goes up to 1 Gbit/s.
+   bitrate switches to PyroWave's default for your resolution (300 Mbit/s at
+   4K60, 150 to 600 in all) and the slider goes up to 1 Gbit/s. Every frame
+   crosses the network whole, so a higher bitrate costs latency: at 300 Mbit/s
+   a 4K frame takes about 6 ms on gigabit Ethernet, at 600 about 12.
 
 ## Wake it
 

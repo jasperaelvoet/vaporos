@@ -14,7 +14,7 @@
 #         builder and is never in git.
 #
 # Environment passed on to build/build.sh: VERSION COMPRESS REFRESH VOS_DEBUG
-# CHANNEL GIT. DOCKER_PLATFORM=linux/amd64 is for Macs.
+# CHANNEL GIT, and VOS_MEM_KIB (set here). DOCKER_PLATFORM=linux/amd64 is for Macs.
 #
 # The caches (/work, the pacman package cache) are the Docker volumes vos-work
 # and vos-pkgcache. Two builds at once would trample them, so a build waits
@@ -25,6 +25,10 @@ set -euo pipefail
 src=$1 out=$2 keys=$3
 export VERSION COMPRESS REFRESH CHANNEL GIT
 export VOS_DEBUG=${VOS_DEBUG:-1}
+# Inside the container /proc/meminfo is the host kernel's; this one is the builder's own
+# (an LXC's limit), which build/forks.sh sizes its compile jobs by.
+VOS_MEM_KIB=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null) || VOS_MEM_KIB=""
+export VOS_MEM_KIB
 
 platform=()
 [[ -z ${DOCKER_PLATFORM:-} ]] || platform=(--platform "$DOCKER_PLATFORM")
@@ -82,5 +86,5 @@ exec docker run --rm --privileged "${platform[@]}" \
     -v "$keys:/keys:ro" \
     -v vos-pkgcache:/var/cache/pacman/pkg \
     -v vos-work:/work \
-    -e VERSION -e COMPRESS -e REFRESH -e VOS_DEBUG -e CHANNEL -e GIT \
+    -e VERSION -e COMPRESS -e REFRESH -e VOS_DEBUG -e CHANNEL -e GIT -e VOS_MEM_KIB \
     vos-builder /src/build/build.sh

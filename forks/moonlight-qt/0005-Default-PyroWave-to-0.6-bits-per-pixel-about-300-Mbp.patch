@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jasper Aelvoet <jasper.aelvoet@me.com>
+Date: Tue, 24 Nov 2026 03:05:58 +0100
+Subject: [PATCH] Default PyroWave to 0.6 bits per pixel, about 300 Mbps at
+ 4K60, which matches AV1 at 150 Mbps on lossless footage at half the wire time
+ of 600
+
+
+diff --git a/app/settings/streamingpreferences.cpp b/app/settings/streamingpreferences.cpp
+index df588a39..c8799d15 100644
+--- a/app/settings/streamingpreferences.cpp
++++ b/app/settings/streamingpreferences.cpp
+@@ -368,11 +368,12 @@ void StreamingPreferences::save()
+ int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444, int videoCodec)
+ {
+     if (videoCodec == VCC_FORCE_PYROWAVE) {
+-        // PyroWave codes every frame on its own: about 1 bit per pixel looks
+-        // clean (1.5 for 4:4:4). Above 600 Mbps a 4K frame no longer fits the
+-        // host's error correction on gigabit Ethernet, and it never goes
+-        // below 150 Mbps, where it starts to blur.
+-        double kbps = (double)width * height * qMin(fps, 120) * (yuv444 ? 1.5 : 1.0) / 1000.0;
++        // PyroWave codes every frame on its own. About 0.6 bits per pixel (0.9
++        // for 4:4:4) matches AV1 at 150 Mbps on lossless 4K60 footage, and
++        // every frame goes out whole, so more bits mostly cost latency: at
++        // 300 Mbps a 4K frame spends about 6 ms on gigabit Ethernet, at 600
++        // about 12. Below 150 Mbps it starts to blur.
++        double kbps = (double)width * height * qMin(fps, 120) * (yuv444 ? 0.9 : 0.6) / 1000.0;
+         return qBound(150, qRound(kbps / 1000.0), 600) * 1000;
+     }
+ 
