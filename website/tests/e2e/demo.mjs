@@ -265,8 +265,13 @@ try {
     check('walk: held, Power off fires without asking and the Off scene shows the Wake card', true);
     await said(page, /VaporOS is off/);
     await page.screenshot({ path: join(REPORT, 'shots', 'walk-held-off.png') });
+    // Once the box is back the frame reloads itself (scene.js); a tab clicked
+    // before that reload has its navigation aborted, so wait for it first.
+    const reloaded = page.waitForEvent('framenavigated', { predicate: (f) => f === fr, timeout: 30000 });
     await page.getByRole('button', { name: 'Wake it' }).click();
     await said(page, /VaporOS is back on/, 20000);
+    await reloaded;
+    await fr.waitForLoadState('load');
     await fr.locator('#scene').waitFor({ state: 'hidden', timeout: 20000 });
     await booted(fr);
     check('walk: Wake it brings the frame back', true);
